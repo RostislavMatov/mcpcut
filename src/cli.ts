@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util'
-import { formatReadableField } from './journal/format.js'
+import { formatDecisionSummary, formatReadableField } from './journal/format.js'
 import {
   isValidJournalDirection,
+  isValidJournalKind,
   JOURNAL_DIRECTIONS,
+  JOURNAL_KINDS,
   listSessions,
   readSessionWithStats,
   type SessionSummary,
@@ -20,7 +22,7 @@ import { runWrap } from './proxy/wrap.js'
 const USAGE = `Usage:
   mcp-journal wrap -- <cmd> [args...]   Run a wrapped MCP server, journaling all traffic
   mcp-journal sessions                  List journaled sessions
-  mcp-journal show <sessionId> [--method X] [--direction Y] [--json]
+  mcp-journal show <sessionId> [--method X] [--direction Y] [--kind Z] [--json]
                                          Print one session's journal records
   mcp-journal --help                    Show this message
 `
@@ -91,6 +93,7 @@ async function runShowCommand(showArgs: readonly string[]): Promise<number> {
     options: {
       method: { type: 'string' },
       direction: { type: 'string' },
+      kind: { type: 'string' },
       json: { type: 'boolean', default: false },
     },
     allowPositionals: true,
@@ -110,9 +113,16 @@ async function runShowCommand(showArgs: readonly string[]): Promise<number> {
     return 1
   }
 
+  const kind = values.kind
+  if (kind !== undefined && !isValidJournalKind(kind)) {
+    process.stderr.write(`Invalid --kind "${kind}". Allowed values: ${JOURNAL_KINDS.join(', ')}\n\n${USAGE}`)
+    return 1
+  }
+
   const { records, skippedLineCount } = await readSessionWithStats(sessionId, {
     ...(values.method !== undefined ? { method: values.method } : {}),
     ...(direction !== undefined ? { direction } : {}),
+    ...(kind !== undefined ? { kind } : {}),
   })
 
   process.stdout.write(values.json === true ? formatRecordsJson(records) : formatRecordsReadable(records))
@@ -151,7 +161,8 @@ function formatRecordLine(record: JournalRecord): string {
   const kind = formatReadableField(record.kind)
   const method = formatReadableField(record.method ?? '-')
   const payload = truncate(JSON.stringify(record.payload), PAYLOAD_TRUNCATE_LENGTH)
-  return `${ts}  ${direction.padEnd(14)}  ${kind.padEnd(12)}  ${method.padEnd(16)}  ${payload}\n`
+  const decision = record.decision === undefined ? '' : `  ${formatDecisionSummary(record.decision)}`
+  return `${ts}  ${direction.padEnd(14)}  ${kind.padEnd(12)}  ${method.padEnd(16)}  ${payload}${decision}\n`
 }
 
 function truncate(text: string, maxLength: number): string {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { formatReadableField, MAX_READABLE_FIELD_CHARS } from '../../src/journal/format.js'
+import { formatDecisionSummary, formatReadableField, MAX_READABLE_FIELD_CHARS } from '../../src/journal/format.js'
 
 /**
  * `formatReadableField` is the only thing standing between untrusted journal
@@ -64,5 +64,34 @@ describe('formatReadableField', () => {
 
   test('handles an empty string', () => {
     expect(formatReadableField('')).toBe('')
+  })
+})
+
+/**
+ * `formatDecisionSummary` renders a decision record's outcome/tool/rule for
+ * the readable view. Those fields are read back from a journal file on disk
+ * (untrusted), same as every other readable-view field, so control
+ * characters must be neutralized the same way `formatReadableField` does.
+ */
+describe('formatDecisionSummary', () => {
+  test('renders outcome, tool and rule as a labeled summary', () => {
+    const result = formatDecisionSummary({
+      outcome: 'deny',
+      toolName: 'delete_repo',
+      rule: 'servers.github.tools.delete_*',
+    })
+
+    expect(result).toBe('outcome=deny tool=delete_repo rule=servers.github.tools.delete_*')
+  })
+
+  test('neutralizes control characters in each field before rendering', () => {
+    const result = formatDecisionSummary({
+      outcome: 'allow\x1b[31m',
+      toolName: 'tool\x00name',
+      rule: 'rule\x7fname',
+    })
+
+    expect(result).not.toMatch(/[\x00-\x1f\x7f]/)
+    expect(result).toBe('outcome=allow?[31m tool=tool?name rule=rule?name')
   })
 })

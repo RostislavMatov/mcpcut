@@ -15,12 +15,15 @@ export const JOURNAL_DIRECTIONS: readonly JournalDirection[] = [
   'server→client',
   'server-stderr',
 ]
-const JOURNAL_KINDS: readonly string[] = [
+
+/** Kinds a journal record can carry; exported so callers (e.g. the CLI) can validate untrusted input against it. */
+export const JOURNAL_KINDS: readonly string[] = [
   'request',
   'response',
   'notification',
   'invalid',
   'stderr',
+  'decision',
 ]
 
 export interface SessionSummary {
@@ -36,6 +39,7 @@ export interface ReadSessionOptions {
   readonly dir?: string
   readonly method?: string
   readonly direction?: JournalDirection
+  readonly kind?: string
 }
 
 /** Records matching the filters, plus how many lines had to be skipped. */
@@ -62,6 +66,11 @@ export async function listSessions(dir: string = JOURNAL_DIR): Promise<SessionSu
 /** True when `value` is one of the journal's recognized traffic directions. */
 export function isValidJournalDirection(value: string): value is JournalDirection {
   return (JOURNAL_DIRECTIONS as readonly string[]).includes(value)
+}
+
+/** True when `value` is one of the journal's recognized record kinds. */
+export function isValidJournalKind(value: string): boolean {
+  return JOURNAL_KINDS.includes(value)
 }
 
 /**
@@ -130,6 +139,9 @@ function matchesFilters(record: JournalRecord, options: ReadSessionOptions): boo
   if (options.direction !== undefined && record.direction !== options.direction) {
     return false
   }
+  if (options.kind !== undefined && record.kind !== options.kind) {
+    return false
+  }
   return true
 }
 
@@ -194,15 +206,34 @@ function isJournalRecord(value: unknown): value is JournalRecord {
   if (!isPlainObject(value)) {
     return false
   }
+  const kind = value['kind']
   return (
     typeof value['id'] === 'string' &&
     isNonEmptyString(value['ts']) &&
     typeof value['sessionId'] === 'string' &&
     isOneOf(value['direction'], JOURNAL_DIRECTIONS) &&
-    isOneOf(value['kind'], JOURNAL_KINDS) &&
+    isOneOf(kind, JOURNAL_KINDS) &&
     'payload' in value &&
     isOptionalString(value['method']) &&
-    isOptionalNumber(value['durationMs'])
+    isOptionalNumber(value['durationMs']) &&
+    (kind !== 'decision' || isDecisionInfoShape(value['decision']))
+  )
+}
+
+/**
+ * Minimal shape check for a `decision`-kind record's `decision` field: just
+ * enough to make the reader's and CLI's use of `outcome`/`rule`/`toolName`
+ * safe. Old, pre-M2 journal lines never have `kind: 'decision'`, so this
+ * check never runs against them -- backward compatibility is preserved.
+ */
+function isDecisionInfoShape(value: unknown): boolean {
+  if (!isPlainObject(value)) {
+    return false
+  }
+  return (
+    isNonEmptyString(value['outcome']) &&
+    isNonEmptyString(value['rule']) &&
+    isNonEmptyString(value['toolName'])
   )
 }
 

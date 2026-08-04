@@ -82,6 +82,18 @@ describe('record validation', () => {
     expect(sessions[0]?.skippedLineCount).toBe(2)
   })
 
+  test.each([
+    '{"id":"01ARZ3NDEKTSV4RRFFQ69G5FAV","ts":"2026-08-04T10:00:00.000Z","sessionId":"s","direction":"client→server","kind":"decision","payload":null}',
+    '{"id":"01ARZ3NDEKTSV4RRFFQ69G5FAV","ts":"2026-08-04T10:00:00.000Z","sessionId":"s","direction":"client→server","kind":"decision","payload":null,"decision":{"rule":"x","toolName":"y"}}',
+    '{"id":"01ARZ3NDEKTSV4RRFFQ69G5FAV","ts":"2026-08-04T10:00:00.000Z","sessionId":"s","direction":"client→server","kind":"decision","payload":null,"decision":"not-an-object"}',
+  ])('readSession skips a "decision" record with a missing or malformed decision field: %s', async (line) => {
+    await writeJsonl('session-decision-invalid.jsonl', [record(), line, record()])
+
+    const records = await readSession('session-decision-invalid', { dir: tempDir })
+
+    expect(records).toHaveLength(2)
+  })
+
   test('accepts a stderr record shape', async () => {
     await writeJsonl('session-s.jsonl', [
       record({ direction: 'server-stderr', kind: 'stderr', payload: 'log line', method: undefined }),

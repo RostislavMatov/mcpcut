@@ -214,4 +214,72 @@ describe('readSession', () => {
 
     expect(records).toEqual([])
   })
+
+  test('filters by kind', async () => {
+    await writeJsonl('session-i.jsonl', [
+      JSON.stringify(record({ kind: 'request' })),
+      JSON.stringify(
+        record({
+          kind: 'decision',
+          method: undefined,
+          rpcId: undefined,
+          payload: null,
+          decision: {
+            outcome: 'deny',
+            rule: 'servers.github.tools.delete_*',
+            serverName: 'github',
+            toolName: 'delete_repo',
+            toolClass: 'destructive',
+            quarantineState: 'known',
+            argsHash: 'sha256:abc',
+          },
+        }),
+      ),
+    ])
+
+    const records = await readSession('session-i', { dir: tempDir, kind: 'decision' })
+
+    expect(records).toHaveLength(1)
+    expect(records[0]?.kind).toBe('decision')
+  })
+})
+
+describe('decision records (backward compatibility)', () => {
+  test('reads a decision-kind record with a valid decision field', async () => {
+    await writeJsonl('session-decision.jsonl', [
+      JSON.stringify(
+        record({
+          kind: 'decision',
+          method: undefined,
+          rpcId: undefined,
+          payload: null,
+          decision: {
+            outcome: 'allow',
+            rule: 'classDefaults.read',
+            serverName: 'github',
+            toolName: 'list_issues',
+            toolClass: 'read',
+            quarantineState: 'known',
+            argsHash: 'sha256:xyz',
+          },
+        }),
+      ),
+    ])
+
+    const records = await readSession('session-decision', { dir: tempDir })
+
+    expect(records).toHaveLength(1)
+    expect(records[0]?.decision?.outcome).toBe('allow')
+  })
+
+  test('still reads an old M1-style record with no decision field at all', async () => {
+    await writeJsonl('session-old.jsonl', [
+      JSON.stringify(record({ kind: 'request', method: 'tools/list' })),
+    ])
+
+    const records = await readSession('session-old', { dir: tempDir })
+
+    expect(records).toHaveLength(1)
+    expect(records[0]?.decision).toBeUndefined()
+  })
 })

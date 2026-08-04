@@ -1,4 +1,4 @@
-import { MAX_LINE_BUFFER_BYTES } from '../config.js'
+import { createFrameSplitter } from './split.js'
 
 /**
  * Newline-delimited framing for the MCP stdio transport.
@@ -7,10 +7,14 @@ import { MAX_LINE_BUFFER_BYTES } from '../config.js'
  * JSON-RPC, and must never parse JSON — that is the job of a separate,
  * replaceable layer above it (see the architectural invariant in
  * CLAUDE.md: transport framing must stay ignorant of message semantics).
+ *
+ * This is a thin decode-and-filter wrapper over `protocol/split.ts`, which
+ * owns the actual byte-level splitting algorithm. `split.ts` reports every
+ * frame verbatim (terminator kind, blank lines included) for callers that
+ * need to relay bytes exactly as received (the M2 pipeline); this module
+ * keeps its original M1 contract — decoded UTF-8 strings, terminator
+ * stripped, blank lines omitted — unchanged.
  */
-
-const NEWLINE_BYTE = 0x0a
-const CARRIAGE_RETURN_BYTE = 0x0d
 
 export interface LineFramer {
   /**
@@ -32,88 +36,20 @@ export interface LineFramerOptions {
   maxBufferBytes?: number
 }
 
-/**
- * Creates a stateful line framer over newline-delimited byte chunks.
- *
- * The unterminated tail across `push` calls is kept as an array of Buffer
- * fragments plus a running byte total, instead of being concatenated
- * eagerly on every call: re-concatenating the whole backlog for each new
- * chunk would copy it again and again, turning one large message split
- * across many small chunks into an O(n^2) copy. Each new chunk is scanned
- * for newlines on its own; fragments are only concatenated once, when a
- * complete line is emitted or the buffer overflows.
- */
+/** Creates a stateful line framer over newline-delimited byte chunks. */
 export function createLineFramer(options: LineFramerOptions = {}): LineFramer {
-  const maxBufferBytes = options.maxBufferBytes ?? MAX_LINE_BUFFER_BYTES
-  let pendingChunks: Buffer[] = []
-  let pendingBytes = 0
+  const splitter = createFrameSplitter(options)
 
   function push(chunk: Buffer): string[] {
     const lines: string[] = []
-    let searchStart = 0
-    let newlineIndex = chunk.indexOf(NEWLINE_BYTE, searchStart)
-
-    while (newlineIndex !== -1) {
-      const piece = chunk.subarray(searchStart, newlineIndex)
-      appendDecodedLine(lines, completeLine(piece))
-      searchStart = newlineIndex + 1
-      newlineIndex = chunk.indexOf(NEWLINE_BYTE, searchStart)
+    for (const frame of splitter.push(chunk)) {
+      if (frame.isBlank) {
+        continue
+      }
+      lines.push(frame.bytes.toString('utf8'))
     }
-
-    appendToPending(chunk.subarray(searchStart))
-
-    if (pendingBytes > maxBufferBytes) {
-      appendDecodedLine(lines, flushPending())
-    }
-
     return lines
   }
 
-  /** Joins any buffered tail with the newly found line piece, exactly once. */
-  function completeLine(piece: Buffer): Buffer {
-    if (pendingBytes === 0) {
-      return piece
-    }
-    const combined = Buffer.concat([...pendingChunks, piece], pendingBytes + piece.length)
-    resetPending()
-    return combined
-  }
-
-  /** Appends a chunk's unterminated remainder to the pending tail, without copying it. */
-  function appendToPending(remainder: Buffer): void {
-    if (remainder.length === 0) {
-      return
-    }
-    pendingChunks.push(remainder)
-    pendingBytes += remainder.length
-  }
-
-  function resetPending(): void {
-    pendingChunks = []
-    pendingBytes = 0
-  }
-
-  /** Concatenates and clears the whole pending tail, for an overflow flush. */
-  function flushPending(): Buffer {
-    const flushed = Buffer.concat(pendingChunks, pendingBytes)
-    resetPending()
-    return flushed
-  }
-
   return { push }
-}
-
-/** Strips a trailing `\r`, decodes to UTF-8, and skips empty lines. */
-function appendDecodedLine(lines: string[], rawLine: Buffer): void {
-  const trimmed = stripTrailingCarriageReturn(rawLine)
-  if (trimmed.length === 0) {
-    return
-  }
-  lines.push(trimmed.toString('utf8'))
-}
-
-function stripTrailingCarriageReturn(rawLine: Buffer): Buffer {
-  const lastIndex = rawLine.length - 1
-  const hasTrailingCr = lastIndex >= 0 && rawLine[lastIndex] === CARRIAGE_RETURN_BYTE
-  return hasTrailingCr ? rawLine.subarray(0, lastIndex) : rawLine
 }

@@ -35,3 +35,27 @@ export function formatReadableField(value: string): string {
 function truncate(text: string, maxLength: number): string {
   return text.length > maxLength ? `${text.slice(0, maxLength)}${TRUNCATION_MARKER}` : text
 }
+
+/**
+ * The subset of a decision record's fields the readable view renders.
+ * Deliberately narrower than `DecisionInfo` (`journal/record.ts`) so this
+ * module does not need to import it just to describe three strings.
+ */
+export interface DecisionSummaryFields {
+  readonly outcome: string
+  readonly toolName: string
+  readonly rule: string
+}
+
+/**
+ * Renders the readable-view summary for a `decision` journal record.
+ * `outcome`/`toolName`/`rule` are read back from a journal file on disk --
+ * untrusted, like every other readable-view field -- so each one goes
+ * through `formatReadableField` before it reaches the terminal.
+ */
+export function formatDecisionSummary(decision: DecisionSummaryFields): string {
+  const outcome = formatReadableField(decision.outcome)
+  const tool = formatReadableField(decision.toolName)
+  const rule = formatReadableField(decision.rule)
+  return `outcome=${outcome} tool=${tool} rule=${rule}`
+}
