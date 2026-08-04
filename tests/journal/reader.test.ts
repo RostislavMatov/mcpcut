@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { listSessions, readSession } from '../../src/journal/reader.js'
 import type { JournalRecord } from '../../src/journal/record.js'
+import { LIST_SESSIONS_CONCURRENCY } from '../../src/config.js'
 
 let tempDir: string
 
@@ -116,6 +117,21 @@ describe('listSessions', () => {
     const sessions = await listSessions(tempDir)
 
     expect(sessions).toEqual([])
+  })
+
+  test('handles more files than the concurrency bound without dropping any', async () => {
+    const fileCount = LIST_SESSIONS_CONCURRENCY * 3 + 2
+    await Promise.all(
+      Array.from({ length: fileCount }, (_, index) =>
+        writeJsonl(`session-bulk-${index}.jsonl`, [
+          JSON.stringify(record({ sessionId: `session-bulk-${index}` })),
+        ]),
+      ),
+    )
+
+    const sessions = await listSessions(tempDir)
+
+    expect(sessions).toHaveLength(fileCount)
   })
 })
 

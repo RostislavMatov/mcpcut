@@ -153,8 +153,8 @@ describe('splice', () => {
     expect(chunks).toEqual([{ notABuffer: true }])
   })
 
-  test('uses console.error as the default onError when the tap throws', async () => {
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+  test('writes to process.stderr as the default onError when the tap throws', async () => {
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockReturnValue(true)
     const source = new PassThrough()
     const { writable: destination } = createCapturingWritable()
 
@@ -166,8 +166,9 @@ describe('splice', () => {
     source.end()
     await once(destination, 'finish')
 
-    expect(consoleErrorSpy).toHaveBeenCalledTimes(1)
-    consoleErrorSpy.mockRestore()
+    expect(stderrSpy).toHaveBeenCalledTimes(1)
+    expect(String(stderrSpy.mock.calls[0]?.[0])).toContain('tap failure')
+    stderrSpy.mockRestore()
   })
 
   test('ends the destination when the source ends, by default', async () => {

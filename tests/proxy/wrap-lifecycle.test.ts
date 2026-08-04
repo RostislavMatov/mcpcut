@@ -5,6 +5,7 @@ import { Writable } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { ulid } from 'ulid'
 import { createShutdownController, isPipeGoneError, runWrap } from '../../src/proxy/wrap.js'
+import type { ServerHandle } from '../../src/proxy/spawn.js'
 import type { JournalRecord } from '../../src/journal/record.js'
 import {
   BURST_SERVER_PATH,
@@ -29,6 +30,10 @@ const BURST_RESPONSE_COUNT = 40
 const BURST_PADDING_CHARS = 8000
 const SLOW_CLIENT_DELAY_MS = 2
 const WARNING_SETTLE_MS = 20
+const RELAY_DRAIN_TIMEOUT_TEST_MS = 50
+const DRAIN_TIMEOUT_SETTLE_MARGIN_MS = 500
+const SHORT_KILL_ESCALATION_MS = 20
+const ESCALATION_SETTLE_MARGIN_MS = 40
 
 /** Counts client→server request records, i.e. how often the client tap fired. */
 function countClientRequests(records: readonly JournalRecord[]): number {
@@ -229,6 +234,39 @@ describe('runWrap lifecycle', () => {
 
     const records = await readJournalRecords(journalDir, sessionId)
     expect(records.length).toBeGreaterThan(0)
+    // Diagnostics route to the injected client-facing stderr, never to the
+    // proxy's own real process.stderr.
+    expect(stderrSpy).not.toHaveBeenCalled()
+    expect(harness.receivedStderrText()).toContain('server→client stream failed')
+  })
+
+  test('proceeds with shutdown when the client never drains the relay, instead of hanging', async () => {
+    const sessionId = ulid()
+    const harness = createClientHarness()
+    const neverDrainingStdout = new Writable({
+      write(_chunk: Buffer, _encoding, _callback) {
+        // Deliberately never calls _callback: the destination never
+        // acknowledges a write, so splice's relay tracker never settles.
+      },
+    })
+
+    const startedAt = Date.now()
+    const runPromise = runWrap('node', [BURST_SERVER_PATH], {
+      dir: journalDir,
+      sessionId,
+      stdin: harness.clientOutbox,
+      stdout: neverDrainingStdout,
+      stderr: harness.clientStderr,
+      relayDrainTimeoutMs: RELAY_DRAIN_TIMEOUT_TEST_MS,
+    })
+    harness.clientOutbox.write(requestLine(1, 'burst', { count: 1 }))
+
+    const exitCode = await runPromise
+    const elapsedMs = Date.now() - startedAt
+
+    expect(exitCode).toBe(0)
+    expect(elapsedMs).toBeLessThan(RELAY_DRAIN_TIMEOUT_TEST_MS + DRAIN_TIMEOUT_SETTLE_MARGIN_MS)
+    expect(harness.receivedStderrText()).toContain('relay did not drain')
   })
 
   test('keeps the child exit code when the client writes into a stdin whose child already exited', async () => {
@@ -262,13 +300,31 @@ describe('runWrap lifecycle', () => {
 
 describe('createShutdownController', () => {
   interface KillSpy {
-    readonly target: { kill: (signal?: NodeJS.Signals) => void }
+    readonly target: Pick<ServerHandle, 'kill' | 'exitCode'>
     readonly signals: Array<NodeJS.Signals | undefined>
   }
 
+  /** A kill spy whose target never reports an exit, so escalation timers stay pending. */
   function createKillSpy(): KillSpy {
     const signals: Array<NodeJS.Signals | undefined> = []
-    return { target: { kill: (signal) => void signals.push(signal) }, signals }
+    return {
+      target: {
+        kill: (signal) => void signals.push(signal),
+        exitCode: () => new Promise<number>(() => undefined),
+      },
+      signals,
+    }
+  }
+
+  function captureWritable(): { writable: Writable; text: () => string } {
+    const chunks: string[] = []
+    const writable = new Writable({
+      write(chunk: Buffer, _encoding, callback) {
+        chunks.push(String(chunk))
+        callback()
+      },
+    })
+    return { writable, text: () => chunks.join('') }
   }
 
   function silenceStderr(): { restore: () => void; lines: string[] } {
@@ -346,6 +402,35 @@ describe('createShutdownController', () => {
 
     expect(signals).toEqual(['SIGTERM'])
     expect(controller.hasFailed()).toBe(true)
+  })
+
+  test('escalates to SIGKILL when the child has not exited within killEscalationMs', async () => {
+    const { target, signals } = createKillSpy()
+    const stderr = silenceStderr()
+    const controller = createShutdownController(target, { killEscalationMs: SHORT_KILL_ESCALATION_MS })
+
+    controller.report('server→client', new Error('client is gone'), 'destination')
+    await new Promise((resolve) =>
+      setTimeout(resolve, SHORT_KILL_ESCALATION_MS + ESCALATION_SETTLE_MARGIN_MS),
+    )
+    stderr.restore()
+
+    expect(signals).toEqual(['SIGTERM', 'SIGKILL'])
+  })
+
+  test('routes both stream-error and tap-error diagnostics to an injected stream, never real process.stderr', () => {
+    const { target } = createKillSpy()
+    const diagnostics = captureWritable()
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockReturnValue(true)
+    const controller = createShutdownController(target, { diagnostics: diagnostics.writable })
+
+    controller.report('server→client', new Error('client is gone'), 'destination')
+    controller.report('client→server', new Error('journal write blew up'), 'tap')
+    stderrSpy.mockRestore()
+
+    expect(diagnostics.text()).toContain('client is gone')
+    expect(diagnostics.text()).toContain('journal write blew up')
+    expect(stderrSpy).not.toHaveBeenCalled()
   })
 
   test('describes a non-Error failure value without throwing', () => {

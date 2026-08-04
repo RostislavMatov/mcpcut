@@ -1,13 +1,20 @@
-import { readFile, readdir } from 'node:fs/promises'
+import { createReadStream } from 'node:fs'
+import { readdir } from 'node:fs/promises'
+import { createInterface } from 'node:readline'
 import { join } from 'node:path'
-import { JOURNAL_DIR } from '../config.js'
+import { LIST_SESSIONS_CONCURRENCY, JOURNAL_DIR } from '../config.js'
+import { mapWithConcurrency } from './concurrency.js'
 import type { JournalDirection, JournalRecord } from './record.js'
 import { assertValidSessionId } from './session-id.js'
 
 const JSONL_EXTENSION = '.jsonl'
-const NEWLINE = '\n'
 
-const JOURNAL_DIRECTIONS: readonly string[] = ['client→server', 'server→client', 'server-stderr']
+/** Directions a journal record can carry; exported so callers (e.g. the CLI) can validate untrusted input against it. */
+export const JOURNAL_DIRECTIONS: readonly JournalDirection[] = [
+  'client→server',
+  'server→client',
+  'server-stderr',
+]
 const JOURNAL_KINDS: readonly string[] = [
   'request',
   'response',
@@ -45,9 +52,16 @@ export interface SessionReadResult {
  */
 export async function listSessions(dir: string = JOURNAL_DIR): Promise<SessionSummary[]> {
   const files = await listJsonlFiles(dir)
-  const summaries = await Promise.all(files.map((file) => summarizeSessionFile(dir, file)))
+  const summaries = await mapWithConcurrency(files, LIST_SESSIONS_CONCURRENCY, (file) =>
+    summarizeSessionFile(dir, file),
+  )
   const nonEmpty = summaries.filter((summary): summary is SessionSummary => summary !== null)
   return [...nonEmpty].sort((a, b) => b.lastTs.localeCompare(a.lastTs))
+}
+
+/** True when `value` is one of the journal's recognized traffic directions. */
+export function isValidJournalDirection(value: string): value is JournalDirection {
+  return (JOURNAL_DIRECTIONS as readonly string[]).includes(value)
 }
 
 /**
@@ -124,32 +138,41 @@ interface FileReadResult {
   readonly skippedLineCount: number
 }
 
+/**
+ * Reads one journal file line-by-line via a stream, rather than loading it
+ * whole: a long-running session's journal can exceed Node's max string
+ * length, and readline lets the file be processed without ever holding more
+ * than a few lines in memory at once. A missing file yields an empty result
+ * rather than throwing.
+ */
 async function readRecordsFromFile(filePath: string): Promise<FileReadResult> {
-  const content = await readFileOrEmpty(filePath)
-  const lines = content.split(NEWLINE).filter((line) => line.trim().length > 0)
-
   const records: JournalRecord[] = []
   let skippedLineCount = 0
-  for (const line of lines) {
-    const parsed = tryParseRecord(line)
-    if (parsed === null) {
-      skippedLineCount += 1
-      continue
-    }
-    records.push(parsed)
-  }
-  return { records, skippedLineCount }
-}
 
-async function readFileOrEmpty(filePath: string): Promise<string> {
   try {
-    return await readFile(filePath, 'utf8')
+    const lines = createInterface({
+      input: createReadStream(filePath, { encoding: 'utf8' }),
+      crlfDelay: Infinity,
+    })
+    for await (const line of lines) {
+      if (line.trim().length === 0) {
+        continue
+      }
+      const parsed = tryParseRecord(line)
+      if (parsed === null) {
+        skippedLineCount += 1
+        continue
+      }
+      records.push(parsed)
+    }
   } catch (error) {
     if (isEnoent(error)) {
-      return ''
+      return { records: [], skippedLineCount: 0 }
     }
     throw error
   }
+
+  return { records, skippedLineCount }
 }
 
 /** Parses one JSONL line, returning null unless it is a well-shaped record. */

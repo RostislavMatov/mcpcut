@@ -25,7 +25,7 @@ export interface SpliceOptions {
    * Called for tap failures (line framing or onLine throwing) and for stream
    * errors on either side. A stream error must never surface as an uncaught
    * exception, so this is the only place they are reported.
-   * Defaults to console.error.
+   * Defaults to writing one line to process.stderr.
    */
   onError?: (error: unknown, origin: SpliceErrorOrigin) => void
 }
@@ -41,8 +41,12 @@ export interface SpliceHandle {
   readonly relayed: Promise<void>
 }
 
-function defaultOnError(error: unknown): void {
-  console.error(error)
+function defaultOnError(error: unknown, origin: SpliceErrorOrigin): void {
+  process.stderr.write(`[splice] ${origin} error: ${describeError(error)}\n`)
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 /**

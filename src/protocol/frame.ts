@@ -11,7 +11,6 @@ import { MAX_LINE_BUFFER_BYTES } from '../config.js'
 
 const NEWLINE_BYTE = 0x0a
 const CARRIAGE_RETURN_BYTE = 0x0d
-const EMPTY_BUFFER = Buffer.alloc(0)
 
 export interface LineFramer {
   /**
@@ -33,35 +32,72 @@ export interface LineFramerOptions {
   maxBufferBytes?: number
 }
 
-/** Creates a stateful line framer over newline-delimited byte chunks. */
+/**
+ * Creates a stateful line framer over newline-delimited byte chunks.
+ *
+ * The unterminated tail across `push` calls is kept as an array of Buffer
+ * fragments plus a running byte total, instead of being concatenated
+ * eagerly on every call: re-concatenating the whole backlog for each new
+ * chunk would copy it again and again, turning one large message split
+ * across many small chunks into an O(n^2) copy. Each new chunk is scanned
+ * for newlines on its own; fragments are only concatenated once, when a
+ * complete line is emitted or the buffer overflows.
+ */
 export function createLineFramer(options: LineFramerOptions = {}): LineFramer {
   const maxBufferBytes = options.maxBufferBytes ?? MAX_LINE_BUFFER_BYTES
-  let pending = EMPTY_BUFFER
+  let pendingChunks: Buffer[] = []
+  let pendingBytes = 0
 
   function push(chunk: Buffer): string[] {
-    pending = Buffer.concat([pending, chunk])
-    const lines = drainCompleteLines()
+    const lines: string[] = []
+    let searchStart = 0
+    let newlineIndex = chunk.indexOf(NEWLINE_BYTE, searchStart)
 
-    if (pending.length > maxBufferBytes) {
-      appendDecodedLine(lines, pending)
-      pending = EMPTY_BUFFER
+    while (newlineIndex !== -1) {
+      const piece = chunk.subarray(searchStart, newlineIndex)
+      appendDecodedLine(lines, completeLine(piece))
+      searchStart = newlineIndex + 1
+      newlineIndex = chunk.indexOf(NEWLINE_BYTE, searchStart)
+    }
+
+    appendToPending(chunk.subarray(searchStart))
+
+    if (pendingBytes > maxBufferBytes) {
+      appendDecodedLine(lines, flushPending())
     }
 
     return lines
   }
 
-  function drainCompleteLines(): string[] {
-    const lines: string[] = []
-    let newlineIndex = pending.indexOf(NEWLINE_BYTE)
-
-    while (newlineIndex !== -1) {
-      const rawLine = pending.subarray(0, newlineIndex)
-      pending = pending.subarray(newlineIndex + 1)
-      appendDecodedLine(lines, rawLine)
-      newlineIndex = pending.indexOf(NEWLINE_BYTE)
+  /** Joins any buffered tail with the newly found line piece, exactly once. */
+  function completeLine(piece: Buffer): Buffer {
+    if (pendingBytes === 0) {
+      return piece
     }
+    const combined = Buffer.concat([...pendingChunks, piece], pendingBytes + piece.length)
+    resetPending()
+    return combined
+  }
 
-    return lines
+  /** Appends a chunk's unterminated remainder to the pending tail, without copying it. */
+  function appendToPending(remainder: Buffer): void {
+    if (remainder.length === 0) {
+      return
+    }
+    pendingChunks.push(remainder)
+    pendingBytes += remainder.length
+  }
+
+  function resetPending(): void {
+    pendingChunks = []
+    pendingBytes = 0
+  }
+
+  /** Concatenates and clears the whole pending tail, for an overflow flush. */
+  function flushPending(): Buffer {
+    const flushed = Buffer.concat(pendingChunks, pendingBytes)
+    resetPending()
+    return flushed
   }
 
   return { push }

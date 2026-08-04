@@ -158,6 +158,28 @@ export const RAW_REDACTION_OVERLAP_CHARS = 8192
 export const MAX_EMBEDDED_JSON_CHARS = 64 * 1024
 export const MAX_EMBEDDED_JSON_DEPTH = 3
 
+/**
+ * Max serialized length of a *valid* JSON payload kept in a journal record.
+ * Well-formed 16 MB tool results (base64 images etc.) should not land in the
+ * journal whole; over-limit payloads are stored truncated with a marker.
+ */
+export const MAX_VALID_PAYLOAD_CHARS = 256 * 1024
+
+/**
+ * Grace period after forwarding SIGTERM/SIGINT to the child before escalating
+ * to SIGKILL, so a child that ignores signals cannot wedge the proxy.
+ */
+export const SIGKILL_ESCALATION_MS = 5000
+
+/**
+ * Max time to wait for the server→client relay to drain after the child has
+ * exited. A client that stopped reading must not hold the proxy open forever.
+ */
+export const RELAY_DRAIN_TIMEOUT_MS = 5000
+
+/** Max journal files read concurrently by listSessions. */
+export const LIST_SESSIONS_CONCURRENCY = 8
+
 /** Max time to keep an unanswered request id for duration correlation. */
 export const REQUEST_CORRELATION_TTL_MS = 5 * 60 * 1000
 

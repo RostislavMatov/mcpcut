@@ -1,21 +1,45 @@
-import { describe, expect, test } from 'vitest'
+import { once } from 'node:events'
+import { describe, expect, test, vi } from 'vitest'
 import {
   DEFAULT_FORWARDED_SIGNALS,
   installSignalForwarding,
   mapExitCode,
   spawnServer,
+  type ServerHandle,
 } from '../../src/proxy/spawn.js'
 
 const SIGTERM_EXIT_CODE = 143 // 128 + 15
+const SIGKILL_EXIT_CODE = 137 // 128 + 9
 const SIGNAL_EXIT_CODE_BASE = 128
 const CHILD_STARTUP_GRACE_MS = 50
 const BURST_RESPONSE_COUNT = 40
 const BURST_PADDING_CHARS = 8000
 const SLOW_READER_DELAY_MS = 5
+const SHORT_ESCALATION_MS = 30
+const ESCALATION_SETTLE_MARGIN_MS = 40
 
 /** Waits a short, fixed grace period for a just-spawned child to be ready to receive signals. */
 function waitForChildStartup(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, CHILD_STARTUP_GRACE_MS))
+}
+
+/** A minimal installSignalForwarding target that never reports an exit, for listener-hygiene tests. */
+function stubTarget(kill: (signal?: NodeJS.Signals) => void): Pick<ServerHandle, 'kill' | 'exitCode'> {
+  return { kill, exitCode: () => new Promise<number>(() => undefined) }
+}
+
+/**
+ * Spawns a child that installs a SIGTERM handler ignoring the signal, then
+ * writes one byte to stdout as a readiness signal. Waiting for that byte —
+ * rather than a fixed grace period — deterministically guarantees the
+ * handler is registered before the test delivers a real SIGTERM.
+ */
+function spawnSignalIgnoringChild(): ServerHandle {
+  const handle = spawnServer('node', [
+    '-e',
+    "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000); process.stdout.write('ready')",
+  ])
+  return handle
 }
 
 describe('spawnServer', () => {
@@ -134,11 +158,9 @@ describe('mapExitCode', () => {
 describe('installSignalForwarding', () => {
   test('forwards a configured signal to the target', () => {
     const received: NodeJS.Signals[] = []
-    const target = {
-      kill: (signal?: NodeJS.Signals) => {
-        received.push(signal ?? 'SIGTERM')
-      },
-    }
+    const target = stubTarget((signal) => {
+      received.push(signal ?? 'SIGTERM')
+    })
 
     const handle = installSignalForwarding(target, ['SIGTERM'])
     try {
@@ -150,7 +172,7 @@ describe('installSignalForwarding', () => {
   })
 
   test('uninstall removes exactly the listeners it added, restoring prior listener counts', () => {
-    const target = { kill: () => undefined }
+    const target = stubTarget(() => undefined)
     const before = DEFAULT_FORWARDED_SIGNALS.map((signal) => process.listenerCount(signal))
 
     const handle = installSignalForwarding(target)
@@ -169,7 +191,7 @@ describe('installSignalForwarding', () => {
     process.on('SIGTERM', otherListener)
 
     try {
-      const target = { kill: () => undefined }
+      const target = stubTarget(() => undefined)
       const handle = installSignalForwarding(target, ['SIGTERM'])
 
       handle.uninstall()
@@ -178,5 +200,54 @@ describe('installSignalForwarding', () => {
     } finally {
       process.removeListener('SIGTERM', otherListener)
     }
+  })
+
+  test('escalates to SIGKILL after the grace period when the child ignores the forwarded signal', async () => {
+    const handle = spawnSignalIgnoringChild()
+    await once(handle.stdout, 'data')
+
+    const signalHandle = installSignalForwarding(handle, ['SIGTERM'], {
+      killEscalationMs: SHORT_ESCALATION_MS,
+    })
+    try {
+      process.emit('SIGTERM')
+      await expect(handle.exitCode()).resolves.toBe(SIGKILL_EXIT_CODE)
+    } finally {
+      signalHandle.uninstall()
+    }
+  })
+
+  test('does not escalate once the child has already exited', async () => {
+    const handle = spawnServer('node', ['-e', ''])
+    const killSpy = vi.spyOn(handle, 'kill')
+    await handle.exitCode()
+
+    const signalHandle = installSignalForwarding(handle, ['SIGTERM'], {
+      killEscalationMs: SHORT_ESCALATION_MS,
+    })
+    process.emit('SIGTERM')
+    await new Promise((resolve) => setTimeout(resolve, SHORT_ESCALATION_MS + ESCALATION_SETTLE_MARGIN_MS))
+    signalHandle.uninstall()
+
+    expect(killSpy).toHaveBeenCalledWith('SIGTERM')
+    expect(killSpy).not.toHaveBeenCalledWith('SIGKILL')
+  })
+
+  test('uninstall cancels a pending escalation so it never fires', async () => {
+    const handle = spawnSignalIgnoringChild()
+    await once(handle.stdout, 'data')
+    const killSpy = vi.spyOn(handle, 'kill')
+
+    const signalHandle = installSignalForwarding(handle, ['SIGTERM'], {
+      killEscalationMs: SHORT_ESCALATION_MS,
+    })
+    process.emit('SIGTERM')
+    signalHandle.uninstall()
+    await new Promise((resolve) => setTimeout(resolve, SHORT_ESCALATION_MS + ESCALATION_SETTLE_MARGIN_MS))
+
+    expect(killSpy).toHaveBeenCalledWith('SIGTERM')
+    expect(killSpy).not.toHaveBeenCalledWith('SIGKILL')
+
+    handle.kill('SIGKILL')
   })
 })

@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
@@ -124,6 +124,38 @@ describe('readSessionWithStats', () => {
     })
 
     expect(result.records).toHaveLength(1)
+  })
+})
+
+describe('streaming a large session file', () => {
+  test('reads every record from a file with many lines without loading it whole', async () => {
+    const lineCount = 5_000
+    const lines = Array.from({ length: lineCount }, (_, index) =>
+      record({ ts: `2026-08-04T10:00:${String(index % 60).padStart(2, '0')}.000Z`, rpcId: index }),
+    )
+    await writeJsonl('session-huge.jsonl', lines)
+
+    const result = await readSessionWithStats('session-huge', { dir: tempDir })
+
+    expect(result.records).toHaveLength(lineCount)
+    expect(result.skippedLineCount).toBe(0)
+  })
+
+  test('a blank line between records is neither read as a record nor counted as skipped', async () => {
+    await writeJsonl('session-blank.jsonl', [record(), '', record()])
+
+    const result = await readSessionWithStats('session-blank', { dir: tempDir })
+
+    expect(result.records).toHaveLength(2)
+    expect(result.skippedLineCount).toBe(0)
+  })
+
+  test('propagates a non-ENOENT file read error instead of silently returning empty', async () => {
+    // A directory at the expected file path makes the read fail with EISDIR,
+    // not ENOENT -- that must surface, not be swallowed like a missing file.
+    await mkdir(join(tempDir, 'session-dir.jsonl'))
+
+    await expect(readSession('session-dir', { dir: tempDir })).rejects.toThrow()
   })
 })
 

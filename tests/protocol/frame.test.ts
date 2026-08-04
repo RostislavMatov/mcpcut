@@ -136,4 +136,27 @@ describe('createLineFramer', () => {
 
     expect(lines).toEqual([])
   })
+
+  test('reassembles an 8MB message split into 64KB chunks quickly, without quadratic slowdown', () => {
+    const CHUNK_SIZE = 64 * 1024
+    const LINE_BODY_SIZE = 8 * 1024 * 1024
+    const WALL_CLOCK_BOUND_MS = 2000
+    const framer = createLineFramer()
+    const full = Buffer.concat([Buffer.alloc(LINE_BODY_SIZE, 'x'), Buffer.from('\n')])
+
+    const startedAt = Date.now()
+    let observedLines: string[] = []
+    for (let offset = 0; offset < full.length; offset += CHUNK_SIZE) {
+      const chunk = full.subarray(offset, Math.min(offset + CHUNK_SIZE, full.length))
+      observedLines = observedLines.concat(framer.push(chunk))
+    }
+    const elapsedMs = Date.now() - startedAt
+
+    expect(observedLines).toHaveLength(1)
+    expect(observedLines[0]).toHaveLength(LINE_BODY_SIZE)
+    // Loose bound: a quadratic implementation on 8MB/64KB (~128 chunks, each
+    // re-copying an ever-growing backlog) is orders of magnitude slower than
+    // this, while a linear one finishes in milliseconds.
+    expect(elapsedMs).toBeLessThan(WALL_CLOCK_BOUND_MS)
+  })
 })

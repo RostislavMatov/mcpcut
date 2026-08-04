@@ -1,6 +1,7 @@
 import { spawn as nodeSpawn } from 'node:child_process'
 import { constants as osConstants } from 'node:os'
 import type { Readable, Writable } from 'node:stream'
+import { SIGKILL_ESCALATION_MS } from '../config.js'
 
 /**
  * Child process lifecycle for the wrapped MCP server.
@@ -109,18 +110,67 @@ export interface SignalForwardingHandle {
   uninstall(): void
 }
 
+export interface SignalForwardingOptions {
+  /**
+   * Grace period after forwarding a signal before escalating to SIGKILL, if
+   * the child has not exited by then. Defaults to SIGKILL_ESCALATION_MS.
+   * Injectable so tests do not have to wait out the real grace period.
+   */
+  killEscalationMs?: number
+}
+
+/** A pending or already-cancelled SIGKILL escalation. */
+interface KillEscalation {
+  cancel(): void
+}
+
+/**
+ * Kills `target` with `signal`, then escalates to SIGKILL after `delayMs`
+ * if the process has not exited by then — so a child that ignores the
+ * signal cannot wedge the caller open. The escalation timer is unref'd (it
+ * must never itself hold the event loop open) and is cancelled as soon as
+ * `target.exitCode()` settles, so a child that exits promptly is never
+ * SIGKILLed on top of its normal shutdown.
+ */
+export function killWithEscalation(
+  target: Pick<ServerHandle, 'kill' | 'exitCode'>,
+  signal: NodeJS.Signals,
+  delayMs: number = SIGKILL_ESCALATION_MS,
+): KillEscalation {
+  target.kill(signal)
+
+  const timer = setTimeout(() => {
+    target.kill('SIGKILL')
+  }, delayMs)
+  timer.unref()
+
+  const cancel = (): void => clearTimeout(timer)
+  // A rejected exitCode() (spawn failure) is just as good a reason to give
+  // up on the escalation as a resolved one: either way there is no process
+  // left to SIGKILL.
+  target.exitCode().then(cancel, cancel)
+
+  return { cancel }
+}
+
 /**
  * Installs process-level signal listeners that forward each signal to
  * `target.kill(signal)` — used so the proxy forwards SIGTERM/SIGINT it
- * receives on to the wrapped child process.
+ * receives on to the wrapped child process. Each forwarded signal starts
+ * its own SIGKILL escalation (see killWithEscalation), cancelled on
+ * `uninstall()` so no timer outlives this handle.
  */
 export function installSignalForwarding(
-  target: Pick<ServerHandle, 'kill'>,
+  target: Pick<ServerHandle, 'kill' | 'exitCode'>,
   signals: readonly NodeJS.Signals[] = DEFAULT_FORWARDED_SIGNALS,
+  opts: SignalForwardingOptions = {},
 ): SignalForwardingHandle {
+  const killEscalationMs = opts.killEscalationMs ?? SIGKILL_ESCALATION_MS
+  const cancelEscalations: Array<() => void> = []
+
   const installed: Array<[NodeJS.Signals, NodeJS.SignalsListener]> = signals.map((signal) => {
     const listener: NodeJS.SignalsListener = () => {
-      target.kill(signal)
+      cancelEscalations.push(killWithEscalation(target, signal, killEscalationMs).cancel)
     }
     process.on(signal, listener)
     return [signal, listener]
@@ -130,6 +180,9 @@ export function installSignalForwarding(
     uninstall: () => {
       for (const [signal, listener] of installed) {
         process.removeListener(signal, listener)
+      }
+      for (const cancel of cancelEscalations) {
+        cancel()
       }
     },
   }

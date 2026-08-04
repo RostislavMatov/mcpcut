@@ -44,8 +44,11 @@ export interface ClientHarness {
   readonly clientInboxChunks: Buffer[]
   readonly clientStdout: PassThrough
   readonly clientStderr: PassThrough
+  readonly clientStderrChunks: Buffer[]
   /** Number of complete newline-terminated lines received so far on clientStdout. */
   receivedLineCount(): number
+  /** Everything written to clientStderr so far (server stderr passthrough plus any diagnostics). */
+  receivedStderrText(): string
 }
 
 /** Builds the injected client-facing streams used to drive runWrap in tests. */
@@ -55,6 +58,8 @@ export function createClientHarness(): ClientHarness {
   const clientInboxChunks: Buffer[] = []
   clientStdout.on('data', (chunk: Buffer) => clientInboxChunks.push(chunk))
   const clientStderr = new PassThrough()
+  const clientStderrChunks: Buffer[] = []
+  clientStderr.on('data', (chunk: Buffer) => clientStderrChunks.push(chunk))
   clientStderr.resume()
 
   function receivedLineCount(): number {
@@ -62,7 +67,19 @@ export function createClientHarness(): ClientHarness {
     return text.split('\n').filter((line) => line.length > 0).length
   }
 
-  return { clientOutbox, clientInboxChunks, clientStdout, clientStderr, receivedLineCount }
+  function receivedStderrText(): string {
+    return Buffer.concat(clientStderrChunks).toString('utf8')
+  }
+
+  return {
+    clientOutbox,
+    clientInboxChunks,
+    clientStdout,
+    clientStderr,
+    clientStderrChunks,
+    receivedLineCount,
+    receivedStderrText,
+  }
 }
 
 export interface SlowWritable {

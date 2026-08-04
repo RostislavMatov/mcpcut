@@ -1,7 +1,14 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util'
-import { listSessions, readSessionWithStats, type SessionSummary } from './journal/reader.js'
-import type { JournalDirection, JournalRecord } from './journal/record.js'
+import { formatReadableField } from './journal/format.js'
+import {
+  isValidJournalDirection,
+  JOURNAL_DIRECTIONS,
+  listSessions,
+  readSessionWithStats,
+  type SessionSummary,
+} from './journal/reader.js'
+import type { JournalRecord } from './journal/record.js'
 import { runWrap } from './proxy/wrap.js'
 
 /**
@@ -45,8 +52,19 @@ async function main(): Promise<number> {
 /** Splits `wrap -- <cmd> [args...]` and runs the wrapped server to completion. */
 async function runWrapCommand(wrapArgs: readonly string[]): Promise<number> {
   const dashIndex = wrapArgs.indexOf('--')
-  const childCommand = dashIndex === -1 ? undefined : wrapArgs[dashIndex + 1]
-  if (dashIndex === -1 || childCommand === undefined) {
+  if (dashIndex === -1) {
+    process.stderr.write(`Missing "-- <cmd>" in wrap command.\n\n${USAGE}`)
+    return 1
+  }
+  if (dashIndex > 0) {
+    process.stderr.write(
+      `Unknown option(s) before "--" in wrap command: ${wrapArgs.slice(0, dashIndex).join(' ')}\n\n${USAGE}`,
+    )
+    return 1
+  }
+
+  const childCommand = wrapArgs[dashIndex + 1]
+  if (childCommand === undefined) {
     process.stderr.write(`Missing "-- <cmd>" in wrap command.\n\n${USAGE}`)
     return 1
   }
@@ -61,16 +79,15 @@ async function runSessionsCommand(): Promise<number> {
   return 0
 }
 
-/** Parses `show <sessionId> [--method X] [--direction Y] [--json]` and prints its records. */
+/**
+ * Parses `show <sessionId> [--method X] [--direction Y] [--json]` and prints
+ * its records. Options are parsed from the *whole* argument list before the
+ * positional sessionId is read, so `show --json 01ABC` cannot silently treat
+ * `--json` as the session id.
+ */
 async function runShowCommand(showArgs: readonly string[]): Promise<number> {
-  const sessionId = showArgs[0]
-  if (sessionId === undefined) {
-    process.stderr.write(`Missing <sessionId> in show command.\n\n${USAGE}`)
-    return 1
-  }
-
-  const { values } = parseArgs({
-    args: [...showArgs.slice(1)],
+  const { values, positionals } = parseArgs({
+    args: [...showArgs],
     options: {
       method: { type: 'string' },
       direction: { type: 'string' },
@@ -79,9 +96,23 @@ async function runShowCommand(showArgs: readonly string[]): Promise<number> {
     allowPositionals: true,
   })
 
+  const sessionId = positionals[0]
+  if (sessionId === undefined) {
+    process.stderr.write(`Missing <sessionId> in show command.\n\n${USAGE}`)
+    return 1
+  }
+
+  const direction = values.direction
+  if (direction !== undefined && !isValidJournalDirection(direction)) {
+    process.stderr.write(
+      `Invalid --direction "${direction}". Allowed values: ${JOURNAL_DIRECTIONS.join(', ')}\n\n${USAGE}`,
+    )
+    return 1
+  }
+
   const { records, skippedLineCount } = await readSessionWithStats(sessionId, {
     ...(values.method !== undefined ? { method: values.method } : {}),
-    ...(values.direction !== undefined ? { direction: values.direction as JournalDirection } : {}),
+    ...(direction !== undefined ? { direction } : {}),
   })
 
   process.stdout.write(values.json === true ? formatRecordsJson(records) : formatRecordsReadable(records))
@@ -93,13 +124,16 @@ async function runShowCommand(showArgs: readonly string[]): Promise<number> {
 
 function formatSessionsTable(sessions: readonly SessionSummary[]): string {
   const header = `${'sessionId'.padEnd(28)}  ${'firstTs'.padEnd(24)}  ${'lastTs'.padEnd(24)}  messages\n`
-  const rows = sessions
-    .map(
-      (session) =>
-        `${session.sessionId.padEnd(28)}  ${session.firstTs.padEnd(24)}  ${session.lastTs.padEnd(24)}  ${session.messageCount}\n`,
-    )
-    .join('')
+  const rows = sessions.map(formatSessionLine).join('')
   return header + rows
+}
+
+/** Session summaries come from journal files on disk, which are untrusted. */
+function formatSessionLine(session: SessionSummary): string {
+  const sessionId = formatReadableField(session.sessionId)
+  const firstTs = formatReadableField(session.firstTs)
+  const lastTs = formatReadableField(session.lastTs)
+  return `${sessionId.padEnd(28)}  ${firstTs.padEnd(24)}  ${lastTs.padEnd(24)}  ${session.messageCount}\n`
 }
 
 function formatRecordsJson(records: readonly JournalRecord[]): string {
@@ -110,10 +144,14 @@ function formatRecordsReadable(records: readonly JournalRecord[]): string {
   return records.map(formatRecordLine).join('')
 }
 
+/** Record fields come from journal files on disk, which are untrusted (see journal/format.ts). */
 function formatRecordLine(record: JournalRecord): string {
-  const method = record.method ?? '-'
+  const ts = formatReadableField(record.ts)
+  const direction = formatReadableField(record.direction)
+  const kind = formatReadableField(record.kind)
+  const method = formatReadableField(record.method ?? '-')
   const payload = truncate(JSON.stringify(record.payload), PAYLOAD_TRUNCATE_LENGTH)
-  return `${record.ts}  ${record.direction.padEnd(14)}  ${record.kind.padEnd(12)}  ${method.padEnd(16)}  ${payload}\n`
+  return `${ts}  ${direction.padEnd(14)}  ${kind.padEnd(12)}  ${method.padEnd(16)}  ${payload}\n`
 }
 
 function truncate(text: string, maxLength: number): string {

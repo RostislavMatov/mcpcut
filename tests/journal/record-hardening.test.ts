@@ -3,6 +3,8 @@ import { createRecordBuilder } from '../../src/journal/record.js'
 import {
   MAX_INVALID_PAYLOAD_CHARS,
   MAX_PENDING_REQUESTS,
+  MAX_VALID_PAYLOAD_CHARS,
+  PAYLOAD_TRUNCATION_MARKER,
   REDACTED_PLACEHOLDER,
 } from '../../src/config.js'
 import type { ClassifiedMessage, JsonRpcId } from '../../src/protocol/classify.js'
@@ -197,5 +199,106 @@ describe('stderr redaction', () => {
     expect(payload).not.toContain('sk-live-XYZ')
     expect(payload).not.toContain('"p"')
     expect(payload).toContain(REDACTED_PLACEHOLDER)
+  })
+})
+
+describe('valid payload size cap', () => {
+  function requestWithBigParam(charCount: number): ClassifiedMessage {
+    const bigValue = 'v'.repeat(charCount)
+    return {
+      kind: 'request',
+      id: 1,
+      method: 'tools/call',
+      raw: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { big: bigValue } }),
+    }
+  }
+
+  test('leaves a structured payload just under the cap unchanged in shape', () => {
+    const builder = createRecordBuilder('session-1', { now: () => 1_000 })
+    // Comfortably under MAX_VALID_PAYLOAD_CHARS once JSON-serialized.
+    const classified = requestWithBigParam(MAX_VALID_PAYLOAD_CHARS - 1_000)
+
+    const record = builder.buildRecord(classified, 'client→server')
+
+    expect(typeof record.payload).toBe('object')
+    expect(JSON.stringify(record.payload).length).toBeLessThanOrEqual(MAX_VALID_PAYLOAD_CHARS)
+  })
+
+  test('caps a structured payload over the limit as a truncated string with a marker', () => {
+    const builder = createRecordBuilder('session-1', { now: () => 1_000 })
+    const classified = requestWithBigParam(MAX_VALID_PAYLOAD_CHARS * 2)
+
+    const record = builder.buildRecord(classified, 'client→server')
+
+    expect(typeof record.payload).toBe('string')
+    const payload = record.payload as string
+    expect(payload.endsWith(PAYLOAD_TRUNCATION_MARKER)).toBe(true)
+    expect(payload.length).toBeLessThanOrEqual(MAX_VALID_PAYLOAD_CHARS + PAYLOAD_TRUNCATION_MARKER.length)
+  })
+
+  test('a secret in an over-limit payload does not survive truncation', () => {
+    const builder = createRecordBuilder('session-1', { now: () => 1_000 })
+    const filler = 'v'.repeat(MAX_VALID_PAYLOAD_CHARS * 2)
+    const classified: ClassifiedMessage = {
+      kind: 'request',
+      id: 1,
+      method: 'tools/call',
+      raw: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { token: 'super-secret-value', big: filler },
+      }),
+    }
+
+    const record = builder.buildRecord(classified, 'client→server')
+
+    expect(String(record.payload)).not.toContain('super-secret-value')
+  })
+})
+
+describe('method and rpcId redaction', () => {
+  test('redacts a Bearer token embedded in the method name', () => {
+    const builder = createRecordBuilder('session-1', { now: () => 1_000 })
+    const classified: ClassifiedMessage = {
+      kind: 'request',
+      id: 1,
+      method: 'tools/call Bearer abc123',
+      raw: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call Bearer abc123' }),
+    }
+
+    const record = builder.buildRecord(classified, 'client→server')
+
+    expect(record.method).not.toContain('abc123')
+    expect(record.method).toContain(REDACTED_PLACEHOLDER)
+  })
+
+  test('redacts a Bearer token embedded in a string rpcId', () => {
+    const builder = createRecordBuilder('session-1', { now: () => 1_000 })
+    const classified: ClassifiedMessage = {
+      kind: 'request',
+      id: 'Bearer abc123',
+      method: 'tools/call',
+      raw: JSON.stringify({ jsonrpc: '2.0', id: 'Bearer abc123', method: 'tools/call' }),
+    }
+
+    const record = builder.buildRecord(classified, 'client→server')
+
+    expect(record.rpcId).not.toContain('abc123')
+    expect(String(record.rpcId)).toContain(REDACTED_PLACEHOLDER)
+  })
+
+  test('leaves a numeric rpcId untouched', () => {
+    const builder = createRecordBuilder('session-1', { now: () => 1_000 })
+    const classified: ClassifiedMessage = {
+      kind: 'request',
+      id: 42,
+      method: 'ping',
+      raw: JSON.stringify({ jsonrpc: '2.0', id: 42, method: 'ping' }),
+    }
+
+    const record = builder.buildRecord(classified, 'client→server')
+
+    expect(record.rpcId).toBe(42)
   })
 })
