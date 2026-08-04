@@ -233,7 +233,7 @@ function idOf(classified: ClassifiedMessage): JsonRpcId | undefined {
 
 /** Builds the direction- and type-qualified key for one pending request. */
 function pendingKey(direction: ClientServerDirection, id: JsonRpcId): PendingKey {
-  return `${direction} ${typeof id} ${String(id)}`
+  return `${direction}\u0000${typeof id}\u0000${String(id)}`
 }
 
 /**
