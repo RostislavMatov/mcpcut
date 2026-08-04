@@ -1,0 +1,28 @@
+{
+  "name": "mcp-journal",
+  "version": "0.1.0",
+  "description": "Transparent stdio proxy for MCP servers with a persistent, secret-redacted JSONL journal",
+  "type": "module",
+  "bin": {
+    "mcp-journal": "./dist/cli.js"
+  },
+  "main": "./dist/cli.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run --coverage",
+    "test:watch": "vitest",
+    "lint": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "ulid": "^2.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@vitest/coverage-v8": "^2.1.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.1.0"
+  }
+}
