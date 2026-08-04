@@ -63,6 +63,7 @@ describe('listSessions', () => {
         firstTs: '2026-08-04T10:00:00.000Z',
         lastTs: '2026-08-04T10:10:00.000Z',
         messageCount: 3,
+        skippedLineCount: 0,
       },
     ])
   })
@@ -95,6 +96,7 @@ describe('listSessions', () => {
         firstTs: '2026-08-04T10:00:00.000Z',
         lastTs: '2026-08-04T10:01:00.000Z',
         messageCount: 2,
+        skippedLineCount: 1,
       },
     ])
   })

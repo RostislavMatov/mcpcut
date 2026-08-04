@@ -16,6 +16,9 @@ const SIGNAL_EXIT_CODE_BASE = 128
 /** Fallback exit code when neither a numeric code nor a signal is reported. */
 const DEFAULT_EXIT_CODE = 0
 
+/** Signal number assumed when this platform does not define the reported signal. */
+const UNKNOWN_SIGNAL_NUMBER = 0
+
 /** Signals the proxy forwards to the child by default when it receives them itself. */
 export const DEFAULT_FORWARDED_SIGNALS: readonly NodeJS.Signals[] = ['SIGTERM', 'SIGINT']
 
@@ -24,7 +27,11 @@ export interface ServerHandle {
   readonly stdout: Readable
   readonly stderr: Readable
   readonly pid: number | undefined
-  /** Resolves with the mapped exit code, or rejects if the process could not be spawned. */
+  /**
+   * Resolves with the mapped exit code once the child has exited *and* its
+   * stdio has been fully drained, or rejects if the process could not be
+   * spawned.
+   */
   exitCode(): Promise<number>
   kill(signal?: NodeJS.Signals): void
 }
@@ -46,9 +53,11 @@ function describeCause(cause: unknown): string {
 }
 
 /** Maps a node child_process exit outcome to a single conventional exit code. */
-function mapExitCode(code: number | null, signal: NodeJS.Signals | null): number {
+export function mapExitCode(code: number | null, signal: NodeJS.Signals | null): number {
   if (signal !== null) {
-    return SIGNAL_EXIT_CODE_BASE + osConstants.signals[signal]
+    // os.constants.signals omits signals this platform does not define (e.g.
+    // SIGPWR on macOS); without the fallback that would yield 128 + undefined = NaN.
+    return SIGNAL_EXIT_CODE_BASE + (osConstants.signals[signal] ?? UNKNOWN_SIGNAL_NUMBER)
   }
   return code ?? DEFAULT_EXIT_CODE
 }
@@ -73,7 +82,10 @@ export function spawnServer(
     child.once('error', (error) => {
       reject(new SpawnServerError(command, args, error))
     })
-    child.once('exit', (code, signal) => {
+    // 'close' — not 'exit' — is the drain barrier: it fires once every stdio
+    // stream has been closed, so no bytes are left unread in the OS pipes.
+    // Resolving on 'exit' would cut relaying short mid-response.
+    child.once('close', (code, signal) => {
       resolve(mapExitCode(code, signal))
     })
   })

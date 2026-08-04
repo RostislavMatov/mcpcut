@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util'
-import { listSessions, readSession, type SessionSummary } from './journal/reader.js'
+import { listSessions, readSessionWithStats, type SessionSummary } from './journal/reader.js'
 import type { JournalDirection, JournalRecord } from './journal/record.js'
 import { runWrap } from './proxy/wrap.js'
 
@@ -79,12 +79,15 @@ async function runShowCommand(showArgs: readonly string[]): Promise<number> {
     allowPositionals: true,
   })
 
-  const records = await readSession(sessionId, {
+  const { records, skippedLineCount } = await readSessionWithStats(sessionId, {
     ...(values.method !== undefined ? { method: values.method } : {}),
     ...(values.direction !== undefined ? { direction: values.direction as JournalDirection } : {}),
   })
 
   process.stdout.write(values.json === true ? formatRecordsJson(records) : formatRecordsReadable(records))
+  if (skippedLineCount > 0) {
+    process.stderr.write(`Skipped ${skippedLineCount} unreadable journal line(s).\n`)
+  }
   return 0
 }
 

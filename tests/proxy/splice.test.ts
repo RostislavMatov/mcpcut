@@ -1,12 +1,37 @@
 import { randomBytes } from 'node:crypto'
-import { PassThrough, Writable } from 'node:stream'
+import { PassThrough, Writable, type Readable } from 'node:stream'
 import { once } from 'node:events'
 import { describe, expect, test, vi } from 'vitest'
 import { splice } from '../../src/proxy/splice.js'
 
+const SLOW_DESTINATION_DELAY_MS = 5
+
 interface CapturingWritable {
   writable: Writable
   chunks: Buffer[]
+}
+
+/** Lets pending stream events and microtasks settle. */
+function tick(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve))
+}
+
+interface ListenerCounts {
+  sourceData: number
+  sourceEnd: number
+  sourceError: number
+  destinationDrain: number
+  destinationError: number
+}
+
+function snapshotListenerCounts(source: Readable, destination: Writable): ListenerCounts {
+  return {
+    sourceData: source.listenerCount('data'),
+    sourceEnd: source.listenerCount('end'),
+    sourceError: source.listenerCount('error'),
+    destinationDrain: destination.listenerCount('drain'),
+    destinationError: destination.listenerCount('error'),
+  }
 }
 
 /** A Writable that records every chunk it receives, for byte-identity assertions. */
@@ -102,7 +127,30 @@ describe('splice', () => {
     expect(seenLines).toEqual(['boom', 'survivor'])
     expect(onError).toHaveBeenCalledTimes(1)
     expect(onError.mock.calls[0]?.[0]).toBeInstanceOf(Error)
+    expect(onError.mock.calls[0]?.[1]).toBe('tap')
     expect(Buffer.concat(chunks)).toEqual(Buffer.from('boom\nsurvivor\n'))
+  })
+
+  test('reports a framing failure as a tap error instead of crashing the forwarder', async () => {
+    // An object-mode source hands the framer something it cannot concatenate.
+    const source = new PassThrough({ objectMode: true })
+    const chunks: unknown[] = []
+    const destination = new Writable({
+      objectMode: true,
+      write(chunk: unknown, _encoding, callback) {
+        chunks.push(chunk)
+        callback()
+      },
+    })
+    const onError = vi.fn()
+
+    splice(source, destination, () => undefined, { onError, endDestination: false })
+    source.write({ notABuffer: true })
+    await tick()
+
+    expect(onError).toHaveBeenCalledTimes(1)
+    expect(onError.mock.calls[0]?.[1]).toBe('tap')
+    expect(chunks).toEqual([{ notABuffer: true }])
   })
 
   test('uses console.error as the default onError when the tap throws', async () => {
@@ -169,5 +217,164 @@ describe('splice', () => {
     expect(source.isPaused()).toBe(false)
 
     source.end()
+  })
+})
+
+describe('splice stream errors', () => {
+  test('routes a source stream error to onError instead of letting it go uncaught', async () => {
+    const source = new PassThrough()
+    const { writable: destination } = createCapturingWritable()
+    const onError = vi.fn()
+
+    splice(source, destination, () => undefined, { onError, endDestination: false })
+    source.destroy(Object.assign(new Error('read failed'), { code: 'EIO' }))
+    await tick()
+
+    expect(onError).toHaveBeenCalledTimes(1)
+    expect(onError.mock.calls[0]?.[0]).toBeInstanceOf(Error)
+    expect(onError.mock.calls[0]?.[1]).toBe('source')
+  })
+
+  test('routes a destination stream error to onError instead of letting it go uncaught', async () => {
+    const source = new PassThrough()
+    const destination = new Writable({
+      write(_chunk: Buffer, _encoding, callback) {
+        callback(Object.assign(new Error('broken pipe'), { code: 'EPIPE' }))
+      },
+    })
+    const onError = vi.fn()
+
+    splice(source, destination, () => undefined, { onError, endDestination: false })
+    source.write('payload\n')
+    await tick()
+
+    expect(onError).toHaveBeenCalledTimes(1)
+    expect(onError.mock.calls[0]?.[1]).toBe('destination')
+    expect((onError.mock.calls[0]?.[0] as NodeJS.ErrnoException).code).toBe('EPIPE')
+  })
+
+  test('stops forwarding once the destination has failed, even while it still accepts writes', async () => {
+    // Models how a socket surfaces EPIPE: the write itself succeeds and the
+    // stream stays writable, and the error arrives asynchronously afterwards.
+    const source = new PassThrough()
+    const { writable: destination, chunks } = createCapturingWritable()
+    const onError = vi.fn()
+
+    splice(source, destination, () => undefined, { onError, endDestination: false })
+    source.write('one\n')
+    await tick()
+    destination.emit('error', Object.assign(new Error('broken pipe'), { code: 'EPIPE' }))
+    source.write('two\n')
+    await tick()
+
+    expect(Buffer.concat(chunks)).toEqual(Buffer.from('one\n'))
+    expect(onError).toHaveBeenCalledTimes(1)
+  })
+
+  test('relayed settles rather than hanging when a stream errors', async () => {
+    const source = new PassThrough()
+    const { writable: destination } = createCapturingWritable()
+
+    const handle = splice(source, destination, () => undefined, {
+      onError: () => undefined,
+      endDestination: false,
+    })
+    source.destroy(new Error('read failed'))
+
+    await expect(handle.relayed).resolves.toBeUndefined()
+  })
+})
+
+describe('splice handle', () => {
+  test('dispose removes exactly the listeners it added, restoring prior listener counts', () => {
+    const source = new PassThrough()
+    const { writable: destination } = createCapturingWritable()
+    const before = snapshotListenerCounts(source, destination)
+
+    const handle = splice(source, destination, () => undefined)
+    expect(source.listenerCount('data')).toBe(before.sourceData + 1)
+
+    handle.dispose()
+
+    expect(snapshotListenerCounts(source, destination)).toEqual(before)
+  })
+
+  test('dispose leaves pre-existing listeners on the same streams untouched', () => {
+    const source = new PassThrough()
+    const { writable: destination } = createCapturingWritable()
+    const preExisting = (): void => undefined
+    source.on('data', preExisting)
+    destination.on('error', preExisting)
+
+    const handle = splice(source, destination, () => undefined)
+    handle.dispose()
+
+    expect(source.listeners('data')).toContain(preExisting)
+    expect(destination.listeners('error')).toContain(preExisting)
+  })
+
+  test('dispose stops forwarding and pauses the source it put into flowing mode', async () => {
+    const source = new PassThrough()
+    const { writable: destination, chunks } = createCapturingWritable()
+
+    const handle = splice(source, destination, () => undefined)
+    source.write('before\n')
+    await tick()
+    handle.dispose()
+    source.write('after\n')
+    await tick()
+
+    expect(Buffer.concat(chunks)).toEqual(Buffer.from('before\n'))
+    expect(source.isPaused()).toBe(true)
+  })
+
+  test('relayed resolves only after a slow destination has acknowledged every chunk', async () => {
+    const source = new PassThrough()
+    const acknowledged: Buffer[] = []
+    const destination = new Writable({
+      highWaterMark: 1,
+      write(chunk: Buffer, _encoding, callback) {
+        setTimeout(() => {
+          acknowledged.push(chunk)
+          callback()
+        }, SLOW_DESTINATION_DELAY_MS)
+      },
+    })
+
+    const handle = splice(source, destination, () => undefined, { endDestination: false })
+    const expected = ['a\n', 'b\n', 'c\n', 'd\n']
+    for (const line of expected) {
+      source.write(line)
+    }
+    source.end()
+
+    await handle.relayed
+
+    expect(Buffer.concat(acknowledged).toString('utf8')).toBe(expected.join(''))
+  })
+
+  test('relayed does not resolve while chunks are still unacknowledged', async () => {
+    const source = new PassThrough()
+    let releaseWrite: (() => void) | undefined
+    const destination = new Writable({
+      write(_chunk: Buffer, _encoding, callback) {
+        releaseWrite = () => callback()
+      },
+    })
+    let isRelayed = false
+
+    const handle = splice(source, destination, () => undefined, { endDestination: false })
+    void handle.relayed.then(() => {
+      isRelayed = true
+    })
+
+    source.write('pending\n')
+    source.end()
+    await tick()
+    expect(isRelayed).toBe(false)
+
+    releaseWrite?.()
+    await handle.relayed
+    expect(isRelayed).toBe(true)
   })
 })
