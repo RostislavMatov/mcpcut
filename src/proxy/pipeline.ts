@@ -58,6 +58,13 @@ export interface PipelineOptions {
    * to or below this line. Defaults to HIGH_WATER_PENDING_FRAMES.
    */
   highWaterMark?: number
+  /**
+   * Maximum bytes an unterminated line may accumulate before the splitter
+   * force-emits it as an `'overflow'` fragment. Forwarded to
+   * `createFrameSplitter`; mainly a test seam. Defaults to the splitter's own
+   * default (`MAX_LINE_BUFFER_BYTES`).
+   */
+  maxBufferBytes?: number
 }
 
 export interface PipelineHandle {
@@ -129,7 +136,9 @@ export function startPipeline(
 ): PipelineHandle {
   const onError = opts.onError ?? defaultOnError
   const highWaterMark = opts.highWaterMark ?? HIGH_WATER_PENDING_FRAMES
-  const splitter = createFrameSplitter()
+  const splitter = createFrameSplitter(
+    opts.maxBufferBytes !== undefined ? { maxBufferBytes: opts.maxBufferBytes } : {},
+  )
 
   let isDisposed = false
   let isSourceEnded = false
@@ -188,6 +197,20 @@ export function startPipeline(
   }
 
   function processFrame(frame: Frame): void {
+    if (frame.reason === 'overflow') {
+      // Fail closed: an 'overflow' fragment is an unterminated slice of an
+      // unfinished line. Reassembly downstream would splice it back together
+      // and execute it, bypassing the gate entirely (C1) — so it is dropped,
+      // never forwarded and never gated, and the drop is reported.
+      onError(
+        new Error(
+          `dropped an oversized unterminated frame (${frame.bytes.length} bytes) ` +
+            'exceeding the line buffer limit; not forwarding to the destination',
+        ),
+      )
+      return
+    }
+
     if (frame.isBlank) {
       trackPending(writer.writeMessage(reattachTerminator(frame)))
       return

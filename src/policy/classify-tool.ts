@@ -1,4 +1,4 @@
-import { DESTRUCTIVE_NAME_HEURISTICS } from './constants.js'
+import { CONFUSABLE_FOLD, DESTRUCTIVE_NAME_HEURISTICS } from './constants.js'
 import type { ToolClass } from './schema.js'
 
 /**
@@ -15,6 +15,40 @@ export interface ClassifiableToolAnnotations {
 export interface ClassifiableTool {
   readonly name: string
   readonly annotations?: ClassifiableToolAnnotations
+}
+
+/**
+ * NFKC-normalizes `name` (folding fullwidth/compatibility forms) so a server
+ * cannot dodge the heuristics with compatibility code points. Inputs that
+ * fail to normalize (never expected) fall back to the raw name.
+ */
+function normalizeName(name: string): string {
+  try {
+    return name.normalize('NFKC')
+  } catch {
+    return name
+  }
+}
+
+/**
+ * Escalation-only homoglyph fold: replaces confusable Cyrillic/Greek code
+ * points with their ASCII look-alike so `dеlete_all` (Cyrillic `е`) still
+ * trips the `delete` heuristic. Only ever used to RAISE a classification.
+ */
+function foldConfusables(name: string): string {
+  let out = ''
+  for (const ch of name) {
+    out += CONFUSABLE_FOLD[ch] ?? ch
+  }
+  return out
+}
+
+/** True if `name` still contains a non-ASCII code point after NFKC normalization. */
+function hasNonAsciiLetter(name: string): boolean {
+  for (const ch of name) {
+    if ((ch.codePointAt(0) ?? 0) > 0x7f) return true
+  }
+  return false
 }
 
 /**
@@ -42,15 +76,21 @@ function normalizeHeuristic(heuristic: string): string {
   return heuristic.endsWith('_') ? heuristic.slice(0, -1).toLowerCase() : heuristic.toLowerCase()
 }
 
+function tokensMatchHeuristic(tokens: readonly string[]): boolean {
+  return DESTRUCTIVE_NAME_HEURISTICS.some((heuristic) => tokens.includes(normalizeHeuristic(heuristic)))
+}
+
 /**
  * True if any `DESTRUCTIVE_NAME_HEURISTICS` word appears as a whole token in
- * the tool name. Escalation-only by design (see `classifyTool`): a server
- * cannot avoid this by naming a tool `dropdown_menu` (no `drop` token) nor
- * evade it by naming one `undelete_item` (no `delete` token).
+ * the tool name. Checks both the NFKC-normalized name and a homoglyph-folded
+ * copy, so a Cyrillic/Greek look-alike (`dеlete_all`) cannot slip past.
+ * Escalation-only by design (see `classifyTool`): a server cannot avoid this
+ * by naming a tool `dropdown_menu` (no `drop` token) nor evade it by naming
+ * one `undelete_item` (no `delete` token).
  */
-function nameMatchesDestructiveHeuristic(name: string): boolean {
-  const tokens = tokenizeToolName(name)
-  return DESTRUCTIVE_NAME_HEURISTICS.some((heuristic) => tokens.includes(normalizeHeuristic(heuristic)))
+function nameMatchesDestructiveHeuristic(normalized: string): boolean {
+  if (tokensMatchHeuristic(tokenizeToolName(normalized))) return true
+  return tokensMatchHeuristic(tokenizeToolName(foldConfusables(normalized)))
 }
 
 /**
@@ -86,16 +126,19 @@ function matchOverride(
  * Precedence (strict, first match wins):
  *  1. A config override matching `tool.name` (exact beats longest trailing
  *     glob) -- the operator always wins over any heuristic or annotation.
- *  2. `annotations.destructiveHint === true`, or the tool name matches a
- *     `DESTRUCTIVE_NAME_HEURISTICS` word as a whole token -> `destructive`.
- *  3. `annotations.readOnlyHint === true` (and nothing escalated in step 2)
- *     -> `read`.
- *  4. Otherwise -> `write` (safe default; unannotated tools are `write`).
+ *  2. `annotations.destructiveHint === true`, or the NFKC-normalized (and
+ *     homoglyph-folded) tool name matches a `DESTRUCTIVE_NAME_HEURISTICS`
+ *     word as a whole token -> `destructive`.
+ *  3. `annotations.readOnlyHint === true`, the tool is not destructive, AND
+ *     the name is pure ASCII after normalization -> `read`.
+ *  4. Otherwise -> `write` (safe default). A name that still contains a
+ *     non-ASCII code point after normalization can never be downgraded to
+ *     `read` by `readOnlyHint`: an unmappable confusable is a red flag, so it
+ *     floors at `write`.
  *
  * Server-supplied annotations are untrusted hints: `readOnlyHint` can never
- * downgrade a tool whose name matches a destructive heuristic, so a server
- * cannot self-declare `delete_everything` safe by omitting or lying about
- * `destructiveHint`. Pure function, no I/O.
+ * downgrade a tool whose name matches a destructive heuristic, nor one whose
+ * name smuggles non-ASCII confusables. Pure function, no I/O.
  */
 export function classifyTool(
   tool: ClassifiableTool,
@@ -104,11 +147,15 @@ export function classifyTool(
   const override = matchOverride(overrides, tool.name)
   if (override !== undefined) return override
 
+  const normalized = normalizeName(tool.name)
+
   const isDestructive =
-    tool.annotations?.destructiveHint === true || nameMatchesDestructiveHeuristic(tool.name)
+    tool.annotations?.destructiveHint === true || nameMatchesDestructiveHeuristic(normalized)
   if (isDestructive) return 'destructive'
 
-  if (tool.annotations?.readOnlyHint === true) return 'read'
+  // A non-ASCII name (after normalization) is suspicious: never let an
+  // untrusted `readOnlyHint` downgrade it below `write`.
+  if (tool.annotations?.readOnlyHint === true && !hasNonAsciiLetter(normalized)) return 'read'
 
   return 'write'
 }

@@ -434,6 +434,44 @@ describe('startPipeline trailing fragment', () => {
   })
 })
 
+describe('startPipeline oversized-frame fail-closed (C1)', () => {
+  test('an oversized unterminated frame is dropped, never delivered to the destination, and reported', async () => {
+    const source = new PassThrough()
+    const { writer, written } = createRecordingWriter()
+    const onError = vi.fn()
+    let gateCalls = 0
+    const gate: GateFn = () => {
+      gateCalls += 1
+      return { action: 'forward' }
+    }
+
+    // maxBufferBytes 8: a 16-byte newline-less chunk overflows and is
+    // force-emitted as an 'overflow' fragment the pipeline must fail closed on.
+    const handle = startPipeline(source, writer, gate, { onError, maxBufferBytes: 8 })
+    source.write('0123456789ABCDEF')
+    source.end()
+    await handle.done
+
+    expect(written).toEqual([]) // never forwarded to the server
+    expect(gateCalls).toBe(0) // and never even reaches the gate
+    expect(onError).toHaveBeenCalledTimes(1)
+  })
+
+  test('a legitimate eof trailing fragment still forwards while overflow fragments do not', async () => {
+    const source = new PassThrough()
+    const { writer, written } = createRecordingWriter()
+
+    // 'short' (5 bytes < 8) never overflows; it is retained and flushed as an
+    // 'eof' fragment at source end, which keeps the existing forward behavior.
+    const handle = startPipeline(source, writer, FORWARD_GATE, { maxBufferBytes: 8 })
+    source.write('short')
+    source.end()
+    await handle.done
+
+    expect(written.map((bytes) => bytes.toString('utf8'))).toEqual(['short'])
+  })
+})
+
 describe('startPipeline backpressure', () => {
   test('pauses the source once pending frames exceed the high-water mark, and resumes once they settle', async () => {
     const source = new PassThrough()

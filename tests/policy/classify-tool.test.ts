@@ -69,6 +69,49 @@ describe('classifyTool: heuristic matches whole tokens only, not substrings', ()
   })
 })
 
+describe('M11: unicode / vocabulary evasion of destructive-name heuristics', () => {
+  test('Cyrillic look-alike "dеlete_all" (Cyrillic е) is NOT classified read', () => {
+    // NOTE: the second character is Cyrillic е, not ASCII 'e'.
+    const cyrillicDelete = 'dеlete_all'
+    expect(classifyTool(tool(cyrillicDelete))).not.toBe('read')
+  })
+
+  test('Cyrillic look-alike is escalated to destructive via the confusable fold', () => {
+    const cyrillicDelete = 'dеlete_all'
+    expect(classifyTool(tool(cyrillicDelete))).toBe('destructive')
+  })
+
+  test('a non-ASCII name cannot be downgraded to read by readOnlyHint', () => {
+    const cyrillicName = 'rеad_аll' // Cyrillic е and а
+    expect(classifyTool(tool(cyrillicName, { readOnlyHint: true }))).not.toBe('read')
+  })
+
+  test.each([
+    'wipe_disk',
+    'erase_all',
+    'rm_rf',
+    'overwrite_file',
+    'kill_process',
+    'shutdown_host',
+    'chmod_recursive',
+    'exec_shell',
+    'transfer_funds',
+    'send_email',
+    'terminate_instance',
+  ])('expanded heuristic classifies %s as destructive', (name) => {
+    expect(classifyTool(tool(name))).toBe('destructive')
+  })
+
+  test('a legit ASCII read tool is still classified read with readOnlyHint', () => {
+    expect(classifyTool(tool('read_file', { readOnlyHint: true }))).toBe('read')
+  })
+
+  test('a fullwidth "delete" (NFKC compatibility form) escalates to destructive', () => {
+    const fullwidth = 'ｄｅｌｅｔｅ_all' // ｄｅｌｅｔｅ_all
+    expect(classifyTool(tool(fullwidth))).toBe('destructive')
+  })
+})
+
 describe('classifyTool: config overrides win over everything', () => {
   test('exact-name override beats a destructive-name heuristic', () => {
     const overrides: Record<string, ToolClass> = { delete_x: 'read' }

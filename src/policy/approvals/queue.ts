@@ -316,12 +316,27 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
     return { ok: true, record }
   }
 
+  /**
+   * Records an operator resolution. Time-aware for `approved`: if the request
+   * has already passed its `expiresAt`, the session it was for is dead and a
+   * late `approved` would let `checkRecentApproval` mint a grant for a
+   * finished session. Such a stale approval is DOWNGRADED to `expired` (the
+   * operator's `actor`/`reason` are preserved for the audit trail) so no
+   * `approved` resolution is ever written past expiry. A `denied` on a stale
+   * request is harmless and is recorded as-is.
+   */
   function resolve(approvalId: string, resolution: ResolveInput): Promise<ResolveResult> {
-    return moveToResolved(approvalId, () => ({
-      outcome: resolution.outcome,
-      ...(resolution.actor !== undefined ? { actor: resolution.actor } : {}),
-      ...(resolution.reason !== undefined ? { reason: resolution.reason } : {}),
-    }))
+    const nowMs = clock()
+    return moveToResolved(approvalId, (pending) => {
+      const expired = nowMs > Date.parse(pending.expiresAt)
+      const outcome: ResolutionOutcome =
+        expired && resolution.outcome === 'approved' ? 'expired' : resolution.outcome
+      return {
+        outcome,
+        ...(resolution.actor !== undefined ? { actor: resolution.actor } : {}),
+        ...(resolution.reason !== undefined ? { reason: resolution.reason } : {}),
+      }
+    })
   }
 
   function markExpired(approvalId: string): Promise<ResolveResult> {

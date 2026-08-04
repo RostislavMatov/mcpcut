@@ -1,6 +1,11 @@
-import { readdir, readFile, stat } from 'node:fs/promises'
-import { join } from 'node:path'
-import { DEFAULT_GRANT_TTL_MS } from '../constants.js'
+import { readdir, readFile, rm, stat } from 'node:fs/promises'
+import { basename, join } from 'node:path'
+import {
+  DEFAULT_GRANT_TTL_MS,
+  GRANT_CLOCK_SKEW_MS,
+  MAX_RESOLVED_FILES_SCANNED,
+  RESOLVED_FILE_RETENTION_MS,
+} from '../constants.js'
 
 /**
  * Two-tier grant design.
@@ -31,11 +36,11 @@ import { DEFAULT_GRANT_TTL_MS } from '../constants.js'
  * *slower* retry, arriving after the in-process wait gave up).
  */
 
-/** Max resolved files inspected by `checkRecentApproval`, most-recently-modified first. Bounds a hostile/huge resolved/ directory to O(1) cost. */
-const MAX_GRANT_SCAN_FILES = 500
-
 const RESOLVED_SUBDIR = 'resolved'
 const JSON_FILE_SUFFIX = '.json'
+
+/** Max old resolved files this call will `stat`/`rm` for retention. Bounds cleanup cost per call so it amortizes over many calls instead of a single stat storm. */
+const RETENTION_CLEANUP_BATCH = 200
 
 export interface GrantKey {
   readonly serverName: string
@@ -84,6 +89,7 @@ export function createGrantRegistry(opts: GrantRegistryOptions = {}): GrantRegis
 
 /** Minimal shape `checkRecentApproval` needs from a resolved file; validated field-by-field so garbage disk content is skipped, never thrown. */
 interface ResolvedFileForGrantCheck {
+  readonly approvalId: string
   readonly serverName: string
   readonly toolName: string
   readonly argsHash: string
@@ -96,6 +102,7 @@ function isResolvedFileForGrantCheck(raw: unknown): raw is ResolvedFileForGrantC
   const value = raw as Record<string, unknown>
   const resolution = value.resolution
   return (
+    typeof value.approvalId === 'string' &&
     typeof value.serverName === 'string' &&
     typeof value.toolName === 'string' &&
     typeof value.argsHash === 'string' &&
@@ -113,12 +120,17 @@ export interface CheckRecentApprovalInput extends GrantKey {
 }
 
 /**
- * Disk-backed fallback for a late approval (see module doc comment). Scans
- * up to `MAX_GRANT_SCAN_FILES` most-recently-modified files under
- * `<baseDir>/resolved/`, newest first, and returns `true` on the first one
- * that matches `(serverName, toolName, argsHash)`, has `outcome ===
- * 'approved'`, and resolved within `ttlMs` of now. Malformed files are
- * skipped, never thrown.
+ * Disk-backed fallback for a late approval (see module doc comment). Bounds
+ * cost on the approval hot path: resolved files are ULID-named (lexicographic
+ * order tracks creation time), so this reads at most
+ * `MAX_RESOLVED_FILES_SCANNED` files, newest first (descending filename sort)
+ * WITHOUT statting every entry — the previous `stat`-every-file approach cost
+ * hundreds of ms on a large, never-pruned directory. Returns `true` on the
+ * first file that matches `(serverName, toolName, argsHash)`, has `outcome ===
+ * 'approved'`, whose `approvalId` equals its own filename, and whose
+ * `resolvedAt` is within `ttlMs` of now and not in the future (skew-guarded).
+ * Malformed files are skipped, never thrown. Opportunistically prunes a
+ * bounded batch of files older than `RESOLVED_FILE_RETENTION_MS`.
  */
 export async function checkRecentApproval(
   baseDir: string,
@@ -135,49 +147,38 @@ export async function checkRecentApproval(
     return false // no resolved/ directory yet: nothing to grant
   }
 
-  const withMtime = await statAll(resolvedDir, fileNames)
-  const scanCandidates = withMtime
-    .sort((a, b) => b.mtimeMs - a.mtimeMs)
-    .slice(0, MAX_GRANT_SCAN_FILES)
+  const newestFirst = fileNames.sort((a, b) => (a < b ? 1 : a > b ? -1 : 0))
+  const scanList = newestFirst.slice(0, MAX_RESOLVED_FILES_SCANNED)
 
-  for (const candidate of scanCandidates) {
-    const matches = await matchesGrant(join(resolvedDir, candidate.name), input, nowMs)
-    if (matches) return true
-  }
-  return false
-}
-
-interface FileWithMtime {
-  readonly name: string
-  readonly mtimeMs: number
-}
-
-async function statAll(dir: string, fileNames: readonly string[]): Promise<FileWithMtime[]> {
-  const results: FileWithMtime[] = []
-  for (const name of fileNames) {
-    try {
-      const stats = await stat(join(dir, name))
-      results.push({ name, mtimeMs: stats.mtimeMs })
-    } catch {
-      // File removed between readdir and stat: skip, not fatal.
+  let matched = false
+  for (const name of scanList) {
+    if (await matchesGrant(resolvedDir, name, input, nowMs)) {
+      matched = true
+      break
     }
   }
-  return results
+
+  await pruneOldResolvedFiles(resolvedDir, newestFirst.slice(MAX_RESOLVED_FILES_SCANNED), nowMs)
+  return matched
 }
 
 async function matchesGrant(
-  filePath: string,
+  dir: string,
+  fileName: string,
   input: CheckRecentApprovalInput,
   nowMs: number,
 ): Promise<boolean> {
   let raw: unknown
   try {
-    raw = JSON.parse(await readFile(filePath, 'utf8'))
+    raw = JSON.parse(await readFile(join(dir, fileName), 'utf8'))
   } catch {
     return false // unreadable or invalid JSON: skip
   }
   if (!isResolvedFileForGrantCheck(raw)) return false
 
+  // Bind the record to its own filename: a resolved file whose approvalId does
+  // not equal its basename was moved/forged and must not mint a grant.
+  if (raw.approvalId !== basename(fileName, JSON_FILE_SUFFIX)) return false
   if (raw.resolution.outcome !== 'approved') return false
   if (raw.serverName !== input.serverName) return false
   if (raw.toolName !== input.toolName) return false
@@ -185,5 +186,32 @@ async function matchesGrant(
 
   const resolvedAtMs = Date.parse(raw.resolvedAt)
   if (Number.isNaN(resolvedAtMs)) return false
+  // Reject a future-dated resolution (backdated/forged clock): a grant may only
+  // come from an approval that already happened, within the TTL window.
+  if (resolvedAtMs > nowMs + GRANT_CLOCK_SKEW_MS) return false
   return nowMs - resolvedAtMs <= input.ttlMs
+}
+
+/**
+ * Best-effort retention: deletes up to `RETENTION_CLEANUP_BATCH` of the oldest
+ * resolved files whose mtime is older than `RESOLVED_FILE_RETENTION_MS`, so the
+ * directory cannot grow without bound across a long-lived session. Bounded per
+ * call and never throws (a failed unlink is ignored — another call retries).
+ */
+async function pruneOldResolvedFiles(
+  dir: string,
+  oldestFirst: readonly string[],
+  nowMs: number,
+): Promise<void> {
+  const batch = oldestFirst.slice(-RETENTION_CLEANUP_BATCH)
+  for (const name of batch) {
+    try {
+      const stats = await stat(join(dir, name))
+      if (nowMs - stats.mtimeMs > RESOLVED_FILE_RETENTION_MS) {
+        await rm(join(dir, name), { force: true })
+      }
+    } catch {
+      // Vanished or unreadable: not fatal, skip.
+    }
+  }
 }

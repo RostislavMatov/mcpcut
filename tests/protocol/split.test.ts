@@ -117,6 +117,18 @@ describe('createFrameSplitter', () => {
     expect(frames[0].bytes.toString('utf8')).toBe('0123456789')
     expect(frames[0].terminator).toBe('none')
     expect(frames[0].isBlank).toBe(false)
+    // A mid-stream overflow fragment must be classified 'overflow', so the
+    // mode-B pipeline can fail closed on it instead of forwarding a fragment
+    // a downstream reassembler would splice back together and execute (C1).
+    expect(frames[0].reason).toBe('overflow')
+  })
+
+  test('classifies a normally terminated frame as reason "line"', () => {
+    const splitter = createFrameSplitter()
+
+    const frames = splitter.push(Buffer.from('hello\n'))
+
+    expect(frames[0].reason).toBe('line')
   })
 
   test('resumes framing normally after an overflow flush', () => {
@@ -277,6 +289,24 @@ describe('createFrameSplitter flush', () => {
     expect(frames[0].bytes.toString('utf8')).toBe('part')
     expect(frames[0].terminator).toBe('none')
     expect(frames[0].isBlank).toBe(false)
+    // A source-end fragment is legitimate final output, classified 'eof' —
+    // distinct from an 'overflow' fragment, so the pipeline still relays it.
+    expect(frames[0].reason).toBe('eof')
+  })
+
+  test('distinguishes an eof flush fragment from an overflow force-emit by reason', () => {
+    const overflow = createFrameSplitter({ maxBufferBytes: 4 })
+    const overflowFrames = overflow.push(Buffer.from('abcdefgh'))
+
+    const eof = createFrameSplitter()
+    eof.push(Buffer.from('tail-fragment'))
+    const eofFrames = eof.flush()
+
+    expect(overflowFrames[0].reason).toBe('overflow')
+    expect(eofFrames[0].reason).toBe('eof')
+    // Both look identical on the wire (terminator 'none'); only reason differs.
+    expect(overflowFrames[0].terminator).toBe('none')
+    expect(eofFrames[0].terminator).toBe('none')
   })
 
   test('joins a fragment spread across several chunks into one frame', () => {

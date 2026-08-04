@@ -195,4 +195,28 @@ describe('createOrderedWriter', () => {
       writer.dispose()
     }).not.toThrow()
   })
+
+  test('dispose() resolves a write parked on backpressure so its caller never hangs (TS-L3)', async () => {
+    // A destination that accepts nothing: _write never completes and it never
+    // drains, so the write parks on 'drain'/'error'/'close' indefinitely.
+    const destination = new Writable({
+      highWaterMark: 1,
+      write() {
+        // Intentionally never call the callback and never emit 'drain'.
+      },
+    })
+    const writer = createOrderedWriter(destination)
+
+    let resolved = false
+    const pending = writer.writeMessage(Buffer.from('parked\n')).then(() => {
+      resolved = true
+    })
+    await tick()
+    expect(resolved).toBe(false) // genuinely parked on backpressure
+
+    writer.dispose()
+    await pending
+
+    expect(resolved).toBe(true)
+  })
 })

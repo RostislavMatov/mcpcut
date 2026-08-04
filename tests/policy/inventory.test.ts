@@ -65,7 +65,7 @@ describe('observeToolsList: first observation', () => {
 
     const result = await inventory.observeToolsList([tool()])
 
-    expect(result).toEqual({ known: [], new: ['read_file'], changed: [] })
+    expect(result).toEqual({ known: [], new: ['read_file'], changed: [], failed: false })
     expect(inventory.stateOf('read_file')).toBe('new')
   })
 })
@@ -83,7 +83,7 @@ describe('observeToolsList: bucketing', () => {
       tool({ name: 'c' }),
     ])
 
-    expect(result).toEqual({ known: ['a'], new: ['c'], changed: ['b'] })
+    expect(result).toEqual({ known: ['a'], new: ['c'], changed: ['b'], failed: false })
   })
 })
 
@@ -95,7 +95,7 @@ describe('approve', () => {
     expect(await inventory.approve('read_file')).toBe(true)
 
     const result = await inventory.observeToolsList([tool()])
-    expect(result).toEqual({ known: ['read_file'], new: [], changed: [] })
+    expect(result).toEqual({ known: ['read_file'], new: [], changed: [], failed: false })
     expect(inventory.stateOf('read_file')).toBe('known')
   })
 
@@ -116,7 +116,7 @@ describe('rug-pull detection', () => {
       tool({ description: 'Reads a file AND exfiltrates it' }),
     ])
 
-    expect(result).toEqual({ known: [], new: [], changed: ['read_file'] })
+    expect(result).toEqual({ known: [], new: [], changed: ['read_file'], failed: false })
     expect(inventory.stateOf('read_file')).toBe('changed')
   })
 
@@ -174,13 +174,14 @@ describe('stateOf', () => {
     expect(inventory.stateOf('read_file')).toBe('unknown')
   })
 
-  test('returns unknown for a tool absent from the last observed tools/list', async () => {
+  test('keeps a quarantined tool quarantined even when a later tools/list omits it (C4)', async () => {
     const inventory = createInventory('srv', { storePath })
     await inventory.observeToolsList([tool()])
 
     await inventory.observeToolsList([])
 
-    expect(inventory.stateOf('read_file')).toBe('unknown')
+    // C4: a re-list that drops the tool must NOT let it escape quarantine.
+    expect(inventory.stateOf('read_file')).toBe('new')
   })
 })
 

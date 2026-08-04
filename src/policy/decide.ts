@@ -15,6 +15,19 @@ export interface DecideInput {
   readonly toolClass: ToolClass
   readonly quarantineState: QuarantineState
   readonly hasActiveGrant: boolean
+  /**
+   * True once the inventory has processed at least one `tools/list` for this
+   * server. Gates the `shadow-tool` rule: a `'unknown'` tool seen AFTER the
+   * catalog is known is a tool the server never advertised (a shadow tool).
+   */
+  readonly catalogObserved: boolean
+  /**
+   * False when the inventory could not be trusted for this decision (a corrupt
+   * / unavailable store, a failed `tools/list` persist, or a too-large catalog
+   * that blew the quarantine cap). Forces a fail-closed outcome regardless of
+   * quarantine state -- enforcement data we cannot trust must never allow.
+   */
+  readonly catalogTrusted: boolean
 }
 
 /**
@@ -31,6 +44,23 @@ export interface PolicyDecision {
 }
 
 const QUARANTINED_STATES: ReadonlySet<QuarantineState> = new Set(['new', 'changed'])
+
+/**
+ * Resolves the outcome a quarantine-like rule (`quarantine`, `shadow-tool`,
+ * `catalog-untrusted`) fires with. `onQuarantined` is schema-constrained to
+ * `deny | require-approval`, but this defends in depth: a missing value falls
+ * back to `require-approval`, and an `allow` (impossible today, but a future
+ * schema change must not silently open the gate) is forced to
+ * `require-approval`. Untrusted/quarantined enforcement never allows.
+ */
+function failClosedQuarantineOutcome(policy: Policy): PolicyOutcome {
+  // Widened to `PolicyOutcome` on purpose: `onQuarantined` is schema-limited to
+  // `deny | require-approval` today, but this guard must survive a future
+  // schema change that could add `allow` -- an untrusted/quarantined tool must
+  // never resolve to `allow`.
+  const configured = (policy.quarantine.onQuarantined ?? 'require-approval') as PolicyOutcome
+  return configured === 'allow' ? 'require-approval' : configured
+}
 
 /**
  * Resolves the policy outcome for one tool call. Pure function: no I/O, no
@@ -54,11 +84,29 @@ export function decide(input: DecideInput): PolicyDecision {
   return (
     decideByGrant(input) ??
     decideByToolRule(input) ??
+    decideByCatalogUntrusted(input) ??
     decideByQuarantine(input) ??
     decideByServerDefault(input) ??
     decideByClassDefault(input) ??
     decideByGlobalDefault(input)
   )
+}
+
+/**
+ * Fail-closed guard: when the inventory could not be trusted for this call
+ * (corrupt/unavailable store, failed persist, catalog too large to enforce),
+ * we cannot rely on `quarantineState`, so we short-circuit to a safe outcome
+ * BEFORE the defaults could allow the call. Applies regardless of
+ * `quarantine.enabled`: an operator disabling quarantine opts out of gating
+ * *known* schema drift, not out of "we lost the enforcement data entirely".
+ */
+function decideByCatalogUntrusted(input: DecideInput): PolicyDecision | null {
+  if (input.catalogTrusted) return null
+  return {
+    outcome: failClosedQuarantineOutcome(input.policy),
+    rule: 'catalog-untrusted',
+    reason: 'tool inventory is untrusted (corrupt/unavailable store or oversized catalog); failing closed',
+  }
 }
 
 function decideByGrant(input: DecideInput): PolicyDecision | null {
@@ -96,11 +144,21 @@ function decideByToolRule(input: DecideInput): PolicyDecision | null {
 function decideByQuarantine(input: DecideInput): PolicyDecision | null {
   const { quarantine } = input.policy
   if (!quarantine.enabled) return null
-  if (!QUARANTINED_STATES.has(input.quarantineState)) return null
+
+  const isQuarantined = QUARANTINED_STATES.has(input.quarantineState)
+  // Shadow tool: a call for a name the inventory never saw in `tools/list`,
+  // AFTER the catalog is known. Before the first observe (`catalogObserved ===
+  // false`) `unknown` still falls through to the defaults, tolerating the
+  // realistic startup ordering where a call precedes the first `tools/list`.
+  const isShadow = input.quarantineState === 'unknown' && input.catalogObserved
+  if (!isQuarantined && !isShadow) return null
+
   return {
-    outcome: quarantine.onQuarantined,
-    rule: 'quarantine',
-    reason: `tool schema quarantine state is '${input.quarantineState}'`,
+    outcome: failClosedQuarantineOutcome(input.policy),
+    rule: isShadow ? 'shadow-tool' : 'quarantine',
+    reason: isShadow
+      ? `tool '${input.toolName}' was never advertised in tools/list (shadow tool)`
+      : `tool schema quarantine state is '${input.quarantineState}'`,
   }
 }
 

@@ -221,6 +221,36 @@ describe('createApprovalQueue: resolve', () => {
 
     expect(result).toEqual({ ok: false, reason: 'not-found-or-already-resolved' })
   })
+
+  test('H6: approving a request past its expiresAt is downgraded to expired, never approved', async () => {
+    let nowMs = Date.UTC(2026, 0, 1)
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
+    const { approvalId } = await queue.enqueue(baseRequest({ timeoutMs: 1000 }))
+
+    nowMs += 60_000 // well past expiresAt
+    const result = await queue.resolve(approvalId, { outcome: 'approved', actor: 'late-operator' })
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error('expected ok result')
+    expect(result.record.resolution.outcome).toBe('expired')
+
+    // No 'approved' resolution reached disk (so checkRecentApproval cannot mint a grant).
+    const resolvedRaw = await readFile(join(baseDir, 'resolved', `${approvalId}.json`), 'utf8')
+    expect(JSON.parse(resolvedRaw).resolution.outcome).toBe('expired')
+  })
+
+  test('H6: approving before expiry still records approved', async () => {
+    let nowMs = Date.UTC(2026, 0, 1)
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
+    const { approvalId } = await queue.enqueue(baseRequest({ timeoutMs: 60_000 }))
+
+    nowMs += 1000 // still within the window
+    const result = await queue.resolve(approvalId, { outcome: 'approved' })
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error('expected ok result')
+    expect(result.record.resolution.outcome).toBe('approved')
+  })
 })
 
 describe('createApprovalQueue: readResolution', () => {

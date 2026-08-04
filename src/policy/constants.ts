@@ -34,7 +34,8 @@ export const APPROVAL_POLL_INTERVAL_MS = 300
  * server must not be able to self-declare `drop_database` as safe merely by
  * omitting or lying about annotations -- these heuristics only ever raise
  * the class, never lower it. Matched case-insensitively against the tool
- * name; `force_` is a prefix, the rest are substrings.
+ * name; `force_` is a prefix, the rest are matched as whole tokens by
+ * `classify-tool.ts`.
  */
 export const DESTRUCTIVE_NAME_HEURISTICS: readonly string[] = [
   'delete',
@@ -45,8 +46,104 @@ export const DESTRUCTIVE_NAME_HEURISTICS: readonly string[] = [
   'revoke',
   'destroy',
   'reset',
+  'wipe',
+  'erase',
+  'rm',
+  'overwrite',
+  'kill',
+  'shutdown',
+  'chmod',
+  'exec',
+  'transfer',
+  'send',
+  'terminate',
   'force_',
 ]
+
+/**
+ * Homoglyph fold used ONLY to escalate the destructive-name heuristic
+ * (`classify-tool.ts`): maps common Cyrillic/Greek/fullwidth confusables to
+ * their ASCII look-alike so a tool named with a Cyrillic `е` in `dеlete_all`
+ * still trips the `delete` heuristic. Escalation-only: this fold can never
+ * lower a classification, so an occasional false collapse (e.g. Greek `ο`→`o`)
+ * only ever makes a name look *more* destructive, which is the safe direction.
+ */
+export const CONFUSABLE_FOLD: Readonly<Record<string, string>> = {
+  а: 'a', // Cyrillic a
+  е: 'e', // Cyrillic e
+  о: 'o', // Cyrillic o
+  р: 'p', // Cyrillic er
+  с: 'c', // Cyrillic es
+  х: 'x', // Cyrillic ha
+  у: 'y', // Cyrillic u
+  і: 'i', // Cyrillic dotted i
+  ѕ: 's', // Cyrillic dze
+  к: 'k', // Cyrillic ka
+  м: 'm', // Cyrillic em
+  т: 't', // Cyrillic te
+  ν: 'v', // Greek nu (look-alike)
+  ο: 'o', // Greek omicron
+  ρ: 'p', // Greek rho
+  τ: 't', // Greek tau
+  ι: 'i', // Greek iota
+  κ: 'k', // Greek kappa
+}
+
+/**
+ * Object keys that must never be used as a map key in the inventory store
+ * (`inventory.ts`): a tool literally named `__proto__`/`constructor`/
+ * `prototype` would either poison the prototype chain or round-trip to a
+ * plain-object key that loses its record and corrupts the whole shared store
+ * file. These names are handled with a `reserved:` prefix instead of being
+ * written verbatim.
+ */
+export const RESERVED_OBJECT_KEYS: readonly string[] = ['__proto__', 'constructor', 'prototype']
+
+/**
+ * Max characters of a tool's `description` kept before storing a quarantined
+ * entry's descriptor copy. A malicious/compromised server can advertise an
+ * arbitrarily large description; this bounds both the redaction work and the
+ * store file size. The schema hash (used for known/new/changed comparisons)
+ * is computed on the original, uncapped descriptor, so truncation here never
+ * affects rug-pull detection.
+ */
+export const MAX_STORED_DESCRIPTION_CHARS = 4096
+
+/**
+ * Hard cap on quarantined tools persisted per server. A hostile/compromised
+ * server can advertise an unbounded `tools/list`; past this cap the inventory
+ * stops adding new quarantine entries and marks the catalog untrusted (so
+ * `decide` fails closed) rather than growing the store file without bound.
+ */
+export const MAX_QUARANTINED_TOOLS_PER_SERVER = 2000
+
+/**
+ * Max serialized (JSON) length of a stored quarantined descriptor copy. The
+ * schema hash already pins the full descriptor, so the stored copy is only
+ * for human display and can be aggressively bounded.
+ */
+export const MAX_STORED_DESCRIPTOR_CHARS = 8192
+
+/**
+ * Clock-skew tolerance (ms) for `checkRecentApproval` (grants.ts): a resolved
+ * file whose `resolvedAt` is more than this far in the FUTURE is rejected, so
+ * a forged/backdated file cannot mint a grant.
+ */
+export const GRANT_CLOCK_SKEW_MS = 5_000
+
+/**
+ * Max resolved files `checkRecentApproval` will `readdir`/`stat` on the
+ * approval hot path. Bounds the cost of a huge, never-pruned `resolved/`
+ * directory: only the first this-many directory entries are considered.
+ */
+export const MAX_RESOLVED_FILES_SCANNED = 2000
+
+/**
+ * Resolved-file retention: `checkRecentApproval` opportunistically deletes
+ * resolved files older than this (well past any grant TTL), so the directory
+ * cannot grow without bound across a long-lived proxy session.
+ */
+export const RESOLVED_FILE_RETENTION_MS = 24 * 60 * 60_000
 
 /**
  * Max number of server entries a single policy file may define under

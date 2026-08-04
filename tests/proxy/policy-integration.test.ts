@@ -239,8 +239,15 @@ describe('runWrap: an allowed session is relayed byte-for-byte, including odd fr
     ).toHaveLength(3)
 
     const allows = decisionRecords(modeB.records).filter((r) => r.decision?.outcome === 'allow')
-    expect(allows).toHaveLength(2) // the two tools/call frames; initialize is not gated
-    expect(outcomesOf(modeB.records)).not.toContain('deny')
+    expect(allows).toHaveLength(2) // the two complete tools/call frames; initialize is not gated
+
+    // The unterminated trailing fragment is no longer silently forwarded: under
+    // the fail-closed client-direction default it is denied and journaled. It
+    // carries no recoverable id, so nothing is written back to the client and
+    // the byte-identity guarantee above still holds.
+    const denies = decisionRecords(modeB.records).filter((r) => r.decision?.outcome === 'deny')
+    expect(denies).toHaveLength(1)
+    expect(denies[0]?.decision?.rule).toBe('unparseable-client-frame')
   })
 })
 

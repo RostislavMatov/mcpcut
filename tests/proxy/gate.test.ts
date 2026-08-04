@@ -11,7 +11,7 @@ import { createGrantRegistry } from '../../src/policy/approvals/grants.js'
 import { createInventory, type Inventory } from '../../src/policy/inventory.js'
 import { parsePolicy, type Policy } from '../../src/policy/schema.js'
 import { createPolicyGate, type PolicyGate } from '../../src/proxy/gate.js'
-import { createBoundedIdSet } from '../../src/proxy/gate-helpers.js'
+import { createAnswerGuard, createBoundedIdSet, type GateInventory } from '../../src/proxy/gate-helpers.js'
 import {
   ERROR_CODE_APPROVAL,
   ERROR_CODE_POLICY_DENIED,
@@ -61,7 +61,7 @@ function policyOf(overrides: Record<string, unknown> = {}): Policy {
 
 function frameOf(message: unknown): Frame {
   const text = typeof message === 'string' ? message : JSON.stringify(message)
-  return { bytes: Buffer.from(text, 'utf8'), terminator: '\n', isBlank: false }
+  return { bytes: Buffer.from(text, 'utf8'), terminator: '\n', isBlank: false, reason: 'line' }
 }
 
 function toolCall(id: unknown, name: string, args: unknown = { path: '/tmp/x' }): Frame {
@@ -89,9 +89,60 @@ interface GateHarness {
   readonly clientWriter: OrderedWriter
 }
 
+/** Knobs the adapter uses to simulate the pinned inventory's failure/trust signals. */
+interface InventoryControls {
+  /** Force `observeToolsList` to report `failed:true` without touching the real store. */
+  readonly observeFailed?: boolean
+  /** Make `load()` reject, so the catalog is untrusted from the start. */
+  readonly loadRejects?: boolean
+}
+
+/**
+ * Wraps the real `Inventory` in the pinned `GateInventory` contract the gate
+ * consumes (the parallel policy agent adds `load`/`hasObservedCatalog`/
+ * `isCatalogTrusted`/`failed` to the real module; this adapter provides them
+ * here so these transport/gate tests stay self-contained). `stateOf` and the
+ * store side of `observeToolsList` delegate to the real inventory, so
+ * quarantine behaviour is exercised for real.
+ */
+function asGateInventory(real: Inventory, controls: InventoryControls = {}): GateInventory {
+  let observed = false
+  let lastObserveFailed = false
+  let loadFailed = false
+  return {
+    async load(): Promise<void> {
+      if (controls.loadRejects) {
+        loadFailed = true
+        throw new Error('inventory store unavailable')
+      }
+      const maybeLoad = (real as Partial<GateInventory>).load
+      if (typeof maybeLoad === 'function') await maybeLoad.call(real)
+    },
+    async observeToolsList(tools) {
+      observed = true
+      if (controls.observeFailed) {
+        lastObserveFailed = true
+        return { known: [], new: [], changed: [], failed: true }
+      }
+      try {
+        const result = await real.observeToolsList(tools)
+        lastObserveFailed = false
+        return { known: result.known, new: result.new, changed: result.changed, failed: false }
+      } catch {
+        lastObserveFailed = true
+        return { known: [], new: [], changed: [], failed: true }
+      }
+    },
+    stateOf: (name) => real.stateOf(name),
+    hasObservedCatalog: () => observed,
+    isCatalogTrusted: () => !lastObserveFailed && !loadFailed,
+  }
+}
+
 interface HarnessOptions {
   readonly policy?: Policy
   readonly inventory?: Inventory
+  readonly controls?: InventoryControls
   readonly timeoutMs?: number
 }
 
@@ -101,7 +152,7 @@ function createHarness(opts: HarnessOptions = {}): GateHarness {
     policy: opts.policy ?? policyOf({ defaultDecision: 'allow', quarantine: { enabled: false } }),
     serverName: SERVER_NAME,
     sessionId: SESSION_ID,
-    inventory: opts.inventory ?? inventory,
+    inventory: asGateInventory(opts.inventory ?? inventory, opts.controls),
     approvalQueue: queue,
     approvalWaiter: createApprovalWaiter({ pollIntervalMs: POLL_INTERVAL_MS }),
     grantRegistry: createGrantRegistry(),
@@ -175,26 +226,60 @@ describe('createPolicyGate: traffic that is never gated', () => {
     expect(await readDecisions()).toEqual([])
   })
 
-  test('invalid junk is forwarded and never journaled as a decision', async () => {
+  test('invalid junk with no recoverable id is dropped and journaled, never forwarded (C2)', async () => {
     const { gate, written } = createHarness({ policy: policyOf(DENY_EVERYTHING) })
 
     const verdict = await gate.gateClientMessage(frameOf('} not json at all {'))
 
-    expect(verdict).toEqual({ action: 'forward' })
-    expect(written).toEqual([])
-    expect(await readDecisions()).toEqual([])
+    // Fail closed: an unparseable client frame must never reach the server.
+    expect(verdict).toEqual({ action: 'drop' })
+    expect(written).toEqual([]) // no scalar id to answer
+    const decisions = await readDecisions()
+    expect(decisions).toHaveLength(1)
+    expect(decisions[0]!.decision).toMatchObject({ outcome: 'deny', rule: 'unparseable-client-frame' })
   })
 
-  test('a malformed tools/call (no params.name) is forwarded for the server to reject', async () => {
+  test('a malformed tools/call (no params.name) is dropped, journaled and answered (C2)', async () => {
     const { gate, written } = createHarness({ policy: policyOf(DENY_EVERYTHING) })
 
     const verdict = await gate.gateClientMessage(
       frameOf({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: {} }),
     )
 
-    expect(verdict).toEqual({ action: 'forward' })
-    expect(written).toEqual([])
-    expect(await readDecisions()).toEqual([])
+    // A tools/call we cannot parse is the dangerous case: fail closed, do not
+    // hand the server an unvetted call it would happily execute.
+    expect(verdict).toEqual({ action: 'drop' })
+    expect(written).toHaveLength(1)
+    expect(parseWritten(written[0]!).error.code).toBe(ERROR_CODE_POLICY_DENIED)
+    const decisions = await readDecisions()
+    expect(decisions).toHaveLength(1)
+    expect(decisions[0]!.decision).toMatchObject({ outcome: 'deny', rule: 'malformed-tools-call' })
+  })
+})
+
+describe('createPolicyGate: client direction fails closed (C2)', () => {
+  // Every vector from the review table: none may reach the server-writer, and
+  // each must be journaled as a deny.
+  const VECTORS: ReadonlyArray<readonly [string, unknown, boolean]> = [
+    ['a top-level JSON-RPC batch array', [{ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'x' } }], false],
+    ['a frame missing "jsonrpc"', { id: 7, method: 'tools/call', params: { name: 'x' } }, true],
+    ['a numeric "jsonrpc" version', { jsonrpc: 2, id: 8, method: 'tools/call', params: { name: 'x' } }, true],
+    ['a non-scalar (object) id', { jsonrpc: '2.0', id: { a: 1 }, method: 'tools/call', params: { name: 'x' } }, false],
+    ['tools/call with params as an array', { jsonrpc: '2.0', id: 9, method: 'tools/call', params: ['x'] }, true],
+    ['tools/call with a non-string name', { jsonrpc: '2.0', id: 10, method: 'tools/call', params: { name: 123 } }, true],
+  ]
+
+  test.each(VECTORS)('%s is dropped, journaled, and never reaches the server', async (_label, message, idRecoverable) => {
+    const { gate, written } = createHarness({ policy: policyOf({ defaultDecision: 'allow', quarantine: { enabled: false } }) })
+
+    const verdict = await gate.gateClientMessage(frameOf(message))
+
+    expect(verdict).toEqual({ action: 'drop' })
+    // A recoverable scalar id gets a synthetic denial; otherwise a bare drop.
+    expect(written).toHaveLength(idRecoverable ? 1 : 0)
+    const decisions = await readDecisions()
+    expect(decisions).toHaveLength(1)
+    expect(decisions[0]!.decision?.outcome).toBe('deny')
   })
 })
 
@@ -654,20 +739,43 @@ describe('createPolicyGate: internal errors fail closed', () => {
     expect(errors).toHaveLength(2) // the original failure, then the answer failure
   })
 
-  test('a failing tools/list observation forwards the response instead of breaking the stream', async () => {
-    const failingInventory: Inventory = {
-      ...inventory,
-      observeToolsList: () => Promise.reject(new Error('store is unwritable')),
-    }
-    const { gate } = createHarness({ inventory: failingInventory })
+  test('a failed tools/list observation forwards the response but journals it as untrusted (C3/C4)', async () => {
+    const { gate } = createHarness({ controls: { observeFailed: true } })
 
     await gate.gateClientMessage(frameOf({ jsonrpc: '2.0', id: 5, method: 'tools/list' }))
     const verdict = await gate.gateServerMessage(
       frameOf({ jsonrpc: '2.0', id: 5, result: { tools: [{ name: 'read_file' }] } }),
     )
 
+    // Forwarded unfiltered — but NOT a silent fail-open: the failure is
+    // journaled, and enforcement now shifts to the call level.
     expect(verdict).toEqual({ action: 'forward' })
-    expect(errors).toHaveLength(1)
+    const decisions = await readDecisions()
+    expect(decisions.at(-1)?.decision?.rule).toBe('inventory-unavailable')
+  })
+
+  test('after a failed observation, a later tools/call for any tool fails closed (C3/C4)', async () => {
+    const { gate, written } = createHarness({
+      // Would be allowed if the catalog were trusted. `onQuarantined:'deny'`
+      // makes the untrusted-catalog fail-closed a deterministic fast synthetic
+      // deny (decide resolves catalog-untrusted to onQuarantined ?? approval).
+      policy: policyOf({ defaultDecision: 'allow', quarantine: { enabled: true, onQuarantined: 'deny' } }),
+      controls: { observeFailed: true },
+    })
+
+    await gate.gateClientMessage(frameOf({ jsonrpc: '2.0', id: 5, method: 'tools/list' }))
+    await gate.gateServerMessage(
+      frameOf({ jsonrpc: '2.0', id: 5, result: { tools: [{ name: 'read_file' }] } }),
+    )
+
+    const verdict = await gate.gateClientMessage(toolCall(6, 'read_file'))
+
+    expect(verdict).toEqual({ action: 'drop' })
+    expect(parseWritten(written[0]!).error.code).toBe(ERROR_CODE_POLICY_DENIED)
+    expect((await readDecisions()).at(-1)?.decision).toMatchObject({
+      outcome: 'deny',
+      rule: 'catalog-untrusted',
+    })
   })
 
   test('reports through stderr when no onError is injected', async () => {
@@ -697,6 +805,161 @@ describe('createPolicyGate: internal errors fail closed', () => {
     }
 
     expect(writes.join('')).toContain('[gate] inventory exploded')
+  })
+})
+
+const APPROVAL_ONLY_POLICY = {
+  defaultDecision: 'require-approval',
+  quarantine: { enabled: false },
+  approval: { timeoutMs: 10_000, grantTtlMs: 60_000 },
+} as const
+
+describe('createPolicyGate: exactly-one-outcome under load (M8)', () => {
+  test('a reused id burned by one in-flight approval blocks a concurrent approval from forwarding', async () => {
+    const { gate, written } = createHarness({
+      policy: policyOf({
+        ...APPROVAL_ONLY_POLICY,
+        approval: { timeoutMs: 60_000, grantTtlMs: 60_000 },
+      }),
+    })
+
+    // Two concurrent approvals share request id 42 (different args → no grant).
+    const first = gate.gateClientMessage(toolCall(42, 'write_file', { a: 1 }))
+    const pendingA = await waitForPendingApproval()
+    const second = gate.gateClientMessage(toolCall(42, 'write_file', { a: 2 }))
+    const pendingB = await waitForOtherPendingApproval(pendingA.approvalId)
+
+    // Deny the first: id 42 is answered locally and burned while the second
+    // approval is still in flight, so the burn cannot be evicted from under it.
+    await queue.resolve(pendingA.approvalId, { outcome: 'denied', actor: 'operator' })
+    expect(await first).toEqual({ action: 'drop' })
+
+    // Approving the second must NOT forward id 42 after it was already answered.
+    await queue.resolve(pendingB.approvalId, { outcome: 'approved', actor: 'operator' })
+    expect(await second).toEqual({ action: 'drop' })
+    expect(written).toHaveLength(1) // only the first (denied) answer
+    expect((await readDecisions()).at(-1)?.decision?.rule).toBe('already-answered-locally')
+  })
+})
+
+describe('createPolicyGate: tools/list observation survives concurrency (M9)', () => {
+  test('a tools/list response is observed even after far more concurrent list requests than the old shared cap', async () => {
+    const { gate } = createHarness({
+      policy: policyOf({ defaultDecision: 'allow', quarantine: { enabled: false } }),
+    })
+
+    // Old design shared a 10k oldest-first cap with answered ids, so the
+    // first-issued id would be evicted here and its response escape
+    // observation. The dedicated, far-larger tools/list cap keeps it tracked.
+    for (let i = 0; i < 20_000; i += 1) {
+      gate.gateClientMessage(frameOf({ jsonrpc: '2.0', id: `list-${i}`, method: 'tools/list' }))
+    }
+
+    const verdict = await gate.gateServerMessage(
+      frameOf({ jsonrpc: '2.0', id: 'list-0', result: { tools: [{ name: 'fresh_tool' }] } }),
+    )
+
+    expect(verdict).toEqual({ action: 'forward' }) // allow-all hides nothing
+    expect(inventory.stateOf('fresh_tool')).toBe('new') // it WAS observed and quarantined
+  })
+})
+
+describe('createPolicyGate: cancellation ordering (TS-M2)', () => {
+  test('notifications/cancelled is held behind the in-flight verdict of the request it cancels', async () => {
+    const { gate } = createHarness({ policy: policyOf(APPROVAL_ONLY_POLICY) })
+
+    const callVerdict = gate.gateClientMessage(toolCall(1, 'write_file'))
+    const pending = await waitForPendingApproval()
+
+    const cancelVerdict = gate.gateClientMessage(
+      frameOf({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 1 } }),
+    )
+    let cancelResolved = false
+    void Promise.resolve(cancelVerdict).then(() => {
+      cancelResolved = true
+    })
+    await sleep(POLL_INTERVAL_MS * 3)
+
+    // The cancellation must not reach the server before the request it cancels.
+    expect(cancelResolved).toBe(false)
+
+    await queue.resolve(pending.approvalId, { outcome: 'approved', actor: 'operator' })
+    expect(await callVerdict).toEqual({ action: 'forward' })
+    expect(await cancelVerdict).toEqual({ action: 'forward' })
+  })
+
+  test('notifications/cancelled forwards immediately when nothing is in flight for its requestId', () => {
+    const { gate } = createHarness()
+
+    const verdict = gate.gateClientMessage(
+      frameOf({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 999 } }),
+    )
+
+    expect(verdict).toEqual({ action: 'forward' })
+  })
+})
+
+describe('createPolicyGate: teardown expires enqueued approvals (H6)', () => {
+  test('cancelPending marks every unresolved enqueued approval as expired on disk', async () => {
+    const { gate } = createHarness({
+      policy: policyOf({
+        ...APPROVAL_ONLY_POLICY,
+        approval: { timeoutMs: 60_000, grantTtlMs: 60_000 },
+      }),
+    })
+
+    const verdictPromise = gate.gateClientMessage(toolCall(11, 'write_file'))
+    const pending = await waitForPendingApproval()
+
+    await gate.cancelPending()
+    await verdictPromise
+
+    const resolution = await queue.readResolution(pending.approvalId)
+    expect(resolution?.outcome).toBe('expired')
+  })
+})
+
+describe('createAnswerGuard', () => {
+  test('an id answered while a wait is in flight survives LRU eviction, then clears when the wait ends', () => {
+    const guard = createAnswerGuard(2)
+
+    guard.beginWait('x')
+    guard.markAnswered('x')
+    // Two more answered ids would evict 'x' from a 2-entry LRU...
+    guard.markAnswered('a')
+    guard.markAnswered('b')
+
+    // ...but the in-flight burn keeps it reported as answered.
+    expect(guard.isAnswered('x')).toBe(true)
+
+    guard.endWait('x')
+    // Now nothing pins it: the LRU already evicted it, so it is forgotten.
+    expect(guard.isAnswered('x')).toBe(false)
+  })
+
+  test('without an in-flight wait, an answered id relies on the evictable LRU only', () => {
+    const guard = createAnswerGuard(2)
+
+    guard.markAnswered('x')
+    guard.markAnswered('a')
+    guard.markAnswered('b') // evicts 'x'
+
+    expect(guard.isAnswered('x')).toBe(false)
+  })
+
+  test('the burn is refcounted: it clears only once the last overlapping wait ends', () => {
+    const guard = createAnswerGuard(1)
+
+    guard.beginWait('x')
+    guard.beginWait('x')
+    guard.markAnswered('x')
+    guard.markAnswered('evict-x') // evicts 'x' from the 1-entry LRU
+
+    guard.endWait('x')
+    expect(guard.isAnswered('x')).toBe(true) // one wait still holds the burn
+
+    guard.endWait('x')
+    expect(guard.isAnswered('x')).toBe(false)
   })
 })
 

@@ -19,6 +19,11 @@ function input(overrides: Partial<DecideInput> & { policy: Policy }): DecideInpu
     toolClass: 'read',
     quarantineState: 'known',
     hasActiveGrant: false,
+    // Defaults chosen so the pre-existing precedence tests keep their meaning:
+    // catalog not yet observed (so `unknown` still falls through to defaults,
+    // never shadow-tool) and trusted (so catalog-untrusted never fires).
+    catalogObserved: false,
+    catalogTrusted: true,
     ...overrides,
   }
 }
@@ -209,6 +214,150 @@ describe('decide: step 3 -- quarantine', () => {
           quarantine: { enabled: true, onQuarantined: 'deny' },
         }),
         quarantineState: 'unknown',
+      }),
+    )
+
+    expect(result.rule).toBe('defaultDecision')
+    expect(result.outcome).toBe('allow')
+  })
+})
+
+describe('decide: catalog-untrusted (fail closed)', () => {
+  test('untrusted catalog forces require-approval even when defaultDecision is allow', () => {
+    const result = decide(
+      input({
+        policy: policy({ version: 1, defaultDecision: 'allow' }),
+        catalogTrusted: false,
+      }),
+    )
+
+    expect(result.rule).toBe('catalog-untrusted')
+    expect(result.outcome).toBe('require-approval')
+  })
+
+  test('untrusted catalog honors onQuarantined=deny', () => {
+    const result = decide(
+      input({
+        policy: policy({
+          version: 1,
+          defaultDecision: 'allow',
+          quarantine: { enabled: true, onQuarantined: 'deny' },
+        }),
+        catalogTrusted: false,
+      }),
+    )
+
+    expect(result.rule).toBe('catalog-untrusted')
+    expect(result.outcome).toBe('deny')
+  })
+
+  test('untrusted catalog fails closed even when quarantine is disabled', () => {
+    const result = decide(
+      input({
+        policy: policy({
+          version: 1,
+          defaultDecision: 'allow',
+          quarantine: { enabled: false, onQuarantined: 'deny' },
+        }),
+        catalogTrusted: false,
+      }),
+    )
+
+    expect(result.rule).toBe('catalog-untrusted')
+    expect(result.outcome).not.toBe('allow')
+  })
+
+  test('an active grant still beats an untrusted catalog', () => {
+    const result = decide(
+      input({
+        policy: policy({ version: 1, defaultDecision: 'allow' }),
+        catalogTrusted: false,
+        hasActiveGrant: true,
+      }),
+    )
+
+    expect(result.rule).toBe('grant')
+    expect(result.outcome).toBe('allow')
+  })
+
+  test('an explicit tool rule still beats an untrusted catalog', () => {
+    const result = decide(
+      input({
+        policy: policy({
+          version: 1,
+          defaultDecision: 'allow',
+          servers: { github: { tools: { search_index: 'allow' } } },
+        }),
+        catalogTrusted: false,
+      }),
+    )
+
+    expect(result.rule).toBe('servers.github.tools.search_index')
+  })
+})
+
+describe('decide: shadow-tool (unknown after catalog observed)', () => {
+  test('unknown tool AFTER the catalog is observed is treated as quarantined (shadow-tool)', () => {
+    const result = decide(
+      input({
+        policy: policy({
+          version: 1,
+          defaultDecision: 'allow',
+          quarantine: { enabled: true, onQuarantined: 'require-approval' },
+        }),
+        quarantineState: 'unknown',
+        catalogObserved: true,
+      }),
+    )
+
+    expect(result.rule).toBe('shadow-tool')
+    expect(result.outcome).toBe('require-approval')
+  })
+
+  test('shadow-tool honors onQuarantined=deny', () => {
+    const result = decide(
+      input({
+        policy: policy({
+          version: 1,
+          defaultDecision: 'allow',
+          quarantine: { enabled: true, onQuarantined: 'deny' },
+        }),
+        quarantineState: 'unknown',
+        catalogObserved: true,
+      }),
+    )
+
+    expect(result.rule).toBe('shadow-tool')
+    expect(result.outcome).toBe('deny')
+  })
+
+  test('unknown tool BEFORE the catalog is observed still falls through to defaults', () => {
+    const result = decide(
+      input({
+        policy: policy({
+          version: 1,
+          defaultDecision: 'allow',
+          quarantine: { enabled: true, onQuarantined: 'deny' },
+        }),
+        quarantineState: 'unknown',
+        catalogObserved: false,
+      }),
+    )
+
+    expect(result.rule).toBe('defaultDecision')
+    expect(result.outcome).toBe('allow')
+  })
+
+  test('shadow-tool does not fire when quarantine is disabled', () => {
+    const result = decide(
+      input({
+        policy: policy({
+          version: 1,
+          defaultDecision: 'allow',
+          quarantine: { enabled: false, onQuarantined: 'deny' },
+        }),
+        quarantineState: 'unknown',
+        catalogObserved: true,
       }),
     )
 

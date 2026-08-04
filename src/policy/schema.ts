@@ -4,6 +4,7 @@ import {
   DEFAULT_GRANT_TTL_MS,
   MAX_SERVERS_IN_POLICY,
   MAX_TOOL_RULES_PER_SERVER,
+  RESERVED_OBJECT_KEYS,
   TOOL_RULE_NAME_PATTERN,
 } from './constants.js'
 
@@ -47,16 +48,35 @@ const serverNameSchema = z
   .string()
   .regex(SERVER_NAME_PATTERN, 'server name must match ^[A-Za-z0-9_.:-]{1,64}$')
 
-/** Caps a `Record<key, value>` map at `max` entries with a clear message. */
+/**
+ * Caps a `Record<key, value>` map at `max` entries, and LOUDLY rejects the
+ * reserved keys `__proto__`/`constructor`/`prototype`. zod's `z.record`
+ * happily strips a `__proto__` key (JSON.parse materializes it as an own
+ * property, but many code paths silently drop it), which would turn a
+ * `{"__proto__":"deny"}` rule into "rule never matched, falls through to a
+ * looser default" — a fail-OPEN downgrade. `Object.getOwnPropertyNames`
+ * observes the reserved keys even when `Object.keys` would hide them.
+ */
 function withMaxEntries<V extends z.ZodTypeAny>(
   keySchema: z.ZodString,
   valueSchema: V,
   max: number,
   what: string,
 ) {
-  return z.record(keySchema, valueSchema).refine((map) => Object.keys(map).length <= max, {
-    message: `too many ${what}: max ${max}`,
-  })
+  return z
+    .record(keySchema, valueSchema)
+    .refine((map) => Object.keys(map).length <= max, { message: `too many ${what}: max ${max}` })
+    .superRefine((map, ctx) => {
+      for (const key of Object.getOwnPropertyNames(map)) {
+        if (RESERVED_OBJECT_KEYS.includes(key)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `reserved key "${key}" is not allowed in ${what}`,
+            path: [key],
+          })
+        }
+      }
+    })
 }
 
 const classDefaultsSchema = z
@@ -147,9 +167,45 @@ export type ParsePolicyResult =
  * decide how to surface a bad policy, this function never throws.
  */
 export function parsePolicy(value: unknown): ParsePolicyResult {
+  // `__proto__` is materialized as an own property by `JSON.parse` but is
+  // silently dropped by zod's record rebuild BEFORE any `superRefine` can see
+  // it -- so a `{"__proto__":"deny"}` rule would vanish (a fail-open
+  // downgrade). Scan the raw input for reserved keys up front and reject
+  // loudly. (`constructor`/`prototype` survive to `withMaxEntries`'s
+  // `superRefine`; scanning here covers all three uniformly.)
+  const reservedPath = findReservedKeyPath(value, [])
+  if (reservedPath) {
+    const error = new z.ZodError([
+      {
+        code: 'custom',
+        message: `reserved key "${reservedPath.at(-1)}" is not allowed`,
+        path: reservedPath,
+      },
+    ])
+    return { ok: false, error }
+  }
+
   const result = policySchema.safeParse(value)
   if (result.success) {
     return { ok: true, policy: result.data }
   }
   return { ok: false, error: result.error }
+}
+
+/** Depth-bounded scan for a reserved own-key anywhere in `value`; returns its path or null. */
+function findReservedKeyPath(value: unknown, path: readonly (string | number)[]): (string | number)[] | null {
+  if (path.length > 32 || typeof value !== 'object' || value === null) return null
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i += 1) {
+      const hit = findReservedKeyPath(value[i], [...path, i])
+      if (hit) return hit
+    }
+    return null
+  }
+  for (const key of Object.getOwnPropertyNames(value)) {
+    if (RESERVED_OBJECT_KEYS.includes(key)) return [...path, key]
+    const hit = findReservedKeyPath((value as Record<string, unknown>)[key], [...path, key])
+    if (hit) return hit
+  }
+  return null
 }

@@ -63,6 +63,11 @@ export function createOrderedWriter(
   // a later write never begins before an earlier one has been fully
   // accepted (and drained, if the destination applied backpressure).
   let tail: Promise<void> = Promise.resolve()
+  // Settles the single write currently parked on backpressure (waiting for
+  // 'drain'/'error'/'close'), if any, and detaches its transient listeners.
+  // `dispose()` calls it so a parked write is never left hanging when the
+  // destination neither drains nor closes (TS-L3).
+  let settleParkedWrite: (() => void) | null = null
 
   const handleDestinationError = (error: unknown): void => onError(error)
   destination.on('error', handleDestinationError)
@@ -95,8 +100,11 @@ export function createOrderedWriter(
         destination.removeListener('drain', settle)
         destination.removeListener('error', settle)
         destination.removeListener('close', settle)
+        settleParkedWrite = null
         resolve()
       }
+      // Exposed so dispose() can force-settle this parked write itself.
+      settleParkedWrite = settle
       destination.once('drain', settle)
       destination.once('error', settle)
       destination.once('close', settle)
@@ -111,6 +119,10 @@ export function createOrderedWriter(
       }
       isDisposed = true
       destination.removeListener('error', handleDestinationError)
+      // Force-settle a write parked on backpressure so its caller does not
+      // hang forever on a destination that neither drains nor closes; the
+      // settle callback also detaches its own transient listeners.
+      settleParkedWrite?.()
     },
   }
 }

@@ -2,6 +2,30 @@ import { describe, expect, test } from 'vitest'
 import { parsePolicy, policySchema } from '../../src/policy/schema.js'
 import { MAX_SERVERS_IN_POLICY, MAX_TOOL_RULES_PER_SERVER } from '../../src/policy/constants.js'
 
+describe('L14: reserved keys in servers/tools maps are rejected, not silently dropped', () => {
+  test('a __proto__ key in a server tools map fails validation', () => {
+    // JSON.parse materializes __proto__ as an own property (the vector zod strips).
+    const raw = JSON.parse('{"version":1,"servers":{"github":{"tools":{"__proto__":"deny"}}}}')
+    const result = parsePolicy(raw)
+
+    expect(result.ok).toBe(false)
+  })
+
+  test('a __proto__ key in the servers map fails validation', () => {
+    const raw = JSON.parse('{"version":1,"servers":{"__proto__":{"defaultDecision":"deny"}}}')
+    const result = parsePolicy(raw)
+
+    expect(result.ok).toBe(false)
+  })
+
+  test.each(['constructor', 'prototype'])('a %s key in a tools map fails validation', (key) => {
+    const raw = JSON.parse(`{"version":1,"servers":{"github":{"tools":{"${key}":"deny"}}}}`)
+    const result = parsePolicy(raw)
+
+    expect(result.ok).toBe(false)
+  })
+})
+
 describe('parsePolicy', () => {
   test('accepts the minimal valid config', () => {
     const result = parsePolicy({ version: 1 })

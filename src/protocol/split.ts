@@ -25,6 +25,20 @@ const CARRIAGE_RETURN_BYTE = 0x0d
 export type Terminator = '\n' | '\r\n' | 'none'
 
 /**
+ * Why the splitter emitted a frame — a security-relevant discriminator the
+ * mode-B pipeline acts on (see `proxy/pipeline.ts`):
+ *  - `'line'`     a normally `\n`/`\r\n`-terminated frame; the common case.
+ *  - `'eof'`      the legitimate final, newline-less bytes of a source that
+ *                 ended mid-line (see `flush()`); safe to relay.
+ *  - `'overflow'` a mid-stream buffer force-emitted because it exceeded
+ *                 `maxBufferBytes` without ever containing a terminator. It is
+ *                 an unterminated *fragment* of a larger unfinished line: a
+ *                 downstream reassembler would splice it back together and
+ *                 execute it, so a policy gate must NEVER forward it.
+ */
+export type FrameReason = 'line' | 'eof' | 'overflow'
+
+/**
  * One frame produced by the splitter: the content bytes with any line
  * terminator removed, plus enough metadata to reproduce the original bytes
  * exactly (`bytes` followed by the terminator's own bytes).
@@ -40,6 +54,13 @@ export interface Frame {
   readonly terminator: Terminator
   /** True when `bytes` is empty (a lone terminator with no content). */
   readonly isBlank: boolean
+  /**
+   * Why this frame was emitted. Lets the semantic layer tell a legitimate
+   * source-end fragment (`'eof'`) apart from a dangerous mid-stream overflow
+   * fragment (`'overflow'`) — both carry `terminator: 'none'`, but only the
+   * latter is an unterminated *slice* of an unfinished line.
+   */
+  readonly reason: FrameReason
 }
 
 export interface FrameSplitter {
@@ -103,7 +124,7 @@ export function createFrameSplitter(options: FrameSplitterOptions = {}): FrameSp
     appendToPending(chunk.subarray(searchStart))
 
     if (pendingBytes > maxBufferBytes) {
-      frames.push(toUnterminatedFrame(flushPending()))
+      frames.push(toUnterminatedFrame(flushPending(), 'overflow'))
     }
 
     return frames
@@ -144,7 +165,7 @@ export function createFrameSplitter(options: FrameSplitterOptions = {}): FrameSp
     if (pendingBytes === 0) {
       return []
     }
-    return [toUnterminatedFrame(flushPending())]
+    return [toUnterminatedFrame(flushPending(), 'eof')]
   }
 
   return { push, flush }
@@ -159,14 +180,22 @@ function toTerminatedFrame(rawLine: Buffer): Frame {
     bytes,
     terminator: hasTrailingCr ? '\r\n' : '\n',
     isBlank: bytes.length === 0,
+    reason: 'line',
   })
 }
 
-/** Builds a frame for a buffer flushed without ever seeing a terminator (overflow or source end). */
-function toUnterminatedFrame(flushed: Buffer): Frame {
+/**
+ * Builds a frame for a buffer flushed without ever seeing a terminator.
+ * `reason` distinguishes the two very different callers: `'eof'` for the
+ * legitimate final bytes of a source that ended mid-line (`flush()`), and
+ * `'overflow'` for a dangerous mid-stream fragment force-emitted past
+ * `maxBufferBytes`.
+ */
+function toUnterminatedFrame(flushed: Buffer, reason: 'eof' | 'overflow'): Frame {
   return Object.freeze({
     bytes: flushed,
     terminator: 'none',
     isBlank: flushed.length === 0,
+    reason,
   })
 }

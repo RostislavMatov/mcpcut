@@ -207,4 +207,48 @@ describe('checkRecentApproval', () => {
       }),
     ).resolves.toBe(false)
   })
+
+  test('M7: a future-dated resolvedAt does NOT grant (forged/backdated clock)', async () => {
+    const nowMs = Date.now()
+    await writeResolvedFile('01AAA', { resolvedAt: new Date(nowMs + 3_600_000).toISOString() })
+
+    const granted = await checkRecentApproval(baseDir, {
+      serverName: 'github',
+      toolName: 'create_issue',
+      argsHash: 'hash-1',
+      ttlMs: 60_000,
+      clock: () => nowMs,
+    })
+
+    expect(granted).toBe(false)
+  })
+
+  test('M7: a resolved file whose approvalId does not match its filename is ignored', async () => {
+    const nowMs = Date.now()
+    // File named 01AAA.json but carrying a different approvalId inside.
+    const content = {
+      approvalId: 'SOMETHING_ELSE',
+      serverName: 'github',
+      toolName: 'create_issue',
+      toolClass: 'write',
+      argsRedacted: {},
+      argsHash: 'hash-1',
+      sessionId: 'session-1',
+      requestedAt: new Date(nowMs).toISOString(),
+      expiresAt: new Date(nowMs).toISOString(),
+      resolution: { outcome: 'approved' },
+      resolvedAt: new Date(nowMs).toISOString(),
+    }
+    await writeFile(join(baseDir, 'resolved', '01AAA.json'), JSON.stringify(content), 'utf8')
+
+    const granted = await checkRecentApproval(baseDir, {
+      serverName: 'github',
+      toolName: 'create_issue',
+      argsHash: 'hash-1',
+      ttlMs: 60_000,
+      clock: () => nowMs,
+    })
+
+    expect(granted).toBe(false)
+  })
 })
