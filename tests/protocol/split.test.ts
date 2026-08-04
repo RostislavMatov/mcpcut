@@ -252,3 +252,85 @@ describe('createFrameSplitter', () => {
     })
   })
 })
+
+describe('createFrameSplitter flush', () => {
+  test('returns an empty array when nothing is buffered', () => {
+    const splitter = createFrameSplitter()
+
+    expect(splitter.flush()).toEqual([])
+  })
+
+  test('returns an empty array when the last chunk ended exactly on a terminator', () => {
+    const splitter = createFrameSplitter()
+    splitter.push(Buffer.from('complete\n'))
+
+    expect(splitter.flush()).toEqual([])
+  })
+
+  test('returns the pending unterminated fragment as a single frame with terminator "none"', () => {
+    const splitter = createFrameSplitter()
+    splitter.push(Buffer.from('done\npart'))
+
+    const frames = splitter.flush()
+
+    expect(frames).toHaveLength(1)
+    expect(frames[0].bytes.toString('utf8')).toBe('part')
+    expect(frames[0].terminator).toBe('none')
+    expect(frames[0].isBlank).toBe(false)
+  })
+
+  test('joins a fragment spread across several chunks into one frame', () => {
+    const splitter = createFrameSplitter()
+    splitter.push(Buffer.from('{"jsonrpc":"2.'))
+    splitter.push(Buffer.from('0","id":1'))
+
+    const frames = splitter.flush()
+
+    expect(frames.map((frame) => frame.bytes.toString('utf8'))).toEqual(['{"jsonrpc":"2.0","id":1'])
+  })
+
+  test('does not strip a trailing \\r: no terminator was seen, so those bytes are content', () => {
+    const splitter = createFrameSplitter()
+    splitter.push(Buffer.from('tail\r'))
+
+    const frames = splitter.flush()
+
+    expect(frames[0].bytes.toString('utf8')).toBe('tail\r')
+    expect(frames[0].terminator).toBe('none')
+  })
+
+  test('clears the buffer: a second flush is empty and the splitter stays usable', () => {
+    const splitter = createFrameSplitter()
+    splitter.push(Buffer.from('part'))
+
+    expect(splitter.flush()).toHaveLength(1)
+    expect(splitter.flush()).toEqual([])
+
+    const frames = splitter.push(Buffer.from('next\n'))
+
+    expect(frames.map((frame) => frame.bytes.toString('utf8'))).toEqual(['next'])
+  })
+
+  test('returns a frozen frame, like every other frame the splitter emits', () => {
+    const splitter = createFrameSplitter()
+    splitter.push(Buffer.from('part'))
+
+    expect(Object.isFrozen(splitter.flush()[0])).toBe(true)
+  })
+
+  test('push + flush together reproduce the original bytes of a stream ending mid-frame', () => {
+    const splitter = createFrameSplitter()
+    const original = Buffer.from('first\r\n\nlast fragment', 'utf8')
+
+    const frames = [...splitter.push(original), ...splitter.flush()]
+
+    const reconstructed = Buffer.concat(frames.map(originalBytesOf))
+    expect(reconstructed.equals(original)).toBe(true)
+  })
+})
+
+/** Reproduces a frame's original wire bytes (duplicated from the nested suite above). */
+function originalBytesOf(frame: Frame): Buffer {
+  const terminator = frame.terminator === 'none' ? '' : frame.terminator
+  return Buffer.concat([frame.bytes, Buffer.from(terminator, 'utf8')])
+}

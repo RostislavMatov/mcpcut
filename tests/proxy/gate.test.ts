@@ -389,8 +389,10 @@ describe('createPolicyGate: require-approval', () => {
   })
 
   test('an approval that lands on an id already answered locally is dropped, never forwarded', async () => {
+    // 300ms (not 30) so attempt 2's resolve reliably beats the deadline under load;
+    // attempt 1 still times out because nothing ever resolves it.
     const { gate, written } = createHarness({
-      policy: policyOf({ ...APPROVAL_POLICY, approval: { timeoutMs: 30, grantTtlMs: 60_000 } }),
+      policy: policyOf({ ...APPROVAL_POLICY, approval: { timeoutMs: 300, grantTtlMs: 60_000 } }),
     })
 
     // Attempt 1 times out, so id 5 is answered locally.

@@ -350,6 +350,90 @@ describe('startPipeline lifecycle', () => {
   })
 })
 
+describe('startPipeline trailing fragment', () => {
+  test('forwards an unterminated final fragment when the source ends mid-frame', async () => {
+    const source = new PassThrough()
+    const { writer, written } = createRecordingWriter()
+
+    const handle = startPipeline(source, writer, FORWARD_GATE)
+    source.write('complete\npartial')
+    source.end()
+    await handle.done
+
+    expect(written.map((bytes) => bytes.toString('utf8'))).toEqual(['complete\n', 'partial'])
+  })
+
+  test('routes the trailing fragment through the gate like any other frame', async () => {
+    const source = new PassThrough()
+    const { writer, written } = createRecordingWriter()
+    const seen: string[] = []
+    const gate: GateFn = (frame) => {
+      seen.push(frame.bytes.toString('utf8'))
+      return frame.bytes.toString('utf8') === 'partial'
+        ? { action: 'drop' }
+        : { action: 'forward' }
+    }
+
+    const handle = startPipeline(source, writer, gate)
+    source.write('complete\npartial')
+    source.end()
+    await handle.done
+
+    expect(seen).toEqual(['complete', 'partial'])
+    expect(written.map((bytes) => bytes.toString('utf8'))).toEqual(['complete\n'])
+  })
+
+  test('waits for an asynchronous verdict on the trailing fragment before resolving done', async () => {
+    const source = new PassThrough()
+    const { writer, written } = createRecordingWriter()
+    let releaseVerdict: (() => void) | undefined
+    const gate: GateFn = () =>
+      new Promise<Verdict>((resolve) => {
+        releaseVerdict = () => resolve({ action: 'forward' })
+      })
+
+    const handle = startPipeline(source, writer, gate)
+    source.write('tail-only')
+    source.end()
+    await tick()
+
+    expect(written).toEqual([])
+
+    releaseVerdict?.()
+    await handle.done
+
+    expect(written.map((bytes) => bytes.toString('utf8'))).toEqual(['tail-only'])
+  })
+
+  test('resolves done with no extra write when the source ends exactly on a terminator', async () => {
+    const source = new PassThrough()
+    const { writer, written } = createRecordingWriter()
+
+    const handle = startPipeline(source, writer, FORWARD_GATE)
+    source.write('complete\n')
+    source.end()
+    await handle.done
+
+    expect(written.map((bytes) => bytes.toString('utf8'))).toEqual(['complete\n'])
+  })
+
+  test('a stream ending mid-frame is still relayed byte-for-byte, trailing fragment included', async () => {
+    const source = new PassThrough()
+    const { writable: destination, chunks } = createCapturingWritable()
+    const writer = createOrderedWriter(destination)
+    const full = Buffer.from('{"a":1}\r\n\n{"b":2} no newline here', 'utf8')
+
+    const handle = startPipeline(source, writer, FORWARD_GATE)
+    source.write(full.subarray(0, 5))
+    source.write(full.subarray(5, 12))
+    source.write(full.subarray(12))
+    source.end()
+    await handle.done
+
+    expect(Buffer.concat(chunks)).toEqual(full)
+  })
+})
+
 describe('startPipeline backpressure', () => {
   test('pauses the source once pending frames exceed the high-water mark, and resumes once they settle', async () => {
     const source = new PassThrough()

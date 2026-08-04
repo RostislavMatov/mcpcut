@@ -16,12 +16,11 @@ import type { OrderedWriter } from './writer.js'
  * pipeline owns exactly the listeners it installs on `source` and removes
  * them again in `dispose()`.
  *
- * Byte-identity scope: `protocol/split.ts` retains an unterminated tail
- * internally until more data arrives (or an overflow flush) — there is no
- * source-end flush. A source that ends mid-frame with no final terminator
- * therefore leaves that last fragment unforwarded. Real MCP stdio traffic
- * is newline-delimited, so this only affects a source that ends without
- * ever completing its last line.
+ * Byte-identity scope: a source that ends mid-frame (no final terminator)
+ * has its retained tail flushed through the same gate/forward path on
+ * `'end'`, so the relayed bytes equal the source bytes even then. A source
+ * that never ends and is only `dispose()`d keeps its tail unforwarded —
+ * there is nothing left to relay it to.
  */
 
 /** The gate's decision for one non-blank frame. */
@@ -233,6 +232,13 @@ export function startPipeline(
   }
 
   function handleSourceEnd(): void {
+    // A source that died mid-line still produced those bytes, and the
+    // destination must see them: flush the splitter's unterminated tail
+    // through the very same gate/forward path before finishing, so mode B
+    // never eats the final partial output of a crashed peer.
+    for (const frame of splitter.flush()) {
+      processFrame(frame)
+    }
     isSourceEnded = true
     checkFinished()
   }

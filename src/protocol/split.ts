@@ -33,8 +33,9 @@ export interface Frame {
   /** Frame content, with the terminator (if any) already stripped. */
   readonly bytes: Buffer
   /**
-   * `'none'` only occurs for an overflow flush of an unterminated buffer
-   * (see `maxBufferBytes`) — no terminator byte was ever seen for it.
+   * `'none'` only occurs for an unterminated buffer that was flushed
+   * anyway — on overflow (see `maxBufferBytes`) or at source end (see
+   * `flush()`). No terminator byte was ever seen for it.
    */
   readonly terminator: Terminator
   /** True when `bytes` is empty (a lone terminator with no content). */
@@ -45,9 +46,20 @@ export interface FrameSplitter {
   /**
    * Feed a raw chunk of bytes into the splitter. Returns zero or more
    * complete frames. Any incomplete tail is retained internally until the
-   * next `push` call or an overflow flush.
+   * next `push` call, a `flush()`, or an overflow flush.
    */
   push(chunk: Buffer): Frame[]
+  /**
+   * Emits whatever unterminated tail is still buffered as a single frame
+   * with `terminator: 'none'`, and clears the buffer; returns `[]` when
+   * nothing is buffered.
+   *
+   * Called by a relay when its source has ended: a peer that died mid-line
+   * (a crashed server's last, newline-less output) still produced bytes the
+   * other side must see. No terminator was ever observed for those bytes,
+   * so none is invented — not even a trailing `\r`, which stays content.
+   */
+  flush(): Frame[]
 }
 
 export interface FrameSplitterOptions {
@@ -91,7 +103,7 @@ export function createFrameSplitter(options: FrameSplitterOptions = {}): FrameSp
     appendToPending(chunk.subarray(searchStart))
 
     if (pendingBytes > maxBufferBytes) {
-      frames.push(toOverflowFrame(flushPending()))
+      frames.push(toUnterminatedFrame(flushPending()))
     }
 
     return frames
@@ -121,14 +133,21 @@ export function createFrameSplitter(options: FrameSplitterOptions = {}): FrameSp
     pendingBytes = 0
   }
 
-  /** Concatenates and clears the whole pending tail, for an overflow flush. */
+  /** Concatenates and clears the whole pending tail, for an overflow or end flush. */
   function flushPending(): Buffer {
     const flushed = Buffer.concat(pendingChunks, pendingBytes)
     resetPending()
     return flushed
   }
 
-  return { push }
+  function flush(): Frame[] {
+    if (pendingBytes === 0) {
+      return []
+    }
+    return [toUnterminatedFrame(flushPending())]
+  }
+
+  return { push, flush }
 }
 
 /** Builds a frame for a `\n`-terminated line, stripping a trailing `\r` if present. */
@@ -143,8 +162,8 @@ function toTerminatedFrame(rawLine: Buffer): Frame {
   })
 }
 
-/** Builds a frame for an overflow-flushed, unterminated buffer. */
-function toOverflowFrame(flushed: Buffer): Frame {
+/** Builds a frame for a buffer flushed without ever seeing a terminator (overflow or source end). */
+function toUnterminatedFrame(flushed: Buffer): Frame {
   return Object.freeze({
     bytes: flushed,
     terminator: 'none',
