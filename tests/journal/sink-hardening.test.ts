@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
@@ -54,6 +54,21 @@ describe('journal file permissions', () => {
     'creates the journal directory with owner-only permissions (0700)',
     async () => {
       const dir = join(tempDir, 'journal')
+      const sink = createJournalSink('session-1', { dir })
+
+      sink.write(makeRecord())
+      await sink.close()
+
+      const dirStat = await stat(dir)
+      expect(dirStat.mode & PERMISSION_MASK).toBe(JOURNAL_DIR_MODE)
+    },
+  )
+
+  test.skipIf(isWindows)(
+    'tightens a pre-existing journal directory to owner-only (0700)',
+    async () => {
+      const dir = join(tempDir, 'journal')
+      await mkdir(dir, { recursive: true, mode: 0o755 })
       const sink = createJournalSink('session-1', { dir })
 
       sink.write(makeRecord())

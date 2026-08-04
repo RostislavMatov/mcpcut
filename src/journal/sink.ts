@@ -1,4 +1,4 @@
-import { appendFile, mkdir } from 'node:fs/promises'
+import { appendFile, chmod, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { JOURNAL_DIR, JOURNAL_DIR_MODE, JOURNAL_FILE_MODE } from '../config.js'
 import type { JournalRecord } from './record.js'
@@ -45,9 +45,16 @@ export function createJournalSink(sessionId: string, opts: JournalSinkOptions = 
   let isClosed = false
   let hasWarnedAfterClose = false
 
-  /** Memoized so concurrent and subsequent writes share one mkdir. */
+  /**
+   * Memoized so concurrent and subsequent writes share one mkdir. The chmod
+   * covers directories that already existed: mkdir's `mode` only applies on
+   * creation, so without it a pre-existing journal dir would keep whatever
+   * permissions it was created with.
+   */
   function ensureDir(): Promise<unknown> {
-    dirReady ??= mkdir(dir, { recursive: true, mode: JOURNAL_DIR_MODE })
+    dirReady ??= mkdir(dir, { recursive: true, mode: JOURNAL_DIR_MODE }).then(() =>
+      chmod(dir, JOURNAL_DIR_MODE),
+    )
     return dirReady
   }
 
