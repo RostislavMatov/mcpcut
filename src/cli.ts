@@ -1,6 +1,11 @@
 #!/usr/bin/env node
+import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
-import { formatDecisionSummary, formatReadableField } from './journal/format.js'
+import { runApprovals, type ApprovalsCliOptions } from './cli/approvals-cmd.js'
+import { runPolicyShow, runPolicyValidate, type PolicyCliOptions } from './cli/policy-cmd.js'
+import { formatRecordsJson, formatRecordsReadable, formatSessionsTable } from './cli/session-view.js'
+import { runQuarantine, type RunQuarantineOptions } from './cli/quarantine-cmd.js'
+import { runWrapCommand, type WrapCommandOptions } from './cli/wrap-cmd.js'
 import {
   isValidJournalDirection,
   isValidJournalKind,
@@ -8,76 +13,119 @@ import {
   JOURNAL_KINDS,
   listSessions,
   readSessionWithStats,
-  type SessionSummary,
 } from './journal/reader.js'
-import type { JournalRecord } from './journal/record.js'
-import { runWrap } from './proxy/wrap.js'
 
 /**
  * Thin argv-dispatch entry point. All real logic lives in tested modules
- * (proxy/wrap.ts, journal/reader.ts) — this file only parses argv, calls
- * them, and formats output. Excluded from coverage by design.
+ * (proxy/wrap.ts via cli/wrap-cmd.ts, journal/reader.ts, cli/*-cmd.ts) --
+ * this file only parses argv, routes to them, and formats output. Excluded
+ * from coverage by design.
+ *
+ * `dispatch()` is exported (rather than only a top-level `main()`) so tests
+ * can drive full command routing without spawning a subprocess or touching
+ * the real process stdio -- see `tests/cli/dispatch.test.ts`.
  */
 
 const USAGE = `Usage:
-  mcp-journal wrap -- <cmd> [args...]   Run a wrapped MCP server, journaling all traffic
+  mcp-journal wrap [--server <name>] [--policy <path>] [--no-policy] [--fail-closed] -- <cmd> [args...]
+                                         Run a wrapped MCP server, journaling all traffic
   mcp-journal sessions                  List journaled sessions
   mcp-journal show <sessionId> [--method X] [--direction Y] [--kind Z] [--json]
                                          Print one session's journal records
+  mcp-journal policy validate [path]    Validate the resolved (or given) policy file
+  mcp-journal policy show [--server <name>] [--json] [--policy <path>]
+                                         Print the effective policy (defaults applied)
+  mcp-journal quarantine list [--server <name>] [--json]
+                                         List quarantined tools
+  mcp-journal quarantine approve <server> <tool> | --all --server <name>
+                                         Approve quarantined tool(s)
+  mcp-journal quarantine reject <server> <tool>
+                                         Reject (discard) a quarantined tool
+  mcp-journal approvals list [--json]   List pending approval requests
+  mcp-journal approvals approve <id> [--reason TEXT]
+                                         Approve a pending request
+  mcp-journal approvals deny <id> [--reason TEXT]
+                                         Deny a pending request
   mcp-journal --help                    Show this message
 `
 
-const PAYLOAD_TRUNCATE_LENGTH = 200
+/** Minimal writable-stream shape the dispatcher and its subcommands need. */
+export interface CliWritable {
+  write(chunk: string): unknown
+}
 
-async function main(): Promise<number> {
-  const argv = process.argv.slice(2)
+export interface CliIo {
+  readonly stdout: CliWritable
+  readonly stderr: CliWritable
+}
+
+/** Test-only seams for each subcommand, so `tests/cli/dispatch.test.ts` can isolate every command from real disk state. */
+export interface DispatchOptions {
+  /** Journal directory override for `sessions`/`show`. Defaults to JOURNAL_DIR. */
+  readonly journalDir?: string
+  readonly wrap?: WrapCommandOptions
+  readonly policy?: PolicyCliOptions
+  readonly quarantine?: RunQuarantineOptions
+  readonly approvals?: ApprovalsCliOptions
+}
+
+const DEFAULT_IO: CliIo = { stdout: process.stdout, stderr: process.stderr }
+
+export async function dispatch(
+  argv: readonly string[],
+  io: CliIo = DEFAULT_IO,
+  opts: DispatchOptions = {},
+): Promise<number> {
   const command = argv[0]
 
   if (command === undefined || command === '--help' || command === '-h') {
-    process.stdout.write(USAGE)
+    io.stdout.write(USAGE)
     return 0
   }
   if (command === 'wrap') {
-    return runWrapCommand(argv.slice(1))
+    return runWrapCommand(argv.slice(1), io, opts.wrap)
   }
   if (command === 'sessions') {
-    return runSessionsCommand()
+    return runSessionsCommand(io, opts.journalDir)
   }
   if (command === 'show') {
-    return runShowCommand(argv.slice(1))
+    return runShowCommand(argv.slice(1), io, opts.journalDir)
+  }
+  if (command === 'policy') {
+    return runPolicyCommand(argv.slice(1), io, opts.policy)
+  }
+  if (command === 'quarantine') {
+    return runQuarantine([...argv.slice(1)], io, opts.quarantine)
+  }
+  if (command === 'approvals') {
+    return runApprovals([...argv.slice(1)], io, opts.approvals)
   }
 
-  process.stderr.write(`Unknown command: ${command}\n\n${USAGE}`)
+  io.stderr.write(`Unknown command: ${command}\n\n${USAGE}`)
   return 1
 }
 
-/** Splits `wrap -- <cmd> [args...]` and runs the wrapped server to completion. */
-async function runWrapCommand(wrapArgs: readonly string[]): Promise<number> {
-  const dashIndex = wrapArgs.indexOf('--')
-  if (dashIndex === -1) {
-    process.stderr.write(`Missing "-- <cmd>" in wrap command.\n\n${USAGE}`)
-    return 1
+async function runPolicyCommand(
+  policyArgs: readonly string[],
+  io: CliIo,
+  opts: PolicyCliOptions = {},
+): Promise<number> {
+  const [subcommand, ...rest] = policyArgs
+  if (subcommand === 'validate') {
+    return runPolicyValidate(rest, io, opts)
   }
-  if (dashIndex > 0) {
-    process.stderr.write(
-      `Unknown option(s) before "--" in wrap command: ${wrapArgs.slice(0, dashIndex).join(' ')}\n\n${USAGE}`,
-    )
-    return 1
+  if (subcommand === 'show') {
+    return runPolicyShow(rest, io, opts)
   }
-
-  const childCommand = wrapArgs[dashIndex + 1]
-  if (childCommand === undefined) {
-    process.stderr.write(`Missing "-- <cmd>" in wrap command.\n\n${USAGE}`)
-    return 1
-  }
-
-  const childArgs = wrapArgs.slice(dashIndex + 2)
-  return runWrap(childCommand, childArgs)
+  io.stderr.write(
+    `${subcommand === undefined ? 'Missing policy subcommand.' : `Unknown policy subcommand: ${subcommand}`}\n\n${USAGE}`,
+  )
+  return 1
 }
 
-async function runSessionsCommand(): Promise<number> {
-  const sessions = await listSessions()
-  process.stdout.write(sessions.length === 0 ? 'No sessions found.\n' : formatSessionsTable(sessions))
+async function runSessionsCommand(io: CliIo, journalDir: string | undefined): Promise<number> {
+  const sessions = await listSessions(journalDir)
+  io.stdout.write(sessions.length === 0 ? 'No sessions found.\n' : formatSessionsTable(sessions))
   return 0
 }
 
@@ -87,7 +135,11 @@ async function runSessionsCommand(): Promise<number> {
  * positional sessionId is read, so `show --json 01ABC` cannot silently treat
  * `--json` as the session id.
  */
-async function runShowCommand(showArgs: readonly string[]): Promise<number> {
+async function runShowCommand(
+  showArgs: readonly string[],
+  io: CliIo,
+  journalDir: string | undefined,
+): Promise<number> {
   const { values, positionals } = parseArgs({
     args: [...showArgs],
     options: {
@@ -101,13 +153,13 @@ async function runShowCommand(showArgs: readonly string[]): Promise<number> {
 
   const sessionId = positionals[0]
   if (sessionId === undefined) {
-    process.stderr.write(`Missing <sessionId> in show command.\n\n${USAGE}`)
+    io.stderr.write(`Missing <sessionId> in show command.\n\n${USAGE}`)
     return 1
   }
 
   const direction = values.direction
   if (direction !== undefined && !isValidJournalDirection(direction)) {
-    process.stderr.write(
+    io.stderr.write(
       `Invalid --direction "${direction}". Allowed values: ${JOURNAL_DIRECTIONS.join(', ')}\n\n${USAGE}`,
     )
     return 1
@@ -115,66 +167,44 @@ async function runShowCommand(showArgs: readonly string[]): Promise<number> {
 
   const kind = values.kind
   if (kind !== undefined && !isValidJournalKind(kind)) {
-    process.stderr.write(`Invalid --kind "${kind}". Allowed values: ${JOURNAL_KINDS.join(', ')}\n\n${USAGE}`)
+    io.stderr.write(`Invalid --kind "${kind}". Allowed values: ${JOURNAL_KINDS.join(', ')}\n\n${USAGE}`)
     return 1
   }
 
   const { records, skippedLineCount } = await readSessionWithStats(sessionId, {
+    ...(journalDir !== undefined ? { dir: journalDir } : {}),
     ...(values.method !== undefined ? { method: values.method } : {}),
     ...(direction !== undefined ? { direction } : {}),
     ...(kind !== undefined ? { kind } : {}),
   })
 
-  process.stdout.write(values.json === true ? formatRecordsJson(records) : formatRecordsReadable(records))
+  io.stdout.write(values.json === true ? formatRecordsJson(records) : formatRecordsReadable(records))
   if (skippedLineCount > 0) {
-    process.stderr.write(`Skipped ${skippedLineCount} unreadable journal line(s).\n`)
+    io.stderr.write(`Skipped ${skippedLineCount} unreadable journal line(s).\n`)
   }
   return 0
 }
 
-function formatSessionsTable(sessions: readonly SessionSummary[]): string {
-  const header = `${'sessionId'.padEnd(28)}  ${'firstTs'.padEnd(24)}  ${'lastTs'.padEnd(24)}  messages\n`
-  const rows = sessions.map(formatSessionLine).join('')
-  return header + rows
+async function main(): Promise<number> {
+  return dispatch(process.argv.slice(2))
 }
 
-/** Session summaries come from journal files on disk, which are untrusted. */
-function formatSessionLine(session: SessionSummary): string {
-  const sessionId = formatReadableField(session.sessionId)
-  const firstTs = formatReadableField(session.firstTs)
-  const lastTs = formatReadableField(session.lastTs)
-  return `${sessionId.padEnd(28)}  ${firstTs.padEnd(24)}  ${lastTs.padEnd(24)}  ${session.messageCount}\n`
-}
+/**
+ * Only runs `main()` when this file is executed directly (the `mcp-journal`
+ * binary), not when it is imported as a module -- `tests/cli/dispatch.test.ts`
+ * imports `dispatch()` directly and must not trigger a second, argv-driven
+ * dispatch as a side effect of that import.
+ */
+const isMainModule = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href
 
-function formatRecordsJson(records: readonly JournalRecord[]): string {
-  return records.map((record) => JSON.stringify(record)).join('\n') + (records.length > 0 ? '\n' : '')
+if (isMainModule) {
+  main()
+    .then((exitCode) => {
+      process.exitCode = exitCode
+    })
+    .catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error)
+      process.stderr.write(`${message}\n`)
+      process.exitCode = 1
+    })
 }
-
-function formatRecordsReadable(records: readonly JournalRecord[]): string {
-  return records.map(formatRecordLine).join('')
-}
-
-/** Record fields come from journal files on disk, which are untrusted (see journal/format.ts). */
-function formatRecordLine(record: JournalRecord): string {
-  const ts = formatReadableField(record.ts)
-  const direction = formatReadableField(record.direction)
-  const kind = formatReadableField(record.kind)
-  const method = formatReadableField(record.method ?? '-')
-  const payload = truncate(JSON.stringify(record.payload), PAYLOAD_TRUNCATE_LENGTH)
-  const decision = record.decision === undefined ? '' : `  ${formatDecisionSummary(record.decision)}`
-  return `${ts}  ${direction.padEnd(14)}  ${kind.padEnd(12)}  ${method.padEnd(16)}  ${payload}${decision}\n`
-}
-
-function truncate(text: string, maxLength: number): string {
-  return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text
-}
-
-main()
-  .then((exitCode) => {
-    process.exitCode = exitCode
-  })
-  .catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error)
-    process.stderr.write(`${message}\n`)
-    process.exitCode = 1
-  })

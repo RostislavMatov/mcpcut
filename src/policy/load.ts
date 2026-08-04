@@ -47,8 +47,12 @@ export type PolicyLoadResult =
   | { readonly status: 'disabled' }
   | { readonly status: 'error'; readonly sourcePath: string; readonly errors: readonly string[] }
 
-/** Subdirectory name for the project-level source, relative to `opts.cwd`. */
-const PROJECT_POLICY_SUBDIR = '.mcp-journal'
+/**
+ * Subdirectory name for the project-level source, relative to `opts.cwd`.
+ * Exported so `cli/policy-cmd.ts` can describe the same resolution order to
+ * the operator without duplicating the literal.
+ */
+export const PROJECT_POLICY_SUBDIR = '.mcp-journal'
 
 /** One resolved candidate path to try reading, in resolution order. */
 interface PolicyCandidate {

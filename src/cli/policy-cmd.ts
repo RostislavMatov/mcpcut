@@ -3,7 +3,7 @@ import { parseArgs } from 'node:util'
 import { JOURNAL_DIR } from '../config.js'
 import { formatReadableField } from '../journal/format.js'
 import { POLICY_ENV_VAR, POLICY_FILE_NAME } from '../policy/constants.js'
-import { loadPolicy, type LoadPolicyOptions, type PolicyLoadResult } from '../policy/load.js'
+import { loadPolicy, PROJECT_POLICY_SUBDIR, type LoadPolicyOptions, type PolicyLoadResult } from '../policy/load.js'
 import type { Policy } from '../policy/schema.js'
 
 /**
@@ -42,14 +42,6 @@ const VALIDATE_USAGE = `Usage:
 const SHOW_USAGE = `Usage:
   policy show [--server <name>] [--json] [--policy <path>]   Print the effective policy (defaults applied)
 `
-
-/**
- * Mirrors `policy/load.ts`'s private `PROJECT_POLICY_SUBDIR`. Not exported
- * there, and this module must not modify `load.ts` (owned by a parallel M2
- * task), so the constant is duplicated here purely to describe the same
- * resolution order to the operator in the "no policy file found" message.
- */
-const PROJECT_POLICY_SUBDIR = '.mcp-journal'
 
 /**
  * `policy validate [path]`: loads the policy (explicit `path` if given,
