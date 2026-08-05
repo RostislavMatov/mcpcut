@@ -132,6 +132,27 @@ describe('M11: unicode / vocabulary evasion of destructive-name heuristics', () 
     expect(classifyTool(tool(`de${'‍'}lete_all`))).toBe('destructive') // ZWJ
     expect(classifyTool(tool(`de${'﻿'}lete_all`))).toBe('destructive') // BOM
   })
+
+  // Re-review M2: the strip must cover the whole invisible/format repertoire,
+  // not a hand-picked four — every vector below survives NFKC and previously
+  // downgraded `delete_all` from destructive to write.
+  test.each([
+    ['WORD JOINER U+2060', '⁠'],
+    ['SOFT HYPHEN U+00AD', '­'],
+    ['LEFT-TO-RIGHT MARK U+200E', '‎'],
+    ['RIGHT-TO-LEFT MARK U+200F', '‏'],
+    ['ARABIC LETTER MARK U+061C', '؜'],
+    ['FUNCTION APPLICATION U+2061', '⁡'],
+    ['INVISIBLE TIMES U+2062', '⁢'],
+    ['MONGOLIAN VOWEL SEPARATOR U+180E', '᠎'],
+    ['TAG LATIN SMALL LETTER D U+E0064', '\u{E0064}'],
+    ['MUSICAL SYMBOL BEGIN BEAM U+1D173', '\u{1D173}'],
+    ['HANGUL CHOSEONG FILLER U+115F', 'ᅟ'],
+    ['HANGUL FILLER U+3164', 'ㅤ'],
+    ['HALFWIDTH HANGUL FILLER U+FFA0', 'ﾠ'],
+  ])('an invisible %s inside "delete" does not evade the heuristic (re-review M2)', (_label, ch) => {
+    expect(classifyTool(tool(`del${ch}ete_all`))).toBe('destructive')
+  })
 })
 
 describe('classifyTool: config overrides win over everything', () => {

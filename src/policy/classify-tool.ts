@@ -30,21 +30,26 @@ function normalizeName(name: string): string {
   }
 }
 
-/** Zero-width code points that render invisibly but split a name's tokens (M11 evasion). */
-const ZERO_WIDTH_CHARS_REGEX = /[​‌‍﻿]/g
-/** Unicode combining marks: stray diacritics slipped mid-word to break tokenization (M11 evasion). */
-const COMBINING_MARKS_REGEX = /\p{M}/gu
+/**
+ * Every invisible/format code point and combining mark (M11 evasion, widened
+ * by re-review M2): `Default_Ignorable_Code_Point` covers the render-as-nothing
+ * repertoire (ZW*, BOM, Hangul fillers, tag characters, invisible operators),
+ * `Cf` covers the remaining format controls (soft hyphen, bidi marks, musical
+ * format chars), `M` covers stray combining marks. A hand-picked char class
+ * here is a whack-a-mole invitation; the Unicode properties are the closed set.
+ */
+const EVASION_CHARS_REGEX = /[\p{Default_Ignorable_Code_Point}\p{Cf}\p{M}]/gu
 
 /**
- * Strips zero-width characters (U+200B/200C/200D, BOM) and combining marks
- * from `name` before it is tokenized for the destructive-name heuristic:
- * `del<ZWSP>ete_repo` and `del<COMBINING ACUTE>ete_all` must still tokenize
- * to `delete`. Heuristic-input only -- `hasNonAsciiLetter`'s floor check
- * still runs on the un-stripped name, so a name that smuggled these code
- * points stays ineligible for the `read` downgrade regardless.
+ * Strips invisible code points and combining marks from `name` before it is
+ * tokenized for the destructive-name heuristic: `del<ZWSP>ete_repo` and
+ * `del<COMBINING ACUTE>ete_all` must still tokenize to `delete`.
+ * Heuristic-input only -- `hasNonAsciiLetter`'s floor check still runs on the
+ * un-stripped name, so a name that smuggled these code points stays
+ * ineligible for the `read` downgrade regardless.
  */
 function stripEvasionChars(name: string): string {
-  return name.replace(ZERO_WIDTH_CHARS_REGEX, '').replace(COMBINING_MARKS_REGEX, '')
+  return name.replace(EVASION_CHARS_REGEX, '')
 }
 
 /**

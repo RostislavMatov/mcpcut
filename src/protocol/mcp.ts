@@ -17,7 +17,8 @@ import type { ClassifiedMessage, JsonRpcId } from './classify.js'
  * `null` (or `false`/an empty result), rather than raising.
  */
 
-const TOOLS_CALL_METHOD = 'tools/call'
+/** The single point of coupling to the MCP `tools/call` method name; import it rather than re-typing the literal. */
+export const TOOLS_CALL_METHOD = 'tools/call'
 const TOOLS_LIST_METHOD = 'tools/list'
 
 /** A single tool as reported by a server's `tools/list` response. */
@@ -46,18 +47,15 @@ export interface ParsedToolsListResult {
 }
 
 /**
- * Extracts the tool name, arguments, and request id from a `tools/call`
- * request. Only handles requests (a `tools/call` notification has no id to
- * reply to, which is itself a spec violation — callers are expected to
- * forward notifications unconditionally without consulting this parser).
- * Returns `null` for any other message kind/method or malformed shape.
+ * Extracts the tool name and arguments of a `tools/call` from its raw JSON
+ * line, with no assumption about the presence of an `id`. This is the ONE
+ * shape-validation for a tool call: both the id-bearing request path
+ * (`parseToolCall`) and the id-less notification-shaped path (C2/N1,
+ * `proxy/gate-helpers.ts`) go through it, so the two can never drift in what
+ * they accept. Returns `null` on any malformed shape.
  */
-export function parseToolCall(msg: ClassifiedMessage): ParsedToolCall | null {
-  if (msg.kind !== 'request' || msg.method !== TOOLS_CALL_METHOD) {
-    return null
-  }
-
-  const parsed = tryParseJsonObject(msg.raw)
+export function parseToolCallParams(raw: string): Pick<ParsedToolCall, 'toolName' | 'args'> | null {
+  const parsed = tryParseJsonObject(raw)
   if (!parsed) {
     return null
   }
@@ -73,9 +71,28 @@ export function parseToolCall(msg: ClassifiedMessage): ParsedToolCall | null {
   }
 
   const rawArgs = params['arguments']
-  const args = rawArgs === undefined ? null : rawArgs
+  return { toolName: name, args: rawArgs === undefined ? null : rawArgs }
+}
 
-  return { toolName: name, args, id: msg.id }
+/**
+ * Extracts the tool name, arguments, and request id from a `tools/call`
+ * request. Only handles requests — a `tools/call` with no id classifies as a
+ * notification and is parsed by `proxy/gate-helpers.ts`'s
+ * `parseIdlessToolCall` instead, through the same `parseToolCallParams`
+ * (it is gated identically, never blindly forwarded — C2/N1).
+ * Returns `null` for any other message kind/method or malformed shape.
+ */
+export function parseToolCall(msg: ClassifiedMessage): ParsedToolCall | null {
+  if (msg.kind !== 'request' || msg.method !== TOOLS_CALL_METHOD) {
+    return null
+  }
+
+  const parsed = parseToolCallParams(msg.raw)
+  if (!parsed) {
+    return null
+  }
+
+  return { ...parsed, id: msg.id }
 }
 
 /** True if `msg` is a `tools/list` request. */

@@ -146,7 +146,10 @@ export function createJsonStore<T>(filePath: string, opts: JsonStoreOptions<T>):
       await renameWithRetry(tmpPath, filePath)
       renamed = true
     } finally {
-      if (!renamed) await rm(tmpPath, { force: true })
+      // The cleanup must never mask the rename rejection that is already
+      // propagating (re-review L6): a throwing `rm` in a finally block would
+      // replace the original error, hiding the root cause from the caller.
+      if (!renamed) await rm(tmpPath, { force: true }).catch(() => undefined)
     }
   }
 
@@ -235,7 +238,14 @@ export function createJsonStore<T>(filePath: string, opts: JsonStoreOptions<T>):
     }
   }
 
-  /** Age of the lock, preferring its own recorded `createdAtMs`; falls back to fs mtime for a foreign/legacy lockfile with no parseable content. */
+  /**
+   * Age of the lock, preferring its own recorded `createdAtMs`; falls back to
+   * fs mtime for a foreign/legacy lockfile with no parseable content. Known
+   * trade-off (re-review L7): `createdAtMs` is the WRITER's clock, so on a
+   * shared/NFS journal dir a peer with a lagging clock makes its fresh lock
+   * look stale here; server-side mtime is more skew-resistant but loses the
+   * self-describing pid. Acceptable while the journal dir is local-only.
+   */
   async function lockAgeMs(lockPath: string, raw: string): Promise<number | null> {
     const record = parseLockRecord(raw)
     if (record !== null) return Date.now() - record.createdAtMs

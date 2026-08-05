@@ -6,7 +6,7 @@ import { decide } from '../policy/decide.js'
 import { canonicalJson, sha256Hex } from '../policy/hash.js'
 import type { Policy } from '../policy/schema.js'
 import type { ClassifiedMessage, JsonRpcId } from '../protocol/classify.js'
-import { parseToolsListResult, type ParsedToolCall, type ToolDescriptor } from '../protocol/mcp.js'
+import { parseToolCallParams, parseToolsListResult, type ParsedToolCall, type ToolDescriptor } from '../protocol/mcp.js'
 import type { Verdict } from './pipeline.js'
 import { denialError, quarantinedError, type SynthesizableId } from './synthesize.js'
 import { filterToolsListResult } from './tools-filter.js'
@@ -35,6 +35,9 @@ export const DUPLICATE_RESPONSE_RULE = 'duplicate-response-warning'
 export const UNPARSEABLE_CLIENT_FRAME_RULE = 'unparseable-client-frame'
 /** `rule` recorded when a `tools/call` request could not be parsed into a call and was dropped (C2). */
 export const MALFORMED_TOOLS_CALL_RULE = 'malformed-tools-call'
+
+/** An id-less `tools/call` that resolved to require-approval: denied instead of enqueued (re-review L4). */
+export const IDLESS_APPROVAL_RULE = 'idless-require-approval'
 /** `rule` recorded when a `tools/list` observation failed or the catalog is untrusted (C3/C4). */
 export const INVENTORY_UNAVAILABLE_RULE = 'inventory-unavailable'
 /** `rule` recorded when a call is failed closed because the tool catalog is untrusted (C3/C4). */
@@ -209,14 +212,8 @@ export function unsafeClientFrameDecision(serverName: string, rule: string): Dec
  * malformed shape, mirroring `parseToolCall`'s own contract.
  */
 export function parseIdlessToolCall(raw: string): ParsedToolCall | null {
-  const parsed = tryParse(raw)
-  if (!isPlainRecord(parsed)) return null
-  const params = parsed['params']
-  if (!isPlainRecord(params)) return null
-  const name = params['name']
-  if (typeof name !== 'string' || name.length === 0) return null
-  const rawArgs = params['arguments']
-  return { toolName: name, args: rawArgs === undefined ? null : rawArgs, id: null }
+  const parsed = parseToolCallParams(raw)
+  return parsed === null ? null : { ...parsed, id: null }
 }
 
 function tryParse(raw: string): unknown {

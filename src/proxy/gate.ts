@@ -6,7 +6,7 @@ import {
   type ClassifiedRequest,
   type JsonRpcId,
 } from '../protocol/classify.js'
-import { isToolsListRequest, parseToolCall, type ParsedToolCall } from '../protocol/mcp.js'
+import { TOOLS_CALL_METHOD, isToolsListRequest, parseToolCall, type ParsedToolCall } from '../protocol/mcp.js'
 import type { Frame } from '../protocol/split.js'
 import { classifyTool } from '../policy/classify-tool.js'
 import { decide, type PolicyDecision } from '../policy/decide.js'
@@ -24,6 +24,7 @@ import {
   DUPLICATE_RESPONSE_RULE,
   FORWARD,
   GATE_ERROR_RULE,
+  IDLESS_APPROVAL_RULE,
   MALFORMED_TOOLS_CALL_RULE,
   QUARANTINE_RULE,
   RESPONSE_TOOL_NAME,
@@ -171,13 +172,23 @@ export function createPolicyGate(deps: PolicyGateDeps): PolicyGate {
   // a `tools/call` decided while it is still false races an unhydrated
   // snapshot, where a persisted-quarantined tool would read back as
   // `stateOf === 'unknown'` and fall through to the defaults instead of
-  // failing closed. Only a quarantine-enabled policy's decision actually
-  // depends on `quarantineState`/`catalogObserved` (`policy/decide.ts`
-  // gates both behind `quarantine.enabled`), so gating the await on that
-  // flag keeps a quarantine-disabled session's synchronous fast path intact.
+  // failing closed. The await is unconditional (re-review M1): even with
+  // quarantine disabled, `catalogTrusted` — which only `load()` can set to
+  // false for a corrupt store — is consulted by every decision, so a
+  // front-loaded call must not race the stale trusted-by-default state.
+  // The cost is one microtask on the first call of a session only.
+  //
+  // `inventoryLoadFailed` is the gate's own record of a `load()` rejection
+  // (re-review L3): the GateInventory contract says the inventory untrusts
+  // itself on load failure, but the gate does not bet on that — a rejection
+  // fails closed here even if `isCatalogTrusted()` still reports true.
   let inventoryLoaded = false
+  let inventoryLoadFailed = false
   const inventoryLoadPromise: Promise<void> = Promise.resolve(inventory.load())
-    .catch((error: unknown) => onError(error))
+    .catch((error: unknown) => {
+      inventoryLoadFailed = true
+      onError(error)
+    })
     .then(() => {
       inventoryLoaded = true
     })
@@ -401,7 +412,8 @@ export function createPolicyGate(deps: PolicyGateDeps): PolicyGate {
    * already non-allow for the untrusted state.
    */
   function enforceCatalogTrust(decision: PolicyDecision): PolicyDecision {
-    if (inventory.isCatalogTrusted() || decision.outcome !== 'allow') return decision
+    if (decision.outcome !== 'allow') return decision
+    if (inventory.isCatalogTrusted() && !inventoryLoadFailed) return decision
     return {
       outcome: 'deny',
       rule: CATALOG_UNTRUSTED_RULE,
@@ -416,17 +428,29 @@ export function createPolicyGate(deps: PolicyGateDeps): PolicyGate {
 
     if (decision.outcome === 'allow') return applyAllow(call, facts, decision)
     if (decision.outcome === 'deny') return applyDeny(call, facts, decision)
+    // An id-less call has no return address: an approval could never deliver
+    // it, yet its grant would still be minted and consumable by a later
+    // id-bearing call — pure operator-fatigue cost with zero upside, so it
+    // short-circuits to deny instead of enqueuing (re-review L4).
+    if (call.id === null) {
+      return applyDeny(call, facts, {
+        outcome: 'deny',
+        rule: IDLESS_APPROVAL_RULE,
+        reason: 'id-less tools/call cannot receive an approval result; denying instead of enqueuing',
+      })
+    }
     return requestApproval(call, facts, grantKey, decision)
   }
 
   /**
    * Entry point for every gated `tools/call` (id-bearing or id-less alike).
-   * Awaits inventory hydration first when the decision could depend on it
-   * (see the `inventoryLoaded` doc above); a no-op once `load()` has
-   * settled, which is the case for every call after the first.
+   * Awaits inventory hydration first, unconditionally (see the
+   * `inventoryLoaded` doc above — `catalogTrusted` depends on `load()`
+   * regardless of `quarantine.enabled`); a no-op once `load()` has settled,
+   * which is the case for every call after the first.
    */
   function gateToolCall(call: ParsedToolCall): Verdict | Promise<Verdict> {
-    if (!inventoryLoaded && policy.quarantine.enabled) {
+    if (!inventoryLoaded) {
       return inventoryLoadPromise.then(() => decideToolCall(call))
     }
     return decideToolCall(call)
@@ -515,7 +539,7 @@ export function createPolicyGate(deps: PolicyGateDeps): PolicyGate {
     // tools/call is checked BEFORE the kind fork, on purpose: an id-less
     // tools/call classifies as a 'notification' (no `id` key at all), and
     // must never take the "notifications forward unconditionally" path (C2/N1).
-    if ((msg.kind === 'request' || msg.kind === 'notification') && msg.method === 'tools/call') {
+    if ((msg.kind === 'request' || msg.kind === 'notification') && msg.method === TOOLS_CALL_METHOD) {
       return gateToolsCallFrame(msg, text)
     }
     // Fail closed: FORWARD only frames positively identified as safe.

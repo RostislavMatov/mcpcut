@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
@@ -95,6 +95,12 @@ interface InventoryControls {
   readonly observeFailed?: boolean
   /** Make `load()` reject, so the catalog is untrusted from the start. */
   readonly loadRejects?: boolean
+  /**
+   * Make `load()` reject WITHOUT untrusting the catalog — models an inventory
+   * whose load rethrows before flipping its trusted flag (re-review L3), so
+   * the gate's own load-failure flag is what must fail closed.
+   */
+  readonly loadRejectsKeepingTrust?: boolean
 }
 
 /**
@@ -114,6 +120,9 @@ function asGateInventory(real: Inventory, controls: InventoryControls = {}): Gat
       if (controls.loadRejects) {
         loadFailed = true
         throw new Error('inventory store unavailable')
+      }
+      if (controls.loadRejectsKeepingTrust) {
+        throw new Error('inventory load rejected without untrusting')
       }
       const maybeLoad = (real as Partial<GateInventory>).load
       if (typeof maybeLoad === 'function') await maybeLoad.call(real)
@@ -135,7 +144,9 @@ function asGateInventory(real: Inventory, controls: InventoryControls = {}): Gat
     },
     stateOf: (name) => real.stateOf(name),
     hasObservedCatalog: () => observed,
-    isCatalogTrusted: () => !lastObserveFailed && !loadFailed,
+    // Delegates to the real inventory's own trust signal too, so a corrupt
+    // store discovered by `load()` is visible through the adapter (re-review M1).
+    isCatalogTrusted: () => !lastObserveFailed && !loadFailed && real.isCatalogTrusted(),
   }
 }
 
@@ -336,6 +347,73 @@ describe('createPolicyGate: inventory hydration race on the first call (C4/HIGH)
   })
 })
 
+describe('createPolicyGate: catalog trust races load() regardless of quarantine (re-review M1/L3)', () => {
+  test('a quarantine-disabled session still fails closed when a corrupt store races the first call', async () => {
+    // The store is corrupt on disk; the real inventory only discovers that
+    // (and untrusts the catalog) once its async load() settles. A call
+    // front-loaded before that settles must NOT slip through on the stale
+    // trusted=true default — `catalog-untrusted` applies regardless of
+    // `quarantine.enabled`.
+    await writeFile(join(tempDir, 'tool-inventory.json'), '{ this is not json', 'utf8')
+    const freshInventory = createInventory(SERVER_NAME, {
+      storePath: join(tempDir, 'tool-inventory.json'),
+      onError: () => {},
+    })
+    const { gate, written } = createHarness({
+      inventory: freshInventory,
+      // `onQuarantined: 'deny'` keeps the fail-closed outcome synchronous —
+      // the default 'require-approval' would park this test on a 60s wait.
+      policy: policyOf({ defaultDecision: 'allow', quarantine: { enabled: false, onQuarantined: 'deny' } }),
+    })
+
+    const verdict = await gate.gateClientMessage(toolCall(1, 'read_thing'))
+
+    expect(verdict).toEqual({ action: 'drop' })
+    expect(parseWritten(written[0]!).error.code).toBe(ERROR_CODE_POLICY_DENIED)
+    const decisions = await readDecisions()
+    expect(decisions.at(-1)?.decision).toMatchObject({ outcome: 'deny', rule: 'catalog-untrusted' })
+  })
+
+  test('a load() rejection fails closed at the gate even if the inventory still reports trust', async () => {
+    // The GateInventory contract says isCatalogTrusted() goes false on a load
+    // failure, but the gate must not bet on that: a rejection whose
+    // implementation forgot to untrust (the real inventory rethrows non-Store
+    // errors without flipping `trusted`) is caught by the gate's own flag.
+    const { gate } = createHarness({
+      policy: policyOf({ defaultDecision: 'allow', quarantine: { enabled: false } }),
+      controls: { loadRejectsKeepingTrust: true },
+    })
+
+    const verdict = await gate.gateClientMessage(toolCall(1, 'read_thing'))
+
+    expect(verdict).toEqual({ action: 'drop' })
+    expect(errors).toHaveLength(1) // the load rejection is reported, not swallowed
+    const decisions = await readDecisions()
+    expect(decisions.at(-1)?.decision).toMatchObject({ outcome: 'deny', rule: 'catalog-untrusted' })
+  })
+})
+
+describe('createPolicyGate: an id-less call cannot consume a human approval (re-review L4)', () => {
+  test('an id-less tools/call under require-approval is denied without enqueuing an approval', async () => {
+    // Approving it could never deliver the call (no return address), but the
+    // minted grant would let a later id-bearing call ride on it — pure
+    // operator-fatigue cost with zero upside, so it short-circuits to deny.
+    const { gate, written } = createHarness({
+      policy: policyOf({ defaultDecision: 'require-approval', quarantine: { enabled: false } }),
+    })
+
+    const verdict = await gate.gateClientMessage(
+      frameOf({ jsonrpc: '2.0', method: 'tools/call', params: { name: 'delete_repo' } }),
+    )
+
+    expect(verdict).toEqual({ action: 'drop' })
+    expect(written).toEqual([])
+    expect(await queue.list()).toEqual([])
+    const decisions = await readDecisions()
+    expect(decisions.at(-1)?.decision).toMatchObject({ outcome: 'deny', rule: 'idless-require-approval' })
+  })
+})
+
 describe('createPolicyGate: client direction fails closed (C2)', () => {
   // Every vector from the review table: none may reach the server-writer, and
   // each must be journaled as a deny.
@@ -440,17 +518,22 @@ describe('createPolicyGate: deny', () => {
 })
 
 describe('createPolicyGate: allow', () => {
-  test('forwards the call synchronously and journals an allow decision', async () => {
+  test('forwards the call synchronously once hydration settles, and journals an allow decision', async () => {
     const { gate, written } = createHarness()
 
-    const verdict = gate.gateClientMessage(toolCall(1, 'read_file'))
+    // The first call of a session awaits inventory hydration (re-review M1),
+    // so only it may go async; settle it before asserting the fast path.
+    await gate.gateClientMessage(toolCall(1, 'read_file'))
 
-    // Order-preserving fast path: an allowed call must not become async.
+    // Order-preserving fast path: after load() has settled, an allowed call
+    // must not become async.
+    const verdict = gate.gateClientMessage(toolCall(2, 'read_file'))
+
     expect(verdict).toEqual({ action: 'forward' })
     expect(written).toEqual([])
     const decisions = await readDecisions()
-    expect(decisions).toHaveLength(1)
-    expect(decisions[0]!.decision).toMatchObject({ outcome: 'allow', toolName: 'read_file' })
+    expect(decisions).toHaveLength(2)
+    expect(decisions[1]!.decision).toMatchObject({ outcome: 'allow', toolName: 'read_file' })
   })
 
   test('records the argument hash and redacted arguments on the decision record', async () => {
