@@ -1,0 +1,93 @@
+# ADR-0002: Streamable HTTP — две модели сессий, транспортируем обе, не транслируем между
+
+- **Статус**: принято (2026-08-05, Task 1 Волны 0 M3)
+- **Основание**: сверка с первоисточником — `docs/research/http-spec-matrix.md` (там же полная
+  матрица MUST/SHOULD/MAY × версия × поддержка)
+
+## Контекст
+
+Спека MCP пережила транспортный разлом:
+
+- **Sessionful** (2025-03-26 … 2025-11-25, все Final): `initialize`-handshake, сервер MAY выдаёт
+  `Mcp-Session-Id`, GET-SSE для server-initiated requests, DELETE для завершения, resumability
+  через `Last-Event-ID`. На этой модели — все реальные серверы и клиенты на сегодня.
+- **Stateless** (2026-07-28): handshake и сессии убраны; версия/capabilities — в `_meta` каждого
+  запроса + обязательные заголовки `MCP-Protocol-Version`/`Mcp-Method`/`Mcp-Name` с MUST-валидацией
+  header↔body; server-initiated requests заменены MRTR (SEP-2322: `InputRequiredResult`
+  c `inputRequests`/`requestState`, ретрай с `inputResponses` и новым id); GET-стрим заменён
+  `subscriptions/listen`; resumability удалена.
+
+**Важная поправка к плану**: 2026-07-28 — уже НЕ RC. Финализирована 28.07.2026 и объявлена
+**current** (страница versioning первоисточника). Предпосылка плана «RC не финален, синтезировать
+под черновик — работа в мусор» устарела как аргумент, но решение ниже устойчиво и без неё.
+
+## Решение
+
+**Транспортируем обе модели. Не транслируем между ними. Мисматч пары — отказ.**
+
+1. Версионная семантика локализована в `src/protocol/mcp.ts` (единственная точка привязки к спеке)
+   и тонком слое `src/transport/http/session.ts`. Транспорт (`framing`, `sse`, `server`, `client`)
+   о JSON-RPC не знает — инвариант проверяется тестом графа импортов.
+2. **Downstream** (агент → плоскость): модель определяется по трафику. Пришёл `initialize` →
+   sessionful (плоскость выдаёт session id — `crypto.randomUUID()`); первый запрос без initialize
+   и с `_meta.protocolVersion`/заголовками новой модели → stateless (per-request контекст).
+3. **Upstream** (плоскость → сервер): модель — поле реестра `protocol: 'sessionful' | 'stateless'
+   | 'auto'`; `auto` — пробный initialize, по результату модель фиксируется в записи.
+4. **Negotiation сквозная**: `protocolVersion` (initialize-параметр или `_meta`) плоскость форвардит
+   и не подменяет. Отказ плоскости — только на транспортном мисматче моделей.
+5. Ревизия решения о трансляции — **контрольная точка ~октябрь 2026** (ROADMAP). Смысл точки
+   скорректирован: не «дождаться финала RC» (финал состоялся), а «оценить реальную адопцию
+   stateless у серверов/клиентов и спрос design-партнёров».
+
+### Почему не транслируем (актуализированные основания)
+
+1. Модели различаются не только handshake'ом: MRTR меняет саму форму server-initiated взаимодействий
+   (отдельный JSON-RPC request ↔ поле результата + ретрай с новым id). Трансляция требует
+   синтезировать запросы/результаты, вести карту id и state — это ломает инварианты M1/M2
+   «байт-идентичность» и «ровно один исход на id».
+2. Stateless-ревизия добавляет MUST-обязанности, которые не синтезировать честно из sessionful-мира:
+   `server/discover`, обязательный `resultType`, `ttlMs`/`cacheScope`, header↔body-валидация.
+3. Спрос не подтверждён: серверов, говорящих только 2026-07-28, в природе пока нет; агентов — тоже.
+   Строить трансляцию до появления реальной пары «старый агент × новый сервер» — YAGNI.
+
+## Матрица поведения (downstream-модель × upstream-модель)
+
+| Downstream (агент) \ Upstream (сервер из реестра) | stdio (старые ревизии) | HTTP sessionful | HTTP stateless |
+|---|---|---|---|
+| **stdio-агент через `connect`** (шлёт initialize) | ✅ M1/M2-путь | ✅ мост: initialize форвардится POST'ом, session id захватывается, GET-SSE открывается, DELETE при закрытии | ❌ отказ: «server speaks stateless MCP (2026-07-28); translation not supported, see ADR-0002» |
+| **HTTP-агент, sessionful** (POST initialize) | ✅ мост: spawn per session | ✅ pass-through: сессия к сессии (свой id downstream, upstream-id внутри клиента) | ❌ отказ (тот же) |
+| **HTTP-агент, stateless** (без initialize, `_meta`-версия) | ❌ отказ: реальный stdio-сервер ждёт initialize; плоскость его не синтезирует | ❌ отказ | ✅ pass-through: POST → POST, заголовки зеркалятся из тела |
+
+Отказ — на этапе `connect`/первого запроса `serve`: типизированная ошибка с указанием моделей пары
+и ссылкой на этот ADR; для HTTP — 400 с JSON-RPC error без id. Никакого «тихого» даунгрейда.
+
+Примечание: stdio-транспорт в 2026-07-28 тоже stateless (initialize убран на уровне протокола,
+не транспорта) — поэтому мисматч-клетки симметричны: решает пара «моделей», а не пара «транспортов».
+
+## Ключевые обязанности по ревизиям (краткая выжимка; полностью — http-spec-matrix.md)
+
+- Sessionful downstream: session id — randomUUID, ASCII 0x21–0x7E; 400 без id (кроме initialize);
+  404 на протухшую/отозванную сессию; DELETE поддержан; GET-SSE для server-initiated.
+- Sessionful upstream: `MCP-Protocol-Version` на всех запросах после initialize; на 404 — типизированная
+  ошибка + повторный initialize с лимитом попыток; уважаем SSE `retry`.
+- Stateless downstream: только POST (GET/DELETE → 405); Origin при наличии — валидация, невалидный → 403;
+  header↔body-валидация (`-32020`); `Mcp-Session-Id`/`Last-Event-ID` игнорируются.
+- Stateless upstream: зеркалим `MCP-Protocol-Version`/`Mcp-Method`/`Mcp-Name` из тела;
+  `Mcp-Param-*` (x-mcp-header) — бэклог с документированным ограничением.
+- Resumability (`Last-Event-ID`) — не поддерживаем ни в одной модели (MAY/SHOULD в старой, удалена
+  в новой); обрыв фиксируется в журнале, недоставленное признаётся потерянным. Бэклог.
+- Origin-валидация — всегда при наличии заголовка (MUST; rebinding целит localhost), дефолтный
+  allowlist — localhost-origins, расширение флагом `--allowed-origin`.
+
+## Последствия
+
+- (+) Обе модели работают без искажения трафика; вся версионность — в двух файлах; финал спеки
+  не порождает переделок транспорта.
+- (+) Понятные отказы вместо полурабочей трансляции; матрица выше — прямой источник тестов Волны 3.
+- (−) Пара «старый агент × stateless-only сервер» не обслуживается до отдельного решения;
+  риск принят, спрос отслеживаем через design-партнёров (контрольная точка октябрь 2026).
+- (−) `x-mcp-header` не зеркалится в M3 — тулзы, требующие его, получат `HeaderMismatch` от
+  stateless-сервера; ограничение документируется в README.
+- Журнал получает HTTP-метаданные (session id, статусы, обрывы SSE) — новые кейсы редакции:
+  `Authorization`, vault-значения в заголовках, `requestState`/`inputResponses` (может содержать
+  пользовательский ввод elicitation) — расширение leak-regression в Волне 3.

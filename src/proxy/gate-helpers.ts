@@ -1,23 +1,27 @@
 import { buildDecisionRecord } from '../journal/decision.js'
 import type { DecisionInfo, PolicyOutcome, QuarantineState, ToolClass } from '../journal/record.js'
 import type { JournalSink } from '../journal/sink.js'
-import { classifyTool } from '../policy/classify-tool.js'
-import { decide } from '../policy/decide.js'
 import { canonicalJson, sha256Hex } from '../policy/hash.js'
-import type { Policy } from '../policy/schema.js'
-import type { ClassifiedMessage, JsonRpcId } from '../protocol/classify.js'
-import { parseToolCallParams, parseToolsListResult, type ParsedToolCall, type ToolDescriptor } from '../protocol/mcp.js'
+import type { JsonRpcId } from '../protocol/classify.js'
+import { parseToolCallParams, type ParsedToolCall, type ToolDescriptor } from '../protocol/mcp.js'
 import type { Verdict } from './pipeline.js'
 import { denialError, quarantinedError, type SynthesizableId } from './synthesize.js'
-import { filterToolsListResult } from './tools-filter.js'
 
 /**
  * Supporting cast for the session policy gate (`proxy/gate.ts`): small pure
- * helpers, plus the server-side tool-catalog half of the gate
- * (`createToolCatalog`). Split out purely to keep `gate.ts` focused on the
- * client-side decision flow — the two halves share only the decision writer
- * and the policy itself.
+ * helpers shared by the gate's modules (`gate.ts`, `gate-router.ts`,
+ * `gate-approvals.ts`, `tool-catalog.ts`). Split out purely to keep `gate.ts`
+ * focused on the decision flow. The id-bookkeeping structures live in
+ * `id-tracking.ts` and are re-exported here so consumers keep one import
+ * surface.
  */
+
+export {
+  createAnswerGuard,
+  createBoundedIdSet,
+  type AnswerGuard,
+  type BoundedIdSet,
+} from './id-tracking.js'
 
 /** Shared, frozen verdicts: the gate returns these by identity, never a fresh object. */
 export const FORWARD: Verdict = Object.freeze({ action: 'forward' as const })
@@ -62,6 +66,11 @@ export const RESPONSE_TOOL_NAME = '<response>'
  */
 export function idKeyOf(id: JsonRpcId): string {
   return `${typeof id} ${String(id)}`
+}
+
+/** Distinguishes a settled verdict from one still in flight, without awaiting it. */
+export function isPromiseVerdict(outcome: Verdict | Promise<Verdict>): outcome is Promise<Verdict> {
+  return typeof (outcome as Partial<Promise<Verdict>>).then === 'function'
 }
 
 /** Everything the gate has resolved about one tool call before deciding it. */
@@ -264,247 +273,4 @@ export function denialBytesFor(
     return quarantinedError(id, { toolName: info.toolName, serverName: info.serverName })
   }
   return denialError(id, { toolName: info.toolName, rule: info.rule })
-}
-
-/**
- * Cap on tool descriptors cached from `tools/list` for classification. A
- * catalog beyond this size degrades to name-only classification, which is
- * the safe direction: an unknown descriptor classifies as `write` (or
- * `destructive` by name heuristic), never as `read`.
- */
-const MAX_CACHED_DESCRIPTORS = 5_000
-
-export interface ToolCatalogDeps {
-  readonly policy: Policy
-  readonly serverName: string
-  readonly inventory: GateInventory
-  readonly classOverrides: Record<string, ToolClass> | undefined
-  readonly writeDecision: DecisionWriter
-  /** Awaited before a rewritten catalog is emitted; a no-op unless fail-closed. */
-  readonly settleJournal: () => Promise<void>
-  readonly onError: (error: unknown) => void
-}
-
-export interface ToolCatalog {
-  /** Last descriptor seen for `toolName`, or a name-only stand-in. */
-  descriptorOf(toolName: string): ToolDescriptor
-  /** Observes, quarantines and (optionally) filters one `tools/list` response. */
-  handleResponse(msg: ClassifiedMessage): Promise<Verdict>
-}
-
-/**
- * The server-side half of the gate: everything that happens to a
- * `tools/list` response. It observes the catalog (which quarantines new and
- * changed tools), caches descriptors so later calls can be classified from
- * the real annotations, and hides tools that resolve to `deny`.
- *
- * Filtering is context hygiene, not the security boundary — the call itself
- * is still gated — so anything unexpected forwards the original message
- * rather than risking the transport.
- */
-export function createToolCatalog(deps: ToolCatalogDeps): ToolCatalog {
-  const descriptorsByName = new Map<string, ToolDescriptor>()
-
-  function cacheDescriptors(tools: readonly ToolDescriptor[]): void {
-    for (const tool of tools) {
-      if (descriptorsByName.size >= MAX_CACHED_DESCRIPTORS) return
-      descriptorsByName.set(tool.name, tool)
-    }
-  }
-
-  /**
-   * Visibility is static, so it is resolved without a grant: grants are
-   * call-scoped (they key on argument values), and a tool that is only
-   * callable with an approval must stay visible to be callable at all.
-   */
-  function isVisible(tool: ToolDescriptor): boolean {
-    // Built as a const (not a fresh literal at the call site) so the two
-    // catalog-trust fields the pinned `decide()` requires are supplied
-    // without an excess-property error while the shared type lands.
-    const input = {
-      policy: deps.policy,
-      serverName: deps.serverName,
-      toolName: tool.name,
-      toolClass: classifyTool(tool, deps.classOverrides),
-      quarantineState: deps.inventory.stateOf(tool.name),
-      hasActiveGrant: false,
-      catalogObserved: deps.inventory.hasObservedCatalog(),
-      catalogTrusted: deps.inventory.isCatalogTrusted(),
-    }
-    return decide(input).outcome !== 'deny'
-  }
-
-  /** One of the two records pairing the catalog the server sent with the one the client saw. */
-  function writeCatalogDecision(rule: string, toolNames: readonly string[]): void {
-    deps.writeDecision(
-      bookkeepingDecisionInfo(deps.serverName, rule, TOOLS_LIST_TOOL_NAME, toolNames),
-      { tools: toolNames },
-    )
-  }
-
-  /**
-   * Rewrites the catalog down to what the client may see. When nothing is
-   * hidden the original bytes are forwarded verbatim, preserving byte
-   * identity for a stream policy did not actually touch.
-   */
-  async function filterCatalog(
-    msg: ClassifiedMessage,
-    tools: readonly ToolDescriptor[],
-  ): Promise<Verdict> {
-    const filtered = filterToolsListResult(msg, isVisible)
-    if (filtered === null) {
-      deps.onError(new Error('tools/list response could not be rewritten; forwarding the original'))
-      return FORWARD
-    }
-
-    const removed = new Set(filtered.removed)
-    const allNames = tools.map((tool) => tool.name)
-    writeCatalogDecision(TOOLS_LIST_ORIGINAL_RULE, allNames)
-    writeCatalogDecision(
-      TOOLS_LIST_FILTERED_RULE,
-      allNames.filter((name) => !removed.has(name)),
-    )
-    await deps.settleJournal()
-
-    return removed.size === 0 ? FORWARD : { action: 'emit', bytes: filtered.bytes }
-  }
-
-  /**
-   * The catalog could not be trusted (the observe failed, or the inventory
-   * reports an untrusted snapshot). We do NOT silently fail open: the failure
-   * is journaled, and — because `decide()` now sees `catalogTrusted:false` —
-   * every subsequent `tools/call` fails closed at the call level (C3/C4).
-   * The response itself is forwarded unfiltered; enforcement is at call time.
-   */
-  async function forwardUntrusted(toolNames: readonly string[]): Promise<Verdict> {
-    deps.writeDecision(
-      bookkeepingDecisionInfo(deps.serverName, INVENTORY_UNAVAILABLE_RULE, TOOLS_LIST_TOOL_NAME, toolNames),
-      { tools: toolNames },
-    )
-    await deps.settleJournal()
-    return FORWARD
-  }
-
-  async function handleResponse(msg: ClassifiedMessage): Promise<Verdict> {
-    try {
-      const parsed = parseToolsListResult(msg)
-      if (parsed === null) return FORWARD
-      cacheDescriptors(parsed.tools)
-      // Quarantines new/changed tools before any visibility decision reads
-      // their state, and before the next call can be gated. Never throws.
-      const observed = await deps.inventory.observeToolsList(parsed.tools)
-      if (observed.failed || !deps.inventory.isCatalogTrusted()) {
-        return await forwardUntrusted(parsed.tools.map((tool) => tool.name))
-      }
-      if (deps.policy.toolsList.filter === 'off') return FORWARD
-      return await filterCatalog(msg, parsed.tools)
-    } catch (error: unknown) {
-      deps.onError(error)
-      return FORWARD
-    }
-  }
-
-  return {
-    descriptorOf: (toolName) => descriptorsByName.get(toolName) ?? { name: toolName },
-    handleResponse,
-  }
-}
-
-/**
- * An insertion-ordered id set with a hard entry cap, evicting oldest-first.
- *
- * The gate tracks request ids for the whole life of a session (which ids it
- * answered locally, which are outstanding `tools/list` requests). A client
- * that never stops issuing new ids must not be able to grow that bookkeeping
- * without bound, so the set forgets its oldest entries past `maxEntries` —
- * the same cap-and-evict discipline `journal/record.ts` applies to pending
- * request correlation.
- */
-export interface BoundedIdSet {
-  add(key: string): void
-  has(key: string): boolean
-  /** True if `key` was present (and is now removed). */
-  delete(key: string): boolean
-}
-
-export function createBoundedIdSet(maxEntries: number, onEvict?: (key: string) => void): BoundedIdSet {
-  const keys = new Set<string>()
-
-  function evictOldest(): void {
-    const oldest = keys.values().next()
-    if (oldest.done !== true) {
-      keys.delete(oldest.value)
-      // Eviction is silent for bookkeeping sets, but the tools/list tracker
-      // journals it (M9): a forgotten id means a later tools/list response
-      // could escape observation, which an auditor must be able to see.
-      onEvict?.(oldest.value)
-    }
-  }
-
-  return {
-    add(key: string): void {
-      // Re-adding moves the key to the newest position, so insertion order
-      // stays age order and eviction stays "oldest first".
-      keys.delete(key)
-      // `keys.size > 0` also makes a nonsensical `maxEntries <= 0` terminate.
-      while (keys.size >= maxEntries && keys.size > 0) {
-        evictOldest()
-      }
-      keys.add(key)
-    },
-    has: (key: string): boolean => keys.has(key),
-    delete: (key: string): boolean => keys.delete(key),
-  }
-}
-
-/**
- * The exactly-one-outcome guard for locally-answered request ids (M8).
- *
- * A request id that has been answered locally (a synthetic denial/timeout)
- * must never also be forwarded to the server — not even by a human approval
- * that lands after the wait it was racing. The bulk `answered` set is a
- * bounded LRU (fine for duplicate-response detection), but under a flood of
- * intervening answered ids that LRU can evict the very id an in-flight
- * approval is about to resolve. So ids that are answered *while an approval
- * wait for them is in flight* are also recorded in a separate, non-evicting
- * `burned` set, kept only for the lifetime of that wait (refcounted, cleared
- * when the last wait for the id settles). `isAnswered` consults both.
- */
-export interface AnswerGuard {
-  /** Records `key` as answered locally; burns it too if a wait is currently in flight for it. */
-  markAnswered(key: string): void
-  /** True if `key` was ever answered locally (LRU) or burned during an in-flight wait. */
-  isAnswered(key: string): boolean
-  /** Marks the start of one in-flight approval wait for `key` (refcounted). */
-  beginWait(key: string): void
-  /** Marks the end of one in-flight approval wait for `key`; clears its burn once no wait remains. */
-  endWait(key: string): void
-}
-
-export function createAnswerGuard(maxEntries: number): AnswerGuard {
-  const answered = createBoundedIdSet(maxEntries)
-  const waitCounts = new Map<string, number>()
-  const burned = new Set<string>()
-
-  return {
-    markAnswered(key: string): void {
-      answered.add(key)
-      if (waitCounts.has(key)) {
-        burned.add(key)
-      }
-    },
-    isAnswered: (key: string): boolean => answered.has(key) || burned.has(key),
-    beginWait(key: string): void {
-      waitCounts.set(key, (waitCounts.get(key) ?? 0) + 1)
-    },
-    endWait(key: string): void {
-      const next = (waitCounts.get(key) ?? 0) - 1
-      if (next <= 0) {
-        waitCounts.delete(key)
-        burned.delete(key)
-      } else {
-        waitCounts.set(key, next)
-      }
-    },
-  }
 }
