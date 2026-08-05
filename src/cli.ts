@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { realpathSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 import { runApprovals, type ApprovalsCliOptions } from './cli/approvals-cmd.js'
@@ -194,8 +195,22 @@ async function main(): Promise<number> {
  * binary), not when it is imported as a module -- `tests/cli/dispatch.test.ts`
  * imports `dispatch()` directly and must not trigger a second, argv-driven
  * dispatch as a side effect of that import.
+ *
+ * `argv[1]` is resolved through `realpathSync` because an npm-installed (or
+ * `npm link`-ed) binary is a SYMLINK to this file: `import.meta.url` is the
+ * real path, so comparing it against the raw symlink path never matches and
+ * the CLI would silently exit 0 without dispatching.
  */
-const isMainModule = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href
+function isRunDirectly(): boolean {
+  const argvPath = process.argv[1]
+  if (argvPath === undefined) return false
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(argvPath)).href
+  } catch {
+    return false
+  }
+}
+const isMainModule = isRunDirectly()
 
 if (isMainModule) {
   main()
