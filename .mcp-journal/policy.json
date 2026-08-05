@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "defaultDecision": "require-approval",
+  "classDefaults": {
+    "read": "allow"
+  },
+  "quarantine": {
+    "enabled": true,
+    "onQuarantined": "require-approval"
+  },
+  "toolsList": {
+    "filter": "hide-denied"
+  },
+  "journal": {
+    "failClosed": true
+  }
+}
