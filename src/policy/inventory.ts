@@ -41,6 +41,17 @@ export interface CreateInventoryOptions {
   readonly storePath?: string
   /** Injectable clock (ms since epoch) for deterministic tests. Defaults to `Date.now`. */
   readonly clock?: () => number
+  /**
+   * Reports the underlying cause whenever a persist fails (TS-MEDIUM-3): the
+   * observation is always fail-closed regardless (`failed: true`, catalog
+   * untrusted), but the cause must never be silently swallowed. Defaults to
+   * one line on stderr, matching the gate's own default `onError`.
+   */
+  readonly onError?: (error: unknown) => void
+}
+
+function defaultOnError(error: unknown): void {
+  process.stderr.write(`[inventory] ${error instanceof Error ? error.message : String(error)}\n`)
 }
 
 export interface Inventory {
@@ -74,6 +85,7 @@ export interface Inventory {
 /** Creates a per-server tool inventory backed by the shared inventory store file. */
 export function createInventory(serverName: string, opts: CreateInventoryOptions = {}): Inventory {
   const clock = opts.clock ?? Date.now
+  const onError = opts.onError ?? defaultOnError
   const store = openInventoryStore(opts.storePath)
 
   let snapshot: ReadonlyMap<string, QuarantineState> = new Map()
@@ -117,9 +129,11 @@ export function createInventory(serverName: string, opts: CreateInventoryOptions
       snapshot = buildSnapshot(observation.nextServerEntry)
       trusted = !observation.capExceeded
       return { ...observation.buckets, failed: false }
-    } catch {
-      // Persist failed (corrupt/locked/disk): keep the prior snapshot, fail closed.
+    } catch (error: unknown) {
+      // Persist failed (corrupt/locked/disk): keep the prior snapshot, fail
+      // closed, and report the cause instead of swallowing it (TS-MEDIUM-3).
       trusted = false
+      onError(error)
       return { known: [], new: [], changed: [], failed: true }
     }
   }

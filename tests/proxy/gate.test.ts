@@ -214,7 +214,6 @@ describe('createPolicyGate: traffic that is never gated', () => {
   test.each([
     ['a non-tools/call request', { jsonrpc: '2.0', id: 1, method: 'resources/read', params: {} }],
     ['a notification', { jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 1 } }],
-    ['a tools/call notification (no id at all)', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'delete_repo' } }],
     ['a response', { jsonrpc: '2.0', id: 1, result: { ok: true } }],
   ])('%s is forwarded even under a deny-everything policy', async (_label, message) => {
     const { gate, written } = createHarness({ policy: policyOf(DENY_EVERYTHING) })
@@ -254,6 +253,86 @@ describe('createPolicyGate: traffic that is never gated', () => {
     const decisions = await readDecisions()
     expect(decisions).toHaveLength(1)
     expect(decisions[0]!.decision).toMatchObject({ outcome: 'deny', rule: 'malformed-tools-call' })
+  })
+})
+
+describe('createPolicyGate: an id-less tools/call is never blindly forwarded (C2/N1)', () => {
+  // A `tools/call` with no `id` at all is notification-shaped by classify(),
+  // but it is still a call that would execute a tool if forwarded: it must go
+  // through the exact same decide() path as an id-bearing call, never a bare
+  // forward. This is the CRITICAL regression: the old behaviour (asserted by
+  // the test this replaces) forwarded it unexamined under deny-everything.
+  const IDLESS_TOOLS_CALL = { jsonrpc: '2.0', method: 'tools/call', params: { name: 'delete_repo' } }
+
+  test('under a deny-everything policy it is dropped, journaled as deny, and never forwarded', async () => {
+    const { gate, written } = createHarness({ policy: policyOf(DENY_EVERYTHING) })
+
+    const verdict = await gate.gateClientMessage(frameOf(IDLESS_TOOLS_CALL))
+
+    expect(verdict).toEqual({ action: 'drop' })
+    // No id means no synthetic reply is possible, but it must still never
+    // reach the server: the pipeline only writes to the server on 'forward'.
+    expect(written).toEqual([])
+    const decisions = await readDecisions()
+    expect(decisions).toHaveLength(1)
+    expect(decisions[0]!.decision).toMatchObject({ outcome: 'deny', toolName: 'delete_repo' })
+  })
+
+  test('under an allow-all policy it is forwarded, but only after being decided and journaled', async () => {
+    const { gate } = createHarness({
+      policy: policyOf({ defaultDecision: 'allow', quarantine: { enabled: false } }),
+    })
+
+    const verdict = await gate.gateClientMessage(frameOf(IDLESS_TOOLS_CALL))
+
+    expect(verdict).toEqual({ action: 'forward' })
+    const decisions = await readDecisions()
+    expect(decisions).toHaveLength(1)
+    expect(decisions[0]!.decision).toMatchObject({ outcome: 'allow', toolName: 'delete_repo' })
+  })
+
+  test('a malformed id-less tools/call (no params.name) is dropped and journaled as malformed', async () => {
+    const { gate, written } = createHarness({ policy: policyOf(DENY_EVERYTHING) })
+
+    const verdict = await gate.gateClientMessage(
+      frameOf({ jsonrpc: '2.0', method: 'tools/call', params: {} }),
+    )
+
+    expect(verdict).toEqual({ action: 'drop' })
+    expect(written).toEqual([])
+    const decisions = await readDecisions()
+    expect(decisions).toHaveLength(1)
+    expect(decisions[0]!.decision).toMatchObject({ outcome: 'deny', rule: 'malformed-tools-call' })
+  })
+})
+
+describe('createPolicyGate: inventory hydration race on the first call (C4/HIGH)', () => {
+  test('a persisted-quarantined tool is denied on the very first call, racing an unresolved load()', async () => {
+    // Seed the store as a previous session would have: `delete_repo` is
+    // already persisted as quarantined ('new') before this session starts.
+    await inventory.observeToolsList([{ name: 'delete_repo', description: 'deletes things' }])
+
+    // A brand-new inventory instance for this "session": its load() has not
+    // been awaited by anything yet when the first frame arrives.
+    const freshInventory = createInventory(SERVER_NAME, {
+      storePath: join(tempDir, 'tool-inventory.json'),
+    })
+    const { gate, written } = createHarness({
+      inventory: freshInventory,
+      policy: policyOf({
+        defaultDecision: 'allow',
+        quarantine: { enabled: true, onQuarantined: 'deny' },
+      }),
+    })
+
+    // No explicit `await freshInventory.load()`: the very first client frame
+    // races the gate's own internal hydration.
+    const verdict = await gate.gateClientMessage(toolCall(1, 'delete_repo'))
+
+    expect(verdict).toEqual({ action: 'drop' })
+    expect(parseWritten(written[0]!).error.code).toBe(ERROR_CODE_QUARANTINED)
+    const decisions = await readDecisions()
+    expect(decisions.at(-1)?.decision).toMatchObject({ outcome: 'quarantined', rule: 'quarantine' })
   })
 })
 

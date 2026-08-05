@@ -41,6 +41,7 @@ import {
   denialBytesFor,
   idKeyOf,
   parseCancelledRequestId,
+  parseIdlessToolCall,
   recoverScalarId,
   unsafeClientFrameDecision,
   type CallFacts,
@@ -64,8 +65,12 @@ export type { GateInventory, GateSink } from './gate-helpers.js'
  *  - **Exactly one outcome per request id.** Once a call has been answered
  *    locally with a synthetic error, that id is never forwarded to the
  *    server — not even by an approval that lands after the wait timed out.
- *  - **Only `tools/call` is gated.** Notifications, responses, other
- *    methods and unparseable frames are forwarded untouched, always.
+ *  - **Only `tools/call` is gated — by method, not by message shape.** Any
+ *    frame whose `method` is `tools/call` is decided, id or no id (C2/N1): a
+ *    spec-violating id-less call is still routed through decide()/journal,
+ *    never blindly forwarded as an ordinary notification. Every other
+ *    notification, response, other method and unparseable frame is
+ *    forwarded untouched, always.
  *  - **Fail closed on our own bugs.** Any unexpected error while deciding a
  *    `tools/call` denies the call; the same error on ordinary traffic
  *    forwards it (a gate defect must not break an unrelated session).
@@ -161,7 +166,21 @@ export function createPolicyGate(deps: PolicyGateDeps): PolicyGate {
   // `stateOf` is authoritative before the first gated call. A failure here is
   // not swallowed: the inventory reflects it via `isCatalogTrusted()`, which
   // forces every subsequent `tools/call` to fail closed (C3/C4).
-  void Promise.resolve(inventory.load()).catch((error: unknown) => onError(error))
+  //
+  // `inventoryLoaded` flips once `load()` has settled either way (HIGH/C4):
+  // a `tools/call` decided while it is still false races an unhydrated
+  // snapshot, where a persisted-quarantined tool would read back as
+  // `stateOf === 'unknown'` and fall through to the defaults instead of
+  // failing closed. Only a quarantine-enabled policy's decision actually
+  // depends on `quarantineState`/`catalogObserved` (`policy/decide.ts`
+  // gates both behind `quarantine.enabled`), so gating the await on that
+  // flag keeps a quarantine-disabled session's synchronous fast path intact.
+  let inventoryLoaded = false
+  const inventoryLoadPromise: Promise<void> = Promise.resolve(inventory.load())
+    .catch((error: unknown) => onError(error))
+    .then(() => {
+      inventoryLoaded = true
+    })
 
   const pendingToolsListIds = createBoundedIdSet(MAX_TRACKED_TOOLS_LIST_IDS, (evicted) => {
     writeDecision(bookkeepingDecisionInfo(serverName, TOOLS_LIST_OVERFLOW_RULE, TOOLS_LIST_TOOL_NAME, evicted))
@@ -390,7 +409,7 @@ export function createPolicyGate(deps: PolicyGateDeps): PolicyGate {
     }
   }
 
-  function gateToolCall(call: ParsedToolCall): Verdict | Promise<Verdict> {
+  function decideToolCall(call: ParsedToolCall): Verdict | Promise<Verdict> {
     const facts = factsOf(call)
     const grantKey: GrantKey = { serverName, toolName: facts.toolName, argsHash: facts.argsHash }
     const decision = enforceCatalogTrust(decide(decideInputOf(facts, grantRegistry.isGranted(grantKey))))
@@ -398,6 +417,19 @@ export function createPolicyGate(deps: PolicyGateDeps): PolicyGate {
     if (decision.outcome === 'allow') return applyAllow(call, facts, decision)
     if (decision.outcome === 'deny') return applyDeny(call, facts, decision)
     return requestApproval(call, facts, grantKey, decision)
+  }
+
+  /**
+   * Entry point for every gated `tools/call` (id-bearing or id-less alike).
+   * Awaits inventory hydration first when the decision could depend on it
+   * (see the `inventoryLoaded` doc above); a no-op once `load()` has
+   * settled, which is the case for every call after the first.
+   */
+  function gateToolCall(call: ParsedToolCall): Verdict | Promise<Verdict> {
+    if (!inventoryLoaded && policy.quarantine.enabled) {
+      return inventoryLoadPromise.then(() => decideToolCall(call))
+    }
+    return decideToolCall(call)
   }
 
   /**
@@ -432,18 +464,18 @@ export function createPolicyGate(deps: PolicyGateDeps): PolicyGate {
   }
 
   function gateClientRequest(msg: ClassifiedRequest): Verdict | Promise<Verdict> {
-    if (msg.method !== 'tools/call') {
-      // The only non-tools/call request we care about is tools/list, whose id
-      // we track so its response can be observed. Everything else forwards.
-      if (isToolsListRequest(msg)) pendingToolsListIds.add(idKeyOf(msg.id))
-      return FORWARD
-    }
-    const call = parseToolCall(msg)
-    if (call === null) return denyUnsafeClientFrame(MALFORMED_TOOLS_CALL_RULE, msg.id)
-    return recordVerdict(call.id, track(guarded(call, () => gateToolCall(call))))
+    // tools/call is intercepted by gateClientMessage before this fork runs
+    // (C2/N1): every path that reaches here is some other request method.
+    // The only one we care about is tools/list, whose id we track so its
+    // response can be observed. Everything else forwards.
+    if (isToolsListRequest(msg)) pendingToolsListIds.add(idKeyOf(msg.id))
+    return FORWARD
   }
 
   function gateClientNotification(msg: ClassifiedNotification): Verdict | Promise<Verdict> {
+    // A notification-shaped tools/call (id-less) is intercepted by
+    // gateClientMessage before this fork runs (C2/N1); this only ever sees
+    // an actual notification method.
     if (msg.method !== 'notifications/cancelled') return FORWARD
     const requestId = parseCancelledRequestId(msg.raw)
     if (requestId === null) return FORWARD
@@ -455,9 +487,37 @@ export function createPolicyGate(deps: PolicyGateDeps): PolicyGate {
     return track(pending.then(() => FORWARD, () => FORWARD))
   }
 
+  /**
+   * Gates a `tools/call` regardless of whether it is a proper id-bearing
+   * request or a spec-violating, id-less notification-shaped one (C2/N1): the
+   * old bug routed the latter straight to `gateClientNotification`, which
+   * forwards every non-`notifications/cancelled` notification unexamined —
+   * an unvetted `tools/call` with no id would reach the server even under a
+   * deny-everything policy, no decision ever recorded. Both shapes now go
+   * through the exact same parse -> decide -> journal path; an id-less call
+   * simply cannot be answered locally (no return address), so a non-allow
+   * outcome is a silent drop instead of a synthetic reply.
+   */
+  function gateToolsCallFrame(msg: ClassifiedRequest | ClassifiedNotification, raw: string): Verdict | Promise<Verdict> {
+    if (msg.kind === 'request') {
+      const call = parseToolCall(msg)
+      if (call === null) return denyUnsafeClientFrame(MALFORMED_TOOLS_CALL_RULE, msg.id)
+      return recordVerdict(call.id, track(guarded(call, () => gateToolCall(call))))
+    }
+    const call = parseIdlessToolCall(raw)
+    if (call === null) return denyUnsafeClientFrame(MALFORMED_TOOLS_CALL_RULE, null)
+    return track(guarded(call, () => gateToolCall(call)))
+  }
+
   function gateClientMessage(frame: Frame): Verdict | Promise<Verdict> {
     const text = frame.bytes.toString('utf8')
     const msg = classify(text)
+    // tools/call is checked BEFORE the kind fork, on purpose: an id-less
+    // tools/call classifies as a 'notification' (no `id` key at all), and
+    // must never take the "notifications forward unconditionally" path (C2/N1).
+    if ((msg.kind === 'request' || msg.kind === 'notification') && msg.method === 'tools/call') {
+      return gateToolsCallFrame(msg, text)
+    }
     // Fail closed: FORWARD only frames positively identified as safe.
     switch (msg.kind) {
       case 'notification':

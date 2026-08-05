@@ -30,6 +30,23 @@ function normalizeName(name: string): string {
   }
 }
 
+/** Zero-width code points that render invisibly but split a name's tokens (M11 evasion). */
+const ZERO_WIDTH_CHARS_REGEX = /[​‌‍﻿]/g
+/** Unicode combining marks: stray diacritics slipped mid-word to break tokenization (M11 evasion). */
+const COMBINING_MARKS_REGEX = /\p{M}/gu
+
+/**
+ * Strips zero-width characters (U+200B/200C/200D, BOM) and combining marks
+ * from `name` before it is tokenized for the destructive-name heuristic:
+ * `del<ZWSP>ete_repo` and `del<COMBINING ACUTE>ete_all` must still tokenize
+ * to `delete`. Heuristic-input only -- `hasNonAsciiLetter`'s floor check
+ * still runs on the un-stripped name, so a name that smuggled these code
+ * points stays ineligible for the `read` downgrade regardless.
+ */
+function stripEvasionChars(name: string): string {
+  return name.replace(ZERO_WIDTH_CHARS_REGEX, '').replace(COMBINING_MARKS_REGEX, '')
+}
+
 /**
  * Escalation-only homoglyph fold: replaces confusable Cyrillic/Greek code
  * points with their ASCII look-alike so `dеlete_all` (Cyrillic `е`) still
@@ -89,8 +106,9 @@ function tokensMatchHeuristic(tokens: readonly string[]): boolean {
  * one `undelete_item` (no `delete` token).
  */
 function nameMatchesDestructiveHeuristic(normalized: string): boolean {
-  if (tokensMatchHeuristic(tokenizeToolName(normalized))) return true
-  return tokensMatchHeuristic(tokenizeToolName(foldConfusables(normalized)))
+  const stripped = stripEvasionChars(normalized)
+  if (tokensMatchHeuristic(tokenizeToolName(stripped))) return true
+  return tokensMatchHeuristic(tokenizeToolName(foldConfusables(stripped)))
 }
 
 /**

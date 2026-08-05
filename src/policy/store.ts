@@ -137,7 +137,17 @@ export function createJsonStore<T>(filePath: string, opts: JsonStoreOptions<T>):
 
     const tmpPath = uniqueTmpPath()
     await writeFile(tmpPath, JSON.stringify(value), { encoding: 'utf8', mode: JOURNAL_FILE_MODE })
-    await renameWithRetry(tmpPath, filePath)
+    // TS-LOW-1: a rename that fails permanently (retries exhausted) must not
+    // leave the uniquely-named tmp file behind forever; clean it up on the
+    // failure path only -- a successful rename has already moved it away, so
+    // there is nothing left at tmpPath for the (still harmless) force-rm.
+    let renamed = false
+    try {
+      await renameWithRetry(tmpPath, filePath)
+      renamed = true
+    } finally {
+      if (!renamed) await rm(tmpPath, { force: true })
+    }
   }
 
   async function renameWithRetry(from: string, to: string): Promise<void> {
@@ -160,6 +170,19 @@ export function createJsonStore<T>(filePath: string, opts: JsonStoreOptions<T>):
    * the lockfile exists, giving a cheap, cross-platform mutex; a lockfile
    * older than `LOCK_STALE_MS` is presumed orphaned by a crashed holder and
    * stolen so a crash can never wedge the store permanently.
+   *
+   * TS-MEDIUM: the original stat -> rm -> open('wx') steal was a bare TOCTOU
+   * — nothing verified that the lock removed by `rm` was still the same one
+   * judged stale, so a recoverer whose `rm` landed late could delete a fresh
+   * lock a *different* recoverer had already, legitimately, re-acquired and
+   * was actively using, letting two holders believe they held the lock at
+   * once. `stealIfStale` now (a) re-reads the lock's content immediately
+   * before removing it and backs off if it changed, and (b) is the ONLY
+   * place that creates the replacement lockfile, atomically, right after the
+   * removal — if that create loses the race to a concurrent stealer, this
+   * one backs off instead of trying again immediately (no double-steal).
+   * `stealIfStale`'s return value means "this call now holds the lock", not
+   * "go steal again".
    */
   async function acquireLock(): Promise<string> {
     const dir = dirname(filePath)
@@ -168,30 +191,101 @@ export function createJsonStore<T>(filePath: string, opts: JsonStoreOptions<T>):
     const deadline = Date.now() + LOCK_TOTAL_WAIT_MS
 
     for (;;) {
-      try {
-        const handle = await open(lockPath, 'wx', JOURNAL_FILE_MODE)
-        await handle.close()
-        return lockPath
-      } catch (error: unknown) {
-        if (!isEexist(error)) throw error
-        if (await stealIfStale(lockPath)) continue
-        if (Date.now() >= deadline) throw new StoreLockError(filePath)
-        await sleep(LOCK_POLL_MS)
-      }
+      if (await tryCreateLockFile(lockPath)) return lockPath
+      if (await stealIfStale(lockPath)) return lockPath
+      if (Date.now() >= deadline) throw new StoreLockError(filePath)
+      await sleep(LOCK_POLL_MS)
     }
   }
 
-  async function stealIfStale(lockPath: string): Promise<boolean> {
+  /** The lock file's own content: who created it and when, for a content-based staleness check. */
+  interface LockRecord {
+    readonly pid: number
+    readonly createdAtMs: number
+  }
+
+  function encodeLockRecord(): string {
+    const record: LockRecord = { pid: process.pid, createdAtMs: Date.now() }
+    return JSON.stringify(record)
+  }
+
+  /** Atomically creates the lockfile with our own ownership record. `false` only on EEXIST. */
+  async function tryCreateLockFile(lockPath: string): Promise<boolean> {
+    try {
+      const handle = await open(lockPath, 'wx', JOURNAL_FILE_MODE)
+      try {
+        await handle.writeFile(encodeLockRecord())
+      } finally {
+        await handle.close()
+      }
+      return true
+    } catch (error: unknown) {
+      if (isEexist(error)) return false
+      throw error
+    }
+  }
+
+  /** Raw lockfile content, or `null` if it does not exist. */
+  async function readLockFileRaw(lockPath: string): Promise<string | null> {
+    try {
+      return await readFile(lockPath, 'utf8')
+    } catch (error: unknown) {
+      if (isEnoent(error)) return null
+      throw error
+    }
+  }
+
+  /** Age of the lock, preferring its own recorded `createdAtMs`; falls back to fs mtime for a foreign/legacy lockfile with no parseable content. */
+  async function lockAgeMs(lockPath: string, raw: string): Promise<number | null> {
+    const record = parseLockRecord(raw)
+    if (record !== null) return Date.now() - record.createdAtMs
     try {
       const stats = await stat(lockPath)
-      if (Date.now() - stats.mtimeMs < LOCK_STALE_MS) return false
-      await rm(lockPath, { force: true })
-      return true
+      return Date.now() - stats.mtimeMs
     } catch {
-      // Lock vanished (holder released) between our failed create and this
-      // stat: treat as "retry the create" without stealing.
-      return true
+      return null
     }
+  }
+
+  function parseLockRecord(raw: string): LockRecord | null {
+    try {
+      const value = JSON.parse(raw) as Partial<LockRecord>
+      if (typeof value.pid === 'number' && typeof value.createdAtMs === 'number') {
+        return { pid: value.pid, createdAtMs: value.createdAtMs }
+      }
+      return null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Steals a stale lock. Returns `true` iff THIS call now holds the lock
+   * (either because it won the atomic re-create, or because there was
+   * nothing left to steal and it created fresh); `false` means "someone
+   * else owns it and it is not (yet) stale — keep waiting", never "go steal
+   * again immediately".
+   */
+  async function stealIfStale(lockPath: string): Promise<boolean> {
+    const raw = await readLockFileRaw(lockPath)
+    if (raw === null) return tryCreateLockFile(lockPath) // vanished; claim it ourselves
+
+    const age = await lockAgeMs(lockPath, raw)
+    if (age === null) return tryCreateLockFile(lockPath) // vanished between the read and the stat
+    if (age < LOCK_STALE_MS) return false // held by a live process
+
+    // Re-read immediately before removing: only steal a lock whose content
+    // is still exactly what was just judged stale, so a fresh lock a
+    // concurrent recoverer already re-acquired is never clobbered from
+    // under it.
+    const confirm = await readLockFileRaw(lockPath)
+    if (confirm !== raw) return false // someone else already touched it; back off
+
+    await rm(lockPath, { force: true })
+
+    // Claim it immediately. If a concurrent stealer's create wins this race,
+    // back off rather than looping straight back into another steal attempt.
+    return tryCreateLockFile(lockPath)
   }
 
   async function releaseLock(lockPath: string): Promise<void> {

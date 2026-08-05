@@ -110,6 +110,28 @@ describe('M11: unicode / vocabulary evasion of destructive-name heuristics', () 
     const fullwidth = 'ｄｅｌｅｔｅ_all' // ｄｅｌｅｔｅ_all
     expect(classifyTool(tool(fullwidth))).toBe('destructive')
   })
+
+  test('a zero-width space hidden inside "delete" does not evade the heuristic (M11)', () => {
+    const zeroWidthDelete = `del${'​'}ete_repo` // U+200B ZERO WIDTH SPACE
+    expect(classifyTool(tool(zeroWidthDelete))).toBe('destructive')
+  })
+
+  test('a stray Unicode combining mark inside "delete" does not evade the heuristic (M11)', () => {
+    // U+0301 COMBINING ACUTE ACCENT placed after "d": Unicode has no
+    // precomposed "d with acute" letter, so NFKC normalization leaves the
+    // base letter and the mark as two separate code points (unlike, say,
+    // "l" + U+0301, which composes to the precomposed "ĺ") -- this is what
+    // actually exercises the combining-mark strip rather than accidentally
+    // being absorbed into a different, still-non-ASCII precomposed letter.
+    const combiningDelete = `d${'́'}elete_all`
+    expect(classifyTool(tool(combiningDelete))).toBe('destructive')
+  })
+
+  test('zero-width joiner/non-joiner and a BOM inside "delete" all still escalate (M11)', () => {
+    expect(classifyTool(tool(`de${'‌'}lete_all`))).toBe('destructive') // ZWNJ
+    expect(classifyTool(tool(`de${'‍'}lete_all`))).toBe('destructive') // ZWJ
+    expect(classifyTool(tool(`de${'﻿'}lete_all`))).toBe('destructive') // BOM
+  })
 })
 
 describe('classifyTool: config overrides win over everything', () => {

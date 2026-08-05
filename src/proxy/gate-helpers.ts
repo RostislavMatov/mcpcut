@@ -6,7 +6,7 @@ import { decide } from '../policy/decide.js'
 import { canonicalJson, sha256Hex } from '../policy/hash.js'
 import type { Policy } from '../policy/schema.js'
 import type { ClassifiedMessage, JsonRpcId } from '../protocol/classify.js'
-import { parseToolsListResult, type ToolDescriptor } from '../protocol/mcp.js'
+import { parseToolsListResult, type ParsedToolCall, type ToolDescriptor } from '../protocol/mcp.js'
 import type { Verdict } from './pipeline.js'
 import { denialError, quarantinedError, type SynthesizableId } from './synthesize.js'
 import { filterToolsListResult } from './tools-filter.js'
@@ -196,6 +196,27 @@ export function unsafeClientFrameDecision(serverName: string, rule: string): Dec
     quarantineState: 'unknown',
     argsHash: '',
   }
+}
+
+/**
+ * Parses an id-less `tools/call` (spec-violating: `classify()` reports this
+ * shape as `kind: 'notification'`, which has no `id` field at all) into the
+ * same shape `protocol/mcp.ts`'s `parseToolCall` produces for a proper
+ * request, with `id: null`. This is what lets a notification-shaped
+ * `tools/call` go through the exact same decide()/journal path as an
+ * id-bearing one instead of being blindly forwarded (C2/N1): the gate must
+ * never treat "no id" as "no need to look at it". Returns `null` on any
+ * malformed shape, mirroring `parseToolCall`'s own contract.
+ */
+export function parseIdlessToolCall(raw: string): ParsedToolCall | null {
+  const parsed = tryParse(raw)
+  if (!isPlainRecord(parsed)) return null
+  const params = parsed['params']
+  if (!isPlainRecord(params)) return null
+  const name = params['name']
+  if (typeof name !== 'string' || name.length === 0) return null
+  const rawArgs = params['arguments']
+  return { toolName: name, args: rawArgs === undefined ? null : rawArgs, id: null }
 }
 
 function tryParse(raw: string): unknown {

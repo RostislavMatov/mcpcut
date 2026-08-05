@@ -186,6 +186,30 @@ describe('M10: unbounded inventory growth is capped, fail closed', () => {
   })
 })
 
+describe('TS-MEDIUM-3: a persist failure is reported through onError, never silently swallowed', () => {
+  test('onError receives the underlying cause; observeToolsList still fails closed', async () => {
+    await writeFile(storePath, 'not json at all', 'utf8')
+    const errors: unknown[] = []
+    const inventory = createInventory('srv', { storePath, onError: (error) => errors.push(error) })
+
+    const result = await inventory.observeToolsList([{ name: 'x' }])
+
+    expect(result.failed).toBe(true)
+    expect(inventory.isCatalogTrusted()).toBe(false)
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toBeInstanceOf(Error)
+  })
+
+  test('a clean observe never calls onError', async () => {
+    const errors: unknown[] = []
+    const inventory = createInventory('srv', { storePath, onError: (error) => errors.push(error) })
+
+    await inventory.observeToolsList([{ name: 'x' }])
+
+    expect(errors).toEqual([])
+  })
+})
+
 describe('TS-C1: a tool literally named __proto__ does not corrupt the shared store', () => {
   test('__proto__ is quarantined and handled like any other tool', async () => {
     const inventory = createInventory('srv', { storePath })

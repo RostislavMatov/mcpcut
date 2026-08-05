@@ -454,6 +454,37 @@ describe('runWrap blocks a denied tools/call', () => {
   })
 })
 
+describe('runWrap blocks an id-less tools/call notification (C2/N1)', () => {
+  const journalDir = useJournalDir('mcp-journal-wrap-idless-')
+  const policy = policyOf({ defaultDecision: 'deny' })
+  let session: SessionResult
+
+  beforeAll(async () => {
+    session = await runFakeServerSession({
+      journalDir: journalDir(),
+      lines: [
+        // Spec-violating: a `tools/call` with no "id" key at all.
+        `${JSON.stringify({ jsonrpc: '2.0', method: 'tools/call', params: { name: 'echo', arguments: { text: 'hi' } } })}\n`,
+        requestLine(2, 'initialize'),
+      ],
+      expectedResponses: 1,
+      policy,
+    })
+  })
+
+  test('never reaches the server: only the unrelated call after it gets a response', () => {
+    expect(session.messages).toHaveLength(1)
+    expect(session.messages[0]?.id).toBe(2)
+  })
+
+  test('is journaled as a denied tools/call, not silently dropped without a trace', () => {
+    const denials = decisionRecords(session.records).filter(
+      (record) => record.decision?.outcome === 'deny' && record.decision?.toolName === 'echo',
+    )
+    expect(denials).toHaveLength(1)
+  })
+})
+
 describe('runWrap quarantines a tool it has never seen approved', () => {
   const journalDir = useJournalDir('mcp-journal-wrap-quarantine-')
   const policy = policyOf({

@@ -145,11 +145,16 @@ export function wirePolicyRelay(args: PolicyRelayArgs): RelayWiring {
     onError: (error) => args.reportError('client→server', error, 'destination'),
   })
 
+  // A gate-internal failure and a swallowed inventory-persist failure are the
+  // same class of problem (a proxy defect that must never be silently lost):
+  // both route through the same reportError channel/origin (TS-MEDIUM-3).
+  const onInternalError = (error: unknown): void => args.reportError('client→server', error, 'tap')
+
   const gate = createPolicyGate({
     policy: args.policy,
     serverName: args.serverName,
     sessionId: args.sessionId,
-    inventory: createInventory(args.serverName, { storePath: inventoryStorePath }),
+    inventory: createInventory(args.serverName, { storePath: inventoryStorePath, onError: onInternalError }),
     approvalQueue: createApprovalQueue({ baseDir: approvalsBaseDir }),
     approvalWaiter: createApprovalWaiter(),
     grantRegistry: createGrantRegistry(),
@@ -158,7 +163,7 @@ export function wirePolicyRelay(args: PolicyRelayArgs): RelayWiring {
     approvalsBaseDir,
     // A gate-internal failure is a proxy defect, not a broken stream: log it
     // (the gate has already failed the call closed) and keep the session up.
-    onError: (error) => args.reportError('client→server', error, 'tap'),
+    onError: onInternalError,
   })
 
   /**
