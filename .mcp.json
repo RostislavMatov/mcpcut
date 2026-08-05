@@ -1,5 +1,18 @@
 {
   "mcpServers": {
+    "playwright": {
+      "command": "node",
+      "args": [
+        "<path-to-mcpcut>/dist/cli.js",
+        "wrap",
+        "--server",
+        "playwright",
+        "--",
+        "npx",
+        "-y",
+        "@playwright/mcp@latest"
+      ]
+    },
     "memory": {
       "command": "node",
       "args": [

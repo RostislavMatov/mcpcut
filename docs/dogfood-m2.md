@@ -7,9 +7,15 @@ Gate выхода M2 (ROADMAP): «свои агенты работают чер�
 
 ## Что развёрнуто (2026-08-05)
 
-- `.mcp.json` проекта оборачивает `@modelcontextprotocol/server-memory` в
-  `mcp-journal wrap --server memory` — каждая сессия Claude Code в этом
-  репозитории ходит к memory-серверу через прокси.
+- `.mcp.json` проекта оборачивает два сервера в `mcp-journal wrap`:
+  `@modelcontextprotocol/server-memory` (`--server memory`) и
+  `@playwright/mcp` (`--server playwright`) — каждая новая сессия Claude
+  Code в этом репозитории ходит к ним через прокси. Playwright добавлен как
+  write-тяжёлый источник approval-fatigue-данных (клики/навигация/формы —
+  почти всё не read). Внимание: плагиновые playwright-серверы (official и
+  ecc) при этом остаются активными в обход прокси — для честного dogfood их
+  стоит отключить в `/plugin` на время недели, иначе агент может уходить в
+  неблокируемые дубли тулзов.
 - Политика: `./.mcp-journal/policy.json` — read → allow, всё остальное →
   require-approval (60s, timeout → deny), карантин новых тулзов включён,
   `tools/list` фильтруется, журнал fail-closed.
