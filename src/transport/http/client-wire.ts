@@ -2,6 +2,7 @@ import { request as httpRequest, type ClientRequest, type IncomingMessage } from
 import { request as httpsRequest } from 'node:https'
 import type { McpMessage, MessageSource } from '../message.js'
 import { UpstreamConnectionError, UpstreamResponseError } from './client-errors.js'
+import { createSseParser, type SseItem } from './sse-parse.js'
 
 /**
  * Wire-level plumbing for the HTTP upstream client (`./client.ts`): raw
@@ -27,6 +28,45 @@ export function defaultDelay(ms: number): Promise<void> {
     const timer = setTimeout(resolve, ms)
     timer.unref()
   })
+}
+
+/**
+ * A serialized "start" queue: each `enqueue()`-ed task begins only once the
+ * previous one has called its own `markDispatched`. `client.ts`'s sink uses
+ * this to serialize POST *dispatch* order without serializing on the full
+ * response — see the comment on `write()` there for why dispatch (not
+ * response) is the release point.
+ *
+ * A task that settles without ever calling `markDispatched` (it threw
+ * before reaching its own dispatch point) still releases the queue: the
+ * safety net below calls it for them, so one failed task can never leave
+ * every later one hanging forever.
+ */
+export interface DispatchQueue {
+  enqueue<T>(task: (markDispatched: () => void) => Promise<T>): Promise<T>
+}
+
+export function createDispatchQueue(): DispatchQueue {
+  let tail: Promise<void> = Promise.resolve()
+  return {
+    enqueue<T>(task: (markDispatched: () => void) => Promise<T>): Promise<T> {
+      const previous = tail
+      let dispatched = false
+      let markDispatched!: () => void
+      tail = new Promise<void>((resolve) => {
+        markDispatched = () => {
+          dispatched = true
+          resolve()
+        }
+      })
+      const result = previous.then(() => task(markDispatched))
+      const release = () => {
+        if (!dispatched) markDispatched()
+      }
+      result.then(release, release)
+      return result
+    },
+  }
 }
 
 /**
@@ -77,6 +117,15 @@ export function createChannel(onDispose: () => void): Channel {
 export interface StartedRequest {
   readonly req: ClientRequest
   readonly response: Promise<IncomingMessage>
+  /**
+   * Resolves once this request's body has been fully handed off to the
+   * socket (Node's `'finish'` event) — or once the request failed, so
+   * nothing chained on it is ever left hanging. Never rejects. This is the
+   * dispatch-order release point `client.ts`'s sink serializes writes on
+   * (see the comment on `write()` there for why it is this and not the
+   * response).
+   */
+  readonly dispatched: Promise<void>
 }
 
 /**
@@ -94,16 +143,24 @@ export function startRequest(
 ): StartedRequest {
   const requestFn = url.protocol === 'https:' ? httpsRequest : httpRequest
   let req!: ClientRequest
+  let resolveDispatched!: () => void
+  const dispatched = new Promise<void>((resolve) => {
+    resolveDispatched = resolve
+  })
   const response = new Promise<IncomingMessage>((resolve, reject) => {
     req = requestFn(url, { method, headers }, resolve)
-    req.on('error', (error: unknown) => reject(new UpstreamConnectionError(method, host, error)))
+    req.on('error', (error: unknown) => {
+      resolveDispatched()
+      reject(new UpstreamConnectionError(method, host, error))
+    })
+    req.once('finish', resolveDispatched)
     if (body !== null) {
       req.end(body)
     } else {
       req.end()
     }
   })
-  return { req, response }
+  return { req, response, dispatched }
 }
 
 /** Buffers a whole response body, failing (and dropping the socket) past `maxBytes`. */
@@ -133,4 +190,45 @@ export function readBoundedBody(
 export function contentTypeOf(res: IncomingMessage): string {
   const raw = res.headers['content-type']
   return typeof raw === 'string' ? raw.toLowerCase() : ''
+}
+
+export interface SseConsumerOptions {
+  /** Forwarded to `sse-parse.ts`'s `createSseParser` (per-event memory bound). */
+  readonly maxBufferedChars: number
+  readonly host: string
+  /** One dispatched event's data, decoded utf8. */
+  readonly onMessage: (data: string) => void
+  /** A `retry:` directive's value, verbatim (uncapped — `client.ts` caps it). */
+  readonly onRetry: (retryMs: number) => void
+}
+
+/** Streams one SSE response through `sse-parse.ts` into the given callbacks, in order. */
+export function consumeSseResponse(res: IncomingMessage, opts: SseConsumerOptions): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const parser = createSseParser(opts.maxBufferedChars)
+    const handle = (item: SseItem): void => {
+      if (item.kind === 'retry') {
+        opts.onRetry(item.retryMs)
+        return
+      }
+      opts.onMessage(item.data)
+    }
+    res.on('data', (chunk: Buffer) => {
+      try {
+        for (const item of parser.feed(chunk)) handle(item)
+      } catch (error: unknown) {
+        res.destroy()
+        reject(error)
+      }
+    })
+    res.on('end', () => {
+      try {
+        for (const item of parser.end()) handle(item)
+        resolve()
+      } catch (error: unknown) {
+        reject(error)
+      }
+    })
+    res.on('error', (error: unknown) => reject(new UpstreamConnectionError('stream', opts.host, error)))
+  })
 }

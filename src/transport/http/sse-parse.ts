@@ -17,6 +17,16 @@ import { MAX_UPSTREAM_RESPONSE_BYTES } from './constants.js'
  *
  * The parser deals in text and field names only — it never inspects the
  * payload (no JSON-RPC knowledge; CLAUDE.md layering invariant).
+ *
+ * Memory bound: `maxBufferedChars` caps two independent things, both
+ * required — one alone is not enough. `buffer` bounds one physical line (a
+ * hostile upstream sending one unterminated line forever). The *sum* of
+ * `dataLines` bounds one logical event's joined payload (a hostile upstream
+ * sending endless short `data: x\n` lines, each individually tiny, never
+ * followed by the blank line that would dispatch and reset them) — without
+ * this second bound `dataLines` grows forever and the control plane's
+ * memory with it, since `buffer` alone never sees more than one line at a
+ * time.
  */
 
 /** One parsed item: a complete event's data, or a `retry:` directive. */
@@ -57,6 +67,7 @@ export function createSseParser(maxBufferedChars: number = MAX_UPSTREAM_RESPONSE
   const decoder = new StringDecoder('utf8')
   let buffer = ''
   let dataLines: string[] = []
+  let dataLinesCharCount = 0
   let sawFirstChunk = false
 
   function dispatch(): SseItem | null {
@@ -65,6 +76,7 @@ export function createSseParser(maxBufferedChars: number = MAX_UPSTREAM_RESPONSE
     }
     const data = dataLines.join('\n')
     dataLines = []
+    dataLinesCharCount = 0
     // WHATWG: an event whose data buffer is the empty string dispatches nothing.
     return data === '' ? null : Object.freeze({ kind: 'message' as const, data })
   }
@@ -81,6 +93,14 @@ export function createSseParser(maxBufferedChars: number = MAX_UPSTREAM_RESPONSE
     const rawValue = colonIndex === -1 ? '' : line.slice(colonIndex + 1)
     const value = rawValue.startsWith(' ') ? rawValue.slice(1) : rawValue
     if (field === 'data') {
+      // +1 for the '\n' `dispatch()` will join this line with — otherwise
+      // N one-char lines would report as only N buffered chars, not 2N-1.
+      dataLinesCharCount += value.length + 1
+      if (dataLinesCharCount > maxBufferedChars) {
+        throw new SseParseError(
+          `event data exceeds ${maxBufferedChars} buffered characters (no dispatching blank line seen)`,
+        )
+      }
       dataLines.push(value)
       return null
     }

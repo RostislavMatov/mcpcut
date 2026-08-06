@@ -85,6 +85,8 @@ interface SessionJournalWiring {
   readonly sessionId: string
   readonly sink: JournalSink
   readonly writeStderrLine: (line: string) => void
+  /** Tells this session's record builder which exact values went upstream. */
+  readonly registerKnownSecrets: (values: readonly string[]) => void
   readonly deps: Parameters<typeof createSession>[0]['journal']
 }
 
@@ -121,6 +123,7 @@ export function createServeSessionFactory(deps: ServeRuntimeDeps): OpenSession {
       sessionId,
       sink,
       writeStderrLine: (line: string) => sink.write(recordBuilder.buildStderrRecord(line)),
+      registerKnownSecrets: recordBuilder.registerKnownSecrets,
       deps: { recordBuilder, sink },
     }
   }
@@ -193,6 +196,11 @@ export function createServeSessionFactory(deps: ServeRuntimeDeps): OpenSession {
 
     const opened = await openUpstream(target.record, {
       ...deps.upstream,
+      // The one place a decrypted vault value passes through on this path, so
+      // the one place that can tell the journal what to redact. Registration
+      // happens here rather than after `openUpstream` returns so that not even
+      // the child's very first stderr line can outrun it.
+      resolveRefs: collectKnownSecrets(deps.upstream.resolveRefs, journal.registerKnownSecrets),
       onServerStderr: journal.writeStderrLine,
       onError: (error: unknown) => report(ctx, describeError(error)),
     })
@@ -249,4 +257,24 @@ export function createServeSessionFactory(deps: ServeRuntimeDeps): OpenSession {
 
 function describeError(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+}
+
+/**
+ * Wraps a vault resolver so every successfully resolved env/header value is
+ * registered as a known secret for this session's journal. Registry literals
+ * are included on purpose: an operator who declared a value inline did not
+ * thereby declare it public, and hiding a non-secret costs nothing
+ * (`redact/known-secrets.ts` drops anything under 8 characters).
+ */
+function collectKnownSecrets(
+  resolveRefs: OpenUpstreamDeps['resolveRefs'],
+  register: (values: readonly string[]) => void,
+): OpenUpstreamDeps['resolveRefs'] {
+  return async (record) => {
+    const result = await resolveRefs(record)
+    if (result.status === 'resolved') {
+      register(Object.values(result.values))
+    }
+    return result
+  }
 }

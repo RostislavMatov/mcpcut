@@ -1,4 +1,6 @@
+import { EventEmitter } from 'node:events'
 import { mkdtempSync, rmSync } from 'node:fs'
+import type { ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createAgentsStore, type AgentsStore } from '../../../src/agents/store.js'
@@ -55,6 +57,8 @@ export interface FakeSessionControl {
   readonly written: Buffer[]
   /** Emits a server-initiated message into the source. */
   push(text: string): void
+  /** Fires the source's `onError` (transport failure on the upstream side). */
+  fail(error: unknown): void
   /** Fires the source's `onEnd` (upstream conversation over). */
   end(): void
   isClosed(): boolean
@@ -89,6 +93,7 @@ export function createFakeSessionFactory(options: FakeFactoryOptions = {}): Fake
     }
 
     let onMessage: ((message: ReturnType<typeof serverMessage>) => void) | null = null
+    let onError: ((error: unknown) => void) | null = null
     let onEnd: (() => void) | null = null
     let isDisposed = false
     let isClosed = false
@@ -116,7 +121,9 @@ export function createFakeSessionFactory(options: FakeFactoryOptions = {}): Fake
       onMessage: (handler) => {
         onMessage = handler
       },
-      onError: () => undefined,
+      onError: (handler) => {
+        onError = handler
+      },
       onEnd: (handler) => {
         onEnd = handler
       },
@@ -129,6 +136,9 @@ export function createFakeSessionFactory(options: FakeFactoryOptions = {}): Fake
       ctx,
       written,
       push: emit,
+      fail: (error: unknown) => {
+        if (!isDisposed) onError?.(error)
+      },
       end: () => onEnd?.(),
       isClosed: () => isClosed,
       isDisposed: () => isDisposed,
@@ -147,6 +157,52 @@ export function createFakeSessionFactory(options: FakeFactoryOptions = {}): Fake
   }
 
   return { openSession, handles }
+}
+
+// ---------------------------------------------------------------------------
+// Minimal ServerResponse stand-in (good enough for `openSseStream`)
+// ---------------------------------------------------------------------------
+
+export interface FakeRes {
+  readonly res: ServerResponse
+  readonly chunks: string[]
+  writtenText(): string
+  emitClose(): void
+  isEnded(): boolean
+}
+
+export function createFakeRes(): FakeRes {
+  const emitter = new EventEmitter()
+  const chunks: string[] = []
+  let ended = false
+  const res = {
+    writeHead: (_status: number, _headers: Record<string, string>) => res,
+    flushHeaders: () => undefined,
+    write: (chunk: string) => {
+      chunks.push(chunk)
+      return true
+    },
+    end: () => {
+      ended = true
+      emitter.emit('close')
+      return res
+    },
+    on: (event: string, handler: () => void) => {
+      emitter.on(event, handler)
+      return res
+    },
+    once: (event: string, handler: () => void) => {
+      emitter.once(event, handler)
+      return res
+    },
+  }
+  return {
+    res: res as unknown as ServerResponse,
+    chunks,
+    writtenText: () => chunks.join(''),
+    emitClose: () => emitter.emit('close'),
+    isEnded: () => ended,
+  }
 }
 
 // ---------------------------------------------------------------------------

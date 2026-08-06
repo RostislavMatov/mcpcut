@@ -3,25 +3,20 @@ import { parseArgs } from 'node:util'
 import { ulid } from 'ulid'
 import type { AgentRecord } from '../agents/schema.js'
 import { createAgentsStore, type AgentsStore } from '../agents/store.js'
+import { JOURNAL_DIR } from '../config.js'
 import type { LoadPolicyOptions } from '../policy/load.js'
 import type { Policy } from '../policy/schema.js'
-import { detectInitializeBytes } from '../protocol/mcp.js'
 import { EXIT_CODE_JOURNAL_FAILURE } from '../proxy/wrap.js'
 import { createOrderedWriter } from '../proxy/writer.js'
 import type { ServerRecord } from '../registry/schema.js'
 import { createRegistryStore, type RegistryStore } from '../registry/store.js'
 import type { AgentRecordReader } from '../session/agent-watch.js'
-import type { SessionEndReason, SessionEndpoints, SessionHandle } from '../session/core.js'
-import type { MessageSource } from '../transport/message.js'
+import type { SessionEndReason, SessionEndpoints } from '../session/core.js'
 import { createStdioMessageSink } from '../transport/stdio-adapter.js'
 import { resolveVaultRefs } from '../vault/resolve.js'
 import { createVaultStore } from '../vault/store.js'
-import {
-  CONNECT_USAGE,
-  DIAGNOSTIC_PREFIX,
-  EXIT_CODE_REFUSED,
-  statelessInitializeRefusal,
-} from './connect-constants.js'
+import { CONNECT_USAGE, DIAGNOSTIC_PREFIX, EXIT_CODE_REFUSED } from './connect-constants.js'
+import { createMismatchGuard } from './connect-mismatch.js'
 import { resolveConnectPolicy } from './connect-policy.js'
 import { resolveConnectTarget } from './connect-resolve.js'
 import {
@@ -29,7 +24,7 @@ import {
   type ConnectSessionHandle,
   type StartConnectSessionArgs,
 } from './connect-session.js'
-import { createReadableMessageSource, guardStatelessInitialize } from './connect-source.js'
+import { createReadableMessageSource } from './connect-source.js'
 import {
   prepareUpstream,
   type PrepareUpstreamArgs,
@@ -87,8 +82,13 @@ export interface ConnectDeps {
   readonly sessionId?: string
   /** Injectable clock (ms since epoch). */
   readonly now?: () => number
-  /** Forwarded to `loadPolicy` unchanged (minus `explicitPath`, which comes from `--policy`). */
-  readonly loadPolicy?: Omit<LoadPolicyOptions, 'explicitPath'>
+  /**
+   * Test seam for policy file reading. Deliberately NOT the full
+   * `LoadPolicyOptions`: on this command the policy's location is not
+   * configurable at all — it is always `<journalDir>/policy.json`
+   * (`connect-policy.ts`), because everything else is agent-controlled.
+   */
+  readonly policyReadFile?: LoadPolicyOptions['readFile']
   readonly approvalsBaseDir?: string
   readonly inventoryStorePath?: string
   /** Revocation poll interval; defaults to the ≤5 s session constant. */
@@ -111,6 +111,12 @@ const DEFAULT_IO: ConnectCliIo = { stderr: process.stderr }
 interface ConnectFlags {
   readonly server: string
   readonly agent: string
+  /**
+   * `--policy`, which this command REFUSES rather than honors
+   * (`connect-policy.ts`). It is still parsed so the refusal can explain
+   * itself; dropping it from `options` would collapse the case into bare usage
+   * text and leave the operator guessing.
+   */
   readonly policy: string | undefined
   readonly failClosed: boolean
 }
@@ -206,10 +212,15 @@ export async function runConnect(
     return EXIT_CODE_REFUSED
   }
 
+  // Policy comes from the operator's directory only — never from the argv,
+  // cwd or environment this command was launched with (see `connect-policy.ts`).
   const policyOutcome = await resolveConnectPolicy({
     io,
+    journalDir: journalDir ?? JOURNAL_DIR,
+    env,
+    cwd: deps.cwd ?? process.cwd(),
     ...(flags.policy !== undefined ? { explicitPath: flags.policy } : {}),
-    ...(deps.loadPolicy !== undefined ? { loadPolicyOptions: deps.loadPolicy } : {}),
+    ...(deps.policyReadFile !== undefined ? { readFile: deps.policyReadFile } : {}),
   })
   if (policyOutcome.status === 'failed') {
     return policyOutcome.exitCode
@@ -371,40 +382,3 @@ async function runSession(args: RunSessionArgs): Promise<number> {
   })
 }
 
-interface MismatchGuard {
-  /** Wraps the client source so a sessionful handshake never reaches the upstream. */
-  wrap(source: MessageSource): MessageSource
-  /** Supplies the session to end — it does not exist when the guard is built. */
-  bind(session: SessionHandle): void
-  hasTripped(): boolean
-}
-
-/**
- * Session-model mismatch guard for a `protocol: 'stateless'` upstream: the
- * refusal is decided from the client's FIRST message and the message is never
- * delivered, so the upstream receives zero bytes (ADR-0002 — the control
- * plane transports both models and translates between neither).
- */
-function createMismatchGuard(
-  serverName: string,
-  onDiagnostic: (line: string) => void,
-): MismatchGuard {
-  let hasTripped = false
-  let session: SessionHandle | null = null
-
-  return {
-    hasTripped: () => hasTripped,
-    bind: (next: SessionHandle) => {
-      session = next
-      if (hasTripped) {
-        void session.close('closed')
-      }
-    },
-    wrap: (source: MessageSource) =>
-      guardStatelessInitialize(source, detectInitializeBytes, () => {
-        hasTripped = true
-        onDiagnostic(statelessInitializeRefusal(serverName))
-        void session?.close('closed')
-      }),
-  }
-}

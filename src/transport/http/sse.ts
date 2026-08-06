@@ -10,9 +10,20 @@ import { HTTP_STATUS_OK } from './server-constants.js'
  * A payload containing newlines is split into one `data:` line per text
  * line (the WHATWG grammar's only representation of multi-line data —
  * `sse-parse.ts` on the client side re-joins them with '\n', so the bytes
- * round-trip). A `: ping` comment goes out every `heartbeatIntervalMs` on
- * an unref'ed timer so intermediaries keep the connection alive without
- * the process being held open.
+ * round-trip). The split is on `\r\n`, `\r` and `\n` alike — matching
+ * `sse-parse.ts`'s own line-break rule — not just `\n`: splitting on `\n`
+ * only would leave a bare `\r` embedded inside one wire line, and the
+ * parser's line-break regex (which treats a lone `\r` as a break too)
+ * would then cut that wire line in the wrong place, silently dropping
+ * whatever text followed the `\r` (it loses its `data:` prefix once
+ * mis-split, and an unprefixed line is ignored as an unknown field — see
+ * `sse-parse.ts`). Splitting on every CR/LF variant here keeps every byte
+ * accounted for; the CR-vs-LF distinction itself cannot survive an SSE
+ * round trip (the grammar has no way to represent it), so it normalizes to
+ * `\n` — a documented, honest lossy transform, never a silent drop. A
+ * `: ping` comment goes out every `heartbeatIntervalMs` on an unref'ed
+ * timer so intermediaries keep the connection alive without the process
+ * being held open.
  *
  * Headers include `X-Accel-Buffering: no` (spec SHOULD — critical behind
  * a buffering reverse proxy) and disable caching. Payload bytes are
@@ -34,9 +45,12 @@ export interface SseStreamOptions {
   readonly onClose?: () => void
 }
 
+/** Matches `sse-parse.ts`'s own line-break rule: CRLF, then bare CR or LF. */
+const SSE_LINE_BREAK = /\r\n|\r|\n/
+
 /** Encodes one payload as a spec-conformant SSE event. */
 export function encodeSseEvent(payload: Buffer): string {
-  const lines = payload.toString('utf8').split('\n')
+  const lines = payload.toString('utf8').split(SSE_LINE_BREAK)
   return `${lines.map((line) => `data: ${line}`).join('\n')}\n\n`
 }
 

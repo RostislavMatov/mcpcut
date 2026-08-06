@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -24,6 +25,7 @@ import type { Verdict } from '../../src/proxy/pipeline.js'
 import type { Frame } from '../../src/protocol/split.js'
 import { clientMessage, serverMessage, type McpMessage, type MessageVerdict } from '../../src/transport/message.js'
 import { frameToMessage, messageToChunk } from '../../src/transport/stdio-adapter.js'
+import { readJournalRecords } from './harness.js'
 
 /**
  * M3 gate tests: the message-level core (`createMessagePolicyGate`), its
@@ -97,6 +99,8 @@ interface MessageHarness {
   readonly gate: MessagePolicyGate
   readonly answered: McpMessage[]
   readonly journalPath: string
+  /** Flushes the journal and returns every decision record written so far. */
+  decisions(): Promise<JournalRecord[]>
 }
 
 interface FrameHarness {
@@ -116,7 +120,7 @@ function sinkFor(sessionId: string): JournalSink {
   return sink
 }
 
-function commonDeps(opts: HarnessOptions, sessionId: string) {
+function commonDeps(opts: HarnessOptions, sessionId: string, sink: JournalSink) {
   return {
     policy: opts.policy ?? policyOf({ defaultDecision: 'allow' }),
     serverName: SERVER_NAME,
@@ -125,7 +129,7 @@ function commonDeps(opts: HarnessOptions, sessionId: string) {
     approvalQueue: queue,
     approvalWaiter: createApprovalWaiter({ pollIntervalMs: 5 }),
     grantRegistry: createGrantRegistry(),
-    sink: sinkFor(sessionId),
+    sink,
     approvalsBaseDir: approvalsDir,
     ...(opts.agentScope !== undefined ? { agentScope: opts.agentScope } : {}),
     onError: (error: unknown) => errors.push(error),
@@ -135,8 +139,9 @@ function commonDeps(opts: HarnessOptions, sessionId: string) {
 function createMessageHarness(opts: HarnessOptions = {}): MessageHarness {
   const sessionId = opts.sessionId ?? `${SESSION_ID}-msg`
   const answered: McpMessage[] = []
+  const sink = sinkFor(sessionId)
   const gate = createMessagePolicyGate({
-    ...commonDeps(opts, sessionId),
+    ...commonDeps(opts, sessionId, sink),
     clientSink: {
       write: (message) => {
         answered.push(message)
@@ -144,14 +149,25 @@ function createMessageHarness(opts: HarnessOptions = {}): MessageHarness {
       },
     },
   })
-  return { gate, answered, journalPath: join(tempDir, `${sessionId}.jsonl`) }
+  return {
+    gate,
+    answered,
+    journalPath: join(tempDir, `${sessionId}.jsonl`),
+    decisions: async () => {
+      await sink.flush()
+      // A session that journaled nothing never creates its file at all.
+      if (!existsSync(join(tempDir, `${sessionId}.jsonl`))) return []
+      const records = await readJournalRecords(tempDir, sessionId)
+      return records.filter((record) => record.kind === 'decision')
+    },
+  }
 }
 
 function createFrameHarness(opts: HarnessOptions = {}): FrameHarness {
   const sessionId = opts.sessionId ?? `${SESSION_ID}-frame`
   const written: Buffer[] = []
   const gate = createPolicyGate({
-    ...commonDeps(opts, sessionId),
+    ...commonDeps(opts, sessionId, sinkFor(sessionId)),
     clientWriter: {
       writeMessage: (bytes) => {
         written.push(bytes)
@@ -361,6 +377,182 @@ describe('message-level gate: agent scope', () => {
           JSON.stringify({ jsonrpc: '2.0', id: 10, result: { tools: [{ name: 'write_file' }] } }),
         ),
       ),
+    )
+
+    expect(verdict).toEqual({ action: 'forward' })
+  })
+})
+
+describe('message-level gate: methods outside the grant vocabulary (agent sessions)', () => {
+  const NON_GRANTABLE = [
+    'resources/read',
+    'resources/list',
+    'resources/subscribe',
+    'resources/unsubscribe',
+    'resources/templates/list',
+    'prompts/list',
+    'prompts/get',
+    'completion/complete',
+  ] as const
+
+  test.each(NON_GRANTABLE)(
+    '%s is denied and never reaches the server when an agent is present',
+    async (method) => {
+      const harness = createMessageHarness({
+        agentScope: scopeOf(['*']),
+        sessionId: `${SESSION_ID}-nongrantable-${method.replace(/\//g, '-')}`,
+      })
+
+      const verdict = await harness.gate.gateClientMessage(
+        clientMessage(Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: 11, method, params: {} }))),
+      )
+
+      expect(verdict).toEqual({ action: 'drop' })
+      const answer = JSON.parse(harness.answered[0]!.bytes.toString('utf8'))
+      expect(answer.id).toBe(11)
+      expect(answer.error.code).toBe(ERROR_CODE_POLICY_DENIED)
+      expect(String(answer.error.data.rule)).toBe(`agent: method not grantable in M3: ${method}`)
+    },
+  )
+
+  test('the denial is journaled as a decision naming the method', async () => {
+    const harness = createMessageHarness({
+      agentScope: scopeOf(['*']),
+      sessionId: `${SESSION_ID}-nongrantable-journal`,
+    })
+
+    await harness.gate.gateClientMessage(
+      clientMessage(
+        Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: 12, method: 'resources/read', params: { uri: 'file:///etc/passwd' } })),
+      ),
+    )
+
+    const decisions = await harness.decisions()
+    expect(decisions).toHaveLength(1)
+    expect(decisions[0]?.decision).toMatchObject({
+      outcome: 'deny',
+      rule: 'agent: method not grantable in M3: resources/read',
+      toolName: 'resources/read',
+      serverName: SERVER_NAME,
+    })
+  })
+
+  test('an id-less (notification-shaped) resources/read is dropped without an answer', async () => {
+    const harness = createMessageHarness({
+      agentScope: scopeOf(['*']),
+      sessionId: `${SESSION_ID}-nongrantable-idless`,
+    })
+
+    const verdict = await harness.gate.gateClientMessage(
+      clientMessage(
+        Buffer.from(JSON.stringify({ jsonrpc: '2.0', method: 'resources/read', params: { uri: 'file:///x' } })),
+      ),
+    )
+
+    expect(verdict).toEqual({ action: 'drop' })
+    // No id, no return address: the drop is journaled, nothing is synthesized.
+    expect(harness.answered).toEqual([])
+    expect((await harness.decisions())[0]?.decision?.outcome).toBe('deny')
+  })
+
+  test('protocol plumbing an agent session still needs is forwarded untouched', async () => {
+    const harness = createMessageHarness({
+      agentScope: scopeOf(['*']),
+      sessionId: `${SESSION_ID}-plumbing`,
+    })
+
+    for (const [id, method] of [
+      [21, 'initialize'],
+      [22, 'ping'],
+      [23, 'tools/list'],
+      [24, 'logging/setLevel'],
+    ] as const) {
+      const verdict = await harness.gate.gateClientMessage(
+        clientMessage(Buffer.from(JSON.stringify({ jsonrpc: '2.0', id, method, params: {} }))),
+      )
+      expect(verdict).toEqual({ action: 'forward' })
+    }
+    const notification = await harness.gate.gateClientMessage(
+      clientMessage(Buffer.from(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }))),
+    )
+
+    expect(notification).toEqual({ action: 'forward' })
+    expect(harness.answered).toEqual([])
+  })
+
+  test('without an agentScope (wrap) resources/read forwards exactly as in M2', async () => {
+    const harness = createMessageHarness({ sessionId: `${SESSION_ID}-wrap-resources` })
+
+    const verdict = await harness.gate.gateClientMessage(
+      clientMessage(
+        Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: 31, method: 'resources/read', params: {} })),
+      ),
+    )
+
+    expect(verdict).toEqual({ action: 'forward' })
+    expect(harness.answered).toEqual([])
+    await expect(harness.decisions()).resolves.toEqual([])
+  })
+})
+
+describe('message-level gate: an untracked tools/list-shaped response', () => {
+  /** A catalog response whose id was never seen in a tracked `tools/list` request. */
+  function unsolicitedCatalog(id: number): McpMessage {
+    return serverMessage(
+      Buffer.from(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id,
+          result: { tools: [{ name: 'read_file' }, { name: 'delete_repo' }], nextCursor: 'c9' },
+        }),
+      ),
+    )
+  }
+
+  test('still passes the grant filter, so an agent cannot see what it was never given', async () => {
+    const harness = createMessageHarness({
+      agentScope: scopeOf(['read_*']),
+      sessionId: `${SESSION_ID}-untracked-agent`,
+    })
+
+    const verdict = (await harness.gate.gateServerMessage(unsolicitedCatalog(99))) as Extract<
+      MessageVerdict,
+      { action: 'emit' }
+    >
+
+    expect(verdict.action).toBe('emit')
+    const result = JSON.parse(verdict.bytes.toString('utf8')).result
+    expect(result.tools.map((tool: { name: string }) => tool.name)).toEqual(['read_file'])
+    expect(result.nextCursor).toBe('c9')
+  })
+
+  test('an untracked catalog whose tools are all granted forwards byte-identically', async () => {
+    const harness = createMessageHarness({
+      agentScope: scopeOf(['read_*', 'delete_*']),
+      sessionId: `${SESSION_ID}-untracked-all-granted`,
+    })
+
+    const verdict = await harness.gate.gateServerMessage(unsolicitedCatalog(98))
+
+    expect(verdict).toEqual({ action: 'forward' })
+  })
+
+  test('without an agentScope it forwards untouched, exactly as in M2', async () => {
+    const harness = createMessageHarness({ sessionId: `${SESSION_ID}-untracked-wrap` })
+
+    const verdict = await harness.gate.gateServerMessage(unsolicitedCatalog(97))
+
+    expect(verdict).toEqual({ action: 'forward' })
+  })
+
+  test('a non-catalog response is forwarded untouched even under an agent scope', async () => {
+    const harness = createMessageHarness({
+      agentScope: scopeOf([]),
+      sessionId: `${SESSION_ID}-untracked-non-catalog`,
+    })
+
+    const verdict = await harness.gate.gateServerMessage(
+      serverMessage(Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: 96, result: { content: [] } }))),
     )
 
     expect(verdict).toEqual({ action: 'forward' })

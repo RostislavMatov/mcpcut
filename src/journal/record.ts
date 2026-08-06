@@ -7,6 +7,7 @@ import {
   RAW_REDACTION_OVERLAP_CHARS,
   REQUEST_CORRELATION_TTL_MS,
 } from '../config.js'
+import { normalizeKnownSecrets } from '../redact/known-secrets.js'
 import { sealUnterminatedKeyBlock } from '../redact/patterns.js'
 import { redact, redactString } from '../redact/redact.js'
 import type { ClassifiedMessage, JsonRpcId } from '../protocol/classify.js'
@@ -79,6 +80,12 @@ export interface RecordBuilderOptions {
   readonly now?: () => number
   /** Max time to keep an unanswered request id for correlation. */
   readonly ttlMs?: number
+  /**
+   * Exact values this session's upstream was given (vault-resolved env and
+   * header material, plus the registry literals beside them). See
+   * `redact/known-secrets.ts` for why they need registering at all.
+   */
+  readonly knownSecrets?: readonly string[]
 }
 
 export interface RecordBuilder {
@@ -89,6 +96,14 @@ export interface RecordBuilder {
   ) => JournalRecord
   /** Builds a redacted, immutable record from a raw stderr text line. */
   readonly buildStderrRecord: (text: string) => JournalRecord
+  /**
+   * Adds to the known-secret set used by every subsequent record. Needed
+   * because a session's upstream (and therefore its secrets) is resolved
+   * AFTER its journal wiring exists — the stderr tap has to be handed to the
+   * upstream at construction time. Registration is additive and the set is
+   * replaced, never mutated.
+   */
+  readonly registerKnownSecrets: (values: readonly string[]) => void
 }
 
 interface PendingRequest {
@@ -139,6 +154,11 @@ export function createRecordBuilder(
   const now = opts.now ?? Date.now
   const ttlMs = opts.ttlMs ?? REQUEST_CORRELATION_TTL_MS
   const pending: PendingMap = new Map()
+  let knownSecrets = normalizeKnownSecrets(opts.knownSecrets ?? [])
+
+  function registerKnownSecrets(values: readonly string[]): void {
+    knownSecrets = normalizeKnownSecrets([...knownSecrets, ...values])
+  }
 
   function buildRecord(
     classified: ClassifiedMessage,
@@ -159,9 +179,9 @@ export function createRecordBuilder(
       sessionId,
       direction,
       kind: classified.kind,
-      method: methodOf(classified),
-      rpcId: idOf(classified),
-      payload: buildPayload(classified.raw),
+      method: methodOf(classified, knownSecrets),
+      rpcId: idOf(classified, knownSecrets),
+      payload: buildPayload(classified.raw, knownSecrets),
       durationMs,
       nowMs,
     })
@@ -174,13 +194,13 @@ export function createRecordBuilder(
       kind: 'stderr',
       method: undefined,
       rpcId: undefined,
-      payload: redactRawLine(text),
+      payload: redactRawLine(text, knownSecrets),
       durationMs: undefined,
       nowMs: now(),
     })
   }
 
-  return { buildRecord, buildStderrRecord }
+  return { buildRecord, buildStderrRecord, registerKnownSecrets }
 }
 
 interface FinalizeArgs {
@@ -215,10 +235,13 @@ function finalizeRecord(args: FinalizeArgs): JournalRecord {
  * name is attacker-influenced text and must go through the same string
  * redaction as everything else before it reaches the journal.
  */
-function methodOf(classified: ClassifiedMessage): string | undefined {
+function methodOf(
+  classified: ClassifiedMessage,
+  knownSecrets: readonly string[],
+): string | undefined {
   const method =
     classified.kind === 'request' || classified.kind === 'notification' ? classified.method : undefined
-  return method === undefined ? undefined : redactString(method)
+  return method === undefined ? undefined : redactString(method, knownSecrets)
 }
 
 /**
@@ -226,9 +249,12 @@ function methodOf(classified: ClassifiedMessage): string | undefined {
  * cannot carry a secret and pass through unchanged; a string id is redacted
  * like any other attacker-influenced string.
  */
-function idOf(classified: ClassifiedMessage): JsonRpcId | undefined {
+function idOf(
+  classified: ClassifiedMessage,
+  knownSecrets: readonly string[],
+): JsonRpcId | undefined {
   const id = classified.kind === 'request' || classified.kind === 'response' ? classified.id : undefined
-  return typeof id === 'string' ? redactString(id) : id
+  return typeof id === 'string' ? redactString(id, knownSecrets) : id
 }
 
 /** Builds the direction- and type-qualified key for one pending request. */
@@ -307,9 +333,11 @@ function evictOldest(pending: PendingMap, maxEntries: number): void {
  * capped raw path, because that carrier also receives oversize framer
  * flushes and stderr noise.
  */
-function buildPayload(raw: string): unknown {
+function buildPayload(raw: string, knownSecrets: readonly string[]): unknown {
   const parsed = tryParseJson(raw)
-  return parsed.ok ? capValidPayload(redact(parsed.value)) : redactRawLine(raw)
+  return parsed.ok
+    ? capValidPayload(redact(parsed.value, knownSecrets))
+    : redactRawLine(raw, knownSecrets)
 }
 
 /**
@@ -337,9 +365,9 @@ function capValidPayload(redactedPayload: unknown): unknown {
  * instead of surviving as a prefix. Whatever the trim leaves behind is then
  * checked for a decapitated key block.
  */
-function redactRawLine(raw: string): string {
+function redactRawLine(raw: string, knownSecrets: readonly string[]): string {
   const wasWindowed = raw.length > RAW_REDACTION_WINDOW_CHARS
-  const redacted = redactString(raw.slice(0, RAW_REDACTION_WINDOW_CHARS))
+  const redacted = redactString(raw.slice(0, RAW_REDACTION_WINDOW_CHARS), knownSecrets)
   const wasTrimmed = redacted.length > MAX_INVALID_PAYLOAD_CHARS
   const capped = sealUnterminatedKeyBlock(redacted.slice(0, MAX_INVALID_PAYLOAD_CHARS))
   return wasTrimmed || wasWindowed ? `${capped}${PAYLOAD_TRUNCATION_MARKER}` : capped

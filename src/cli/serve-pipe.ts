@@ -54,6 +54,13 @@ function createChannel(): Channel {
     },
     onEnd(handler: () => void): void {
       onEnd = handler
+      if (hasEnded && !isSourceDisposed) {
+        // The conversation ended before anyone was listening (a session
+        // that died while the front was still wiring itself up). Telling
+        // the late handler anyway is what keeps the front from waiting on
+        // a message that can never arrive.
+        handler()
+      }
     },
     dispose(): void {
       isSourceDisposed = true

@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeEach, describe, expect, test } from 'vitest'
@@ -59,22 +59,49 @@ afterAll(() => {
   stopAllHttpFixtures()
 })
 
-/** Deps every run shares: temp state, injected stdio, and no policy discovery outside the temp dir. */
+/**
+ * Deps every run shares: temp state and injected stdio. Policy discovery is
+ * NOT configurable here on purpose — `connect` resolves it from `journalDir`
+ * alone (see the "policy source" describe block); `cwd` points at the temp
+ * directory so no policy file of the repo's own can influence a run.
+ */
 function depsOf(overrides: Partial<ConnectDeps> = {}): ConnectDeps {
   return {
     journalDir: tempDir,
     env: {},
+    cwd: tempDir,
     stdin: stdio.clientOutbox,
     stdout: stdio.clientStdout,
     stderr: stdio.clientStderr,
     sessionId: SESSION_ID,
-    loadPolicy: { cwd: tempDir, journalDir: tempDir, env: {} },
     revocationPollIntervalMs: 25,
     childExitGraceMs: 1000,
     killEscalationMs: 500,
     ...overrides,
   }
 }
+
+/** Writes the operator-zone policy: `<journalDir>/policy.json`. */
+async function writeJournalPolicy(document: Record<string, unknown>): Promise<string> {
+  const path = join(tempDir, 'policy.json')
+  await writeFile(path, JSON.stringify(document), 'utf8')
+  return path
+}
+
+/** A policy that denies `echo` on the fixture server — visible in one call. */
+const DENY_ECHO_POLICY = {
+  version: 1,
+  quarantine: { enabled: false },
+  defaultDecision: 'allow',
+  servers: { [SERVER]: { tools: { echo: 'deny' } } },
+} as const
+
+/** A policy that allows everything, used as the bait an agent-controlled source would supply. */
+const ALLOW_ALL_POLICY = {
+  version: 1,
+  quarantine: { enabled: false },
+  defaultDecision: 'allow',
+} as const
 
 function journalPath(): string {
   return join(tempDir, `${SESSION_ID}.jsonl`)
@@ -423,19 +450,9 @@ describe('connect: stdio upstream', () => {
     expect(outcome.messages[0]).not.toHaveProperty('error')
   })
 
-  test('--policy loads the named file and its rules apply on top of the grants', async () => {
+  test('the journal-directory policy applies on top of the grants', async () => {
     await addPolicyServer()
-    const policyPath = join(tempDir, 'custom-policy.json')
-    await writeFile(
-      policyPath,
-      JSON.stringify({
-        version: 1,
-        quarantine: { enabled: false },
-        defaultDecision: 'allow',
-        servers: { [SERVER]: { tools: { echo: 'deny' } } },
-      }),
-      'utf8',
-    )
+    const policyPath = await writeJournalPolicy(DENY_ECHO_POLICY)
     const token = await createGrantedAgent({
       journalDir: tempDir,
       agentName: AGENT,
@@ -446,17 +463,15 @@ describe('connect: stdio upstream', () => {
     const outcome = await runLines({
       token,
       lines: [requestLine(1, 'tools/call', { name: 'echo', arguments: {} })],
-      argv: [SERVER, '--agent', AGENT, '--policy', policyPath],
     })
 
     expect(io.err()).toContain(`policy: loaded from ${policyPath}`)
     expect(outcome.messages[0]).toHaveProperty('error')
   })
 
-  test('a broken --policy file stops the run instead of falling back to allow-all', async () => {
+  test('a broken policy file stops the run instead of falling back to allow-all', async () => {
     await addPolicyServer()
-    const policyPath = join(tempDir, 'broken-policy.json')
-    await writeFile(policyPath, '{ this is not json', 'utf8')
+    await writeFile(join(tempDir, 'policy.json'), '{ this is not json', 'utf8')
     const token = await createGrantedAgent({
       journalDir: tempDir,
       agentName: AGENT,
@@ -465,7 +480,7 @@ describe('connect: stdio upstream', () => {
     })
 
     const exitCode = await runConnect(
-      [SERVER, '--agent', AGENT, '--policy', policyPath],
+      [SERVER, '--agent', AGENT],
       io,
       depsOf({ env: { MCP_AGENT_TOKEN: token, PATH: process.env['PATH'] ?? '' } }),
     )
@@ -570,6 +585,142 @@ describe('connect: stdio upstream', () => {
     expect(io.err()).toContain('revoked')
     const records = await readJournalRecords(tempDir, SESSION_ID)
     expect(records.some((record) => record.decision?.rule === 'agent-revoked')).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Policy source: operator-controlled only
+// ---------------------------------------------------------------------------
+
+describe('connect: the policy source is not agent-controlled', () => {
+  /** Runs one `echo` call and reports whether policy blocked it. */
+  async function echoWasDenied(args: {
+    readonly token: string
+    readonly deps?: Partial<ConnectDeps>
+  }): Promise<boolean> {
+    const outcome = await runLines({
+      token: args.token,
+      lines: [requestLine(1, 'tools/call', { name: 'echo', arguments: {} })],
+      ...(args.deps !== undefined ? { deps: args.deps } : {}),
+    })
+    return Object.prototype.hasOwnProperty.call(outcome.messages[0] ?? {}, 'error')
+  }
+
+  test('--policy is refused outright, with the operator location in the message', async () => {
+    await addPolicyServer()
+    const bait = join(tempDir, 'agent-chosen-policy.json')
+    await writeFile(bait, JSON.stringify(ALLOW_ALL_POLICY), 'utf8')
+    const token = await createGrantedAgent({
+      journalDir: tempDir,
+      agentName: AGENT,
+      serverName: SERVER,
+      tools: '*',
+    })
+
+    const exitCode = await runConnect(
+      [SERVER, '--agent', AGENT, '--policy', bait],
+      io,
+      depsOf({ env: { MCP_AGENT_TOKEN: token, PATH: process.env['PATH'] ?? '' } }),
+    )
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('refusing --policy')
+    expect(io.err()).toContain(join(tempDir, 'policy.json'))
+    // Refused before anything ran: no journal, not one protocol byte.
+    expect(existsSync(journalPath())).toBe(false)
+    expect(stdio.stdoutText()).toBe('')
+  })
+
+  test('--policy is refused even when it names the very file connect would have loaded', async () => {
+    await addPolicyServer()
+    const policyPath = await writeJournalPolicy(ALLOW_ALL_POLICY)
+    const token = await createGrantedAgent({
+      journalDir: tempDir,
+      agentName: AGENT,
+      serverName: SERVER,
+      tools: '*',
+    })
+
+    const exitCode = await runConnect(
+      [SERVER, '--agent', AGENT, '--policy', policyPath],
+      io,
+      depsOf({ env: { MCP_AGENT_TOKEN: token, PATH: process.env['PATH'] ?? '' } }),
+    )
+
+    // The flag is refused by its nature, not by where it points: a rule that
+    // depends on the value is a rule an attacker gets to probe.
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('refusing --policy')
+  })
+
+  test('the usage text no longer advertises --policy', async () => {
+    await runConnect([SERVER], io, depsOf())
+
+    expect(io.err()).toContain('Usage:')
+    expect(io.err()).not.toContain('--policy <path>')
+  })
+
+  test('$MCP_JOURNAL_POLICY is ignored, with a note, and the journal-dir policy still applies', async () => {
+    await addPolicyServer()
+    await writeJournalPolicy(DENY_ECHO_POLICY)
+    const envPolicy = join(tempDir, 'env-policy.json')
+    await writeFile(envPolicy, JSON.stringify(ALLOW_ALL_POLICY), 'utf8')
+    const token = await createGrantedAgent({
+      journalDir: tempDir,
+      agentName: AGENT,
+      serverName: SERVER,
+      tools: '*',
+    })
+
+    const denied = await echoWasDenied({
+      token,
+      deps: {
+        env: {
+          MCP_AGENT_TOKEN: token,
+          PATH: process.env['PATH'] ?? '',
+          MCP_JOURNAL_POLICY: envPolicy,
+        },
+      },
+    })
+
+    expect(denied).toBe(true)
+    expect(io.err()).toContain('ignoring $MCP_JOURNAL_POLICY')
+    expect(io.err()).toContain(`policy: loaded from ${join(tempDir, 'policy.json')}`)
+  })
+
+  test('a project-level <cwd>/.mcp-journal/policy.json is ignored, with a note', async () => {
+    await addPolicyServer()
+    await writeJournalPolicy(DENY_ECHO_POLICY)
+    const projectDir = join(tempDir, 'agent-project')
+    await mkdir(join(projectDir, '.mcp-journal'), { recursive: true })
+    const projectPolicy = join(projectDir, '.mcp-journal', 'policy.json')
+    await writeFile(projectPolicy, JSON.stringify(ALLOW_ALL_POLICY), 'utf8')
+    const token = await createGrantedAgent({
+      journalDir: tempDir,
+      agentName: AGENT,
+      serverName: SERVER,
+      tools: '*',
+    })
+
+    const denied = await echoWasDenied({ token, deps: { cwd: projectDir } })
+
+    expect(denied).toBe(true)
+    expect(io.err()).toContain(`ignoring ${projectPolicy}`)
+  })
+
+  test('no note is printed when no agent-controlled source is present', async () => {
+    await addPolicyServer()
+    await writeJournalPolicy(DENY_ECHO_POLICY)
+    const token = await createGrantedAgent({
+      journalDir: tempDir,
+      agentName: AGENT,
+      serverName: SERVER,
+      tools: '*',
+    })
+
+    await echoWasDenied({ token })
+
+    expect(io.err()).not.toContain('ignoring')
   })
 })
 

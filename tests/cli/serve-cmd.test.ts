@@ -332,7 +332,12 @@ describe('runServe: stateless downstream header validation', () => {
 // ---------------------------------------------------------------------------
 
 describe('runServe: session-model mismatch refusals (ADR-0002)', () => {
-  test('a sessionful agent against a stateless server record is refused with the ADR reference', async () => {
+  /**
+   * The agent gets the bare refusal CODE; the sentence explaining which
+   * session model the server is registered with — and the ADR reference —
+   * is operator information and goes to the plane's stderr only.
+   */
+  test('a sessionful agent against a stateless server record is refused with the code alone', async () => {
     const fixture = await startServe({ grant: '*' })
     await fixture.registry.addServer({
       name: SERVER,
@@ -345,11 +350,12 @@ describe('runServe: session-model mismatch refusals (ADR-0002)', () => {
 
     expect(response.status).toBe(400)
     const body = (await response.json()) as { error: string }
-    expect(body.error).toContain('protocol-mismatch')
-    expect(body.error).toContain(ADR_0002_REFERENCE)
+    expect(body.error).toBe('protocol-mismatch')
+    expect(body.error).not.toContain(ADR_0002_REFERENCE)
+    expect(fixture.io.errText()).toContain(ADR_0002_REFERENCE)
   })
 
-  test('a stateless agent against a stdio server record is refused with the ADR reference', async () => {
+  test('a stateless agent against a stdio server record is refused the same way', async () => {
     const fixture = await startServe({ grant: '*' })
     await addStdioServer(fixture, POLICY_SERVER)
 
@@ -359,7 +365,8 @@ describe('runServe: session-model mismatch refusals (ADR-0002)', () => {
     })
 
     expect(response.status).toBe(400)
-    expect(((await response.json()) as { error: string }).error).toContain(ADR_0002_REFERENCE)
+    expect(((await response.json()) as { error: string }).error).toBe('protocol-mismatch')
+    expect(fixture.io.errText()).toContain(ADR_0002_REFERENCE)
   })
 
   test("an 'auto' HTTP record accepts a sessionful agent", async () => {

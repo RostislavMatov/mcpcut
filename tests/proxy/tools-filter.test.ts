@@ -181,7 +181,26 @@ describe('filterToolsListResult: agent allowlist (intersection with policy)', ()
 
     expect(result).not.toBeNull()
     expect(seen).toEqual(['real'])
-    // Malformed entries are kept verbatim (hygiene fails open on the unknown).
+  })
+
+  test('an unrecognizable entry is DROPPED once an agent predicate is present', () => {
+    const msg = toolsListResponse({}, ['garbage-string', { noName: true }, { name: 42 }, { name: 'real' }])
+
+    const result = filterToolsListResult(msg, () => true, () => true)
+
+    expect(result).not.toBeNull()
+    // An entry with no usable name cannot be intersected with a grant, and an
+    // allowlist that lets through what it could not check is not an allowlist.
+    expect(parsedResult(result!.bytes).tools).toEqual([{ name: 'real' }])
+    expect(result!.kept).toBe(1)
+  })
+
+  test('without an agent predicate the same entries still fail open (M2)', () => {
+    const msg = toolsListResponse({}, ['garbage-string', { noName: true }, { name: 42 }, { name: 'real' }])
+
+    const result = filterToolsListResult(msg, () => true)
+
+    expect(result).not.toBeNull()
     expect(parsedResult(result!.bytes).tools).toHaveLength(4)
   })
 

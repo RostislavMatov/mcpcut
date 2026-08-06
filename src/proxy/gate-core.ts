@@ -3,14 +3,12 @@ import { JOURNAL_DIR } from '../config.js'
 import type { JsonRpcId } from '../protocol/classify.js'
 import { classifyTool } from '../policy/classify-tool.js'
 import { decide, type PolicyDecision } from '../policy/decide.js'
-import type { Policy } from '../policy/schema.js'
-import type { ApprovalWaiter } from '../policy/approvals/waiter.js'
-import type { GrantKey, GrantRegistry } from '../policy/approvals/grants.js'
+import type { GrantKey } from '../policy/approvals/grants.js'
 import type { ParsedToolCall } from '../protocol/mcp.js'
-import { serverMessage, type MessageGate, type MessageSink } from '../transport/message.js'
+import { serverMessage } from '../transport/message.js'
 import type { Verdict } from './pipeline.js'
 import type { SynthesizableId } from './synthesize.js'
-import { createApprovalFlow, type GateApprovalQueue } from './gate-approvals.js'
+import { createApprovalFlow } from './gate-approvals.js'
 import { createGateRouter } from './gate-router.js'
 import { createToolCatalog } from './tool-catalog.js'
 import {
@@ -65,7 +63,13 @@ import {
  *  - **The agent dimension is opt-in and deny-first.** With an `agentScope`
  *    present, a tool outside the agent's grant matrix is denied before the
  *    whole M2 chain (`decide()`'s step 0) and hidden from `tools/list`;
- *    without one, behavior is the M2 chain byte for byte.
+ *    a request whose METHOD no grant can describe at all (`resources/*`,
+ *    `prompts/*`, `completion/complete` — `AGENT_NON_GRANTABLE_METHODS`) is
+ *    denied by the router before it reaches the server, so a tools grant is
+ *    not a back door to the rest of the capability surface; and a
+ *    `tools/list`-shaped response the gate never tracked is still filtered
+ *    down to the grants. Without an `agentScope`, behavior is the M2 chain
+ *    byte for byte.
  *  - **Fail closed on our own bugs.** Any unexpected error while deciding a
  *    `tools/call` denies the call; the same error on ordinary traffic
  *    forwards it (a gate defect must not break an unrelated session).
@@ -79,47 +83,12 @@ const APPROVALS_SUBDIR = 'approvals'
 /** Cap on locally-answered ids remembered per session (exactly-one-outcome LRU); oldest first. */
 const MAX_TRACKED_REQUEST_IDS = 10_000
 
-/** The subset of `MessageSink` the gate needs to answer a client locally. */
-export type GateAnswerSink = Pick<MessageSink, 'write'>
-
-export interface MessagePolicyGateDeps {
-  readonly policy: Policy
-  readonly serverName: string
-  readonly sessionId: string
-  readonly inventory: GateInventory
-  readonly approvalQueue: GateApprovalQueue
-  readonly approvalWaiter: ApprovalWaiter
-  readonly grantRegistry: GrantRegistry
-  readonly sink: GateSink
-  /** Delivers synthetic answers to the client (content bytes, no framing). */
-  readonly clientSink: GateAnswerSink
-  /**
-   * The authenticated agent's visibility/grant scope (M3). Absent on the
-   * ad-hoc `wrap` path — exactly the M2 behavior, byte for byte.
-   */
-  readonly agentScope?: GateAgentScope
-  /**
-   * Root of the approvals queue on disk, for the late-approval fallback.
-   * Defaults to `JOURNAL_DIR/approvals`; must match `approvalQueue`'s own.
-   */
-  readonly approvalsBaseDir?: string
-  /** Injectable clock (ms since epoch) for deterministic tests. Defaults to `Date.now`. */
-  readonly clock?: () => number
-  /** Reports gate-internal failures. Defaults to one line on stderr. */
-  readonly onError?: (error: unknown) => void
-}
-
-export interface MessagePolicyGate {
-  /** Gates one client->server message. */
-  readonly gateClientMessage: MessageGate
-  /** Gates one server->client message. */
-  readonly gateServerMessage: MessageGate
-  /**
-   * Session teardown: cancels every in-flight approval wait (each settles as
-   * a timeout, so the client still gets an answer) and awaits their verdicts.
-   */
-  cancelPending(): Promise<void>
-}
+export type {
+  GateAnswerSink,
+  MessagePolicyGate,
+  MessagePolicyGateDeps,
+} from './gate-types.js'
+import type { MessagePolicyGate, MessagePolicyGateDeps } from './gate-types.js'
 
 function defaultOnError(error: unknown): void {
   process.stderr.write(`[gate] ${error instanceof Error ? error.message : String(error)}\n`)
@@ -377,6 +346,12 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     gateToolCall,
     guarded,
     track,
+    // The same predicate the catalog gets. Its mere presence tells the router
+    // this is an agent session, which is what makes routing deny the methods
+    // no grant can cover and grant-filter an untracked catalog.
+    ...(agentScope !== undefined
+      ? { isGrantedToAgent: (tool: string) => agentScope.isGranted(tool) }
+      : {}),
   })
 
   async function cancelPending(): Promise<void> {

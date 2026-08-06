@@ -1,6 +1,5 @@
 import type { Writable } from 'node:stream'
 import { SYSTEM_ENV_ALLOWLIST } from '../config.js'
-import { extractPerMessageHeaders } from '../protocol/mcp.js'
 import { buildServerEnv } from '../proxy/server-env.js'
 import type { ResolveEnvRefsFn } from '../proxy/server-env.js'
 import {
@@ -14,6 +13,7 @@ import { splice } from '../proxy/splice.js'
 import { createOrderedWriter } from '../proxy/writer.js'
 import type { ServerRecord } from '../registry/schema.js'
 import type { SessionEndpoints } from '../session/core.js'
+import { perMessageHeadersOptionOf } from '../session/per-message-headers.js'
 import {
   createHttpUpstreamClient,
   type HttpUpstreamClient,
@@ -274,13 +274,13 @@ async function finishChild(
 }
 
 /**
- * Connects to an HTTP upstream. The stateless per-message headers
- * (`Mcp-Method`/`Mcp-Name`, SEP-2243 — REQUIRED for that revision per the
- * spec matrix) are injected ONLY for a record pinned to `'stateless'`: for
- * `'sessionful'` they are not part of the revision, and for `'auto'` the
- * model is not known until the first response, so sending them would be a
- * guess. The hook itself lives in `protocol/mcp.ts` — the transport stays
- * free of spec knowledge.
+ * Connects to an HTTP upstream. Whether the stateless per-message headers
+ * (`Mcp-Method`/`Mcp-Name`, SEP-2243) are injected is decided by the shared
+ * `session/per-message-headers.ts` — the same answer `serve` uses, so the two
+ * commands cannot drift again. In particular `'auto'` (the registry default)
+ * DOES carry them: it may turn out to be a stateless upstream, for which they
+ * are REQUIRED, and a sessionful one ignores them. The hook itself is built
+ * on `protocol/mcp.ts` — the transport stays free of spec knowledge.
  */
 function openHttpUpstream(
   url: string,
@@ -289,7 +289,7 @@ function openHttpUpstream(
 ): ConnectUpstream {
   const client: HttpUpstreamClient = createHttpUpstreamClient(
     { url, headers, protocol },
-    protocol === 'stateless' ? { perMessageHeaders: extractPerMessageHeaders } : {},
+    perMessageHeadersOptionOf(protocol),
   )
 
   return {

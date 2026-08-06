@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync } from 'node:fs'
-import { copyFile, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
@@ -8,6 +8,7 @@ import {
   VAULT_ENC_FILE_NAME,
   VAULT_FORMAT_VERSION,
   VAULT_KEY_FILE_NAME,
+  VAULT_KEY_LENGTH_BYTES,
   VAULT_STAGED_KEY_FILE_NAME,
 } from '../../src/vault/constants.js'
 import { decrypt, encrypt, generateKey, VaultIntegrityError } from '../../src/vault/crypto.js'
@@ -274,6 +275,70 @@ describe('interrupted rekey never loses data (write-order invariant)', () => {
     // Old key still decrypts, so nothing must be promoted or replaced.
     expect(read.status).toBe('read')
     expect(await readFile(keyPath(), 'utf8')).toBe(primaryBefore)
+  })
+})
+
+/**
+ * Counts zeroizations of master-key-sized buffers. The master key must not
+ * outlive the operation that loaded it — including on failure paths, which is
+ * exactly what a `try/finally` around its lifetime buys.
+ */
+function spyOnKeyZeroization(): { count: () => number; restore: () => void } {
+  const original = Buffer.prototype.fill
+  const applyOriginal = original as unknown as (this: Buffer, ...args: unknown[]) => Buffer
+  let count = 0
+  const patched = function (this: Buffer, ...args: unknown[]): Buffer {
+    if (args[0] === 0 && this.length === VAULT_KEY_LENGTH_BYTES) count += 1
+    return applyOriginal.apply(this, args)
+  }
+  Buffer.prototype.fill = patched as unknown as typeof Buffer.prototype.fill
+  return {
+    count: () => count,
+    restore: () => {
+      Buffer.prototype.fill = original
+    },
+  }
+}
+
+describe('master key hygiene', () => {
+  test('a key file with characters outside the base64 alphabet is corrupt, not silently truncated', async () => {
+    await initializedWithSecret()
+    const raw = await readFile(keyPath(), 'utf8')
+    await writeFile(keyPath(), `!${raw.trim().slice(1)}\n`, { mode: 0o600 })
+
+    expect((await store().listSecrets()).status).toBe('corrupt')
+  })
+
+  test('a key of the wrong decoded length is corrupt', async () => {
+    await initializedWithSecret()
+    await writeFile(keyPath(), `${Buffer.alloc(16).toString('base64')}\n`, { mode: 0o600 })
+
+    expect((await store().listSecrets()).status).toBe('corrupt')
+  })
+
+  test('a successful read zeroizes the key it loaded', async () => {
+    await initializedWithSecret()
+    const spy = spyOnKeyZeroization()
+    try {
+      expect((await store().readSecretValues(['marker-secret'])).status).toBe('read')
+      expect(spy.count()).toBeGreaterThanOrEqual(1)
+    } finally {
+      spy.restore()
+    }
+  })
+
+  test('a rekey that fails mid-flight still zeroizes both the old and the new key', async () => {
+    await initializedWithSecret()
+    // A directory where the staged key file must go: staging fails hard, and
+    // the failure escapes `rekey` as an unexpected error (not a VaultFailure).
+    await mkdir(stagedKeyPath())
+    const spy = spyOnKeyZeroization()
+    try {
+      await expect(store().rekey()).rejects.toBeTruthy()
+      expect(spy.count()).toBeGreaterThanOrEqual(2)
+    } finally {
+      spy.restore()
+    }
   })
 })
 

@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { request as nodeHttpRequest } from 'node:http'
+import { createServer as createHttpServer, request as nodeHttpRequest, type Server } from 'node:http'
 import { createServer as createNetServer, type AddressInfo } from 'node:net'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -15,7 +15,9 @@ import {
   type HttpUpstreamClientOptions,
   type HttpUpstreamRecord,
 } from '../../../src/transport/http/client.js'
+import { SSE_RETRY_MAX_DELAY_MS } from '../../../src/transport/http/constants.js'
 import { createSseParser, SseParseError } from '../../../src/transport/http/sse-parse.js'
+import { encodeSseEvent } from '../../../src/transport/http/sse.js'
 import { waitUntil, waitUntilAsync } from '../../proxy/harness.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -138,11 +140,20 @@ function collect(source: MessageSource): Collector {
 }
 
 const openClients: HttpUpstreamClient[] = []
+const openServers: Server[] = []
 
 function openClient(record: HttpUpstreamRecord, opts?: HttpUpstreamClientOptions): HttpUpstreamClient {
   const client = createHttpUpstreamClient(record, opts)
   openClients.push(client)
   return client
+}
+
+/** Starts a raw `node:http` server for a test that needs to observe/control wire-level ordering. */
+async function openTestServer(handler: Parameters<typeof createHttpServer>[0]): Promise<{ server: Server; port: number }> {
+  const server = createHttpServer(handler)
+  openServers.push(server)
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  return { server, port: (server.address() as AddressInfo).port }
 }
 
 afterEach(async () => {
@@ -154,6 +165,10 @@ afterEach(async () => {
         child.kill('SIGKILL')
       })
     }
+  }
+  for (const server of openServers.splice(0)) {
+    server.closeAllConnections()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
   }
 })
 
@@ -225,6 +240,20 @@ describe('createSseParser', () => {
     parser.feed(Buffer.from('data: half an eve'))
 
     expect(() => parser.end()).toThrow(SseParseError)
+  })
+
+  test('unbounded short data lines with no dispatching blank line are rejected, not accumulated forever (HIGH: OOM)', () => {
+    const parser = createSseParser(64)
+
+    expect(() => {
+      // A hostile upstream that never sends a blank line: `buffer` alone
+      // (bounded per physical line) would never catch this — each `feed`
+      // call is well under 64 chars — only a bound on the joined total
+      // (`dataLines`) does.
+      for (let i = 0; i < 1000; i += 1) {
+        parser.feed(Buffer.from('data: x\n'))
+      }
+    }).toThrow(SseParseError)
   })
 })
 
@@ -616,5 +645,125 @@ describe('stateless upstream', () => {
     expect(Object.isFrozen(client)).toBe(true)
     expect(Object.isFrozen(client.source)).toBe(true)
     expect(Object.isFrozen(client.sink)).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Sink write ordering (dispatch serialization — HIGH: gate-router relies on
+// notifications/cancelled reaching the server strictly after the tools/call
+// it cancels; see src/proxy/gate-router.ts's gateClientNotification)
+// ---------------------------------------------------------------------------
+
+describe('sink write ordering', () => {
+  // Oversized relative to any loopback socket/TCP buffer so the server
+  // refusing to read forces real backpressure: the client's request 'finish'
+  // genuinely cannot fire until the server drains it.
+  const BIG_BODY_BYTES = 16 * 1024 * 1024
+  const SERVER_READ_DELAY_MS = 200
+
+  test('a second write does not dispatch its POST before the first POST body is fully sent, and is not blocked by the first response', async () => {
+    const events: string[] = []
+    let sawFirst = false
+
+    const { port } = await openTestServer((req, res) => {
+      if (!sawFirst) {
+        sawFirst = true
+        events.push('first-arrived')
+        // Refuse to read yet: with the fix, the second write must not even
+        // start dispatching while this is stalling.
+        req.pause()
+        setTimeout(() => {
+          req.resume()
+          req.on('data', () => undefined)
+          req.on('end', () => {
+            events.push('first-body-drained')
+            // Hold the response open (the sampling POST-SSE pattern): if the
+            // sink serialized on the full response instead of the request
+            // dispatch, the second write would deadlock behind this.
+            res.writeHead(200, { 'content-type': 'text/event-stream' })
+            res.write(': open\n\n')
+          })
+        }, SERVER_READ_DELAY_MS)
+        return
+      }
+      events.push('second-arrived')
+      req.on('data', () => undefined)
+      req.on('end', () => {
+        res.writeHead(202)
+        res.end()
+      })
+    })
+    const client = openClient(record(`http://127.0.0.1:${port}/mcp`, 'stateless'))
+    collect(client.source)
+
+    let firstSettled = false
+    const firstWrite = client.sink.write(clientMessage(Buffer.alloc(BIG_BODY_BYTES, 0x61)))
+    firstWrite.then(
+      () => (firstSettled = true),
+      () => (firstSettled = true),
+    )
+    const secondWrite = client.sink.write(notificationMessage('notifications/cancelled'))
+
+    await waitUntil(() => events.includes('second-arrived'))
+
+    // The second POST only reached the server after the first's body was
+    // fully drained — never while it was still being withheld.
+    expect(events).toEqual(['first-arrived', 'first-body-drained', 'second-arrived'])
+    // The second write resolved even though the first is still in flight,
+    // stuck on its still-open SSE response.
+    await secondWrite
+    expect(firstSettled).toBe(false)
+
+    // Never awaited to completion (its SSE response never ends); avoid an
+    // unhandled rejection from the eventual connection teardown at cleanup.
+    firstWrite.catch(() => undefined)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// SSE encoder (sse.ts) — round-trips through the parser
+// ---------------------------------------------------------------------------
+
+describe('encodeSseEvent', () => {
+  test('a bare CR or CRLF inside the payload is split into its own data line, never silently dropped', () => {
+    const parser = createSseParser()
+    // Old behavior: splitting only on '\n' left a lone '\r' embedded inside
+    // one wire line; the parser's own line-break regex (which treats a bare
+    // '\r' as a break too) would then chop that wire line in the wrong
+    // place, silently discarding whatever followed the '\r' on it (it has
+    // no 'data:' prefix once mis-split, so the generic "unknown field is
+    // ignored" rule swallows it). Encoding every CR/LF variant as its own
+    // data line keeps every byte accounted for; the CR vs LF distinction
+    // itself cannot survive the round trip — SSE's grammar has no way to
+    // represent it — so it normalizes to '\n', documented here rather than
+    // silently.
+    const original = Buffer.from('a\rb\r\nc\nd', 'utf8')
+
+    const wire = encodeSseEvent(original)
+    const items = parser.feed(Buffer.from(wire))
+
+    expect(items).toEqual([{ kind: 'message', data: 'a\nb\nc\nd' }])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// retry: upper bound (LOW: a hostile retry value must not stall reconnects forever)
+// ---------------------------------------------------------------------------
+
+describe('SSE retry cap', () => {
+  test('an absurd retry value is capped, not honored verbatim', async () => {
+    const fixture = await startFixture(SESSIONFUL_FIXTURE)
+    const timer = recordingDelay()
+    const client = openClient(record(fixture.mcpUrl, 'sessionful'), { delay: timer.delay })
+    const collector = collect(client.source)
+    await client.sink.write(requestMessage(1, 'initialize'))
+    await waitUntilAsync(async () => ((await fixture.stats()).openGetStreams ?? 0) >= 1)
+
+    await fixture.emit('with-hostile-retry', 4_294_967_295)
+    await waitUntil(() => collector.raw.length >= 2)
+    await fixture.dropGet()
+    await waitUntil(() => timer.delays.length >= 1)
+
+    expect(timer.delays[0]).toBe(SSE_RETRY_MAX_DELAY_MS)
   })
 })

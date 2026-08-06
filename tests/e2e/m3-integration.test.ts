@@ -329,7 +329,9 @@ describe('e2e: the M2 policy chain applies on top of agent grants', () => {
   test('a deny rule outranks the grant that made the tool visible', async () => {
     const sessionId = 'e2e-deny-over-grant'
     const token = await onboardPolicyServer('echo')
-    const policyPath = await writePolicyFile(plane, {
+    // Into the plane's own directory — `connect` takes its policy from there
+    // and nowhere else (`--policy` is refused: the agent launches the command).
+    await writePolicyFile(plane, {
       ...ALLOW_ALL_POLICY,
       servers: { [SERVER]: { tools: { echo: 'deny' } } },
     })
@@ -338,7 +340,7 @@ describe('e2e: the M2 policy chain applies on top of agent grants', () => {
       plane,
       token,
       sessionId,
-      argv: ['connect', SERVER, '--agent', AGENT, '--policy', policyPath],
+      argv: ['connect', SERVER, '--agent', AGENT],
       lines: [
         requestLine(1, 'tools/list'),
         requestLine(2, 'tools/call', { name: 'echo', arguments: {} }),
@@ -363,7 +365,7 @@ describe('e2e: the M2 policy chain applies on top of agent grants', () => {
   test('a require-approval class sends a granted write tool to the approvals queue', async () => {
     const sessionId = 'e2e-approval-over-grant'
     const token = await onboardPolicyServer()
-    const policyPath = await writePolicyFile(plane, {
+    await writePolicyFile(plane, {
       ...ALLOW_ALL_POLICY,
       classDefaults: { write: 'require-approval' },
       approval: { timeoutMs: 20_000 },
@@ -373,7 +375,7 @@ describe('e2e: the M2 policy chain applies on top of agent grants', () => {
       plane,
       token,
       sessionId,
-      argv: ['connect', SERVER, '--agent', AGENT, '--policy', policyPath],
+      argv: ['connect', SERVER, '--agent', AGENT],
     })
     // The catalog first, so `risky_tool` is a known tool of a known class.
     live.stdio.clientOutbox.write(requestLine(1, 'tools/list'))

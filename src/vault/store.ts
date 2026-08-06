@@ -1,24 +1,28 @@
-import { rename } from 'node:fs/promises'
 import { join } from 'node:path'
-import { z } from 'zod'
 import { JOURNAL_DIR } from '../config.js'
+import {
+  decodeVault,
+  encodeVault,
+  VaultCorruptError,
+  type SecretEntry,
+  type VaultData,
+} from './codec.js'
 import {
   SECRET_NAME_PATTERN,
   VAULT_ENC_FILE_NAME,
-  VAULT_FORMAT_VERSION,
   VAULT_KEY_FILE_NAME,
   VAULT_KEY_LENGTH_BYTES,
   VAULT_STAGED_KEY_FILE_NAME,
 } from './constants.js'
+import { generateKey, VaultIntegrityError, VaultKeyError } from './crypto.js'
 import {
-  decrypt,
-  encrypt,
-  generateKey,
-  VaultIntegrityError,
-  VaultKeyError,
-  type EncryptedPayload,
-} from './crypto.js'
-import { readFileIfExists, withVaultLock, writeFileAtomic } from './files.js'
+  decodeBase64Buffer,
+  readFileBufferIfExists,
+  readFileIfExists,
+  renameDurable,
+  withVaultLock,
+  writeFileAtomic,
+} from './files.js'
 
 /**
  * Encrypted secret store (ADR-0003): `vault.key` (base64 master key, 0600) +
@@ -87,32 +91,7 @@ export interface VaultStoreOptions {
   readonly now?: () => number
 }
 
-/** vault.enc's JSON envelope: `data` is the AES-256-GCM ciphertext of the secrets JSON. */
-const envelopeSchema = z.strictObject({
-  v: z.literal(VAULT_FORMAT_VERSION),
-  iv: z.string(),
-  tag: z.string(),
-  data: z.string(),
-})
-
-const entrySchema = z.strictObject({
-  value: z.string(),
-  createdAt: z.string(),
-  updatedAt: z.string(),
-})
-
-const dataSchema = z.record(z.string().regex(SECRET_NAME_PATTERN), entrySchema)
-
-type SecretEntry = z.infer<typeof entrySchema>
-type VaultData = Record<string, SecretEntry>
-
-/** vault.enc or vault.key exists but cannot be trusted (bad JSON/shape/length). */
-export class VaultCorruptError extends Error {
-  constructor(message: string, cause?: unknown) {
-    super(message, { cause })
-    this.name = 'VaultCorruptError'
-  }
-}
+export { VaultCorruptError } from './codec.js'
 
 /** Internal control-flow marker mapped to `{status: 'not-initialized'}`. */
 class VaultNotInitializedError extends Error {
@@ -162,17 +141,26 @@ export function createVaultStore(opts: VaultStoreOptions = {}): VaultStore {
     throw error // unexpected (fs permissions etc.) — propagate, do not misreport as corruption
   }
 
-  /** Base64-decoded key from `path`, `null` if the file is missing, corrupt error on bad length. */
+  /**
+   * Base64-decoded key from `path`, `null` if the file is missing, corrupt
+   * error on bad length or non-base64 content. Bytes only end to end: the
+   * key never exists as a `string`, which could not be zeroized afterwards.
+   */
   async function readKeyFrom(path: string): Promise<Buffer | null> {
-    const raw = await readFileIfExists(path)
+    const raw = await readFileBufferIfExists(path)
     if (raw === null) return null
-    const key = Buffer.from(raw.trim(), 'base64')
-    if (key.length !== VAULT_KEY_LENGTH_BYTES) {
-      throw new VaultCorruptError(
-        `vault key file "${path}" is not ${VAULT_KEY_LENGTH_BYTES} bytes of base64`,
-      )
+    try {
+      const key = decodeBase64Buffer(raw)
+      if (key === null || key.length !== VAULT_KEY_LENGTH_BYTES) {
+        key?.fill(0)
+        throw new VaultCorruptError(
+          `vault key file "${path}" is not ${VAULT_KEY_LENGTH_BYTES} bytes of base64`,
+        )
+      }
+      return key
+    } finally {
+      raw.fill(0)
     }
-    return key
   }
 
   async function requireKey(): Promise<Buffer> {
@@ -181,52 +169,12 @@ export function createVaultStore(opts: VaultStoreOptions = {}): VaultStore {
     return key
   }
 
-  function parseEnvelope(text: string): EncryptedPayload {
-    let raw: unknown
-    try {
-      raw = JSON.parse(text)
-    } catch (error: unknown) {
-      throw new VaultCorruptError(`vault store "${encPath}" is not valid JSON (truncated?)`, error)
-    }
-    const parsed = envelopeSchema.safeParse(raw)
-    if (!parsed.success) {
-      const issues = parsed.error.issues.map((issue) => issue.message).join('; ')
-      throw new VaultCorruptError(`vault store "${encPath}" has an invalid envelope: ${issues}`)
-    }
-    return {
-      iv: Buffer.from(parsed.data.iv, 'base64'),
-      tag: Buffer.from(parsed.data.tag, 'base64'),
-      data: Buffer.from(parsed.data.data, 'base64'),
-    }
-  }
-
-  /** Decrypts and validates the secrets JSON; zeroizes the plaintext buffer after parsing. */
   function decryptData(key: Buffer, text: string): VaultData {
-    const plaintext = decrypt(key, parseEnvelope(text))
-    let raw: unknown
-    try {
-      raw = JSON.parse(plaintext.toString('utf8'))
-    } catch (error: unknown) {
-      throw new VaultCorruptError('vault plaintext is not valid JSON', error)
-    } finally {
-      plaintext.fill(0)
-    }
-    const parsed = dataSchema.safeParse(raw)
-    if (!parsed.success) throw new VaultCorruptError('vault plaintext has an invalid shape')
-    return parsed.data
+    return decodeVault(key, text, encPath)
   }
 
   async function writeData(key: Buffer, data: VaultData): Promise<void> {
-    const plaintext = Buffer.from(JSON.stringify(data), 'utf8')
-    const payload = encrypt(key, plaintext)
-    plaintext.fill(0)
-    const envelope = {
-      v: VAULT_FORMAT_VERSION,
-      iv: payload.iv.toString('base64'),
-      tag: payload.tag.toString('base64'),
-      data: payload.data.toString('base64'),
-    }
-    await writeFileAtomic(encPath, JSON.stringify(envelope))
+    await writeFileAtomic(encPath, encodeVault(key, data))
   }
 
   /**
@@ -241,16 +189,28 @@ export function createVaultStore(opts: VaultStoreOptions = {}): VaultStore {
    */
   async function loadVault(): Promise<{ key: Buffer; data: VaultData }> {
     const key = await requireKey()
-    const text = await readFileIfExists(encPath)
-    if (text === null) return { key, data: {} } // valid empty vault
+    // `handedOff` means the caller now owns the key and will zeroize it;
+    // every other exit from this function — including a throw — must not
+    // leave master-key bytes behind in the heap.
+    let handedOff = false
     try {
-      return { key, data: decryptData(key, text) }
-    } catch (error: unknown) {
-      if (!(error instanceof VaultIntegrityError)) throw error
-      const recovered = await tryStagedRecovery(text)
-      if (recovered === null) throw error
-      key.fill(0)
-      return recovered
+      const text = await readFileIfExists(encPath)
+      if (text === null) {
+        handedOff = true
+        return { key, data: {} } // valid empty vault
+      }
+      try {
+        const data = decryptData(key, text)
+        handedOff = true
+        return { key, data }
+      } catch (error: unknown) {
+        if (!(error instanceof VaultIntegrityError)) throw error
+        const recovered = await tryStagedRecovery(text)
+        if (recovered === null) throw error
+        return recovered // the primary key is superseded; zeroized below
+      }
+    } finally {
+      if (!handedOff) key.fill(0)
     }
   }
 
@@ -262,13 +222,32 @@ export function createVaultStore(opts: VaultStoreOptions = {}): VaultStore {
       return null // corrupt staged key: fall through to the primary failure
     }
     if (staged === null) return null
+    let handedOff = false
     try {
       const data = decryptData(staged, text)
-      await rename(stagedKeyPath, keyPath) // complete the interrupted rekey (step 3)
+      await renameDurable(stagedKeyPath, keyPath) // complete the interrupted rekey (step 3)
+      handedOff = true
       return { key: staged, data }
     } catch (error: unknown) {
       if (error instanceof VaultIntegrityError || error instanceof VaultCorruptError) return null
       throw error
+    } finally {
+      if (!handedOff) staged.fill(0)
+    }
+  }
+
+  /**
+   * Loads the vault, runs `fn`, and zeroizes the master key no matter how
+   * `fn` ends. Every public method goes through here: a throw on the way out
+   * (a failed write, an unwritable directory) must not be the one path that
+   * leaves the key readable in memory.
+   */
+  async function withVault<T>(fn: (key: Buffer, data: VaultData) => Promise<T>): Promise<T> {
+    const { key, data } = await loadVault()
+    try {
+      return await fn(key, data)
+    } finally {
+      key.fill(0)
     }
   }
 
@@ -278,65 +257,65 @@ export function createVaultStore(opts: VaultStoreOptions = {}): VaultStore {
         return { status: 'already-initialized', keyPath }
       }
       const key = generateKey()
-      await writeFileAtomic(keyPath, `${key.toString('base64')}\n`)
-      key.fill(0)
+      try {
+        await writeFileAtomic(keyPath, `${key.toString('base64')}\n`)
+      } finally {
+        key.fill(0)
+      }
       return { status: 'initialized', keyPath }
     })
   }
 
   async function setSecret(name: string, value: string): Promise<SetSecretResult> {
     if (!SECRET_NAME_PATTERN.test(name)) return { status: 'invalid-name', name }
-    return runGuarded<SetSecretResult>(async () => {
-      const { key, data } = await loadVault()
-      const nowIso = new Date(now()).toISOString()
-      const existing = data[name]
-      const entry: SecretEntry =
-        existing === undefined
-          ? { value, createdAt: nowIso, updatedAt: nowIso }
-          : { value, createdAt: existing.createdAt, updatedAt: nowIso }
-      await writeData(key, { ...data, [name]: entry })
-      key.fill(0)
-      return { status: 'set', name }
-    })
+    return runGuarded<SetSecretResult>(async () =>
+      withVault(async (key, data) => {
+        const nowIso = new Date(now()).toISOString()
+        const existing = data[name]
+        const entry: SecretEntry =
+          existing === undefined
+            ? { value, createdAt: nowIso, updatedAt: nowIso }
+            : { value, createdAt: existing.createdAt, updatedAt: nowIso }
+        await writeData(key, { ...data, [name]: entry })
+        return { status: 'set', name }
+      }),
+    )
   }
 
   async function listSecrets(): Promise<ListSecretsResult> {
-    return runGuarded<ListSecretsResult>(async () => {
-      const { key, data } = await loadVault()
-      key.fill(0)
-      const secrets = Object.entries(data)
-        .map(([name, entry]) => ({ name, createdAt: entry.createdAt, updatedAt: entry.updatedAt }))
-        .sort((a, b) => a.name.localeCompare(b.name))
-      return { status: 'listed', secrets }
-    })
+    return runGuarded<ListSecretsResult>(async () =>
+      withVault(async (_key, data) => {
+        const secrets = Object.entries(data)
+          .map(([name, entry]) => ({ name, createdAt: entry.createdAt, updatedAt: entry.updatedAt }))
+          .sort((a, b) => a.name.localeCompare(b.name))
+        return { status: 'listed', secrets }
+      }),
+    )
   }
 
   async function removeSecret(name: string): Promise<RemoveSecretResult> {
     if (!SECRET_NAME_PATTERN.test(name)) return { status: 'invalid-name', name }
-    return runGuarded<RemoveSecretResult>(async () => {
-      const { key, data } = await loadVault()
-      if (data[name] === undefined) {
-        key.fill(0)
-        return { status: 'not-found', name }
-      }
-      const rest = Object.fromEntries(Object.entries(data).filter(([k]) => k !== name))
-      await writeData(key, rest)
-      key.fill(0)
-      return { status: 'removed', name }
-    })
+    return runGuarded<RemoveSecretResult>(async () =>
+      withVault(async (key, data) => {
+        if (data[name] === undefined) return { status: 'not-found', name }
+        const rest = Object.fromEntries(Object.entries(data).filter(([k]) => k !== name))
+        await writeData(key, rest)
+        return { status: 'removed', name }
+      }),
+    )
   }
 
   async function readSecretValues(names: readonly string[]): Promise<ReadSecretValuesResult> {
-    return runGuarded<ReadSecretValuesResult>(async () => {
-      const { key, data } = await loadVault()
-      key.fill(0)
-      const values: Record<string, string> = {}
-      for (const name of names) {
-        const entry = data[name]
-        if (entry !== undefined) values[name] = entry.value
-      }
-      return { status: 'read', values }
-    })
+    return runGuarded<ReadSecretValuesResult>(async () =>
+      withVault(async (_key, data) => {
+        const values: Record<string, string> = {}
+        for (const name of names) {
+          const entry = data[name]
+          if (entry !== undefined) values[name] = entry.value
+        }
+        return { status: 'read', values }
+      }),
+    )
   }
 
   /**
@@ -359,16 +338,19 @@ export function createVaultStore(opts: VaultStoreOptions = {}): VaultStore {
    * on-disk copy of the old key — unrecoverable loss.
    */
   async function rekey(): Promise<RekeyResult> {
-    return runGuarded<RekeyResult>(async () => {
-      const { key: oldKey, data } = await loadVault()
-      oldKey.fill(0)
-      const newKey = generateKey()
-      await writeFileAtomic(stagedKeyPath, `${newKey.toString('base64')}\n`) // step 1
-      await writeData(newKey, data) // step 2 (commit point)
-      await rename(stagedKeyPath, keyPath) // step 3
-      newKey.fill(0)
-      return { status: 'rekeyed' }
-    })
+    return runGuarded<RekeyResult>(async () =>
+      withVault(async (_oldKey, data) => {
+        const newKey = generateKey()
+        try {
+          await writeFileAtomic(stagedKeyPath, `${newKey.toString('base64')}\n`) // step 1
+          await writeData(newKey, data) // step 2 (commit point)
+          await renameDurable(stagedKeyPath, keyPath) // step 3
+          return { status: 'rekeyed' }
+        } finally {
+          newKey.fill(0)
+        }
+      }),
+    )
   }
 
   return { init, setSecret, listSecrets, removeSecret, readSecretValues, rekey }

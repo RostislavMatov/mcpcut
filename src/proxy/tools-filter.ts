@@ -31,8 +31,9 @@ export interface FilteredToolsListResult {
  * a tool survives only as the intersection of what was granted to the agent
  * AND what M2 policy leaves visible. Omitting it is exactly the M2 (ad-hoc
  * `wrap`) behavior. Like `isVisible`, it is only ever consulted for entries
- * that are recognizably named tool objects -- malformed entries are kept
- * verbatim without invoking either predicate.
+ * that are recognizably named tool objects — but unlike M2, an entry neither
+ * predicate can read is DROPPED while the agent dimension is on (see
+ * `shouldKeep`): hygiene may fail open, an allowlist may not.
  */
 export function filterToolsListResult(
   original: ClassifiedMessage,
@@ -81,12 +82,21 @@ export function filterToolsListResult(
 
 /**
  * Decides whether one raw `tools/list` entry survives filtering, recording
- * its name in `removed` if not. An entry that isn't a named tool object is
- * kept unconditionally rather than dropped — this proxy doesn't understand
- * it well enough to judge visibility, and hygiene filtering must fail open
- * on the unknown rather than silently discard it. A named entry survives
- * only the intersection: granted to the agent (when an agent predicate is
- * present) AND visible under policy.
+ * its name in `removed` if not. A named entry survives only the intersection:
+ * granted to the agent (when an agent predicate is present) AND visible under
+ * policy.
+ *
+ * An entry that isn't a named tool object splits the two modes:
+ *  - **without** an agent predicate this is M2 hygiene, which fails OPEN — the
+ *    proxy doesn't understand the entry well enough to judge its visibility,
+ *    and hygiene must not silently discard what it cannot read;
+ *  - **with** one it is an agent allowlist, which fails CLOSED — a nameless
+ *    entry cannot be intersected with a grant, and an allowlist that admits
+ *    what it could not check is not an allowlist. (It is also the exact shape
+ *    a server would use to smuggle a tool past grant filtering.) It has no
+ *    name to report, so it is dropped without a `removed` entry; the paired
+ *    `toolsList.original`/`toolsList.filtered` journal records still show the
+ *    difference in count.
  */
 function shouldKeep(
   entry: unknown,
@@ -95,7 +105,7 @@ function shouldKeep(
   removed: string[],
 ): boolean {
   if (!isPlainObject(entry) || typeof entry['name'] !== 'string') {
-    return true
+    return isGrantedToAgent === undefined
   }
 
   const granted = isGrantedToAgent === undefined || isGrantedToAgent(entry['name'])

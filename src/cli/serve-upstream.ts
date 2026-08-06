@@ -1,6 +1,6 @@
 import type { Readable } from 'node:stream'
 import { createFrameSplitter } from '../protocol/split.js'
-import { extractPerMessageHeaders } from '../protocol/mcp.js'
+import { perMessageHeadersOptionOf } from '../session/per-message-headers.js'
 import { buildServerEnv, type ResolveEnvRefsFn } from '../proxy/server-env.js'
 import { killWithEscalation, spawnServer, type ServerHandle } from '../proxy/spawn.js'
 import { createOrderedWriter } from '../proxy/writer.js'
@@ -278,10 +278,9 @@ async function openHttpUpstream(
 
   const client = createHttpUpstreamClient(
     { url: record.url, headers: resolved.values, protocol: record.protocol },
-    // The sessionful revisions predate SEP-2243; every other model requires
-    // the header mirror, and `auto` must carry it because it may turn out
-    // to be stateless.
-    record.protocol === 'sessionful' ? {} : { perMessageHeaders: extractPerMessageHeaders },
+    // Shared with connect — session/per-message-headers.ts is the single
+    // owner of the "who gets the SEP-2243 header mirror" decision.
+    perMessageHeadersOptionOf(record.protocol),
   )
   // The source's error/end handlers belong to the session core (one handler
   // per channel — `transport/message.ts`); it ends the session on either.

@@ -1,5 +1,3 @@
-import { EventEmitter } from 'node:events'
-import type { ServerResponse } from 'node:http'
 import { describe, expect, test } from 'vitest'
 import { waitUntil } from '../../proxy/harness.js'
 import {
@@ -9,6 +7,7 @@ import {
   type SessionManagerOptions,
 } from '../../../src/transport/http/session.js'
 import {
+  createFakeRes,
   createFakeSessionFactory,
   testDetectInitialize,
   testExpectsResponse,
@@ -60,49 +59,6 @@ async function openSessionfulSession(managed: Managed): Promise<string> {
   const id = plan.headers?.['mcp-session-id']
   expect(typeof id).toBe('string')
   return id as string
-}
-
-/** Minimal ServerResponse stand-in good enough for `openSseStream`. */
-interface FakeRes {
-  readonly res: ServerResponse
-  readonly chunks: string[]
-  writtenText(): string
-  emitClose(): void
-  isEnded(): boolean
-}
-
-function createFakeRes(): FakeRes {
-  const emitter = new EventEmitter()
-  const chunks: string[] = []
-  let ended = false
-  const res = {
-    writeHead: (_status: number, _headers: Record<string, string>) => res,
-    flushHeaders: () => undefined,
-    write: (chunk: string) => {
-      chunks.push(chunk)
-      return true
-    },
-    end: () => {
-      ended = true
-      emitter.emit('close')
-      return res
-    },
-    on: (event: string, handler: () => void) => {
-      emitter.on(event, handler)
-      return res
-    },
-    once: (event: string, handler: () => void) => {
-      emitter.once(event, handler)
-      return res
-    },
-  }
-  return {
-    res: res as unknown as ServerResponse,
-    chunks,
-    writtenText: () => chunks.join(''),
-    emitClose: () => emitter.emit('close'),
-    isEnded: () => ended,
-  }
 }
 
 describe('sessionful model', () => {

@@ -59,3 +59,11 @@ export const CLOSE_DRAIN_TIMEOUT_MS = 2_000
  * to real MCP payloads.
  */
 export const MAX_UPSTREAM_RESPONSE_BYTES = 8 * 1024 * 1024
+
+/**
+ * Upper bound honored for a server-sent SSE `retry:` directive. The client
+ * MUST honor `retry:` as a reconnect-delay floor (sessionful spec, Δ
+ * 2025-11-25), but a hostile upstream sending e.g. `retry: 4294967295`
+ * must not be able to stall reconnection for (effectively) ever.
+ */
+export const SSE_RETRY_MAX_DELAY_MS = 60_000

@@ -18,27 +18,36 @@ import {
   HTTP_STATUS_NO_CONTENT,
   HTTP_STATUS_OK,
   HTTP_STATUS_TOO_MANY_REQUESTS,
+  MAX_BUFFERED_SERVER_BYTES,
   MAX_BUFFERED_SERVER_MESSAGES,
   MAX_CONCURRENT_SESSIONS,
   SESSION_IDLE_TTL_MS,
   SESSION_SWEEP_INTERVAL_MS,
   SSE_HEARTBEAT_INTERVAL_MS,
+  STATELESS_RESPONSE_TIMEOUT_MS,
 } from './server-constants.js'
+import { createStatelessRunner } from './session-stateless.js'
 import {
+  appendBuffered,
   createDeferred,
+  createSlotCounter,
+  EMPTY_BUFFER,
   jsonPlan,
   refusalPlan,
   sessionIdOf,
   SessionTornDownError,
+  type BufferedMessages,
   type Deferred,
   type DetectInitialize,
   type ExpectsResponse,
   type OpenedSession,
   type OpenSession,
+  type PostOptions,
   type ResponsePlan,
   type SessionContext,
   type SessionManager,
   type SessionManagerOptions,
+  type SessionSlot,
   type StatelessValidation,
   type ValidateStatelessHeaders,
 } from './session-support.js'
@@ -54,9 +63,9 @@ import { openSseStream, type SseStream } from './sse.js'
  *   sessionful: a session is opened, its id is `crypto.randomUUID()` (spec
  *   SHOULD cryptographically secure — matrix §4.3), the response carries
  *   `Mcp-Session-Id`, and later POSTs with that id reach the same session.
- * - no session id and not initialize → stateless: `validateStatelessHeaders`
- *   first (mismatch → 400 with the hook's body), then a one-shot session
- *   whose single response is the HTTP response; the session closes after.
+ * - no session id and not initialize → stateless: a one-shot session whose
+ *   single response is the HTTP response — `session-stateless.ts`, which
+ *   documents how such an exchange is bounded on every side.
  *
  * Decisions this module documents (test-pinned):
  * - ONE in-flight POST request per session; a second parallel request
@@ -66,8 +75,9 @@ import { openSseStream, type SseStream } from './sse.js'
  *   response to a POST is "the next message the session emits").
  * - Server-initiated routing: `source.onMessage` receives everything; a
  *   message arriving while a POST request is in flight IS that request's
- *   response; otherwise it goes to the open GET stream, or into a bounded
- *   buffer (oldest dropped past the cap) flushed when a GET stream opens.
+ *   response; otherwise it goes to the open GET stream, or into a buffer
+ *   bounded in BOTH count and bytes (oldest dropped past either cap),
+ *   flushed when a GET stream opens.
  * - A second GET stream REPLACES the first (old one closed): the likely
  *   cause is a client reconnect whose dead socket we haven't noticed yet,
  *   and the spec forbids duplicating messages across streams.
@@ -76,20 +86,28 @@ import { openSseStream, type SseStream } from './sse.js'
  *   definition (the heartbeat keeps the socket warm). A request in flight
  *   when its session dies (TTL, DELETE, shutdown) answers 404 — matrix §1.5:
  *   a terminated session answers 404 from that point on.
+ * - `maxSessions` counts BOTH models and is reserved synchronously, before
+ *   any hook runs and before the `openSession` await — a check that
+ *   straddled the await would let N parallel initializes all pass it, and
+ *   a cap that ignored one-shots would not be a cap at all.
  */
 
 // Contracts live in session-support.ts (file-size split); public surface stays here.
 export {
+  RequestAbortedError,
   SessionTornDownError,
+  UpstreamTimeoutError,
   type DetectInitialize,
   type ExpectsResponse,
   type OpenedSession,
   type OpenSession,
   type OpenSessionRefusal,
+  type PostOptions,
   type ResponsePlan,
   type SessionContext,
   type SessionManager,
   type SessionManagerOptions,
+  type SessionSlot,
   type StatelessValidation,
   type ValidateStatelessHeaders,
 } from './session-support.js'
@@ -101,7 +119,7 @@ interface ActiveSession {
   readonly handle: OpenedSession
   lastActivityMs: number
   inFlight: Deferred<Buffer> | null
-  buffered: Buffer[]
+  buffered: BufferedMessages
   stream: SseStream | null
 }
 
@@ -114,10 +132,20 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
   const idleTtlMs = opts.idleTtlMs ?? SESSION_IDLE_TTL_MS
   const heartbeatIntervalMs = opts.heartbeatIntervalMs ?? SSE_HEARTBEAT_INTERVAL_MS
   const maxBuffered = opts.maxBufferedMessages ?? MAX_BUFFERED_SERVER_MESSAGES
+  const maxBufferedBytes = opts.maxBufferedBytes ?? MAX_BUFFERED_SERVER_BYTES
+  const statelessTimeoutMs = opts.statelessTimeoutMs ?? STATELESS_RESPONSE_TIMEOUT_MS
   const uuid = opts.uuid ?? randomUUID
   const now = opts.now ?? Date.now
 
   const sessions = new Map<string, ActiveSession>()
+  const stateless = createStatelessRunner({
+    openSession: opts.openSession,
+    validateStatelessHeaders,
+    expectsResponse,
+    timeoutMs: statelessTimeoutMs,
+    onOpenAbandoned: opts.onOpenAbandoned,
+  })
+  const slots = createSlotCounter(maxSessions, () => sessions.size)
   let isManagerClosed = false
 
   const sweeper = setInterval(sweepIdleSessions, opts.sweepIntervalMs ?? SESSION_SWEEP_INTERVAL_MS)
@@ -146,10 +174,7 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
       session.stream.send(payload)
       return
     }
-    if (session.buffered.length >= maxBuffered) {
-      session.buffered = session.buffered.slice(1)
-    }
-    session.buffered = [...session.buffered, payload]
+    session.buffered = appendBuffered(session.buffered, payload, maxBuffered, maxBufferedBytes)
   }
 
   async function teardownSession(session: ActiveSession): Promise<void> {
@@ -164,8 +189,8 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
     session.handle.source.dispose()
     try {
       await session.handle.close()
-    } catch {
-      opts.onSessionError?.(session.id)
+    } catch (error: unknown) {
+      opts.onSessionError?.(session.id, error)
     }
   }
 
@@ -190,12 +215,12 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
       handle,
       lastActivityMs: now(),
       inFlight: null,
-      buffered: [],
+      buffered: EMPTY_BUFFER,
       stream: null,
     }
     sessions.set(session.id, session)
     handle.source.onMessage((message) => routeServerPayload(session, message.bytes))
-    handle.source.onError(() => opts.onSessionError?.(session.id))
+    handle.source.onError((error: unknown) => opts.onSessionError?.(session.id, error))
     handle.source.onEnd(() => void teardownSession(session))
     return session
   }
@@ -231,15 +256,18 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
     return exchange(session, body)
   }
 
-  async function handleInitializePost(ctx: SessionContext, body: Buffer): Promise<ResponsePlan> {
-    if (sessions.size >= maxSessions) {
-      return jsonPlan(HTTP_STATUS_TOO_MANY_REQUESTS, BODY_TOO_MANY_SESSIONS)
-    }
+  async function handleInitializePost(
+    ctx: SessionContext,
+    body: Buffer,
+    slot: SessionSlot,
+  ): Promise<ResponsePlan> {
     const opened = await opts.openSession(ctx)
     if ('error' in opened) {
       return refusalPlan(opened)
     }
     const session = registerSession(ctx, opened)
+    // The session now occupies a slot of its own (`sessions.size`).
+    slot.release()
     let plan: ResponsePlan
     try {
       plan = await exchange(session, body)
@@ -259,39 +287,11 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
     })
   }
 
-  async function handleStatelessPost(
-    ctx: SessionContext,
-    headers: IncomingHttpHeaders,
-    body: Buffer,
-  ): Promise<ResponsePlan> {
-    const validation = validateStatelessHeaders(headers, body)
-    if (!validation.ok) {
-      return jsonPlan(HTTP_STATUS_BAD_REQUEST, validation.errorBody)
-    }
-    const opened = await opts.openSession(ctx)
-    if ('error' in opened) {
-      return refusalPlan(opened)
-    }
-    try {
-      if (!expectsResponse(body)) {
-        await opened.sink.write(clientMessage(body))
-        return Object.freeze({ status: HTTP_STATUS_ACCEPTED })
-      }
-      const first = createDeferred<Buffer>()
-      opened.source.onMessage((message) => first.resolve(message.bytes))
-      opened.source.onError((error) => first.reject(error))
-      await opened.sink.write(clientMessage(body))
-      return jsonPlan(HTTP_STATUS_OK, await first.promise)
-    } finally {
-      opened.source.dispose()
-      await opened.close().catch(() => undefined)
-    }
-  }
-
   async function handlePost(
     ctx: SessionContext,
     headers: IncomingHttpHeaders,
     body: Buffer,
+    options?: PostOptions,
   ): Promise<ResponsePlan> {
     const sessionId = sessionIdOf(headers)
     if (sessionId !== null) {
@@ -301,10 +301,20 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
       }
       return handleSessionPost(session, body)
     }
-    if (detectInitialize(body)) {
-      return handleInitializePost(ctx, body)
+    // A POST without a session id opens one, in either model. Take the slot
+    // BEFORE the hooks run: the cap must not straddle an await, and a
+    // refused request must not leave per-request hook state behind either.
+    const slot = slots.reserve()
+    if (slot === null) {
+      return jsonPlan(HTTP_STATUS_TOO_MANY_REQUESTS, BODY_TOO_MANY_SESSIONS)
     }
-    return handleStatelessPost(ctx, headers, body)
+    try {
+      return detectInitialize(body)
+        ? await handleInitializePost(ctx, body, slot)
+        : await stateless.handle(ctx, headers, body, options)
+    } finally {
+      slot.release()
+    }
   }
 
   function handleGet(
@@ -332,8 +342,8 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
       },
     })
     session.stream = stream
-    const backlog = session.buffered
-    session.buffered = []
+    const backlog = session.buffered.payloads
+    session.buffered = EMPTY_BUFFER
     for (const payload of backlog) {
       stream.send(payload)
     }
@@ -362,14 +372,19 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
     }
     isManagerClosed = true
     clearInterval(sweeper)
-    await Promise.all([...sessions.values()].map((session) => teardownSession(session)))
+    // In-flight one-shots are not in `sessions`; the runner ends them and
+    // resolves once their upstreams have been closed.
+    await Promise.all([
+      ...[...sessions.values()].map((session) => teardownSession(session)),
+      stateless.terminateAll(),
+    ])
   }
 
   return Object.freeze({
     handlePost,
     handleGet,
     handleDelete,
-    activeSessionCount: () => sessions.size,
+    activeSessionCount: () => sessions.size + slots.reserved(),
     close,
   })
 }

@@ -348,7 +348,12 @@ async function waitForShutdown(
 }
 
 function describeBindFailure(error: unknown, flags: ServeFlags): string {
-  const code = (error as NodeJS.ErrnoException | undefined)?.code
+  // Honest narrowing rather than a cast: a thrown value is `unknown`, and an
+  // `errno` code is only trustworthy when it is really there and really a string.
+  const code =
+    typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+      ? error.code
+      : undefined
   const target = `${flags.host}:${flags.port}`
   if (code === 'EADDRINUSE') {
     return `serve: cannot bind ${target}: address already in use\n`

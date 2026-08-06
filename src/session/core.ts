@@ -104,6 +104,14 @@ export interface CreateSessionDeps {
   readonly approvals: SessionApprovals
   readonly grants: GrantRegistry
   readonly journal: SessionJournal
+  /**
+   * Exact values this session's upstream was handed (vault-resolved env and
+   * header material, plus the registry literals beside them). Registered on
+   * the record builder before any traffic is tapped, so the journal redacts
+   * the secrets the plane itself injected even when a server echoes one back
+   * under an innocent key. See `redact/known-secrets.ts`.
+   */
+  readonly knownSecrets?: readonly string[]
   readonly agent?: SessionAgent
   /** Injectable clock (ms since epoch) for deterministic tests. */
   readonly clock?: () => number
@@ -143,6 +151,12 @@ export function createSession(deps: CreateSessionDeps): SessionHandle {
   const clock = deps.clock ?? Date.now
   const onError = deps.onError ?? defaultOnError
   const pollIntervalMs = deps.revocationPollIntervalMs ?? AGENT_REVOCATION_POLL_INTERVAL_MS
+
+  // Before anything can be tapped: no record may be built without knowing
+  // which exact values this session's upstream was trusted with.
+  if (deps.knownSecrets !== undefined) {
+    journal.recordBuilder.registerKnownSecrets(deps.knownSecrets)
+  }
 
   let endPromise: Promise<void> | null = null
   let endedReason: SessionEndReason | null = null

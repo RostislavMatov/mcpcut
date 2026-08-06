@@ -167,6 +167,33 @@ export const MAX_TOOL_RULES_PER_SERVER = 500
  */
 export const TOOL_RULE_NAME_PATTERN = /^[A-Za-z0-9_.:-]+\*?$/
 
+/**
+ * Request methods that reach a server's capability surface but have no
+ * representation in an agent's grant matrix: M3 grants are a tool allowlist
+ * (`agents.json`: `grants: {<server>: {tools: [...]}}`) and say nothing about
+ * resources, prompts or completions. An agent session therefore denies them
+ * fail-closed -- a `tools` grant must not become a back door through which
+ * `resources/read` reaches the same server. Sessions with no agent identity
+ * (ad-hoc `wrap`) are untouched: there is no grant matrix to be inconsistent
+ * with.
+ *
+ * An entry ending in `/` names a whole family (`resources/*`, `prompts/*`) so
+ * a method added by a later spec revision is denied by default rather than
+ * silently admitted; every other entry is an exact method name. Protocol
+ * plumbing (`initialize`, `ping`, `tools/*`, `notifications/*`, `logging/*`)
+ * is deliberately absent -- an agent session cannot work without it.
+ *
+ * Расширение грант-словаря на resources/prompts — бэклог M4.
+ */
+export const AGENT_NON_GRANTABLE_METHODS: readonly string[] = [
+  'resources/',
+  'prompts/',
+  'completion/complete',
+]
+
+/** Prefix of the `rule` recorded for a method denied by `AGENT_NON_GRANTABLE_METHODS`. */
+export const AGENT_NON_GRANTABLE_RULE_PREFIX = 'agent: method not grantable in M3'
+
 /** Default file name looked up in the project/home policy directories. */
 export const POLICY_FILE_NAME = 'policy.json'
 

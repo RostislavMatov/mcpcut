@@ -8,13 +8,14 @@ import {
 import {
   SessionExpiredError,
   SseStreamError,
-  UpstreamConnectionError,
   UpstreamHttpStatusError,
   UpstreamResponseError,
 } from './client-errors.js'
 import {
+  consumeSseResponse,
   contentTypeOf,
   createChannel,
+  createDispatchQueue,
   defaultDelay,
   readBoundedBody,
   startRequest,
@@ -34,19 +35,19 @@ import {
   SSE_RECONNECT_BASE_DELAY_MS,
   SSE_RECONNECT_MAX_ATTEMPTS,
   SSE_RECONNECT_MAX_DELAY_MS,
+  SSE_RETRY_MAX_DELAY_MS,
 } from './constants.js'
-import { createSseParser, type SseItem } from './sse-parse.js'
 
 /**
  * HTTP upstream client (M3 Task 9): connects the control plane to a remote
  * streamable-HTTP MCP server as a transport-neutral `MessageSource`/
- * `MessageSink` pair. Supports both session models of ADR-0002 —
- * sessionful (`Mcp-Session-Id` + GET-SSE + DELETE) and stateless
- * (2026-07-28, plain POSTs) — with `auto` detected purely transport-side:
- * by the presence of the session header on the first successful POST
- * response. No JSON body is ever parsed here; any per-message semantics
- * (e.g. `Mcp-Method`/`Mcp-Name` for stateless upstreams) arrive through the
- * injected `perMessageHeaders` hook (Task 11), default: none.
+ * `MessageSink` pair. Supports both session models of ADR-0002 — sessionful
+ * (`Mcp-Session-Id` + GET-SSE + DELETE) and stateless (2026-07-28, plain
+ * POSTs) — with `auto` detected purely transport-side: by the presence of
+ * the session header on the first successful POST response. No JSON body
+ * is ever parsed here; any per-message semantics (e.g. `Mcp-Method`/
+ * `Mcp-Name` for stateless upstreams) arrive through the injected
+ * `perMessageHeaders` hook (Task 11), default: none.
  *
  * Error hygiene: see `./client-errors.ts` — status + host only, never
  * path/query, header values or bodies.
@@ -150,38 +151,18 @@ export function createHttpUpstreamClient(
     }
   }
 
-  function handleSseItem(item: SseItem): void {
-    if (item.kind === 'retry') {
-      minRetryDelayMs = item.retryMs
-      return
-    }
-    channel.emitMessage(serverMessage(Buffer.from(item.data, 'utf8')))
-  }
-
   /** Streams one SSE response through the parser into the source. */
   function consumeSse(res: IncomingMessage): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const parser = createSseParser(maxBytes)
-      const fail = (error: unknown) => {
-        res.destroy()
-        reject(error)
-      }
-      res.on('data', (chunk: Buffer) => {
-        try {
-          for (const item of parser.feed(chunk)) handleSseItem(item)
-        } catch (error: unknown) {
-          fail(error)
-        }
-      })
-      res.on('end', () => {
-        try {
-          for (const item of parser.end()) handleSseItem(item)
-          resolve()
-        } catch (error: unknown) {
-          reject(error)
-        }
-      })
-      res.on('error', (error: unknown) => reject(new UpstreamConnectionError('stream', host, error)))
+    return consumeSseResponse(res, {
+      maxBufferedChars: maxBytes,
+      host,
+      onMessage: (data) => channel.emitMessage(serverMessage(Buffer.from(data, 'utf8'))),
+      onRetry: (retryMs) => {
+        // The client MUST honor `retry:` as a reconnect-delay floor, but not
+        // unboundedly — a hostile value (e.g. `retry: 4294967295`) must not
+        // stall reconnection for effectively ever.
+        minRetryDelayMs = Math.min(retryMs, SSE_RETRY_MAX_DELAY_MS)
+      },
     })
   }
 
@@ -226,8 +207,13 @@ export function createHttpUpstreamClient(
     channel.emitMessage(serverMessage(body))
   }
 
-  async function performPost(message: McpMessage, isDetector: boolean): Promise<void> {
-    const { response } = startRequest(url, 'POST', postHeaders(message), message.bytes, host)
+  async function performPost(
+    message: McpMessage,
+    isDetector: boolean,
+    onDispatched: () => void,
+  ): Promise<void> {
+    const { response, dispatched } = startRequest(url, 'POST', postHeaders(message), message.bytes, host)
+    void dispatched.then(onDispatched)
     const res = await response
     const status = res.statusCode ?? 0
     if (isDetector && status >= 200 && status < 300) {
@@ -238,13 +224,12 @@ export function createHttpUpstreamClient(
 
   /**
    * Until the session model is known, exactly one POST (the detector) is in
-   * flight and later writes queue behind its response HEADERS (not its full
-   * body) — the session id must be known before any second request. If the
-   * detector fails, the next queued write takes over detection.
+   * flight and later writes queue behind its response headers (not its full
+   * body). If the detector fails, the next queued write takes over.
    */
-  async function postWithDetection(message: McpMessage): Promise<void> {
+  async function postWithDetection(message: McpMessage, onDispatched: () => void): Promise<void> {
     if (isDetected) {
-      await performPost(message, false)
+      await performPost(message, false, onDispatched)
       return
     }
     if (detectionGate === null) {
@@ -252,7 +237,7 @@ export function createHttpUpstreamClient(
         releaseDetectionGate = resolve
       })
       try {
-        await performPost(message, true)
+        await performPost(message, true, onDispatched)
       } finally {
         releaseDetectionGate?.()
         releaseDetectionGate = null
@@ -261,17 +246,33 @@ export function createHttpUpstreamClient(
       return
     }
     await detectionGate
-    await postWithDetection(message)
+    await postWithDetection(message, onDispatched)
   }
+
+  /**
+   * `MessageSink` promises strict write-call ordering; `postWithDetection`
+   * alone does not, once detected every write POSTs immediately, so two
+   * back-to-back writes can race on the wire — exactly what `gate-router.ts`
+   * relies on not happening for `notifications/cancelled` vs. the
+   * `tools/call` it cancels. `dispatchQueue` starts each write only once the
+   * previous one signals *dispatch* (`client-wire.ts`: request body fully
+   * handed to the socket, `'finish'`, or failure) — deliberately not once it
+   * fully completes, which would deadlock the sampling pattern (a server
+   * holding a POST's SSE response open waiting for the client's next
+   * request, Task 9).
+   */
+  const dispatchQueue = createDispatchQueue()
 
   function write(message: McpMessage): Promise<void> {
     if (isClosed) {
       return Promise.resolve()
     }
-    const task = postWithDetection(message).catch((error: unknown) => {
-      channel.emitError(error)
-      throw error
-    })
+    const task = dispatchQueue
+      .enqueue((markDispatched) => postWithDetection(message, markDispatched))
+      .catch((error: unknown) => {
+        channel.emitError(error)
+        throw error
+      })
     inFlight.add(task)
     const settle = () => inFlight.delete(task)
     task.then(settle, settle)

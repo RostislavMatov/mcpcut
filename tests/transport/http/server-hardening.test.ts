@@ -1,10 +1,16 @@
 import { afterEach, describe, expect, test } from 'vitest'
+import { waitUntil } from '../../proxy/harness.js'
 import { isOriginAllowed, parseRoute } from '../../../src/transport/http/routes.js'
 import type { WarnSink } from '../../../src/transport/http/server.js'
+import type {
+  OpenSession,
+  OpenedSession,
+} from '../../../src/transport/http/session.js'
 import {
   createFakeSessionFactory,
   startFront,
   INITIALIZE_BODY,
+  type FakeSessionFactory,
   type StartedFront,
 } from './front-harness.js'
 
@@ -294,6 +300,38 @@ describe('500 branch hygiene', () => {
     expect(logged).not.toContain(started.token)
   })
 
+  test('a session error names the failure class and message, and nothing else', async () => {
+    const lines: string[] = []
+    const stderr: WarnSink = {
+      write: (chunk: string) => {
+        lines.push(chunk)
+        return true
+      },
+    }
+    const base = createFakeSessionFactory()
+    const failingClose: OpenSession = async (ctx) => {
+      const opened = await base.openSession(ctx)
+      if ('error' in opened) return opened
+      const wrapped: OpenedSession = {
+        sink: opened.sink,
+        source: opened.source,
+        close: () => Promise.reject(new Error('CLOSE_MARKER_42')),
+      }
+      return wrapped
+    }
+    const factory: FakeSessionFactory = { openSession: failingClose, handles: base.handles }
+    started = await startFront({ stderr }, factory)
+
+    const init = await started.call('POST', started.path(), { body: INITIALIZE_BODY })
+    const sessionId = init.headers.get('mcp-session-id') ?? ''
+    await started.call('DELETE', started.path(), { headers: { 'mcp-session-id': sessionId } })
+
+    const logged = lines.join('')
+    expect(logged).toContain('Error: CLOSE_MARKER_42')
+    expect(logged).toContain(sessionId)
+    expect(logged).not.toContain(started.token)
+  })
+
   test('an initialize that explodes mid-handshake leaves no half-open session behind', async () => {
     started = await startFront(
       { stderr: { write: () => true } },
@@ -305,5 +343,27 @@ describe('500 branch hygiene', () => {
     expect(response.status).toBe(500)
     const followUp = await started.call('POST', started.path(), { body: REQUEST_BODY })
     expect(followUp.status).toBe(500)
+  })
+})
+
+describe('abandoned requests free their upstream', () => {
+  test('a client that aborts a stateless POST does not leave the session open', async () => {
+    // The factory never answers: only the abort can end this request.
+    started = await startFront({}, createFakeSessionFactory({ respond: () => null }))
+    const controller = new AbortController()
+
+    const inFlight = fetch(`${started.baseUrl}${started.path()}`, {
+      method: 'POST',
+      body: REQUEST_BODY,
+      headers: { authorization: `Bearer ${started.token}` },
+      signal: controller.signal,
+    })
+    inFlight.catch(() => undefined)
+    const front = started
+    await waitUntil(() => front.factory.handles.length === 1)
+    controller.abort()
+
+    await waitUntil(() => front.factory.handles[0]?.isClosed() === true)
+    expect(front.factory.handles[0]?.isDisposed()).toBe(true)
   })
 })

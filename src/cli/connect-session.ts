@@ -49,6 +49,13 @@ export interface StartConnectSessionArgs {
   readonly policy: Policy
   /** `--fail-closed`; only ever turns fail-closed ON, never off. */
   readonly failClosed: boolean
+  /**
+   * Exact values handed to the upstream (`connect-upstream.ts`'s resolved env
+   * or headers, literals included). Registered on this session's record
+   * builder so the journal redacts material the plane injected itself — see
+   * `redact/known-secrets.ts`.
+   */
+  readonly knownSecrets?: readonly string[]
   readonly journalDir?: string
   readonly approvalsBaseDir?: string
   readonly inventoryStorePath?: string
@@ -164,6 +171,7 @@ export function startConnectSession(args: StartConnectSessionArgs): ConnectSessi
     },
     grants: createGrantRegistry(),
     journal: { recordBuilder, sink },
+    ...(args.knownSecrets !== undefined ? { knownSecrets: args.knownSecrets } : {}),
     agent: args.agent,
     ...(args.now !== undefined ? { clock: args.now } : {}),
     ...(args.revocationPollIntervalMs !== undefined

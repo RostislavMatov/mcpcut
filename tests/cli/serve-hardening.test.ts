@@ -20,6 +20,7 @@ import {
 import { createMemoryPipe } from '../../src/cli/serve-pipe.js'
 import { createServeSessionFactory } from '../../src/cli/serve-runtime.js'
 import { checkModelCompatibility } from '../../src/cli/serve-upstream.js'
+import { createSessionManager } from '../../src/transport/http/session.js'
 import { clientMessage, serverMessage } from '../../src/transport/message.js'
 import {
   addStdioServer,
@@ -175,6 +176,56 @@ describe('the downstream-model handoff', () => {
       false,
     )
     expect(hooks.handoff.take()).toBe('stateless')
+  })
+
+  /**
+   * The note is one-shot, so a POST that consults `detectInitialize` and
+   * then refuses without opening a session must not leave one behind — a
+   * later factory invocation would otherwise read a model decided for
+   * somebody else's request. Both refusal shapes are covered: header
+   * mismatch (the hooks ran → the front must reset explicitly, hence
+   * `onOpenAbandoned`) and the session cap (checked before any hook runs,
+   * so no note is ever created).
+   */
+  describe('refusals leave no stale note', () => {
+    const CTX = { agentName: 'bot', serverName: 'testsrv' }
+    const REFUSING_OPEN = () => Promise.resolve({ error: REFUSAL_UNKNOWN_SERVER })
+
+    test('a 400 header mismatch resets the note through onOpenAbandoned', async () => {
+      const hooks = createServeHooks()
+      const manager = createSessionManager({
+        openSession: REFUSING_OPEN,
+        detectInitialize: hooks.detectInitialize,
+        validateStatelessHeaders: hooks.validateStatelessHeaders,
+        expectsResponse: hooks.expectsResponse,
+        onOpenAbandoned: () => {
+          hooks.handoff.take()
+        },
+      })
+
+      const plan = await manager.handlePost(CTX, {}, bodyOf({ jsonrpc: '2.0', id: 1, method: 'tools/list' }))
+
+      expect(plan.status).toBe(400)
+      expect(hooks.handoff.take()).toBeNull()
+      await manager.close()
+    })
+
+    test('a 429 never reaches the hooks, so no note is created at all', async () => {
+      const hooks = createServeHooks()
+      const manager = createSessionManager({
+        openSession: REFUSING_OPEN,
+        detectInitialize: hooks.detectInitialize,
+        validateStatelessHeaders: hooks.validateStatelessHeaders,
+        expectsResponse: hooks.expectsResponse,
+        maxSessions: 0,
+      })
+
+      const plan = await manager.handlePost(CTX, {}, Buffer.from(INITIALIZE_BODY, 'utf8'))
+
+      expect(plan.status).toBe(429)
+      expect(hooks.handoff.take()).toBeNull()
+      await manager.close()
+    })
   })
 })
 
@@ -346,6 +397,34 @@ describe('createMemoryPipe', () => {
     pipe.endFrontSource()
 
     expect(ends).toBe(1)
+  })
+
+  test('a handler registered after the end still learns the conversation is over', () => {
+    // The front registers `onEnd` right after `openSession` resolves; a
+    // session that died in between (dead upstream) must not leave the
+    // front waiting for a message that can never come.
+    const pipe = createMemoryPipe()
+    let ends = 0
+
+    pipe.endFrontSource()
+    pipe.front.source.onEnd(() => {
+      ends += 1
+    })
+
+    expect(ends).toBe(1)
+  })
+
+  test('a disposed source is not woken by a late registration', () => {
+    const pipe = createMemoryPipe()
+    let ends = 0
+
+    pipe.endFrontSource()
+    pipe.front.source.dispose()
+    pipe.front.source.onEnd(() => {
+      ends += 1
+    })
+
+    expect(ends).toBe(0)
   })
 })
 

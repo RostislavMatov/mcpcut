@@ -1,5 +1,11 @@
+import type { DecisionInfo } from '../journal/record.js'
+import {
+  AGENT_NON_GRANTABLE_METHODS,
+  AGENT_NON_GRANTABLE_RULE_PREFIX,
+} from '../policy/constants.js'
 import {
   classify,
+  type ClassifiedMessage,
   type ClassifiedNotification,
   type ClassifiedRequest,
   type JsonRpcId,
@@ -9,6 +15,7 @@ import type { McpMessage } from '../transport/message.js'
 import type { Verdict } from './pipeline.js'
 import type { SynthesizableId } from './synthesize.js'
 import type { ToolCatalog } from './tool-catalog.js'
+import { filterToolsListResult } from './tools-filter.js'
 import {
   DROP,
   DUPLICATE_RESPONSE_RULE,
@@ -27,6 +34,7 @@ import {
   parseCancelledRequestId,
   parseIdlessToolCall,
   recoverScalarId,
+  trimTrailingNewline,
   unsafeClientFrameDecision,
   type AnswerGuard,
   type DecisionWriter,
@@ -52,6 +60,23 @@ import {
  */
 const MAX_TRACKED_TOOLS_LIST_IDS = 65_536
 
+/**
+ * `rule` recorded when a `tools/list`-shaped response the gate never asked for
+ * (an unsolicited push, or one whose id the tracker had to evict) was rewritten
+ * down to the agent's grants on its way out.
+ */
+const UNTRACKED_CATALOG_RULE = 'toolsList.untracked-grant-filtered'
+
+/**
+ * True for a method an agent's grant matrix cannot describe. An entry ending
+ * in `/` covers a whole family; see `AGENT_NON_GRANTABLE_METHODS`.
+ */
+function isNonGrantableMethod(method: string): boolean {
+  return AGENT_NON_GRANTABLE_METHODS.some((entry) =>
+    entry.endsWith('/') ? method.startsWith(entry) : method === entry,
+  )
+}
+
 export interface GateRouterDeps {
   readonly serverName: string
   readonly writeDecision: DecisionWriter
@@ -73,6 +98,13 @@ export interface GateRouterDeps {
   ) => Verdict | Promise<Verdict>
   /** Remembers an in-flight verdict so `cancelPending()` can wait it out. */
   readonly track: (work: Verdict | Promise<Verdict>) => Verdict | Promise<Verdict>
+  /**
+   * The agent dimension (M3). Present only for an authenticated agent session
+   * (`connect`/`serve`); absent on the ad-hoc `wrap` path, where every routing
+   * rule below stays exactly M2. Its presence is what turns on both the
+   * non-grantable-method denial and grant filtering of untracked catalogs.
+   */
+  readonly isGrantedToAgent?: (tool: string) => boolean
 }
 
 export interface GateRouter {
@@ -82,7 +114,7 @@ export interface GateRouter {
 
 export function createGateRouter(deps: GateRouterDeps): GateRouter {
   const { serverName, writeDecision, settleJournal, answerLocally, answerGuard } = deps
-  const { catalog, onError, gateToolCall, guarded, track } = deps
+  const { catalog, onError, gateToolCall, guarded, track, isGrantedToAgent } = deps
 
   const pendingToolsListIds = createBoundedIdSet(MAX_TRACKED_TOOLS_LIST_IDS, (evicted) => {
     writeDecision(bookkeepingDecisionInfo(serverName, TOOLS_LIST_OVERFLOW_RULE, TOOLS_LIST_TOOL_NAME, evicted))
@@ -105,6 +137,34 @@ export function createGateRouter(deps: GateRouterDeps): GateRouter {
       await answerLocally(id, (sid) =>
         denialBytesFor(sid, { toolName: UNPARSEABLE_TOOL_NAME, serverName, rule }),
       )
+    } catch (error: unknown) {
+      onError(error)
+    }
+    return DROP
+  }
+
+  /**
+   * Fail-closed denial of a method an agent's grant matrix cannot describe
+   * (`resources/*`, `prompts/*`, `completion/complete`). Only ever reached
+   * with an `isGrantedToAgent` present, i.e. on an authenticated agent
+   * session. Same shape as every other local denial: journal the decision,
+   * make it durable when fail-closed, answer the client with the policy-denied
+   * error, drop the frame. An id-less (notification-shaped) one has no return
+   * address and is dropped after journaling, exactly like an id-less
+   * `tools/call` (C2/N1).
+   */
+  async function denyNonGrantableMethod(
+    msg: ClassifiedRequest | ClassifiedNotification,
+  ): Promise<Verdict> {
+    const rule = `${AGENT_NON_GRANTABLE_RULE_PREFIX}: ${msg.method}`
+    try {
+      writeDecision(nonGrantableMethodDecision(serverName, rule, msg.method))
+      await settleJournal()
+      if (msg.kind === 'request') {
+        await answerLocally(msg.id, (sid) =>
+          denialBytesFor(sid, { toolName: msg.method, serverName, rule }),
+        )
+      }
     } catch (error: unknown) {
       onError(error)
     }
@@ -178,6 +238,17 @@ export function createGateRouter(deps: GateRouterDeps): GateRouter {
     if ((msg.kind === 'request' || msg.kind === 'notification') && msg.method === TOOLS_CALL_METHOD) {
       return gateToolsCallFrame(msg, text)
     }
+    // The agent dimension, checked before the kind fork for the same reason
+    // tools/call is: an id-less `resources/read` classifies as a notification
+    // and must not take the "notifications forward unconditionally" path.
+    // Without an agent identity this is inert and the M2 routing stands.
+    if (
+      isGrantedToAgent !== undefined &&
+      (msg.kind === 'request' || msg.kind === 'notification') &&
+      isNonGrantableMethod(msg.method)
+    ) {
+      return track(denyNonGrantableMethod(msg))
+    }
     // Fail closed: FORWARD only frames positively identified as safe.
     switch (msg.kind) {
       case 'notification':
@@ -192,6 +263,35 @@ export function createGateRouter(deps: GateRouterDeps): GateRouter {
   }
 
   // -- server -> client --------------------------------------------------
+
+  /**
+   * A `tools/list`-shaped response the gate never tracked: an unsolicited
+   * server push, or one whose id the bounded tracker had to evict. `M2` simply
+   * forwarded it, which on an agent session leaks the NAMES of tools the agent
+   * was never granted (calling them is still denied — this is visibility only,
+   * and the reason it is a low-severity fix).
+   *
+   * Only the grant half of the filter runs here: policy visibility depends on
+   * quarantine state, and quarantine state comes from observing the catalog —
+   * which this path deliberately does NOT do. `observeToolsList` on an
+   * untracked response would let an unsolicited push rewrite the inventory
+   * (and so the quarantine state) of a server the client never queried.
+   * Grants need no inventory, so they can be applied safely.
+   */
+  async function filterUntrackedCatalog(msg: ClassifiedMessage): Promise<Verdict> {
+    if (isGrantedToAgent === undefined) return FORWARD
+    const filtered = filterToolsListResult(msg, () => true, isGrantedToAgent)
+    // `null` means "not a catalog shape we understand" (any other response,
+    // unparseable content): forward it exactly as before.
+    if (filtered === null || filtered.removed.length === 0) return FORWARD
+
+    writeDecision(
+      bookkeepingDecisionInfo(serverName, UNTRACKED_CATALOG_RULE, TOOLS_LIST_TOOL_NAME, filtered.removed),
+      { removed: filtered.removed },
+    )
+    await settleJournal()
+    return { action: 'emit', bytes: trimTrailingNewline(filtered.bytes) }
+  }
 
   function gateServerMessage(message: McpMessage): Verdict | Promise<Verdict> {
     try {
@@ -211,7 +311,7 @@ export function createGateRouter(deps: GateRouterDeps): GateRouter {
           { rpcId: msg.id },
         )
       }
-      return FORWARD
+      return filterUntrackedCatalog(msg)
     } catch (error: unknown) {
       onError(error)
       return FORWARD
@@ -219,4 +319,23 @@ export function createGateRouter(deps: GateRouterDeps): GateRouter {
   }
 
   return { gateClientMessage, gateServerMessage }
+}
+
+/**
+ * `DecisionInfo` for a method denied because an agent's grant matrix cannot
+ * describe it. `toolName` carries the METHOD — there is no tool involved, and
+ * an auditor reading the journal needs to see what was actually refused. The
+ * most alarming class/state values are stamped on it, like every other
+ * fail-closed refusal (`unsafeClientFrameDecision`).
+ */
+function nonGrantableMethodDecision(serverName: string, rule: string, method: string): DecisionInfo {
+  return {
+    outcome: 'deny',
+    rule,
+    serverName,
+    toolName: method,
+    toolClass: 'destructive',
+    quarantineState: 'unknown',
+    argsHash: '',
+  }
 }

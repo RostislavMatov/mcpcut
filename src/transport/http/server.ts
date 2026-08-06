@@ -105,14 +105,34 @@ function headerValue(req: IncomingMessage, name: string): string | undefined {
   return Array.isArray(raw) ? raw[0] : raw
 }
 
+/** Class and message only — never a body, a header or a token. */
+function describeError(error: unknown): string {
+  return error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+}
+
+/**
+ * Fires when the socket dies before the answer was written. The session
+ * manager uses it to stop waiting on an upstream nobody will read anymore
+ * (an agent that gave up must not keep a child process alive).
+ */
+function abortSignalOf(res: ServerResponse): AbortSignal {
+  const controller = new AbortController()
+  res.once('close', () => {
+    if (!res.writableEnded) {
+      controller.abort()
+    }
+  })
+  return controller.signal
+}
+
 export function createHttpFront(opts: HttpFrontOptions): HttpFront {
   const stderr: WarnSink = opts.stderr ?? process.stderr
   const allowedOrigins = opts.allowedOrigins ?? []
   const maxBodyBytes = opts.maxBodyBytes ?? MAX_REQUEST_BODY_BYTES
   const manager = createSessionManager({
     ...opts,
-    onSessionError: (sessionId) => {
-      stderr.write(`[http] session ${sessionId}: upstream error\n`)
+    onSessionError: (sessionId, error) => {
+      stderr.write(`[http] session ${sessionId}: ${describeError(error)}\n`)
     },
   })
 
@@ -136,6 +156,7 @@ export function createHttpFront(opts: HttpFrontOptions): HttpFront {
       writePlan(res, await manager.handleDelete(ctx, req.headers))
       return
     }
+    const signal = abortSignalOf(res)
     const bodyResult = await readRequestBody(req, maxBodyBytes)
     if (!bodyResult.ok) {
       writePlan(res, {
@@ -146,7 +167,12 @@ export function createHttpFront(opts: HttpFrontOptions): HttpFront {
       res.destroy()
       return
     }
-    writePlan(res, await manager.handlePost(ctx, req.headers, bodyResult.body))
+    const plan = await manager.handlePost(ctx, req.headers, bodyResult.body, { signal })
+    if (res.writableEnded || res.destroyed) {
+      // The agent hung up while its answer was being produced.
+      return
+    }
+    writePlan(res, plan)
   }
 
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
