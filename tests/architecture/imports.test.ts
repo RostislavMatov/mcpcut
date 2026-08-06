@@ -33,6 +33,7 @@ const TRANSPORT_DIRS: readonly string[] = ['src/proxy', 'src/protocol', 'src/tra
  */
 const SEMANTIC_ALLOWLIST: ReadonlySet<string> = new Set([
   'src/proxy/gate.ts',
+  'src/proxy/gate-core.ts',
   'src/proxy/gate-helpers.ts',
   'src/proxy/gate-approvals.ts',
   'src/proxy/gate-router.ts',

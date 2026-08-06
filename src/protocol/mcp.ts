@@ -5,10 +5,15 @@ import type { ClassifiedMessage, JsonRpcId } from './classify.js'
  * JSON-RPC classification in `protocol/classify.ts`.
  *
  * THIS MODULE IS THE SINGLE POINT OF COUPLING TO THE MCP PROTOCOL SPEC
- * VERSION. As of writing, the MCP spec RC dated 2026-07-28 is mid-churn on
- * statelessness (dropping `Mcp-Session-Id`, changing server-initiated
- * request shapes). Any future adaptation to spec changes belongs here, and
- * in the semantic gate that consumes it (`proxy/gate.ts`) — nowhere else.
+ * VERSION. The 2026-07-28 revision (finalized and current as of Task 1's
+ * verification — see `docs/research/http-spec-matrix.md`) moves the
+ * protocol to stateless HTTP (no `Mcp-Session-Id`, per-message
+ * `Mcp-Method`/`Mcp-Name` headers). Any future adaptation to spec changes
+ * belongs here, and in the semantic gate that consumes it
+ * (`proxy/gate.ts`) — nowhere else. The version helpers at the bottom of
+ * this file (`isInitializeRequest`, `detectInitializeBytes`,
+ * `extractPerMessageHeaders`) exist precisely so the HTTP transport can be
+ * handed spec knowledge as injected callbacks without ever importing it.
  * `protocol/classify.ts` and `protocol/split.ts` stay deliberately
  * spec-shallow (JSON-RPC only) and must not grow MCP-specific knowledge.
  *
@@ -198,6 +203,122 @@ function toToolJson(tool: ToolDescriptor): Record<string, unknown> {
     ...(tool.inputSchema !== undefined ? { inputSchema: tool.inputSchema } : {}),
     ...(tool.annotations !== undefined ? { annotations: tool.annotations } : {}),
   }
+}
+
+// ---------------------------------------------------------------------------
+// Version helpers (M3): the session-model knowledge the HTTP transport needs,
+// exposed as pure functions so `transport/http/*` can receive them injected
+// and stay semantics-free. All of them treat garbage as "no" — never throw.
+// ---------------------------------------------------------------------------
+
+/** The MCP handshake method that marks the sessionful (≤ 2025-11-25) model. */
+export const INITIALIZE_METHOD = 'initialize'
+
+/**
+ * Methods whose stateless per-message headers carry an `Mcp-Name` mirror,
+ * mapped to the `params` field the spec mirrors it from (SEP-2243:
+ * `params.name` for tools/call and prompts/get, `params.uri` for
+ * resources/read).
+ */
+const MCP_NAME_PARAM_BY_METHOD: Readonly<Record<string, 'name' | 'uri'>> = {
+  [TOOLS_CALL_METHOD]: 'name',
+  'prompts/get': 'name',
+  'resources/read': 'uri',
+}
+
+/** `params._meta` key carrying the stateless protocol version (2026-07-28). */
+const PROTOCOL_VERSION_META_KEY = 'io.modelcontextprotocol/protocolVersion'
+
+/**
+ * True iff `msg` is an `initialize` request — the handshake that selects
+ * the sessionful HTTP model for a downstream connection (an agent speaking
+ * the 2026-07-28 stateless revision never sends one).
+ */
+export function isInitializeRequest(msg: ClassifiedMessage): boolean {
+  return msg.kind === 'request' && msg.method === INITIALIZE_METHOD
+}
+
+/**
+ * `isInitializeRequest` for a context that has raw bytes but no
+ * `ClassifiedMessage` (the HTTP server sees request bodies, not frames).
+ * Request-shaped only: an `id` key must be present, like `classify()`
+ * requires for a request. Garbage of any shape is simply `false`.
+ */
+export function detectInitializeBytes(bytes: Buffer): boolean {
+  const parsed = tryParseJsonObject(bytes.toString('utf8'))
+  return parsed !== null && parsed['method'] === INITIALIZE_METHOD && 'id' in parsed
+}
+
+/**
+ * Derives the stateless per-message headers (SEP-2243) a stateless upstream
+ * requires, by mirroring the message body — the injected implementation of
+ * the HTTP client's `perMessageHeaders` hook:
+ *
+ *  - `Mcp-Method` — the body's `method`, on every request/notification;
+ *  - `Mcp-Name` — `params.name` for `tools/call`/`prompts/get`,
+ *    `params.uri` for `resources/read` (only those three methods);
+ *  - `MCP-Protocol-Version` — mirrored from
+ *    `params._meta["io.modelcontextprotocol/protocolVersion"]` when the
+ *    body carries one, so header and body agree by construction (MUST).
+ *
+ * Values outside printable ASCII are wrapped in the spec's Base64 sentinel
+ * (`=?base64?<b64>?=`) so they stay legal header values. A body that is not
+ * a JSON object with a string `method` (responses, garbage) yields `{}`.
+ */
+export function extractPerMessageHeaders(bytes: Buffer): Record<string, string> {
+  const parsed = tryParseJsonObject(bytes.toString('utf8'))
+  if (parsed === null) {
+    return {}
+  }
+  const method = parsed['method']
+  if (typeof method !== 'string' || method.length === 0) {
+    return {}
+  }
+
+  const headers: Record<string, string> = { 'Mcp-Method': headerValueOf(method) }
+
+  const nameParam = MCP_NAME_PARAM_BY_METHOD[method]
+  const params = parsed['params']
+  if (nameParam !== undefined && isPlainObject(params)) {
+    const name = params[nameParam]
+    if (typeof name === 'string' && name.length > 0) {
+      headers['Mcp-Name'] = headerValueOf(name)
+    }
+  }
+
+  const protocolVersion = protocolVersionOf(params)
+  if (protocolVersion !== null) {
+    headers['MCP-Protocol-Version'] = headerValueOf(protocolVersion)
+  }
+
+  return headers
+}
+
+/** Extracts `params._meta["io.modelcontextprotocol/protocolVersion"]`, if present. */
+function protocolVersionOf(params: unknown): string | null {
+  if (!isPlainObject(params)) {
+    return null
+  }
+  const meta = params['_meta']
+  if (!isPlainObject(meta)) {
+    return null
+  }
+  const version = meta[PROTOCOL_VERSION_META_KEY]
+  return typeof version === 'string' && version.length > 0 ? version : null
+}
+
+/** Chars legal in an HTTP header value without encoding: printable ASCII. */
+const PRINTABLE_ASCII_ONLY = /^[\x20-\x7e]*$/
+
+/**
+ * A mirrored body value as a header value: passed through when it is
+ * printable ASCII, otherwise wrapped in the SEP-2243 Base64 sentinel.
+ */
+function headerValueOf(value: string): string {
+  if (PRINTABLE_ASCII_ONLY.test(value)) {
+    return value
+  }
+  return `=?base64?${Buffer.from(value, 'utf8').toString('base64')}?=`
 }
 
 function tryParseJsonObject(raw: string): Record<string, unknown> | null {

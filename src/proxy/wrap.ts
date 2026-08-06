@@ -4,6 +4,7 @@ import { RELAY_DRAIN_TIMEOUT_MS, SIGKILL_ESCALATION_MS } from '../config.js'
 import { createRecordBuilder, type JournalDirection } from '../journal/record.js'
 import { createJournalSink, type JournalSinkOptions } from '../journal/sink.js'
 import type { Policy } from '../policy/schema.js'
+import type { GateAgentScope } from './gate.js'
 import {
   createJournalFailureController,
   type JournalFailureController,
@@ -103,6 +104,8 @@ export interface RunWrapOptions {
   readonly approvalsBaseDir?: string
   /** Tool inventory store file. Defaults to `<journal dir>/tool-inventory.json`. */
   readonly inventoryStorePath?: string
+  /** Agent scope (M3, set by `connect`; never by ad-hoc `wrap` — exactly M2). Mode B only. */
+  readonly agentScope?: GateAgentScope
   /**
    * Forces fail-closed journaling on regardless of `policy.journal.failClosed`
    * (the `--fail-closed` flag). Never forces it *off*: a policy that asks for
@@ -153,6 +156,7 @@ export async function runWrap(
     sessionId,
     policy: effectivePolicyOf(opts, isFailClosed),
     serverName: opts.serverName ?? autoServerName(command, args),
+    ...(opts.agentScope !== undefined ? { agentScope: opts.agentScope } : {}),
     ...policyLocationsOf(opts),
   })
   journalFailure.arm(handle, wiring)

@@ -13,6 +13,7 @@ import {
   TOOLS_LIST_ORIGINAL_RULE,
   TOOLS_LIST_TOOL_NAME,
   bookkeepingDecisionInfo,
+  trimTrailingNewline,
   type DecisionWriter,
   type GateInventory,
 } from './gate-helpers.js'
@@ -34,6 +35,15 @@ export interface ToolCatalogDeps {
   /** Awaited before a rewritten catalog is emitted; a no-op unless fail-closed. */
   readonly settleJournal: () => Promise<void>
   readonly onError: (error: unknown) => void
+  /**
+   * The agent dimension (M3): when present, a tool survives the `tools/list`
+   * rewrite only as the intersection of what was granted to the agent AND
+   * what policy leaves visible ("агент видит ровно выданное"). Grant
+   * visibility applies even when policy filtering is `off` or the catalog is
+   * untrusted — grants do not depend on the inventory, and an agent must
+   * never see what was not handed out. Absent — the M2 behavior, unchanged.
+   */
+  readonly isGrantedToAgent?: (tool: string) => boolean
 }
 
 export interface ToolCatalog {
@@ -93,16 +103,23 @@ export function createToolCatalog(deps: ToolCatalogDeps): ToolCatalog {
     )
   }
 
+  /** A visibility predicate that lets everything through (grant-only filtering). */
+  const everyToolVisible = (): boolean => true
+
   /**
-   * Rewrites the catalog down to what the client may see. When nothing is
-   * hidden the original bytes are forwarded verbatim, preserving byte
-   * identity for a stream policy did not actually touch.
+   * Rewrites the catalog down to what the client may see: (granted to the
+   * agent, when an agent is present) ∩ (visible under `visibility`). When
+   * nothing is hidden the original bytes are forwarded verbatim, preserving
+   * byte identity for a stream policy did not actually touch. Emitted bytes
+   * are message-level *content* (no trailing `\n`) — the transport sink owns
+   * framing (`gate-core.ts` byte conventions).
    */
   async function filterCatalog(
     msg: ClassifiedMessage,
     tools: readonly ToolDescriptor[],
+    visibility: (tool: ToolDescriptor) => boolean,
   ): Promise<Verdict> {
-    const filtered = filterToolsListResult(msg, isVisible)
+    const filtered = filterToolsListResult(msg, visibility, deps.isGrantedToAgent)
     if (filtered === null) {
       deps.onError(new Error('tools/list response could not be rewritten; forwarding the original'))
       return FORWARD
@@ -117,7 +134,9 @@ export function createToolCatalog(deps: ToolCatalogDeps): ToolCatalog {
     )
     await deps.settleJournal()
 
-    return removed.size === 0 ? FORWARD : { action: 'emit', bytes: filtered.bytes }
+    return removed.size === 0
+      ? FORWARD
+      : { action: 'emit', bytes: trimTrailingNewline(filtered.bytes) }
   }
 
   /**
@@ -145,10 +164,20 @@ export function createToolCatalog(deps: ToolCatalogDeps): ToolCatalog {
       // their state, and before the next call can be gated. Never throws.
       const observed = await deps.inventory.observeToolsList(parsed.tools)
       if (observed.failed || !deps.inventory.isCatalogTrusted()) {
-        return await forwardUntrusted(parsed.tools.map((tool) => tool.name))
+        const verdict = await forwardUntrusted(parsed.tools.map((tool) => tool.name))
+        // Policy visibility cannot be resolved from an untrusted inventory,
+        // but grants can (they do not depend on it) — an agent still must
+        // not see what was never granted, so only grant filtering runs here.
+        if (deps.isGrantedToAgent === undefined) return verdict
+        return await filterCatalog(msg, parsed.tools, everyToolVisible)
       }
-      if (deps.policy.toolsList.filter === 'off') return FORWARD
-      return await filterCatalog(msg, parsed.tools)
+      if (deps.policy.toolsList.filter === 'off') {
+        // `filter: off` opts out of POLICY visibility hygiene only; the
+        // agent-grant allowlist is not a policy knob and always applies.
+        if (deps.isGrantedToAgent === undefined) return FORWARD
+        return await filterCatalog(msg, parsed.tools, everyToolVisible)
+      }
+      return await filterCatalog(msg, parsed.tools, isVisible)
     } catch (error: unknown) {
       deps.onError(error)
       return FORWARD

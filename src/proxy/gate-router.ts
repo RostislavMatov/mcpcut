@@ -5,7 +5,7 @@ import {
   type JsonRpcId,
 } from '../protocol/classify.js'
 import { TOOLS_CALL_METHOD, isToolsListRequest, parseToolCall, type ParsedToolCall } from '../protocol/mcp.js'
-import type { Frame } from '../protocol/split.js'
+import type { McpMessage } from '../transport/message.js'
 import type { Verdict } from './pipeline.js'
 import type { SynthesizableId } from './synthesize.js'
 import type { ToolCatalog } from './tool-catalog.js'
@@ -33,12 +33,15 @@ import {
 } from './gate-helpers.js'
 
 /**
- * The message-dispatch half of the session policy gate: classifies each frame
- * in both directions and routes it to the right decision path. The decision
- * paths themselves (decide/deny/approve, the tool catalog) are injected by
- * `gate.ts`, which owns the shared session state. The routing rules restate
- * the gate's invariants (see `gate.ts`): only `tools/call` is gated — by
- * method, not by message shape — and everything else forwards untouched.
+ * The message-dispatch half of the session policy gate: classifies each
+ * transport-neutral message (`McpMessage`, M3) in both directions and routes
+ * it to the right decision path. The decision paths themselves
+ * (decide/deny/approve, the tool catalog) are injected by `gate-core.ts`,
+ * which owns the shared session state. The routing rules restate the gate's
+ * invariants (see `gate-core.ts`): only `tools/call` is gated — by method,
+ * not by message shape — and everything else forwards untouched. Only a
+ * message's content bytes are consulted; its transport metadata (origin,
+ * terminator) never influences a decision.
  */
 
 /**
@@ -73,8 +76,8 @@ export interface GateRouterDeps {
 }
 
 export interface GateRouter {
-  gateClientMessage(frame: Frame): Verdict | Promise<Verdict>
-  gateServerMessage(frame: Frame): Verdict | Promise<Verdict>
+  gateClientMessage(message: McpMessage): Verdict | Promise<Verdict>
+  gateServerMessage(message: McpMessage): Verdict | Promise<Verdict>
 }
 
 export function createGateRouter(deps: GateRouterDeps): GateRouter {
@@ -166,8 +169,8 @@ export function createGateRouter(deps: GateRouterDeps): GateRouter {
     return track(guarded(call, () => gateToolCall(call)))
   }
 
-  function gateClientMessage(frame: Frame): Verdict | Promise<Verdict> {
-    const text = frame.bytes.toString('utf8')
+  function gateClientMessage(message: McpMessage): Verdict | Promise<Verdict> {
+    const text = message.bytes.toString('utf8')
     const msg = classify(text)
     // tools/call is checked BEFORE the kind fork, on purpose: an id-less
     // tools/call classifies as a 'notification' (no `id` key at all), and
@@ -190,11 +193,11 @@ export function createGateRouter(deps: GateRouterDeps): GateRouter {
 
   // -- server -> client --------------------------------------------------
 
-  function gateServerMessage(frame: Frame): Verdict | Promise<Verdict> {
+  function gateServerMessage(message: McpMessage): Verdict | Promise<Verdict> {
     try {
-      const msg = classify(frame.bytes.toString('utf8'))
-      // A server->client frame can never execute a tool, so an invalid or
-      // non-response frame keeps forwarding untouched (unlike the client
+      const msg = classify(message.bytes.toString('utf8'))
+      // A server->client message can never execute a tool, so an invalid or
+      // non-response message keeps forwarding untouched (unlike the client
       // direction, which fails closed).
       if (msg.kind !== 'response') return FORWARD
 

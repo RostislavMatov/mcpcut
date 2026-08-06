@@ -9,7 +9,7 @@ import { createApprovalWaiter } from '../policy/approvals/waiter.js'
 import { canonicalJson, sha256Hex } from '../policy/hash.js'
 import { createInventory, INVENTORY_FILE_NAME } from '../policy/inventory.js'
 import type { Policy } from '../policy/schema.js'
-import { createPolicyGate } from './gate.js'
+import { createPolicyGate, type GateAgentScope } from './gate.js'
 import { startPipeline, type GateFn } from './pipeline.js'
 import type { ServerHandle } from './spawn.js'
 import { splice, type SpliceErrorOrigin } from './splice.js'
@@ -51,8 +51,9 @@ const APPROVALS_SUBDIR = 'approvals'
 /**
  * Stable identity for a wrapped server that was not given an explicit
  * `--server` name: the same command + args always hash to the same name, so
- * quarantine and policy rules keyed on it survive across sessions. The
- * registry that would hand out real names is M3.
+ * quarantine and policy rules keyed on it survive across sessions. Servers
+ * from the registry (M3) carry their registered name instead; this hash
+ * remains the fallback for ad-hoc `wrap` runs only.
  */
 export function autoServerName(command: string, args: readonly string[]): string {
   const digest = sha256Hex(canonicalJson([command, ...args]))
@@ -97,6 +98,11 @@ export interface PolicyRelayArgs {
   readonly journalDir?: string
   readonly approvalsBaseDir?: string
   readonly inventoryStorePath?: string
+  /**
+   * The authenticated agent's visibility/grant scope (M3, `connect`).
+   * Absent on ad-hoc `wrap` runs — the M2 gate behavior, unchanged.
+   */
+  readonly agentScope?: GateAgentScope
 }
 
 /** Where the policy layer's on-disk state lives for one run. */
@@ -161,6 +167,7 @@ export function wirePolicyRelay(args: PolicyRelayArgs): RelayWiring {
     sink: args.sink,
     clientWriter,
     approvalsBaseDir,
+    ...(args.agentScope !== undefined ? { agentScope: args.agentScope } : {}),
     // A gate-internal failure is a proxy defect, not a broken stream: log it
     // (the gate has already failed the call closed) and keep the session up.
     onError: onInternalError,

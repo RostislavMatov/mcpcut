@@ -27,6 +27,41 @@ export {
 export const FORWARD: Verdict = Object.freeze({ action: 'forward' as const })
 export const DROP: Verdict = Object.freeze({ action: 'drop' as const })
 
+/**
+ * The agent dimension of the gate (M3): what one authenticated agent may
+ * see and call on this session's server. Structurally satisfied by
+ * `agents/scope.ts`'s `agentScope()` output plus the agent's name — the
+ * gate depends only on this interface, never on the agents module, so a
+ * test (or the session core's live-reloading wrapper) can supply its own.
+ * Absent entirely on the ad-hoc `wrap` path: that is exactly the M2
+ * behavior, byte for byte.
+ */
+export interface GateAgentScope {
+  /** Journal-facing identity of the authenticated agent. */
+  readonly agentName: string
+  /** True iff the agent's grant matrix covers `tool` on this server. */
+  isGranted(tool: string): boolean
+  /** The subset of `tools` the agent may see, input order preserved. */
+  filterVisible(tools: readonly string[]): string[]
+}
+
+const NEWLINE_BYTE = 0x0a
+
+/**
+ * Strips one trailing `\n` so a line-framed buffer (synthesized errors and
+ * rewritten catalogs both end in `\n` — `synthesize.ts`, `tools-filter.ts`)
+ * becomes message-level *content* bytes. The message contract carries
+ * framing in metadata, not in the bytes (`transport/message.ts`); the stdio
+ * sink reattaches the terminator on the way out, so the wire stays
+ * byte-identical. Bytes without a trailing newline pass through unchanged.
+ */
+export function trimTrailingNewline(bytes: Buffer): Buffer {
+  if (bytes.length === 0 || bytes[bytes.length - 1] !== NEWLINE_BYTE) {
+    return bytes
+  }
+  return bytes.subarray(0, bytes.length - 1)
+}
+
 /** `rule` value `decide()` reports when quarantine is what blocked a call. */
 export const QUARANTINE_RULE = 'quarantine'
 /** `rule` recorded when the gate itself failed and closed the call down. */

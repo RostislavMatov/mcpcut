@@ -7,6 +7,7 @@ import type {
 import type { JournalSink } from '../journal/sink.js'
 import type { Policy } from '../policy/schema.js'
 import { classify } from '../protocol/classify.js'
+import type { GateAgentScope } from './gate.js'
 import type { ServerHandle } from './spawn.js'
 import { splice, type SpliceErrorOrigin, type SpliceHandle } from './splice.js'
 import { wirePolicyRelay, type RelayWiring } from './wire-policy.js'
@@ -45,6 +46,8 @@ export interface RelayArgs {
   readonly journalDir?: string
   readonly approvalsBaseDir?: string
   readonly inventoryStorePath?: string
+  /** The authenticated agent's scope (M3, `connect`); absent for ad-hoc `wrap`. */
+  readonly agentScope?: GateAgentScope
 }
 
 /** Wires client stdio through the child, in whichever mode this run calls for. */
@@ -72,6 +75,7 @@ function wirePipelines(args: RelayArgs, policy: Policy): RelayWiring {
     ...(args.inventoryStorePath !== undefined
       ? { inventoryStorePath: args.inventoryStorePath }
       : {}),
+    ...(args.agentScope !== undefined ? { agentScope: args.agentScope } : {}),
   })
 }
 
