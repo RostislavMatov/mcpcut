@@ -1,0 +1,38 @@
+/** The dispatcher's top-level usage text (one place, imported by cli.ts). */
+export const USAGE = `Usage:
+  mcp-journal wrap [--server <name>] [--policy <path>] [--no-policy] [--fail-closed] -- <cmd> [args...]
+                                         Run a wrapped MCP server ad hoc, journaling all traffic
+  mcp-journal connect <server> --agent <name> [--policy <path>] [--fail-closed]
+                                         Connect an agent to a registry server (token via MCP_AGENT_TOKEN)
+  mcp-journal serve [--port N] [--host H] [--policy <path>] [--fail-closed]
+                                         Run the HTTP front for remote agents (default 127.0.0.1:8090)
+  mcp-journal server add <name> --transport stdio|http ...
+                                         Register an MCP server (see server add --help)
+  mcp-journal server list|show <name>|remove <name>
+                                         Inspect or edit the server registry
+  mcp-journal vault init|set <name>|list|remove <name>|rekey
+                                         Manage the encrypted secrets vault (set reads stdin)
+  mcp-journal agent create <name>       Create an agent identity (prints its token once)
+  mcp-journal agent grant <agent> <server> [--tools a,b,prefix*]
+                                         Grant a server (optionally specific tools) to an agent
+  mcp-journal agent ungrant <agent> <server> | revoke <name> | list
+                                         Edit or inspect agent identities and grants
+  mcp-journal sessions                  List journaled sessions
+  mcp-journal show <sessionId> [--method X] [--direction Y] [--kind Z] [--json]
+                                         Print one session's journal records
+  mcp-journal policy validate [path]    Validate the resolved (or given) policy file
+  mcp-journal policy show [--server <name>] [--json] [--policy <path>]
+                                         Print the effective policy (defaults applied)
+  mcp-journal quarantine list [--server <name>] [--json]
+                                         List quarantined tools
+  mcp-journal quarantine approve <server> <tool> | --all --server <name>
+                                         Approve quarantined tool(s)
+  mcp-journal quarantine reject <server> <tool>
+                                         Reject (discard) a quarantined tool
+  mcp-journal approvals list [--json]   List pending approval requests
+  mcp-journal approvals approve <id> [--reason TEXT]
+                                         Approve a pending request
+  mcp-journal approvals deny <id> [--reason TEXT]
+                                         Deny a pending request
+  mcp-journal --help                    Show this message
+`

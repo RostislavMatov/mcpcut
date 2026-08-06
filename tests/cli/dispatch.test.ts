@@ -184,3 +184,72 @@ describe('dispatch: show (regression)', () => {
     expect(io.out()).not.toContain('tools/list')
   })
 })
+
+describe('dispatch: M3 commands route to their modules', () => {
+  test('--help lists every M3 command', async () => {
+    const io = fakeIo()
+
+    const exitCode = await dispatch(['--help'], io)
+
+    expect(exitCode).toBe(0)
+    for (const name of ['connect', 'serve', 'server add', 'vault init', 'agent create']) {
+      expect(io.out()).toContain(name)
+    }
+  })
+
+  test('server: missing subcommand prints usage with exit 1', async () => {
+    const io = fakeIo()
+
+    const exitCode = await dispatch(['server'], io)
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('Missing server subcommand.')
+  })
+
+  test('server list routes with an isolated registry', async () => {
+    const io = fakeIo()
+
+    const exitCode = await dispatch(['server', 'list'], io, { server: { journalDir: tempDir } })
+
+    expect(exitCode).toBe(0)
+    expect(io.out().toLowerCase()).toContain('no servers')
+  })
+
+  test('vault list without init reports not-initialized with a hint', async () => {
+    const io = fakeIo()
+
+    const exitCode = await dispatch(['vault', 'list'], io, { vault: { journalDir: tempDir } })
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('vault init')
+  })
+
+  test('agent list routes with an isolated store', async () => {
+    const io = fakeIo()
+
+    const exitCode = await dispatch(['agent', 'list'], io, { agent: { journalDir: tempDir } })
+
+    expect(exitCode).toBe(0)
+  })
+
+  test('connect without MCP_AGENT_TOKEN refuses before any traffic', async () => {
+    const io = fakeIo()
+
+    const exitCode = await dispatch(['connect', 'github', '--agent', 'bot'], io, {
+      connect: { env: {}, journalDir: tempDir },
+    })
+
+    expect(exitCode).not.toBe(0)
+    expect(io.err()).toContain('MCP_AGENT_TOKEN')
+  })
+
+  test('serve with an invalid port refuses to start', async () => {
+    const io = fakeIo()
+
+    const exitCode = await dispatch(['serve', '--port', 'not-a-port'], io, {
+      serve: { journalDir: tempDir },
+    })
+
+    expect(exitCode).not.toBe(0)
+  })
+})
