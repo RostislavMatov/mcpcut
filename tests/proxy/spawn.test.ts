@@ -1,4 +1,6 @@
 import { once } from 'node:events'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, test, vi } from 'vitest'
 import {
   DEFAULT_FORWARDED_SIGNALS,
@@ -249,5 +251,82 @@ describe('installSignalForwarding', () => {
     expect(killSpy).not.toHaveBeenCalledWith('SIGKILL')
 
     handle.kill('SIGKILL')
+  })
+})
+
+// --- M3 Task 8: controlled child environment ------------------------------
+
+const ENV_ECHO_SERVER_PATH = join(dirname(fileURLToPath(import.meta.url)), '../fixtures/env-echo-server.mjs')
+
+/** Collects a handle's full stdout as a UTF-8 string after the child exits. */
+async function readAllStdout(handle: ServerHandle): Promise<string> {
+  const chunks: Buffer[] = []
+  handle.stdout.on('data', (chunk: Buffer) => chunks.push(chunk))
+  handle.stderr.resume()
+  await handle.exitCode()
+  return Buffer.concat(chunks).toString('utf8')
+}
+
+/** Spawns the env-echo fixture and returns the environment the child actually saw. */
+async function spawnEnvEcho(env: 'inherit' | Record<string, string>): Promise<Record<string, string>> {
+  // process.execPath (not 'node') so the child is found even without PATH in env.
+  const handle = spawnServer(process.execPath, [ENV_ECHO_SERVER_PATH], { env })
+  const output = await readAllStdout(handle)
+  return JSON.parse(output) as Record<string, string>
+}
+
+describe('spawnServer env option', () => {
+  test('an explicit env object reaches the child exactly as given', async () => {
+    const childEnv = await spawnEnvEcho({ MCP_ENV_MARKER: 'from-env-object' })
+
+    expect(childEnv.MCP_ENV_MARKER).toBe('from-env-object')
+  })
+
+  test('a plane process variable outside the env object never reaches the child', async () => {
+    const planeVarName = 'MCP_JOURNAL_PLANE_ONLY_VAR'
+    process.env[planeVarName] = 'plane-secret-value'
+
+    try {
+      const childEnv = await spawnEnvEcho({ MCP_ENV_MARKER: 'present' })
+
+      expect(childEnv[planeVarName]).toBeUndefined()
+    } finally {
+      delete process.env[planeVarName]
+    }
+  })
+
+  test("explicit env: 'inherit' behaves exactly like the default (full process.env)", async () => {
+    const planeVarName = 'MCP_JOURNAL_INHERIT_VAR'
+    process.env[planeVarName] = 'inherited-value'
+
+    try {
+      const childEnv = await spawnEnvEcho('inherit')
+
+      expect(childEnv[planeVarName]).toBe('inherited-value')
+    } finally {
+      delete process.env[planeVarName]
+    }
+  })
+
+  test('a vault-resolved secret in env never appears in the spawn failure output', async () => {
+    const secretMarker = 'vault-secret-marker-должен-остаться-в-памяти'
+    const handle = spawnServer('this-binary-should-not-exist-xyz-123', ['--flag'], {
+      env: { GITHUB_PAT: secretMarker },
+    })
+    const stderrChunks: Buffer[] = []
+    handle.stderr.on('error', () => undefined)
+    handle.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk))
+
+    let caught: unknown
+    try {
+      await handle.exitCode()
+    } catch (error: unknown) {
+      caught = error
+    }
+
+    expect(caught).toBeInstanceOf(Error)
+    const errorText = caught instanceof Error ? `${String(caught)}\n${caught.stack ?? ''}` : ''
+    expect(errorText).not.toContain(secretMarker)
+    expect(Buffer.concat(stderrChunks).toString('utf8')).not.toContain(secretMarker)
   })
 })

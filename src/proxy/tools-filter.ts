@@ -26,9 +26,18 @@ export interface FilteredToolsListResult {
   readonly kept: number
 }
 
+/**
+ * `isGrantedToAgent` is the optional agent dimension (M3): when provided,
+ * a tool survives only as the intersection of what was granted to the agent
+ * AND what M2 policy leaves visible. Omitting it is exactly the M2 (ad-hoc
+ * `wrap`) behavior. Like `isVisible`, it is only ever consulted for entries
+ * that are recognizably named tool objects -- malformed entries are kept
+ * verbatim without invoking either predicate.
+ */
 export function filterToolsListResult(
   original: ClassifiedMessage,
   isVisible: (tool: ToolDescriptor) => boolean,
+  isGrantedToAgent?: (tool: string) => boolean,
 ): FilteredToolsListResult | null {
   const parsed = tryParseJsonObject(original.raw)
   if (!parsed) {
@@ -46,7 +55,9 @@ export function filterToolsListResult(
   }
 
   const removed: string[] = []
-  const filteredTools = rawTools.filter((entry) => shouldKeep(entry, isVisible, removed))
+  const filteredTools = rawTools.filter((entry) =>
+    shouldKeep(entry, isVisible, isGrantedToAgent, removed),
+  )
 
   const updated = {
     ...parsed,
@@ -73,18 +84,22 @@ export function filterToolsListResult(
  * its name in `removed` if not. An entry that isn't a named tool object is
  * kept unconditionally rather than dropped — this proxy doesn't understand
  * it well enough to judge visibility, and hygiene filtering must fail open
- * on the unknown rather than silently discard it.
+ * on the unknown rather than silently discard it. A named entry survives
+ * only the intersection: granted to the agent (when an agent predicate is
+ * present) AND visible under policy.
  */
 function shouldKeep(
   entry: unknown,
   isVisible: (tool: ToolDescriptor) => boolean,
+  isGrantedToAgent: ((tool: string) => boolean) | undefined,
   removed: string[],
 ): boolean {
   if (!isPlainObject(entry) || typeof entry['name'] !== 'string') {
     return true
   }
 
-  const visible = isVisible(entry as unknown as ToolDescriptor)
+  const granted = isGrantedToAgent === undefined || isGrantedToAgent(entry['name'])
+  const visible = granted && isVisible(entry as unknown as ToolDescriptor)
   if (!visible) {
     removed.push(entry['name'])
   }

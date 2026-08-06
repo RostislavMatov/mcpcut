@@ -28,14 +28,29 @@ export interface DecideInput {
    * quarantine state -- enforcement data we cannot trust must never allow.
    */
   readonly catalogTrusted: boolean
+  /**
+   * The agent dimension (M3). Absent on the ad-hoc `wrap` path (no agent
+   * identity) -- exactly the M2 behavior. `'granted'` means the caller has
+   * already resolved the agent's grant matrix (`agentScope`) and it covers
+   * this tool: the M2 chain runs unchanged. `'not-granted'` denies
+   * immediately, before every other step -- what was never granted to an
+   * agent cannot be allowed by approvals, rules, or defaults.
+   */
+  readonly agentGrant?: AgentGrantStatus
 }
+
+/** Resolved agent-grant status for one call; see `DecideInput.agentGrant`. */
+export type AgentGrantStatus = 'granted' | 'not-granted'
 
 /**
  * The resolved outcome of one policy evaluation, plus enough context for an
  * auditor reading the journal to see exactly which rule fired. `rule` is
  * always derived from policy config (a fixed literal, or a `servers.<name>`
  * / pattern path) -- never the tool name -- so the same rule string is
- * stable across every tool it happens to match.
+ * stable across every tool it happens to match. The one deliberate
+ * exception is the agent-grant deny (`agent: no grant for <server>/<tool>`):
+ * there is no config path to point at (the *absence* of a grant fired), so
+ * the rule names the exact server/tool pair the auditor needs.
  */
 export interface PolicyDecision {
   readonly outcome: PolicyOutcome
@@ -67,6 +82,11 @@ function failClosedQuarantineOutcome(policy: Policy): PolicyOutcome {
  * `Date.now`, no hidden state -- every input it needs is on `DecideInput`.
  *
  * Precedence (strict, first match wins):
+ *  0. `agentGrant === 'not-granted'` -- the agent's grant matrix does not
+ *     cover this tool; always deny, before approvals grants and every rule.
+ *     A grant defines what an agent may touch at all -- policy only decides
+ *     what happens to what was granted. Absent field (ad-hoc `wrap`) or
+ *     `'granted'` fall through to the chain below unchanged.
  *  1. `hasActiveGrant` -- an operator already approved this exact call
  *     shape; always allow.
  *  2. An explicit tool rule under `servers.<serverName>.tools` (exact name,
@@ -82,6 +102,7 @@ function failClosedQuarantineOutcome(policy: Policy): PolicyOutcome {
  */
 export function decide(input: DecideInput): PolicyDecision {
   return (
+    decideByAgentGrant(input) ??
     decideByGrant(input) ??
     decideByToolRule(input) ??
     decideByCatalogUntrusted(input) ??
@@ -106,6 +127,22 @@ function decideByCatalogUntrusted(input: DecideInput): PolicyDecision | null {
     outcome: failClosedQuarantineOutcome(input.policy),
     rule: 'catalog-untrusted',
     reason: 'tool inventory is untrusted (corrupt/unavailable store or oversized catalog); failing closed',
+  }
+}
+
+/**
+ * Step 0, the agent dimension: a tool the agent's grant matrix does not
+ * cover is denied before anything else can run -- an approvals grant or an
+ * allow rule must never resurrect what an operator never handed out.
+ * Missing `agentGrant` (ad-hoc `wrap`, no agent identity) and `'granted'`
+ * both fall through, leaving the M2 chain byte-for-byte unchanged.
+ */
+function decideByAgentGrant(input: DecideInput): PolicyDecision | null {
+  if (input.agentGrant !== 'not-granted') return null
+  return {
+    outcome: 'deny',
+    rule: `agent: no grant for ${input.serverName}/${input.toolName}`,
+    reason: `the agent has no grant covering tool '${input.toolName}' on server '${input.serverName}'; denied before policy evaluation`,
   }
 }
 

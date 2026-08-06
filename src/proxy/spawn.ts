@@ -39,6 +39,15 @@ export interface ServerHandle {
 
 export interface SpawnServerOptions {
   cwd?: string
+  /**
+   * Child environment. `'inherit'` (default) passes `process.env` through
+   * as-is — the ad-hoc `wrap` path, where the operator's own shell is the
+   * trust boundary. An explicit record is what the child receives EXACTLY:
+   * no merging with `process.env` happens here. The registry path assembles
+   * that record on the calling side via proxy/server-env.ts (allowlist slice
+   * + declared env + dereferenced vault refs).
+   */
+  env?: 'inherit' | Readonly<Record<string, string>>
 }
 
 /** Raised when the underlying spawn fails (e.g. ENOENT for a missing binary). */
@@ -64,18 +73,24 @@ export function mapExitCode(code: number | null, signal: NodeJS.Signals | null):
 }
 
 /**
- * Spawns the wrapped MCP server as a child process with piped stdio and
- * env inherited from process.env as-is (MCP servers receive credentials
- * via env — this is a product requirement, not an oversight).
+ * Spawns the wrapped MCP server as a child process with piped stdio.
+ *
+ * Env injection point: `'inherit'` (default) keeps M1 behavior — full
+ * `process.env`, appropriate for ad-hoc `wrap` where the server was going to
+ * run in this shell anyway. Registry servers must instead get an explicit
+ * record built by proxy/server-env.ts, so the child sees the system
+ * allowlist + its own declared env + vault secrets — and nothing else of the
+ * plane's environment. Nothing about the env is ever logged from here.
  */
 export function spawnServer(
   command: string,
   args: readonly string[] = [],
   opts: SpawnServerOptions = {},
 ): ServerHandle {
+  const env = opts.env === undefined || opts.env === 'inherit' ? process.env : opts.env
   const child = nodeSpawn(command, args, {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: process.env,
+    env,
     ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
   })
 

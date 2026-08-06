@@ -188,3 +188,41 @@ export const MAX_PENDING_REQUESTS = 10_000
 
 /** Max buffered incomplete line size before the framer flushes it as-is. */
 export const MAX_LINE_BUFFER_BYTES = 16 * 1024 * 1024
+
+/**
+ * Environment variable names a *registry-spawned* MCP server may inherit from
+ * the control plane's own process (M3: controlled env). Everything else in
+ * `process.env` — cloud keys, other servers' tokens, CI secrets — stays on the
+ * plane's side of the spawn boundary; a server's own variables come explicitly
+ * from its registry record (+ vault refs), assembled in proxy/server-env.ts.
+ * The ad-hoc `wrap` path keeps full inheritance and does not use this list.
+ *
+ * Deliberately minimal — each entry earns its place:
+ * - PATH: without it the child cannot locate its own binaries (`npx`, `node`).
+ * - HOME: package managers and runtimes resolve caches/config from it
+ *   (`~/.npm`, `~/.config`); many tools crash or misbehave without it.
+ * - TMPDIR / TMP / TEMP: temp-file location; TMPDIR is the POSIX/darwin name,
+ *   TMP/TEMP cover tools that read the other spellings.
+ * - LANG / LC_ALL: locale for encoding-sensitive tools (UTF-8 vs C locale).
+ * - SHELL, USER, LOGNAME: identity/shell hints some CLIs expect to exist;
+ *   benign, occasionally load-bearing (e.g. tools that template `$USER`).
+ *
+ * Deliberately EXCLUDED:
+ * - NODE_OPTIONS / NODE_EXTRA_CA_CERTS and friends: `--require`-style flags
+ *   are a code-injection vector into every spawned server; a server that
+ *   genuinely needs one declares it explicitly in its registry env.
+ * - XDG_*: children derive the spec'd defaults from HOME; forwarding the
+ *   plane's overrides would leak its cache/config layout for no gain.
+ */
+export const SYSTEM_ENV_ALLOWLIST: readonly string[] = [
+  'PATH',
+  'HOME',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  'LANG',
+  'LC_ALL',
+  'SHELL',
+  'USER',
+  'LOGNAME',
+]

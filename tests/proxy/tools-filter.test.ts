@@ -119,3 +119,88 @@ describe('filterToolsListResult', () => {
     expect(text.endsWith('\n')).toBe(true)
   })
 })
+
+describe('filterToolsListResult: agent allowlist (intersection with policy)', () => {
+  function grantedOnly(granted: readonly string[]): (tool: string) => boolean {
+    return (tool) => granted.includes(tool)
+  }
+
+  test('granted by agent but hidden by policy -> hidden', () => {
+    const msg = toolsListResponse({}, [{ name: 'a' }, { name: 'b' }])
+
+    const result = filterToolsListResult(msg, keepAllowlisted(['b']), grantedOnly(['a', 'b']))
+
+    expect(result).not.toBeNull()
+    const tools = parsedResult(result!.bytes).tools as { name: string }[]
+    expect(tools.map((t) => t.name)).toEqual(['b'])
+    expect(result!.removed).toEqual(['a'])
+  })
+
+  test('visible by policy but not granted to the agent -> hidden', () => {
+    const msg = toolsListResponse({}, [{ name: 'a' }, { name: 'b' }])
+
+    const result = filterToolsListResult(msg, () => true, grantedOnly(['b']))
+
+    expect(result).not.toBeNull()
+    const tools = parsedResult(result!.bytes).tools as { name: string }[]
+    expect(tools.map((t) => t.name)).toEqual(['b'])
+    expect(result!.removed).toEqual(['a'])
+  })
+
+  test('granted AND visible -> visible, order preserved', () => {
+    const msg = toolsListResponse({}, [{ name: 'a' }, { name: 'b' }, { name: 'c' }])
+
+    const result = filterToolsListResult(msg, keepAllowlisted(['a', 'c']), grantedOnly(['c', 'a']))
+
+    expect(result).not.toBeNull()
+    const tools = parsedResult(result!.bytes).tools as { name: string }[]
+    expect(tools.map((t) => t.name)).toEqual(['a', 'c'])
+    expect(result!.removed).toEqual(['b'])
+  })
+
+  test('empty intersection yields a valid empty tools array, not null', () => {
+    const msg = toolsListResponse({}, [{ name: 'a' }, { name: 'b' }])
+
+    const result = filterToolsListResult(msg, keepAllowlisted(['a']), grantedOnly(['b']))
+
+    expect(result).not.toBeNull()
+    expect(parsedResult(result!.bytes).tools).toEqual([])
+    expect(result!.kept).toBe(0)
+    expect(result!.removed).toEqual(['a', 'b'])
+  })
+
+  test('agent predicate is never called for entries that are not named tool objects', () => {
+    const seen: string[] = []
+    const spy = (tool: string): boolean => {
+      seen.push(tool)
+      return true
+    }
+    const msg = toolsListResponse({}, ['garbage-string', { noName: true }, { name: 42 }, { name: 'real' }])
+
+    const result = filterToolsListResult(msg, () => true, spy)
+
+    expect(result).not.toBeNull()
+    expect(seen).toEqual(['real'])
+    // Malformed entries are kept verbatim (hygiene fails open on the unknown).
+    expect(parsedResult(result!.bytes).tools).toHaveLength(4)
+  })
+
+  test('nextCursor survives agent filtering untouched', () => {
+    const msg = toolsListResponse({ nextCursor: 'page-2' }, [{ name: 'a' }, { name: 'b' }])
+
+    const result = filterToolsListResult(msg, () => true, grantedOnly(['a']))
+
+    expect(result).not.toBeNull()
+    expect(parsedResult(result!.bytes)['nextCursor']).toBe('page-2')
+  })
+
+  test('omitting the agent predicate is exactly the M2 behavior', () => {
+    const msg = toolsListResponse({}, [{ name: 'a' }, { name: 'b' }])
+
+    const withOmitted = filterToolsListResult(msg, keepAllowlisted(['a']))
+    const withAllGranted = filterToolsListResult(msg, keepAllowlisted(['a']), () => true)
+
+    expect(withOmitted).toEqual(withAllGranted)
+    expect(withOmitted!.removed).toEqual(['b'])
+  })
+})
