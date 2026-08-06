@@ -159,6 +159,13 @@ journal it can trust is not enforcing anything.
 
 ```
 mcp-journal wrap [--server <name>] [--policy <path>] [--no-policy] [--fail-closed] -- <cmd> [args...]
+mcp-journal connect <server> --agent <name> [--policy <path>] [--fail-closed]
+mcp-journal serve [--port N] [--host H] [--policy <path>] [--fail-closed] [--allowed-origin URL]
+mcp-journal server add <name> --transport stdio|http ...
+mcp-journal server list | show <name> | remove <name>
+mcp-journal vault init | set <name> | list | remove <name> | rekey
+mcp-journal agent create <name> | list | revoke <name>
+mcp-journal agent grant <agent> <server> [--tools a,b,prefix*] | ungrant <agent> <server>
 mcp-journal sessions
 mcp-journal show <sessionId> [--method X] [--direction Y] [--kind Z] [--json]
 mcp-journal policy validate [path]
@@ -181,6 +188,154 @@ self-approving a quarantined tool. Making the journal and policy stores
 tamper-evident (e.g. append-only signing, a separate privileged writer) is
 tracked for a later milestone; today this is a known, accepted gap, not an
 oversight.
+
+## Registry, agents, vault
+
+`wrap` is the try-it-without-any-setup path: it proxies whatever command line
+you hand it and keeps no state of its own. Everything in this section is the
+other mode — a control plane that knows your MCP servers *by name*, keeps
+their credentials encrypted, issues one identity per agent, and can cut an
+agent off with a single command.
+
+Its state lives in `~/.mcp-journal/`:
+
+| File | Holds | Changed by |
+|---|---|---|
+| `registry.json` | Servers by name: transport, command/URL, env & header **references** | `mcp-journal server ...` |
+| `vault.enc`, `vault.key` | Secrets encrypted with AES-256-GCM, plus the master key | `mcp-journal vault ...` |
+| `agents.json` | Agent identities (token *hashes* only) and the grant matrix | `mcp-journal agent ...` |
+| `policy.json` | Allow / deny / require-approval rules | **you**, by hand |
+| `<sessionId>.jsonl` | The journal | the proxy |
+
+`policy.json` stays the one hand-edited file on purpose. The registry, the
+vault and the grant matrix change often, and a typo in any of them is a
+security problem rather than a syntax error — so they are CLI-managed.
+
+### Onboarding an agent
+
+The whole sequence, from an empty plane to a working, journaled tool call:
+
+```
+mcp-journal vault init
+mcp-journal server add github --transport stdio \
+  --command "npx" --args "-y,@modelcontextprotocol/server-github" \
+  --env GITHUB_PERSONAL_ACCESS_TOKEN=vault:github-pat
+mcp-journal vault set github-pat        # value comes from stdin
+mcp-journal agent create research-bot   # prints the token ONCE
+mcp-journal agent grant research-bot github --tools "get_*,list_*,search_*"
+```
+
+Step by step:
+
+1. **`vault init`** creates `vault.key` (mode `0600`). It refuses to run twice,
+   so it can never silently orphan the secrets encrypted under the old key.
+2. **`server add`** registers the server under the name `github`. That name is
+   what appears in journal decision records from now on, instead of the
+   `auto:<hash>` identity `wrap` has to invent. `--env` values are either
+   non-secret literals or `vault:<name>` **references**: a literal that looks
+   like a secret is rejected by the schema with a pointer to the vault, so
+   "credentials never live in config" is a property of the format, not a habit.
+3. **`vault set github-pat`** reads the secret from **stdin**, never from
+   `argv` (which every process on the host can read out of `ps`), and stores
+   it encrypted. There is deliberately no `vault get`.
+4. **`agent create`** mints a 32-byte token and prints it exactly once; only
+   its SHA-256 hash is stored. Stealing `agents.json` yields no usable token.
+5. **`agent grant`** is the grant matrix: this agent, this server, these tool
+   patterns. Anything not granted is invisible in `tools/list` and denied on
+   call — before any policy rule is even consulted.
+
+Then point the agent's own client config at `connect`:
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "mcp-journal",
+      "args": ["connect", "github", "--agent", "research-bot"],
+      "env": { "MCP_AGENT_TOKEN": "<the token agent create printed>" }
+    }
+  }
+}
+```
+
+The token is the only secret left in the agent's config, and it grants access
+to exactly what that agent was granted — never to the server's own
+credentials, which stay in the vault and are injected into the server process
+by the plane. A registry-spawned server gets a *controlled* environment: a
+small system allowlist (`PATH`, `HOME`, `TMPDIR`, locale) plus its own
+declared variables and resolved vault references. It cannot reach the rest of
+the plane's environment. (`wrap` keeps full inheritance, as before.)
+
+Policies compose on top of grants, they do not replace them: a granted tool
+still goes through classification, quarantine, deny rules and approvals
+exactly as described above. Deny always wins.
+
+### Revoking access
+
+```
+mcp-journal agent revoke research-bot
+```
+
+One command, and the agent's token is dead: new connections are refused
+immediately, and sessions that are already live end on their next poll of
+`agents.json` (≤ 5 s) with an `agent-revoked` decision record in the journal.
+To narrow rather than cut off, use `mcp-journal agent ungrant <agent> <server>`.
+
+### HTTP agents (`serve`)
+
+Agents that speak streamable HTTP instead of stdio connect through the front:
+
+```
+mcp-journal serve --port 8090
+# agent endpoint: http://127.0.0.1:8090/agents/research-bot/servers/github
+# authentication: Authorization: Bearer <the agent's token>
+```
+
+One endpoint per (agent, server) pair — the plane does not aggregate several
+servers behind one URL, so tool names and request ids stay exactly as the
+server produced them.
+
+Both MCP session models are supported, downstream (agent → plane) and
+upstream (plane → server):
+
+| | Sessionful (2025-03 … 2025-11) | Stateless (2026-07-28) |
+|---|---|---|
+| Handshake | `initialize`, then `Mcp-Session-Id` on every request | none |
+| Ending a session | `DELETE`, or idle timeout | nothing to end |
+| Per-request headers | — | `Mcp-Method` / `Mcp-Name`, validated against the body (`-32020` on mismatch) |
+
+Downstream the model is detected from the traffic (an `initialize` selects the
+sessionful one). Upstream it comes from the registry record's `--protocol`
+(`sessionful`, `stateless`, or `auto` to probe once and pin). The plane
+**transports both models and translates between neither**: a stateless agent
+against a sessionful-only server, or the reverse, is refused with a clear
+error rather than a lossy bridge. The reasoning, and the full MUST/SHOULD
+matrix of both revisions, is in `docs/adr/0002-http-dual-version.md`.
+
+`serve` binds `127.0.0.1` by default. A bearer token crossing a network on
+plain HTTP is not acceptable, so any `--host` beyond localhost prints a loud
+warning: terminate TLS in a reverse proxy in front of `serve` and let it keep
+listening on loopback. `serve` has no TLS of its own.
+
+### What the vault protects against, and what it does not
+
+`vault.enc` is a single AES-256-GCM envelope; `vault.key` is the master key,
+mode `0600`, sitting in the same directory under the same OS user.
+
+It **does** protect against secrets leaking through the paths they usually
+leak through: a backup or dotfile-sync of `~/.mcp-journal`, a config file
+committed to a repository, a shell history or `ps` listing (values never pass
+through `argv`), and the journal itself (values are resolved in memory only,
+on their way into a server's environment or request headers — the CLI has no
+command that prints one).
+
+It does **not** protect against a compromised host. A key next to its
+ciphertext, readable by the same user, is exactly as strong as that user
+account: anything running as you can decrypt the vault. This is the same
+trust boundary as the wrapped-process limitation noted above, and it is
+stated here rather than glossed over. Rotate with `mcp-journal vault rekey`
+(re-encrypts every secret under a fresh key). Full threat model and the
+reasoning behind the choice: `docs/adr/0003-vault-crypto.md`.
 
 ## Wiring into `.mcp.json`
 

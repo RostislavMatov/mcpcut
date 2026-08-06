@@ -245,7 +245,10 @@ export async function fixtureControl(
   action: string,
   body?: string,
 ): Promise<Response> {
-  return fetch(mcpUrl.replace(/\/mcp$/, `/__control/${action}`), { method: 'POST', body })
+  return fetch(mcpUrl.replace(/\/mcp$/, `/__control/${action}`), {
+    method: 'POST',
+    ...(body !== undefined ? { body } : {}),
+  })
 }
 
 export const INITIALIZE_BODY = JSON.stringify({
