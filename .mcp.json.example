@@ -1,5 +1,18 @@
 {
   "mcpServers": {
+    "github-cp": {
+      "command": "node",
+      "args": [
+        "<path-to-mcpcut>/dist/cli.js",
+        "connect",
+        "github",
+        "--agent",
+        "smoke-agent"
+      ],
+      "env": {
+        "MCP_AGENT_TOKEN": "<agent-token-from-agent-create>"
+      }
+    },
     "playwright": {
       "command": "node",
       "args": [
