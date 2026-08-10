@@ -2,8 +2,36 @@
 
 A transparent stdio proxy for MCP (Model Context Protocol) servers. It sits
 between an AI agent and a real MCP server, forwards traffic byte-for-byte in
-both directions, and writes a persistent, secret-redacted JSONL journal of
-every message and stderr line.
+both directions, and writes a persistent, secret-redacted JSONL journal of the
+messages and stderr lines it observes.
+
+When enforcement is enabled, every observed `tools/call` is classified before
+forwarding. Without a policy file, the proxy is journaling-only and forwards
+everything unmodified.
+
+## Status
+
+What exists today, and what does not. This table is the source of truth — the
+pitch and landing material must not claim more than it does.
+
+| Capability | Status | Evidence |
+|---|---|---|
+| stdio proxy (`wrap`) | shipped | integration tests, dogfooded daily |
+| allow / deny / require-approval policy | shipped | policy test matrix |
+| quarantine of new & changed tools | shipped | schema-change tests |
+| approvals via CLI | shipped | approval-flow tests |
+| fail-closed journaling | shipped, **off by default** | fault-injection tests; opt in with `--fail-closed` |
+| server registry (`server add/list/...`) | shipped | registry tests |
+| credential vault (AES-256-GCM) | shipped | vault tests, `docs/adr/0003-vault-crypto.md` |
+| agent identities + grant matrix | shipped | grant/revoke tests |
+| streamable HTTP front (`serve`) | shipped, both session models | `docs/adr/0002-http-dual-version.md` |
+| tamper-evident journal storage | **not shipped** | roadmap (M5) |
+| exportable audit report | **not shipped** | roadmap (M5) |
+| admin UI / approval queue | **not shipped** | roadmap (M4) |
+
+Today the journal is a persistent, append-oriented, secret-redacted JSONL file.
+It is **not** tamper-evident and there is **no** audit-report export yet; see
+the trust-boundary note below.
 
 ## Install
 
@@ -19,8 +47,8 @@ This produces `dist/cli.js` (the `mcp-journal` binary, per `package.json`'s
 
 ### Wrap a server
 
-Run the real MCP server as a child process, journaling all traffic while
-forwarding it unmodified:
+Run the real MCP server as a child process, journaling the traffic the proxy
+observes while forwarding it unmodified:
 
 ```
 mcp-journal wrap -- <cmd> [args...]
@@ -90,6 +118,18 @@ heuristic) is allowed by default; anything else falls through to
 server, any tool whose name starts with `delete_` is denied outright,
 regardless of its classification.
 
+**`readOnlyHint` is a server-supplied hint, not a security boundary.** A
+server that lies (`readOnlyHint: true` on a tool that writes) gets its tool
+classified `read`, and with `classDefaults.read: "allow"` that call is
+allowed. Three things bound the damage, and you should rely on them rather
+than on the annotation: a tool is quarantined the first time it is advertised
+(and again on every schema change), an explicit `tools` rule always beats the
+classification, and `classification.overrides` lets you pin a tool's class by
+name. The heuristics only ever *escalate* — `destructiveHint`, a destructive
+name token, or a non-ASCII confusable in the name can never be downgraded by
+`readOnlyHint`. For anything that matters, write the rule; don't inherit the
+hint.
+
 Validate a policy file and inspect the effective (defaults-applied) policy:
 
 ```
@@ -155,6 +195,23 @@ wrapped server is killed, and `mcp-journal` exits with code `3`. The
 rationale: "no audit record, no action" — an enforcement proxy without a
 journal it can trust is not enforcing anything.
 
+This is an **opt-in mode, not the default**. If you are running mcp-journal
+for evidence rather than for convenience, turn it on explicitly:
+
+```
+mcp-journal wrap --fail-closed -- <cmd> [args...]
+```
+
+or persist it in the policy file:
+
+```json
+{ "version": 1, "journal": { "failClosed": true } }
+```
+
+Without one of those, a journal write failure is logged and traffic keeps
+flowing — "no audit record, no action" is a mode you choose, not a property
+the proxy guarantees out of the box.
+
 ### CLI command reference
 
 ```
@@ -184,10 +241,38 @@ The wrapped MCP server runs as a child process under the *same OS user* as
 `mcp-journal` itself. It could, in principle, write directly to the journal,
 approval queue, or quarantine store files on disk — nothing currently stops
 a malicious or compromised server from tampering with its own audit trail or
-self-approving a quarantined tool. Making the journal and policy stores
-tamper-evident (e.g. append-only signing, a separate privileged writer) is
-tracked for a later milestone; today this is a known, accepted gap, not an
-oversight.
+self-approving a quarantined tool. The journal is an **append-oriented** JSONL
+file: nothing in the current implementation makes it append-*only*. Making the
+journal and policy stores tamper-evident (e.g. append-only signing, a separate
+privileged writer) is tracked for a later milestone; today this is a known,
+accepted gap, not an oversight. Do not describe the current journal as
+tamper-evident or audit-ready.
+
+### Known limitation: redaction is not anonymization
+
+Secret redaction removes credentials — API keys, tokens, `Authorization` /
+`Bearer` headers — before anything is written. It does **not** remove personal
+data. Tool arguments and server responses routinely carry customer records,
+email addresses, ticket contents and similar payloads, and those land in the
+journal verbatim. The journal is therefore a data store you own and must
+govern: retention, access control and any GDPR/DPIA obligations for its
+contents are yours, not the proxy's.
+
+### Security advisory: policy bypass via notification-shaped `tools/call` (fixed)
+
+An earlier build classified messages before authorizing them: requests went
+through the policy gate, notifications were forwarded. A `tools/call` carrying
+no `id` — invalid as a JSON-RPC request — took the notification path and
+reached the server without a policy decision, including under a deny-all
+policy.
+
+Enforcement now evaluates every observed `tools/call` before forwarding,
+with or without an `id`. Malformed or ambiguous messages are rejected and
+journaled; an id-less call under `require-approval` is denied outright
+(`idless-require-approval`) rather than enqueuing an approval a human could be
+socially engineered into granting. Regression tests cover missing ids,
+malformed payloads and the classification-order bug itself
+(`tests/proxy/gate.test.ts`).
 
 ## Registry, agents, vault
 
