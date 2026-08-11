@@ -1,9 +1,13 @@
-import { LOCALHOST_HOSTNAMES, ROUTE_NAME_PATTERN } from './server-constants.js'
+import { ROUTE_NAME_PATTERN } from './server-constants.js'
 
 /**
- * Route parsing and Origin screening for the downstream HTTP front. Pure
- * functions over method/URL/header strings — no routing framework (three
- * routes do not justify one; plan decision) and no request semantics.
+ * Route parsing for the downstream HTTP front. Pure functions over
+ * method/URL strings — no routing framework (three routes do not justify
+ * one; plan decision) and no request semantics.
+ *
+ * Origin screening moved to the shared `src/net/origin-host.ts` (M4 Task 1,
+ * so the admin UI reuses the same defense without importing transport);
+ * the re-export below keeps this module's public API unchanged.
  *
  * The single route shape is `/agents/:agent/servers/:server` with method
  * POST | GET | DELETE. Path segment names are validated against the shared
@@ -57,31 +61,4 @@ export function parseRoute(method: string | undefined, url: string | undefined):
   })
 }
 
-/**
- * Origin screening (spec MUST in both revisions; matrix §4.2). Absent header
- * → allowed (non-browser agents don't send Origin). Present → must be a
- * localhost origin (`http(s)://localhost|127.0.0.1|[::1]`, any port) or an
- * exact match in `extraAllowed`; anything else the server rejects with 403
- * before doing anything else. `'null'` (opaque origin) is NOT allowed.
- */
-export function isOriginAllowed(
-  originHeader: string | undefined,
-  extraAllowed: readonly string[],
-): boolean {
-  if (originHeader === undefined) {
-    return true
-  }
-  if (extraAllowed.includes(originHeader)) {
-    return true
-  }
-  let parsed: URL
-  try {
-    parsed = new URL(originHeader)
-  } catch {
-    return false
-  }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    return false
-  }
-  return LOCALHOST_HOSTNAMES.includes(parsed.hostname)
-}
+export { isOriginAllowed } from '../../net/origin-host.js'

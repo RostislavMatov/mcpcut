@@ -4,6 +4,7 @@ import {
   type Server,
   type ServerResponse,
 } from 'node:http'
+import { isHostAllowed, LOCALHOST_HOSTNAMES } from '../../net/origin-host.js'
 import { authenticate, type TokenResolver } from './auth.js'
 import { isOriginAllowed, parseRoute, type RouteMatch } from './routes.js'
 import {
@@ -17,7 +18,6 @@ import {
   HTTP_STATUS_INTERNAL_ERROR,
   HTTP_STATUS_PAYLOAD_TOO_LARGE,
   HTTP_STATUS_UNAUTHORIZED,
-  LOCALHOST_HOSTNAMES,
   MAX_REQUEST_BODY_BYTES,
   NON_LOCALHOST_BIND_WARNING,
 } from './server-constants.js'
@@ -33,14 +33,16 @@ import {
  * Origin screening → Bearer auth → route parsing → the dual-model session
  * manager (`session.ts`). Request processing order is deliberate:
  *
- * 1. Origin present and not allowed → 403 before anything else (spec MUST;
- *    DNS rebinding defense — matrix §4.2).
- * 2. Authentication → uniform 401 (`auth.ts`) — BEFORE any route
+ * 1. Host not naming this listener → 403 before anything else (DNS
+ *    rebinding defense — matrix §4.2; the refusal is byte-identical to the
+ *    Origin one, so neither check is an oracle for the other).
+ * 2. Origin present and not allowed → the same 403 (spec MUST).
+ * 3. Authentication → uniform 401 (`auth.ts`) — BEFORE any route
  *    existence answer, so the name space cannot be scanned without a token.
- * 3. Route parse; no match, or a path naming a DIFFERENT agent than the
+ * 4. Route parse; no match, or a path naming a DIFFERENT agent than the
  *    token resolved to → 404 (a valid token buys visibility into exactly
  *    one agent's namespace, nobody else's).
- * 4. Dispatch to the session manager.
+ * 5. Dispatch to the session manager.
  *
  * Handler failures are caught: the response is a detail-free 500
  * `{"error":"internal"}` and the stderr line carries the error's class and
@@ -56,6 +58,8 @@ export interface HttpFrontOptions extends Omit<SessionManagerOptions, 'onSession
   readonly agentsStore: TokenResolver
   /** Exact-match additions to the localhost Origin allowlist. */
   readonly allowedOrigins?: readonly string[]
+  /** Exact-match additions to the Host allowlist (e.g. a reverse-proxy name). */
+  readonly allowedHosts?: readonly string[]
   readonly maxBodyBytes?: number
   /** Diagnostics sink; defaults to `process.stderr`. */
   readonly stderr?: WarnSink
@@ -128,6 +132,7 @@ function abortSignalOf(res: ServerResponse): AbortSignal {
 export function createHttpFront(opts: HttpFrontOptions): HttpFront {
   const stderr: WarnSink = opts.stderr ?? process.stderr
   const allowedOrigins = opts.allowedOrigins ?? []
+  const allowedHosts = opts.allowedHosts ?? []
   const maxBodyBytes = opts.maxBodyBytes ?? MAX_REQUEST_BODY_BYTES
   const manager = createSessionManager({
     ...opts,
@@ -138,6 +143,8 @@ export function createHttpFront(opts: HttpFrontOptions): HttpFront {
 
   let server: Server | null = null
   let closePromise: Promise<void> | null = null
+  /** The listening endpoint; requests are refused until `listen` records it (fail closed). */
+  let bound: { readonly host: string; readonly port: number } | null = null
 
   async function dispatch(
     route: RouteMatch,
@@ -175,7 +182,23 @@ export function createHttpFront(opts: HttpFrontOptions): HttpFront {
     writePlan(res, plan)
   }
 
+  /** Host screening against the recorded listening endpoint (step 1). */
+  function isRequestHostAllowed(req: IncomingMessage): boolean {
+    if (bound === null) {
+      return false
+    }
+    return isHostAllowed(headerValue(req, 'host'), {
+      boundHost: bound.host,
+      port: bound.port,
+      extraAllowed: allowedHosts,
+    })
+  }
+
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!isRequestHostAllowed(req)) {
+      writePlan(res, { status: HTTP_STATUS_FORBIDDEN, body: BODY_FORBIDDEN })
+      return
+    }
     if (!isOriginAllowed(headerValue(req, 'origin'), allowedOrigins)) {
       writePlan(res, { status: HTTP_STATUS_FORBIDDEN, body: BODY_FORBIDDEN })
       return
@@ -221,6 +244,7 @@ export function createHttpFront(opts: HttpFrontOptions): HttpFront {
           reject(new Error('http front: listener has no TCP address'))
           return
         }
+        bound = Object.freeze({ host: bindHost, port: address.port })
         resolve({ port: address.port })
       })
     })
