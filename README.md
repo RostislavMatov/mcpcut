@@ -27,7 +27,7 @@ pitch and landing material must not claim more than it does.
 | streamable HTTP front (`serve`) | shipped, both session models | `docs/adr/0002-http-dual-version.md` |
 | tamper-evident journal storage | **not shipped** | roadmap (M5) |
 | exportable audit report | **not shipped** | roadmap (M5) |
-| admin UI / approval queue | **not shipped** | roadmap (M4) |
+| admin UI / approval queue | **in progress** — core UI, admin accounts/roles and CLI parity built; not yet e2e-verified or security-reviewed | roadmap (M4), `docs/adr/0004-admin-ui-architecture.md` |
 
 Today the journal is a persistent, append-oriented, secret-redacted JSONL file.
 It is **not** tamper-evident and there is **no** audit-report export yet; see
@@ -124,11 +124,49 @@ classified `read`, and with `classDefaults.read: "allow"` that call is
 allowed. Three things bound the damage, and you should rely on them rather
 than on the annotation: a tool is quarantined the first time it is advertised
 (and again on every schema change), an explicit `tools` rule always beats the
-classification, and `classification.overrides` lets you pin a tool's class by
-name. The heuristics only ever *escalate* — `destructiveHint`, a destructive
-name token, or a non-ASCII confusable in the name can never be downgraded by
+classification, and `classOverrides` lets you pin a tool's class by name. The
+heuristics only ever *escalate* — `destructiveHint`, a destructive name token,
+or a non-ASCII confusable in the name can never be downgraded by
 `readOnlyHint`. For anything that matters, write the rule; don't inherit the
 hint.
+
+### Recipe: `classOverrides` for servers without annotations
+
+Some servers don't send `readOnlyHint`/`destructiveHint` at all —
+`github-mcp-server` is the case that motivated this recipe: every tool,
+including `search_*`, comes back unannotated, so the name-heuristic fallback
+classifies it `write` (the safe default when nothing else is known). If your
+policy sets `classDefaults.read: "allow"` expecting read-only search calls to
+pass through automatically, this is why they don't — the tool was never
+classified `read` in the first place, so `classDefaults` never applies to it.
+
+`classOverrides` (per server, under `servers.<name>`) pins a tool's class
+directly, independent of annotations or name heuristics:
+
+```json
+{
+  "version": 1,
+  "classDefaults": { "read": "allow" },
+  "servers": {
+    "github": {
+      "classOverrides": {
+        "search_*": "read",
+        "get_*": "read"
+      }
+    }
+  }
+}
+```
+
+Same rule-name syntax as `tools` (an exact name, or a name with a single
+trailing `*`). `classOverrides` only changes the *class* a tool is assigned —
+the call still goes through quarantine, any matching `tools` rule, and
+approvals exactly as before; it does not bypass a `deny` rule and does not
+skip quarantine on a schema change (a schema change re-quarantines the tool
+regardless of its class). Use it once you have manually verified that a
+server's unannotated tool really is read-only — it is a statement of trust
+you are making about that tool's behavior, not a way to trust the server's
+own claims (which is exactly why `readOnlyHint` alone isn't enough).
 
 Validate a policy file and inspect the effective (defaults-applied) policy:
 
@@ -167,6 +205,7 @@ Quarantined tools are blocked (`require-approval`/`deny` per
 
 ```
 mcp-journal quarantine list [--server <name>]
+mcp-journal quarantine show <server> <tool>
 mcp-journal quarantine approve <server> <tool>
 mcp-journal quarantine approve --all --server <name>
 mcp-journal quarantine reject <server> <tool>
@@ -175,6 +214,20 @@ mcp-journal quarantine reject <server> <tool>
 This is a defense against a server silently changing a tool's behavior after
 it was already trusted ("rug pull"): a description or schema change always
 re-quarantines the tool, even if its name is unchanged.
+
+`quarantine list` tells you a tool's schema changed; `quarantine show <server>
+<tool>` tells you *how*. It prints a structural diff of the tool's
+`inputSchema` against the last approved version — added/removed/changed
+properties, widened/narrowed `enum`s, `required` changes — plus a
+`surfaceDelta` verdict (`widened` / `narrowed` / `changed` / `neutral`)
+summarizing the direction of the change. This is the same diff the admin UI's
+quarantine card renders (`src/ui/pages/quarantine.ts`); the CLI is not a
+second-class view of it. A brand-new tool has no approved baseline to diff
+against, so `show` prints the observed descriptor instead, with an explicit
+"no approved baseline" note. `surfaceDelta` is informational only in this
+release — it is shown and journaled, but it never changes a tool's
+`read`/`write`/`destructive` classification on its own; that escalation rule
+is future work.
 
 ### `tools/list` filtering
 
@@ -228,11 +281,15 @@ mcp-journal show <sessionId> [--method X] [--direction Y] [--kind Z] [--json]
 mcp-journal policy validate [path]
 mcp-journal policy show [--server <name>] [--json] [--policy <path>]
 mcp-journal quarantine list [--server <name>] [--json]
+mcp-journal quarantine show <server> <tool>
 mcp-journal quarantine approve <server> <tool> | --all --server <name>
 mcp-journal quarantine reject <server> <tool>
 mcp-journal approvals list [--json]
 mcp-journal approvals approve <id> [--reason TEXT]
 mcp-journal approvals deny <id> [--reason TEXT]
+mcp-journal admin add <name> --role owner|operator|viewer
+mcp-journal admin list | remove <name> | rotate <name> | role <name> owner|operator|viewer
+mcp-journal ui [--port 8091] [--host 127.0.0.1]
 ```
 
 ### Known limitation: trust boundary of the wrapped process
@@ -421,6 +478,100 @@ trust boundary as the wrapped-process limitation noted above, and it is
 stated here rather than glossed over. Rotate with `mcp-journal vault rekey`
 (re-encrypts every secret under a fresh key). Full threat model and the
 reasoning behind the choice: `docs/adr/0003-vault-crypto.md`.
+
+## Admin UI
+
+`mcp-journal approvals`/`quarantine`/`agent`/`server`/`vault` are all you need
+in a terminal. The admin UI is the same state — the same file-backed stores —
+behind a browser, for the moment that matters most: a `require-approval` call
+is blocking an agent right now, and someone has to look at it and decide
+before the agent's own timeout runs out. It is a second front onto the
+control plane's stores, not a second source of truth; a resolution made in
+the UI and a resolution made with `mcp-journal approvals approve` race the
+same way (first one wins, the other gets a clear "already resolved").
+
+### Starting it
+
+```
+mcp-journal ui [--port 8091] [--host 127.0.0.1]
+```
+
+The UI is its own process on its own port — it is not part of `serve`, and
+`serve` does not need to be running for it to work. That matters because the
+main M3 scenario (`connect`, stdio) never runs `serve` at all; if the queue
+only had a UI when `serve` was up, that scenario would have no UI ever.
+
+On the very first run, if `~/.mcp-journal/admins.json` does not exist yet,
+`mcp-journal ui` creates the first `owner` account for you and prints its
+bootstrap URL/token **to stderr only, once** — never to stdout, never to a
+file. Copy it before it scrolls away; there is no second printing.
+
+### Admins and roles
+
+Admin accounts are named and personal, not a shared password. Each one holds
+its own token (32 random bytes, shown once), and every action taken through
+the UI — every approval, every deny, every grant change — is attributed to
+the admin who did it, in the journal and in the resolved approval file. There
+are exactly three roles, fixed (no custom/scoped roles in this release):
+
+| Role | Can |
+|---|---|
+| `owner` | everything, including managing other admins, the server registry, and the vault |
+| `operator` | approvals (approve/deny), quarantine (approve/reject), the agent grant matrix (create/grant/ungrant/revoke) |
+| `viewer` | read-only: journal, approvals queue, registry, grant matrix — no POST action succeeds for this role, anywhere |
+
+Manage accounts from the CLI:
+
+```
+mcp-journal admin add <name> --role owner|operator|viewer   # prints the token ONCE
+mcp-journal admin list                                       # names, roles, dates — never token hashes
+mcp-journal admin rotate <name>                               # new token; old one dies immediately
+mcp-journal admin remove <name>
+mcp-journal admin role <name> <role>
+```
+
+`owner`-only management is also available from the UI itself. Rotating,
+removing, or changing an admin's role kills that admin's live sessions
+immediately — everyone else's session is unaffected. The last remaining
+`owner` cannot be removed or demoted; that would lock the plane.
+
+Every admin token is a bearer secret with the same handling rules as an agent
+token: it never appears in a URL, only in the one-time terminal print at
+`admin add`/`admin rotate`, and only its SHA-256 hash is stored on disk.
+Treat "who has which admin token" the same way you'd treat "who has SSH
+access to this host" — one person, one token, rotated when that stops being
+true.
+
+### Threat model summary
+
+- **Bind**: `127.0.0.1` by default, same posture as `serve`. Any `--host`
+  beyond localhost prints a loud warning; TLS is not the UI's job — terminate
+  it in a reverse proxy in front of the UI and let the UI keep listening on
+  loopback, exactly like `serve`.
+- **Auth**: a token exchanges for a session cookie (`HttpOnly`,
+  `SameSite=Strict`, `Path=/`, `Secure` when run behind TLS termination).
+  Sessions live in the UI process's memory only — nothing about a session is
+  written to disk, so a restart logs every admin out.
+- **CSRF**: `SameSite=Strict` plus a double-submit token embedded in every
+  form and `fetch` call in the page; a POST without a matching token is
+  rejected even with a valid session cookie.
+- **Confused deputy**: the browser is the threat, not just the network — any
+  tab open to `127.0.0.1:8091` could otherwise fire a POST that approves a
+  write call on an admin's behalf. `Origin`/`Host` validation, CSRF, and
+  `SameSite=Strict` together are what stop that, not "it's only localhost."
+- **Secrets never render in the browser.** The vault page shows secret
+  *names* and dates — never a value. No route under the UI can return a
+  vault value, and (this is enforced, not just documented) the UI's own code
+  cannot import the vault's value-resolution path at all.
+- **Known, stated limitation**: a personal token can still be handed to
+  someone else — a named account is an audit-friendly convention, not
+  cryptographic identity. SSO/IdP-backed accounts are an explicit
+  post-pilot item, not something this release claims.
+
+None of this changes what the journal itself is: a persistent,
+append-oriented, secret-redacted JSONL file. The UI gives you a faster way to
+read and act on it; it does not make the journal tamper-evident or turn it
+into an audit-ready export — that is `M5`, not `M4` (see Status, above).
 
 ## Wiring into `.mcp.json`
 

@@ -6,6 +6,12 @@ export const USAGE = `Usage:
                                          Connect an agent to a registry server (token via MCP_AGENT_TOKEN)
   mcp-journal serve [--port N] [--host H] [--policy <path>] [--fail-closed]
                                          Run the HTTP front for remote agents (default 127.0.0.1:8090)
+  mcp-journal ui [--port N] [--host H] [--behind-tls] [--allowed-host <h>]
+                                         Run the local admin UI (default 127.0.0.1:8091)
+  mcp-journal admin add <name> --role owner|operator|viewer
+                                         Create a named admin (prints its token once)
+  mcp-journal admin list|remove <name>|rotate <name>|role <name> <role>
+                                         Inspect or edit admin identities
   mcp-journal server add <name> --transport stdio|http ...
                                          Register an MCP server (see server add --help)
   mcp-journal server list|show <name>|remove <name>

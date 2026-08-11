@@ -10,6 +10,9 @@ import {
   rejectTool,
   type QuarantinedEntry,
 } from '../policy/inventory.js'
+import { openInventoryStore, type QuarantinedToolRecord } from '../policy/inventory-store.js'
+import { diffToolSchemas, type SchemaChange } from '../policy/schema-diff.js'
+import type { ToolDescriptor } from '../protocol/mcp.js'
 
 /**
  * `quarantine list|approve|reject` -- CLI review queue for tools that are
@@ -23,6 +26,7 @@ import {
 
 const USAGE = `Usage:
   quarantine list [--server <name>] [--json]       List quarantined tools
+  quarantine show <server> <tool>                   Show the structural inputSchema diff for a quarantined tool
   quarantine approve <server> <tool>                Approve a quarantined tool
   quarantine approve --all --server <name>          Approve every quarantined tool for a server
   quarantine reject <server> <tool>                 Reject (discard) a quarantined tool
@@ -56,6 +60,8 @@ export async function runQuarantine(
     switch (subcommand) {
       case 'list':
         return await runList(rest, io, opts.storePath)
+      case 'show':
+        return await runShow(rest, io, opts.storePath)
       case 'approve':
         return await runApprove(rest, io, opts.storePath)
       case 'reject':
@@ -93,6 +99,36 @@ async function runList(subArgs: string[], io: QuarantineCliIo, storePath: string
       ? formatQuarantineJson(filtered, descriptions)
       : formatQuarantineTable(filtered, descriptions),
   )
+  return 0
+}
+
+/**
+ * `quarantine show <server> <tool>` -- CLI parity for the admin UI's
+ * quarantine card (`src/ui/pages/quarantine.ts`): same structural
+ * `inputSchema` diff, same `surfaceDelta` verdict, so an operator without a
+ * browser does not lose functionality. Reuses `diffToolSchemas` (the pure
+ * diff from `policy/schema-diff.ts`) rather than reimplementing it -- this
+ * command only formats what the diff and the store already compute.
+ */
+async function runShow(subArgs: string[], io: QuarantineCliIo, storePath: string | undefined): Promise<number> {
+  const { positionals } = parseArgs({ args: subArgs, options: {}, allowPositionals: true })
+
+  const [server, tool] = positionals
+  if (server === undefined || tool === undefined) {
+    io.stderr.write(`Usage: quarantine show <server> <tool>\n\n${USAGE}`)
+    return 1
+  }
+
+  const store = openInventoryStore(resolveStorePath(storePath))
+  const data = await store.read()
+  const quarantined = data.servers[server]?.quarantined[tool]
+  if (quarantined === undefined) {
+    io.stderr.write(`"${tool}" is not quarantined for server "${server}".\n`)
+    return 1
+  }
+
+  const approvedDescriptor = data.servers[server]?.approved[tool]?.descriptor
+  io.stdout.write(formatQuarantineShow(server, tool, quarantined, approvedDescriptor))
   return 0
 }
 
@@ -162,6 +198,81 @@ async function runReject(subArgs: string[], io: QuarantineCliIo, storePath: stri
   }
   io.stdout.write(`Rejected "${tool}" for server "${server}".\n`)
   return 0
+}
+
+// -- show formatting -------------------------------------------------------
+//
+// Mirrors `cardFor`/`renderCard` in `src/ui/pages/quarantine.ts`: same diff,
+// same fields, plain text instead of HTML. `quarantined.descriptor` and
+// `approvedDescriptor` are read back from the inventory store file --
+// untrusted, like every other field in this module -- so every string goes
+// through `formatReadableField` before it reaches the terminal.
+
+const SCHEMA_TRUNCATED_NOTE =
+  'note: the stored schema was capped at write time (top-level summary only); the diff may be incomplete.'
+
+function formatQuarantineShow(
+  serverName: string,
+  toolName: string,
+  quarantined: QuarantinedToolRecord,
+  approvedDescriptor: ToolDescriptor | undefined,
+): string {
+  const header = formatShowHeader(serverName, toolName, quarantined)
+  const body =
+    approvedDescriptor === undefined
+      ? formatNoBaseline(quarantined)
+      : formatSchemaDiffSection(approvedDescriptor, quarantined)
+  return `${[...header, '', ...body].join('\n')}\n`
+}
+
+function formatShowHeader(serverName: string, toolName: string, quarantined: QuarantinedToolRecord): string[] {
+  const lines = [
+    `server: ${formatReadableField(serverName)}`,
+    `tool: ${formatReadableField(toolName)}`,
+    `state: ${formatReadableField(quarantined.state)}`,
+    `firstSeenAt: ${formatReadableField(quarantined.firstSeenAt)}`,
+  ]
+  if (quarantined.descriptor.description !== undefined) {
+    lines.push(`description: "${formatReadableField(quarantined.descriptor.description)}"`)
+  }
+  return lines
+}
+
+/** No approved descriptor to diff against (new tool, or a pre-M4 approval with no stored descriptor). */
+function formatNoBaseline(quarantined: QuarantinedToolRecord): string[] {
+  const lines = [
+    'no approved baseline for this tool -- nothing to diff against. Showing the observed descriptor:',
+    `observed inputSchema: ${formatReadableField(safeStringify(quarantined.descriptor.inputSchema))}`,
+  ]
+  if (quarantined.schemaTruncated === true) lines.push(SCHEMA_TRUNCATED_NOTE)
+  return lines
+}
+
+function formatSchemaDiffSection(approvedDescriptor: ToolDescriptor, quarantined: QuarantinedToolRecord): string[] {
+  const diff = diffToolSchemas(approvedDescriptor.inputSchema, quarantined.descriptor.inputSchema)
+  const surfaceDelta = quarantined.surfaceDelta ?? diff.surfaceDelta
+  const lines = [`surfaceDelta: ${surfaceDelta}`, '', ...formatChangeList(diff.changes)]
+  if (diff.truncated) lines.push('diff truncated (schema too deep/large; change list is incomplete)')
+  if (quarantined.schemaTruncated === true) lines.push(SCHEMA_TRUNCATED_NOTE)
+  return lines
+}
+
+function formatChangeList(changes: readonly SchemaChange[]): string[] {
+  if (changes.length === 0) {
+    return [
+      'no structural change detected (description/annotation-only, or a hash mismatch without a schema difference)',
+    ]
+  }
+  return ['changes:', ...changes.map((change) => `  ${change.kind}  ${formatReadableField(change.path)}`)]
+}
+
+/** `inputSchema` is untrusted, unknown-shaped JSON from the server; never throws. */
+function safeStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? 'undefined'
+  } catch {
+    return '<unserializable>'
+  }
 }
 
 // -- formatting ----------------------------------------------------------
