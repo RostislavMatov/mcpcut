@@ -3,6 +3,13 @@ import { chmod, mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:
 import { dirname } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { JOURNAL_DIR_MODE, JOURNAL_FILE_MODE } from '../config.js'
+import {
+  acquireFileLock,
+  ownsFileLock,
+  releaseFileLock,
+  type FileLockHandle,
+  type FileLockOptions,
+} from '../lockfile.js'
 
 /**
  * Atomic, corruption-safe JSON store for policy state (approved tool
@@ -16,6 +23,12 @@ export interface JsonStoreOptions<T> {
   readonly validate: (raw: unknown) => T
   /** Returned (as a deep copy) when the store file does not exist yet. */
   readonly defaultValue: T
+  /**
+   * Overrides for the lock budgets. A one-shot CLI and a long-lived `serve`
+   * do not want the same waits, and tests must not pay a real 5-second
+   * acquisition timeout to exercise the contended path.
+   */
+  readonly lock?: Partial<FileLockOptions>
 }
 
 export interface JsonStore<T> {
@@ -29,11 +42,18 @@ export interface JsonStore<T> {
   read(): Promise<T>
   /**
    * Read-modify-write, serialized per store instance so concurrent callers
-   * never interleave or lose updates. `fn` is treated as a pure function of
-   * a deep copy of the current value; its return value is what gets
-   * persisted (as a deep copy) and is also what this call resolves with.
-   * If the current file is corrupt, the update is rejected rather than
-   * silently overwriting the corrupt file with a fresh default.
+   * never interleave or lose updates. Its return value is what gets persisted
+   * (as a deep copy) and is also what this call resolves with. If the current
+   * file is corrupt, the update is rejected rather than silently overwriting
+   * the corrupt file with a fresh default.
+   *
+   * `fn` MUST be a pure function of the deep copy it is handed, and MUST
+   * tolerate being called more than once (up to `UPDATE_MAX_ATTEMPTS`): when
+   * a concurrent recoverer steals the lock mid-flight, the whole cycle is
+   * re-run against the value that holder committed, because the snapshot the
+   * lost attempt read is no longer current. An `fn` that accumulates into a
+   * captured variable, journals, or mints an id as a side effect will observe
+   * that replay — keep all of it in the returned value.
    */
   update(fn: (current: T) => T): Promise<T>
 }
@@ -49,6 +69,15 @@ const LOCK_POLL_MS = 25
 const LOCK_STALE_MS = 30_000
 /** How many times `rename()` is retried when a concurrent writer's rename removed our (uniquely named) tmp — should never collide, but ENOENT is retried defensively. */
 const RENAME_MAX_ATTEMPTS = 3
+/** How many times a read-modify-write is re-run after losing the lock to a stale-lock stealer. */
+const UPDATE_MAX_ATTEMPTS = 3
+
+const LOCK_OPTIONS: FileLockOptions = {
+  totalWaitMs: LOCK_TOTAL_WAIT_MS,
+  pollMs: LOCK_POLL_MS,
+  staleMs: LOCK_STALE_MS,
+  fileMode: JOURNAL_FILE_MODE,
+}
 
 /** Raised by `read()`/`update()` when the store file exists but cannot be trusted. */
 export class StoreCorruptError extends Error {
@@ -70,6 +99,23 @@ export class StoreLockError extends Error {
   }
 }
 
+/**
+ * Raised when the lock was acquired but repeatedly stolen before the write
+ * could be committed — a different failure from never getting the lock at
+ * all, and one worth telling apart in an incident: it means a crash-looping
+ * holder or a process manipulating the lockfile, not ordinary contention.
+ * Extends `StoreLockError` so existing callers keep catching it.
+ */
+export class StoreLockLostError extends StoreLockError {
+  constructor(filePath: string, attempts: number) {
+    super(filePath)
+    this.message =
+      `Policy store "${filePath}": the lock was stolen before the write could be ` +
+      `committed, ${attempts} times in a row; nothing was written`
+    this.name = 'StoreLockLostError'
+  }
+}
+
 function hasErrorCode(error: unknown, code: string): boolean {
   return (
     typeof error === 'object' &&
@@ -83,10 +129,6 @@ function isEnoent(error: unknown): boolean {
   return hasErrorCode(error, 'ENOENT')
 }
 
-function isEexist(error: unknown): boolean {
-  return hasErrorCode(error, 'EEXIST')
-}
-
 /**
  * Creates a store backed by a single JSON file at `filePath`. The parent
  * directory and file share the journal's ownership model: directory 0700,
@@ -96,6 +138,7 @@ function isEexist(error: unknown): boolean {
  */
 export function createJsonStore<T>(filePath: string, opts: JsonStoreOptions<T>): JsonStore<T> {
   const { validate, defaultValue } = opts
+  const lockOptions: FileLockOptions = { ...LOCK_OPTIONS, ...opts.lock }
 
   /** Serializes every read-modify-write cycle so updates never interleave. */
   let queue: Promise<void> = Promise.resolve()
@@ -166,140 +209,16 @@ export function createJsonStore<T>(filePath: string, opts: JsonStoreOptions<T>):
   }
 
   /**
-   * Cross-process advisory lock via an `O_EXCL` lockfile. Node's own async
-   * queue only serializes callers sharing this store INSTANCE; two processes
-   * (or a proxy session racing the `quarantine approve` CLI) would otherwise
-   * do a lost-update read-modify-write. `open(..., 'wx')` fails with EEXIST if
-   * the lockfile exists, giving a cheap, cross-platform mutex; a lockfile
-   * older than `LOCK_STALE_MS` is presumed orphaned by a crashed holder and
-   * stolen so a crash can never wedge the store permanently.
-   *
-   * TS-MEDIUM: the original stat -> rm -> open('wx') steal was a bare TOCTOU
-   * — nothing verified that the lock removed by `rm` was still the same one
-   * judged stale, so a recoverer whose `rm` landed late could delete a fresh
-   * lock a *different* recoverer had already, legitimately, re-acquired and
-   * was actively using, letting two holders believe they held the lock at
-   * once. `stealIfStale` now (a) re-reads the lock's content immediately
-   * before removing it and backs off if it changed, and (b) is the ONLY
-   * place that creates the replacement lockfile, atomically, right after the
-   * removal — if that create loses the race to a concurrent stealer, this
-   * one backs off instead of trying again immediately (no double-steal).
-   * `stealIfStale`'s return value means "this call now holds the lock", not
-   * "go steal again".
+   * Acquires the store lock, sharing ONE budget across every attempt of a
+   * single `update()` (`deadlineMs`): a caller that keeps losing the lock must
+   * not be able to stall the in-process queue behind it for
+   * `UPDATE_MAX_ATTEMPTS` full acquisition waits.
    */
-  async function acquireLock(): Promise<string> {
-    const dir = dirname(filePath)
-    await mkdir(dir, { recursive: true, mode: JOURNAL_DIR_MODE })
-    const lockPath = `${filePath}${LOCK_SUFFIX}`
-    const deadline = Date.now() + LOCK_TOTAL_WAIT_MS
-
-    for (;;) {
-      if (await tryCreateLockFile(lockPath)) return lockPath
-      if (await stealIfStale(lockPath)) return lockPath
-      if (Date.now() >= deadline) throw new StoreLockError(filePath)
-      await sleep(LOCK_POLL_MS)
-    }
-  }
-
-  /** The lock file's own content: who created it and when, for a content-based staleness check. */
-  interface LockRecord {
-    readonly pid: number
-    readonly createdAtMs: number
-  }
-
-  function encodeLockRecord(): string {
-    const record: LockRecord = { pid: process.pid, createdAtMs: Date.now() }
-    return JSON.stringify(record)
-  }
-
-  /** Atomically creates the lockfile with our own ownership record. `false` only on EEXIST. */
-  async function tryCreateLockFile(lockPath: string): Promise<boolean> {
-    try {
-      const handle = await open(lockPath, 'wx', JOURNAL_FILE_MODE)
-      try {
-        await handle.writeFile(encodeLockRecord())
-      } finally {
-        await handle.close()
-      }
-      return true
-    } catch (error: unknown) {
-      if (isEexist(error)) return false
-      throw error
-    }
-  }
-
-  /** Raw lockfile content, or `null` if it does not exist. */
-  async function readLockFileRaw(lockPath: string): Promise<string | null> {
-    try {
-      return await readFile(lockPath, 'utf8')
-    } catch (error: unknown) {
-      if (isEnoent(error)) return null
-      throw error
-    }
-  }
-
-  /**
-   * Age of the lock, preferring its own recorded `createdAtMs`; falls back to
-   * fs mtime for a foreign/legacy lockfile with no parseable content. Known
-   * trade-off (re-review L7): `createdAtMs` is the WRITER's clock, so on a
-   * shared/NFS journal dir a peer with a lagging clock makes its fresh lock
-   * look stale here; server-side mtime is more skew-resistant but loses the
-   * self-describing pid. Acceptable while the journal dir is local-only.
-   */
-  async function lockAgeMs(lockPath: string, raw: string): Promise<number | null> {
-    const record = parseLockRecord(raw)
-    if (record !== null) return Date.now() - record.createdAtMs
-    try {
-      const stats = await stat(lockPath)
-      return Date.now() - stats.mtimeMs
-    } catch {
-      return null
-    }
-  }
-
-  function parseLockRecord(raw: string): LockRecord | null {
-    try {
-      const value = JSON.parse(raw) as Partial<LockRecord>
-      if (typeof value.pid === 'number' && typeof value.createdAtMs === 'number') {
-        return { pid: value.pid, createdAtMs: value.createdAtMs }
-      }
-      return null
-    } catch {
-      return null
-    }
-  }
-
-  /**
-   * Steals a stale lock. Returns `true` iff THIS call now holds the lock
-   * (either because it won the atomic re-create, or because there was
-   * nothing left to steal and it created fresh); `false` means "someone
-   * else owns it and it is not (yet) stale — keep waiting", never "go steal
-   * again immediately".
-   */
-  async function stealIfStale(lockPath: string): Promise<boolean> {
-    const raw = await readLockFileRaw(lockPath)
-    if (raw === null) return tryCreateLockFile(lockPath) // vanished; claim it ourselves
-
-    const age = await lockAgeMs(lockPath, raw)
-    if (age === null) return tryCreateLockFile(lockPath) // vanished between the read and the stat
-    if (age < LOCK_STALE_MS) return false // held by a live process
-
-    // Re-read immediately before removing: only steal a lock whose content
-    // is still exactly what was just judged stale, so a fresh lock a
-    // concurrent recoverer already re-acquired is never clobbered from
-    // under it.
-    const confirm = await readLockFileRaw(lockPath)
-    if (confirm !== raw) return false // someone else already touched it; back off
-
-    await rm(lockPath, { force: true })
-
-    // Claim it immediately. If a concurrent stealer's create wins this race,
-    // back off rather than looping straight back into another steal attempt.
-    return tryCreateLockFile(lockPath)
-  }
-
-  async function releaseLock(lockPath: string): Promise<void> {
-    await rm(lockPath, { force: true })
+  async function acquireLock(deadlineMs: number): Promise<FileLockHandle> {
+    await mkdir(dirname(filePath), { recursive: true, mode: JOURNAL_DIR_MODE })
+    const handle = await acquireFileLock(`${filePath}${LOCK_SUFFIX}`, lockOptions, deadlineMs)
+    if (handle === null) throw new StoreLockError(filePath)
+    return handle
   }
 
   async function read(): Promise<T> {
@@ -307,18 +226,45 @@ export function createJsonStore<T>(filePath: string, opts: JsonStoreOptions<T>):
     return structuredClone(value)
   }
 
-  function update(fn: (current: T) => T): Promise<T> {
-    const task = queue.then(async () => {
-      const lockPath = await acquireLock()
+  /**
+   * One read-modify-write under the lock, re-run from scratch whenever the
+   * lock turns out to have been stolen before the commit: the value read at
+   * the start of a lost attempt may already be superseded by the new owner's
+   * write, so `fn` must see the current value, not the stale snapshot. An
+   * error raised by `fn` is re-checked the same way — reporting "agent not
+   * found" computed from a snapshot the code already refuses to WRITE from
+   * would be the same staleness bug wearing a different hat.
+   *
+   * All attempts share one acquisition deadline, so a caller that keeps
+   * losing the lock cannot stall the queue behind it for a multiple of
+   * `LOCK_TOTAL_WAIT_MS`. Exhausting the attempts throws `StoreLockLostError`
+   * and writes nothing.
+   */
+  async function updateUnderLock(fn: (current: T) => T): Promise<T> {
+    const deadlineMs = Date.now() + lockOptions.totalWaitMs
+    for (let attempt = 1; attempt <= UPDATE_MAX_ATTEMPTS; attempt += 1) {
+      const handle = await acquireLock(deadlineMs)
       try {
         const current = await readValidated()
-        const next = fn(structuredClone(current))
+        let next: T
+        try {
+          next = fn(structuredClone(current))
+        } catch (error: unknown) {
+          if (await ownsFileLock(handle)) throw error
+          continue
+        }
+        if (!(await ownsFileLock(handle))) continue
         await writeAtomic(next)
         return structuredClone(next)
       } finally {
-        await releaseLock(lockPath)
+        await releaseFileLock(handle)
       }
-    })
+    }
+    throw new StoreLockLostError(filePath, UPDATE_MAX_ATTEMPTS)
+  }
+
+  function update(fn: (current: T) => T): Promise<T> {
+    const task = queue.then(() => updateUnderLock(fn))
 
     // Keep the queue itself always-resolved so one failed update doesn't
     // permanently wedge the chain for subsequent callers; the rejection is
