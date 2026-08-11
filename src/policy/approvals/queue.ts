@@ -2,6 +2,7 @@ import { chmod, mkdir, readdir, readFile, rename, writeFile } from 'node:fs/prom
 import { join } from 'node:path'
 import { ulid } from 'ulid'
 import { JOURNAL_DIR, JOURNAL_DIR_MODE, JOURNAL_FILE_MODE } from '../../config.js'
+import { mapWithConcurrency } from '../../journal/concurrency.js'
 import { redact } from '../../redact/redact.js'
 import { canonicalJson, sha256Hex } from '../hash.js'
 import type { ToolClass } from '../schema.js'
@@ -56,6 +57,21 @@ import {
 
 /** Approval ids are ULIDs; validated before ever being used to build a path. */
 const APPROVAL_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
+
+/** How many queue files are read at once by `list()`/`listResolved()` (EMFILE bound). */
+const QUEUE_READ_CONCURRENCY = 8
+
+/**
+ * "Expired" is `now >= expiresAt` — the expiry INSTANT is already expired —
+ * on BOTH the list and the resolve path, so an operator can never see a
+ * request as live that `resolve()` would downgrade (or vice versa). An
+ * unparseable timestamp cannot reach here (`isPendingApprovalFile` rejects
+ * it, review H2) but is treated as already expired anyway: fail closed twice.
+ */
+function isExpiredAt(expiresAt: string, nowMs: number): boolean {
+  const expiresAtMs = Date.parse(expiresAt)
+  return Number.isNaN(expiresAtMs) || nowMs >= expiresAtMs
+}
 
 export interface EnqueueRequest {
   readonly serverName: string
@@ -215,24 +231,20 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
 
     const jsonEntries = entries.filter((name) => name.endsWith(JSON_FILE_SUFFIX))
     const nowMs = clock()
-    const results: PendingApproval[] = []
-
-    for (const name of jsonEntries) {
+    const reads = await mapWithConcurrency(jsonEntries, QUEUE_READ_CONCURRENCY, async (name) => {
       let raw: unknown
       try {
         raw = await readJsonOrUndefined(join(pendingDir, name))
       } catch {
-        continue // malformed JSON: skip
+        return null // malformed JSON: skip
       }
-      if (!isPendingApprovalFile(raw)) continue // malformed shape: skip
+      if (!isPendingApprovalFile(raw)) return null // malformed shape: skip
+      return { ...raw, expired: isExpiredAt(raw.expiresAt, nowMs) }
+    })
 
-      results.push({
-        ...raw,
-        expired: Date.parse(raw.expiresAt) <= nowMs,
-      })
-    }
-
-    return results.sort((a, b) => a.requestedAt.localeCompare(b.requestedAt))
+    return reads
+      .filter((entry): entry is PendingApproval => entry !== null)
+      .sort((a, b) => a.requestedAt.localeCompare(b.requestedAt))
   }
 
   /**
@@ -298,7 +310,7 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
   function resolve(approvalId: string, resolution: ResolveInput): Promise<ResolveResult> {
     const nowMs = clock()
     return moveToResolved(approvalId, (pending) => {
-      const expired = nowMs > Date.parse(pending.expiresAt)
+      const expired = isExpiredAt(pending.expiresAt, nowMs)
       const outcome: ResolutionOutcome =
         expired && resolution.outcome === 'approved' ? 'expired' : resolution.outcome
       return {
@@ -353,18 +365,16 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
       .sort((a, b) => b.localeCompare(a))
       .slice(0, listOpts.limit)
 
-    const results: ResolvedApprovalFile[] = []
-    for (const name of newestNames) {
+    const reads = await mapWithConcurrency(newestNames, QUEUE_READ_CONCURRENCY, async (name) => {
       let raw: unknown
       try {
         raw = await readJsonOrUndefined(join(resolvedDir, name))
       } catch {
-        continue // malformed JSON: skip
+        return null // malformed JSON: skip
       }
-      if (!isResolvedApprovalFile(raw)) continue // malformed shape: skip
-      results.push(raw)
-    }
-    return results
+      return isResolvedApprovalFile(raw) ? raw : null // malformed shape: skip
+    })
+    return reads.filter((entry): entry is ResolvedApprovalFile => entry !== null)
   }
 
   return { enqueue, list, resolve, markExpired, readResolution, listResolved }

@@ -15,6 +15,7 @@ import {
   type ServerInventory,
   emptyMap,
   isPlainObject,
+  toStoredToolDescriptor,
   withKey,
 } from './inventory-store.js'
 import { diffToolSchemas, type SurfaceDelta } from './schema-diff.js'
@@ -223,7 +224,9 @@ export function redactedDescriptorFor(tool: ToolDescriptor, mode: SchemaStorageM
       : {}),
     ...(tool.annotations !== undefined ? { annotations: tool.annotations } : {}),
   }
-  const redacted = redact(capped) as unknown as ToolDescriptor
+  // The redacted value is re-narrowed instead of double-cast (review M3):
+  // `redact` preserves structure, but the type must be earned, not asserted.
+  const redacted = toStoredToolDescriptor(redact(capped)) ?? { name: tool.name }
   return boundDescriptor(redacted)
 }
 

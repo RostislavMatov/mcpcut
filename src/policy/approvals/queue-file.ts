@@ -73,6 +73,21 @@ function isOptionalString(value: unknown): boolean {
   return value === undefined || typeof value === 'string'
 }
 
+/**
+ * A timestamp field must actually PARSE (review H2): these files are
+ * hand-editable, `Date.parse(garbage)` is `NaN`, and every comparison
+ * against `NaN` is `false` — which made a garbage `expiresAt` behave as
+ * "never expires" on the resolve path. A file whose timestamps cannot be
+ * read is rejected whole, so it can neither be listed nor resolved.
+ */
+function isParseableTimestamp(value: unknown): boolean {
+  return typeof value === 'string' && !Number.isNaN(Date.parse(value))
+}
+
+function isOptionalTimestamp(value: unknown): boolean {
+  return value === undefined || isParseableTimestamp(value)
+}
+
 /** Hand-written shape check: the M4 fields are optional, so pre-M4 files still pass. */
 export function isPendingApprovalFile(raw: unknown): raw is PendingApprovalFile {
   if (typeof raw !== 'object' || raw === null) return false
@@ -84,10 +99,10 @@ export function isPendingApprovalFile(raw: unknown): raw is PendingApprovalFile 
     isToolClass(value.toolClass) &&
     typeof value.argsHash === 'string' &&
     typeof value.sessionId === 'string' &&
-    typeof value.requestedAt === 'string' &&
-    typeof value.expiresAt === 'string' &&
+    isParseableTimestamp(value.requestedAt) &&
+    isParseableTimestamp(value.expiresAt) &&
     isOptionalString(value.agentName) &&
-    isOptionalString(value.waitExpiresAt) &&
+    isOptionalTimestamp(value.waitExpiresAt) &&
     isOptionalString(value.decisionRule)
   )
 }
@@ -101,7 +116,7 @@ export function isResolvedApprovalFile(raw: unknown): raw is ResolvedApprovalFil
   const value = raw as unknown as Record<string, unknown>
   const resolution = value.resolution
   return (
-    typeof value.resolvedAt === 'string' &&
+    isParseableTimestamp(value.resolvedAt) &&
     typeof resolution === 'object' &&
     resolution !== null &&
     isResolutionOutcome((resolution as Record<string, unknown>).outcome)

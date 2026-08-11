@@ -46,8 +46,11 @@ const USAGE = `Usage:
   agent create <name>                          Create an agent; prints its token ONCE
   agent list                                   List agents and their grants
   agent grant <agent> <server> [--tools a,b,prefix*] [--resources uri,uriprefix*|*] [--prompts name,prefix*|*]
-                                               Grant server access (no --tools = all tools;
-                                               no --resources/--prompts = those methods stay denied)
+                                               Grant server access. NOTE the asymmetric defaults:
+                                                 omitting --tools grants ALL tools ('*'),
+                                                 omitting --resources keeps resources/* DENIED,
+                                                 omitting --prompts keeps prompts/* DENIED
+                                               (opening a method surface is always an explicit act)
   agent ungrant <agent> <server>               Remove the grant for a server
   agent revoke <name>                          Revoke the agent (its token stops working)
 `

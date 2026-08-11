@@ -187,28 +187,99 @@ describe('decideMethodGrant: prompts/get uses the shared matcher', () => {
   })
 })
 
-describe('decideMethodGrant: completion/complete', () => {
-  test('allowed with only a resources grant', () => {
+describe('decideMethodGrant: completion/complete dispatches on params.ref (review M1)', () => {
+  const promptRef = (name: string) => ({ ref: { type: 'ref/prompt', name }, argument: { name: 'a', value: 'x' } })
+  const resourceRef = (uri: string) => ({ ref: { type: 'ref/resource', uri }, argument: { name: 'a', value: 'x' } })
+
+  test('a ref/prompt inside the prompts grant forwards', () => {
     const outcome = decideMethodGrant(
       'completion/complete',
-      rawOf('completion/complete', {}),
+      rawOf('completion/complete', promptRef('greeting')),
+      grantsOf({ prompts: ['greet*'] }),
+    )
+
+    expect(outcome).toMatchObject({ action: 'forward', toolClass: 'read' })
+  })
+
+  test('a ref/prompt outside the prompts grant is denied naming the prompt', () => {
+    const outcome = decideMethodGrant(
+      'completion/complete',
+      rawOf('completion/complete', promptRef('secret-prompt')),
+      grantsOf({ prompts: ['greet*'] }),
+    )
+
+    expect(outcome).toMatchObject({
+      action: 'deny',
+      rule: 'agent: no prompts grant for secret-prompt',
+      toolClass: 'read',
+    })
+  })
+
+  test('a ref/prompt with only a resources grant falls back to the M3 denial', () => {
+    const outcome = decideMethodGrant(
+      'completion/complete',
+      rawOf('completion/complete', promptRef('greeting')),
+      grantsOf({ resources: '*' }),
+    )
+
+    expect(outcome).toEqual({ action: 'fallback' })
+  })
+
+  test('a ref/resource inside the resources grant forwards', () => {
+    const outcome = decideMethodGrant(
+      'completion/complete',
+      rawOf('completion/complete', resourceRef('file:///p/data.txt')),
       grantsOf({ resources: ['file:///p/*'] }),
     )
 
     expect(outcome).toMatchObject({ action: 'forward', toolClass: 'read' })
   })
 
-  test('allowed with only a prompts grant', () => {
+  test('a ref/resource outside the resources grant is denied naming the URI', () => {
     const outcome = decideMethodGrant(
       'completion/complete',
-      rawOf('completion/complete', {}),
+      rawOf('completion/complete', resourceRef('file:///etc/passwd')),
+      grantsOf({ resources: ['file:///p/*'] }),
+    )
+
+    expect(outcome).toMatchObject({
+      action: 'deny',
+      rule: 'agent: no resources grant for file:///etc/passwd',
+      toolClass: 'read',
+    })
+  })
+
+  test('a ref/resource with only a prompts grant falls back to the M3 denial', () => {
+    const outcome = decideMethodGrant(
+      'completion/complete',
+      rawOf('completion/complete', resourceRef('file:///p/x')),
       grantsOf({ prompts: '*' }),
     )
 
-    expect(outcome).toMatchObject({ action: 'forward', toolClass: 'read' })
+    expect(outcome).toEqual({ action: 'fallback' })
   })
 
-  test('falls back to M3 with neither grant', () => {
+  test.each<[label: string, params: unknown]>([
+    ['no params.ref at all', {}],
+    ['a non-object ref', { ref: 'ref/prompt' }],
+    ['an unknown ref type', { ref: { type: 'ref/other', name: 'x' } }],
+    ['a ref/prompt without a string name', { ref: { type: 'ref/prompt', name: 7 } }],
+    ['a ref/resource without a string uri', { ref: { type: 'ref/resource' } }],
+  ])('an unreadable ref (%s) is denied as malformed, worst-case class', (_label, params) => {
+    const outcome = decideMethodGrant(
+      'completion/complete',
+      rawOf('completion/complete', params),
+      grantsOf({ resources: '*', prompts: '*' }),
+    )
+
+    expect(outcome).toMatchObject({
+      action: 'deny',
+      rule: 'agent: malformed method params: completion/complete',
+      toolClass: 'destructive',
+    })
+  })
+
+  test('falls back to M3 with neither grant, before the ref is even read', () => {
     expect(
       decideMethodGrant('completion/complete', rawOf('completion/complete', {}), grantsOf({})),
     ).toEqual({ action: 'fallback' })

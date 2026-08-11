@@ -130,7 +130,12 @@ function diffObject(
   state: DiffState,
 ): void {
   const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort()
-  for (const key of keys) diffKey(before[key], after[key], key, path, depth, state)
+  for (const key of keys) {
+    // Once truncated the result is incomplete either way; stop the walk so the
+    // caps bound WORK, not just output (review M4).
+    if (state.truncated) return
+    diffKey(before[key], after[key], key, path, depth, state)
+  }
 }
 
 /** Dispatches one object key to its schema-aware comparison. */
@@ -193,6 +198,7 @@ function diffProperties(
 ): void {
   const names = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort()
   for (const name of names) {
+    if (state.truncated) return
     const propPath = joinPath(parentPath, `properties.${name}`)
     const inBefore = Object.hasOwn(before, name)
     const inAfter = Object.hasOwn(after, name)
@@ -206,9 +212,11 @@ function diffRequired(before: unknown, after: unknown, keyPath: string, state: D
   const beforeNames = stringSetOf(before)
   const afterNames = stringSetOf(after)
   for (const name of [...afterNames].sort()) {
+    if (state.truncated) return
     if (!beforeNames.has(name)) push(state, 'required-added', `${keyPath}.${name}`)
   }
   for (const name of [...beforeNames].sort()) {
+    if (state.truncated) return
     if (!afterNames.has(name)) push(state, 'required-removed', `${keyPath}.${name}`)
   }
 }

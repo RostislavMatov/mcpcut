@@ -283,6 +283,15 @@ describe('runPolicyShow --entry-point', () => {
     return { projectPath, statePath, envPath }
   }
 
+  test('an unknown entry point name explains the expected values instead of generic usage', async () => {
+    const io = fakeIo()
+
+    const exitCode = await runPolicyShow(['--entry-point', 'typoo'], io, { cwd, journalDir, env: {} })
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('expected one of connect, wrap, serve, ui')
+  })
+
   test('connect: prints the state-directory policy, ignoring env and project sources', async () => {
     const { statePath, envPath } = await writeAllThreeSources()
     const io = fakeIo()
