@@ -27,6 +27,21 @@ export const LOCALHOST_HOSTNAMES: readonly string[] = ['127.0.0.1', 'localhost',
 const HTTP_DEFAULT_PORT = 80
 
 /**
+ * The literal value `'null'` is the wire form of an opaque `Origin` header —
+ * what a browser sends from a sandboxed iframe, a `data:` URL or a redirected
+ * request with no origin of its own. `isOriginAllowed` already refuses it as
+ * a HEADER value; this guards the other end of the same rule, the CLI flag
+ * that seeds `extraAllowed`. Without it, `--allowed-origin null` would put
+ * the exact string `'null'` into `extraAllowed`, and the `extraAllowed.includes`
+ * check in `isOriginAllowed` would then re-admit the opaque origin it exists
+ * to reject — so both CLI entry points reject this flag value up front,
+ * before it ever reaches the allowlist.
+ */
+export function isRejectedOriginFlagValue(value: string): boolean {
+  return value === 'null'
+}
+
+/**
  * Origin screening (spec MUST in both revisions; matrix §4.2). Absent header
  * → allowed (non-browser agents don't send Origin). Present → must be a
  * localhost origin (`http(s)://localhost|127.0.0.1|[::1]`, any port) or an

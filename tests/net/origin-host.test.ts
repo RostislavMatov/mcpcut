@@ -4,6 +4,7 @@ import { afterEach, describe, expect, test } from 'vitest'
 import {
   isHostAllowed,
   isOriginAllowed,
+  isRejectedOriginFlagValue,
   isWildcardBindHost,
   LOCALHOST_HOSTNAMES,
 } from '../../src/net/origin-host.js'
@@ -180,6 +181,20 @@ describe('isOriginAllowed (unit, relocated module)', () => {
     for (const name of ['127.0.0.1', 'localhost', '::1', '[::1]']) {
       expect(LOCALHOST_HOSTNAMES).toContain(name)
     }
+  })
+
+  test('an extraAllowed entry of "null" would re-admit the opaque origin (why the CLI flag rejects it)', () => {
+    expect(isOriginAllowed('null', ['null'])).toBe(true)
+  })
+})
+
+describe('isRejectedOriginFlagValue', () => {
+  test('rejects only the literal "null"', () => {
+    expect(isRejectedOriginFlagValue('null')).toBe(true)
+  })
+
+  test('a real origin is not rejected', () => {
+    expect(isRejectedOriginFlagValue('https://admin.example.com')).toBe(false)
   })
 })
 

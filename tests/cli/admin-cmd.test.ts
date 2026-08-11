@@ -96,6 +96,12 @@ describe('admin add', () => {
     expect(tokensIn(io.errText())).toEqual([])
   })
 
+  test('warns against redirecting stdout, on the same stream as the token', async () => {
+    const { io } = await runAdmin(['add', 'alice', '--role', 'owner'])
+
+    expect(io.outText()).toContain("Do not redirect this command's stdout")
+  })
+
   test('records the name, role and creation time in the store', async () => {
     await runAdmin(['add', 'alice', '--role', 'operator'])
 
@@ -278,6 +284,14 @@ describe('admin rotate', () => {
     expect(stored).not.toContain(firstToken)
     expect(JSON.parse(stored).admins.alice.tokenHash).not.toBe(firstHash)
     expect(JSON.parse(stored).admins.alice.rotatedAt).toBe(CLOCK_ISO)
+  })
+
+  test('warns against redirecting stdout, on the same stream as the fresh token', async () => {
+    await runAdmin(['add', 'alice', '--role', 'owner'])
+
+    const { io } = await runAdmin(['rotate', 'alice'])
+
+    expect(io.outText()).toContain("Do not redirect this command's stdout")
   })
 
   test('an unknown admin is refused', async () => {

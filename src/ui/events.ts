@@ -231,9 +231,30 @@ export function createEventHub(opts: EventHubOptions = {}): EventHub {
     if (isSessionLive === undefined || closed) return 0
     // Snapshot first: the probe awaits, and a peer may drop meanwhile.
     const roster = [...subscribers]
+
+    // One probe per distinct sessionId, not per subscriber: several open
+    // streams commonly share one session (multiple tabs), and the production
+    // probe re-reads admins.json on every call. Deduping here — rather than
+    // in the probe itself — keeps `isSessionLive` a pure per-identity check
+    // and makes the sharing a hub concern, run once per tick and concurrently
+    // across the distinct sessions.
+    const firstIdentityBySessionId = new Map<string, SseIdentity>()
+    for (const [, identity] of roster) {
+      if (identity !== undefined && !firstIdentityBySessionId.has(identity.sessionId)) {
+        firstIdentityBySessionId.set(identity.sessionId, identity)
+      }
+    }
+    const liveness = await Promise.all(
+      [...firstIdentityBySessionId.entries()].map(
+        async ([sessionId, identity]) => [sessionId, await isLive(identity)] as const,
+      ),
+    )
+    const liveBySessionId = new Map(liveness)
+
     let ended = 0
     for (const [sink, identity] of roster) {
-      if (await isLive(identity)) continue
+      const isSinkLive = identity !== undefined && (liveBySessionId.get(identity.sessionId) ?? false)
+      if (isSinkLive) continue
       if (!subscribers.has(sink)) continue
       endStream(sink)
       ended += 1

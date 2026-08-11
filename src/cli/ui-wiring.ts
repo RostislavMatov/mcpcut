@@ -122,10 +122,26 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
     reject: (serverName, toolName) => rejectTool(serverName, toolName, deps.inventoryStorePath),
     audit: quarantineAudit,
   })
+  // Adapter literals, not the stores themselves: `ServersHandlersDeps` narrows
+  // each port to a `Pick<>` at compile time only, but a store object handed
+  // through as-is still carries every method at runtime (e.g. the full
+  // `RegistryStore`/`AgentsStore`, or a vault with `readSecretValues`). A
+  // handler that only ever calls the declared methods is safe by construction
+  // today, but the guarantee should not rest on that discipline holding
+  // forever — building an object with only the granted methods makes the
+  // Pick<> a runtime fact, not just a type-checker fact.
   const servers = createServersHandlers({
-    registry: deps.registry,
-    agents: deps.agents,
-    vault: deps.vault,
+    registry: {
+      listServers: () => deps.registry.listServers(),
+      addServer: (record) => deps.registry.addServer(record),
+      removeServer: (name) => deps.registry.removeServer(name),
+    },
+    agents: {
+      listAgents: () => deps.agents.listAgents(),
+    },
+    vault: {
+      listSecrets: () => deps.vault.listSecrets(),
+    },
     audit,
   })
   const agents = createAgentsHandlers({ agentsStore: deps.agents, audit })

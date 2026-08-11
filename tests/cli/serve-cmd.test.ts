@@ -88,6 +88,22 @@ describe('runServe: argument parsing and startup', () => {
     expect(io.errText()).toContain('--port')
   })
 
+  test('--allowed-origin null is rejected before anything is bound', async () => {
+    const io = captureIo()
+    let listened = false
+    const code = await runServe(['--allowed-origin', 'null'], io, {
+      signals: [],
+      onListening: () => {
+        listened = true
+      },
+    })
+
+    expect(code).toBe(1)
+    expect(listened).toBe(false)
+    expect(io.errText()).toContain('--allowed-origin')
+    expect(io.errText().toLowerCase()).toContain('null')
+  })
+
   test('a broken policy stops serve before it listens', async () => {
     const { journalDir, policyPath } = await createJournalDir(
       '{"version": 1, "defaultDecision": "sometimes"}',

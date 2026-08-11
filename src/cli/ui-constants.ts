@@ -47,6 +47,14 @@ export const BOOTSTRAP_ADMIN_NAME = 'owner'
 export const TOKEN_ONCE_NOTICE =
   'Save this token now: it cannot be recovered or shown again.\n'
 
+/**
+ * Printed after `admin add`/`admin rotate`'s one-time token, on stdout. A
+ * supervisor invoking `admin add ... > file` redirects stdout by default,
+ * which would otherwise persist a live credential to disk unnoticed.
+ */
+export const TOKEN_STDOUT_REDIRECT_WARNING =
+  "Do not redirect this command's stdout: doing so would persist the token above to disk.\n"
+
 export const UI_USAGE = `Usage:
   mcp-journal ui [--port ${DEFAULT_UI_PORT}] [--host ${DEFAULT_UI_HOST}] [--behind-tls]
                  [--allowed-host <host[:port]>]... [--allowed-origin <origin>]...

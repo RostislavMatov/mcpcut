@@ -13,7 +13,12 @@ import {
 } from '../admin/store.js'
 import { formatReadableField } from '../journal/format.js'
 import { StoreCorruptError, StoreLockError } from '../policy/store.js'
-import { ADMIN_USAGE, TOKEN_ONCE_NOTICE, type AdminCliIo } from './ui-constants.js'
+import {
+  ADMIN_USAGE,
+  TOKEN_ONCE_NOTICE,
+  TOKEN_STDOUT_REDIRECT_WARNING,
+  type AdminCliIo,
+} from './ui-constants.js'
 
 /**
  * `admin add|list|remove|rotate|role` (M4 Task 16) — operator-facing management
@@ -118,7 +123,8 @@ async function runAdd(args: readonly string[], io: AdminCliIo, store: AdminStore
   const parsed = parseAdminArgs(args, true)
   if (parsed === null || parsed.positionals.length !== 1) return usage(io)
 
-  const name = parsed.positionals[0] as string
+  const name = parsed.positionals.length === 1 ? parsed.positionals[0] : undefined
+  if (name === undefined) return usage(io)
   if (parsed.role === undefined) {
     return usage(io, `admin add requires --role (one of ${ADMIN_ROLES.join(', ')}).`)
   }
@@ -134,6 +140,7 @@ async function runAdd(args: readonly string[], io: AdminCliIo, store: AdminStore
   io.stdout.write(`role: ${admin.role}\n`)
   io.stdout.write(`token: ${token}\n`)
   io.stdout.write(TOKEN_ONCE_NOTICE)
+  io.stdout.write(TOKEN_STDOUT_REDIRECT_WARNING)
   return 0
 }
 
@@ -173,7 +180,10 @@ async function runRemove(
   const parsed = parseAdminArgs(args, false)
   if (parsed === null || parsed.positionals.length !== 1) return usage(io)
 
-  const admin = await store.removeAdmin(parsed.positionals[0] as string)
+  const name = parsed.positionals.length === 1 ? parsed.positionals[0] : undefined
+  if (name === undefined) return usage(io)
+
+  const admin = await store.removeAdmin(name)
   io.stdout.write(
     `removed ${formatReadableField(admin.name)} at ${formatReadableField(admin.revokedAt ?? '')}\n`,
   )
@@ -188,10 +198,14 @@ async function runRotate(
   const parsed = parseAdminArgs(args, false)
   if (parsed === null || parsed.positionals.length !== 1) return usage(io)
 
-  const { admin, token } = await store.rotateAdmin(parsed.positionals[0] as string)
+  const name = parsed.positionals.length === 1 ? parsed.positionals[0] : undefined
+  if (name === undefined) return usage(io)
+
+  const { admin, token } = await store.rotateAdmin(name)
   io.stdout.write(`admin: ${formatReadableField(admin.name)}\n`)
   io.stdout.write(`token: ${token}\n`)
   io.stdout.write(TOKEN_ONCE_NOTICE)
+  io.stdout.write(TOKEN_STDOUT_REDIRECT_WARNING)
   io.stdout.write(`Any browser session held by ${formatReadableField(admin.name)} is now invalid.\n`)
   return 0
 }
@@ -200,7 +214,9 @@ async function runRole(args: readonly string[], io: AdminCliIo, store: AdminStor
   const parsed = parseAdminArgs(args, false)
   if (parsed === null || parsed.positionals.length !== 2) return usage(io)
 
-  const [name, role] = parsed.positionals as [string, string]
+  const name = parsed.positionals.length === 2 ? parsed.positionals[0] : undefined
+  const role = parsed.positionals.length === 2 ? parsed.positionals[1] : undefined
+  if (name === undefined || role === undefined) return usage(io)
   if (!isAdminRole(role)) {
     return usage(
       io,

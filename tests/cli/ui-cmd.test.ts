@@ -380,6 +380,23 @@ describe('runUi: flag parsing and startup', () => {
     expect(io.errText()).toContain('--host')
   })
 
+  test('--allowed-origin null is rejected before anything is bound', async () => {
+    const io = captureIo()
+    let listened = false
+    const code = await runUi(['--allowed-origin', 'null'], io, {
+      journalDir: await makeJournalDir(),
+      signals: [],
+      onListening: () => {
+        listened = true
+      },
+    })
+
+    expect(code).toBe(1)
+    expect(listened).toBe(false)
+    expect(io.errText()).toContain('--allowed-origin')
+    expect(io.errText().toLowerCase()).toContain('null')
+  })
+
   test('a port already in use fails with a clear message, not a stack trace', async () => {
     const blocker = createNetServer()
     await new Promise<void>((resolve) => blocker.listen(0, '127.0.0.1', resolve))
