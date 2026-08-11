@@ -1,4 +1,14 @@
-import type { ApprovalQueue, ResolveOutcome } from '../../policy/approvals/queue.js'
+import {
+  isValidApprovalId,
+  type ApprovalQueue,
+  type ResolveOutcome,
+} from '../../policy/approvals/queue.js'
+import {
+  HTTP_STATUS_BAD_REQUEST,
+  HTTP_STATUS_CONFLICT,
+  HTTP_STATUS_FORBIDDEN,
+  HTTP_STATUS_OK,
+} from '../constants.js'
 import { parseBodyFields, type UiHandler, type UiRequestContext, type UiResult } from '../routes.js'
 import { headerValue } from '../routes.js'
 import { renderApprovalsPage, toApprovalCard, type ApprovalCardView } from '../pages/approvals.js'
@@ -29,11 +39,6 @@ export interface ApprovalsHandlers {
   readonly approvalsDeny: UiHandler
 }
 
-const STATUS_OK = 200
-const STATUS_BAD_REQUEST = 400
-const STATUS_FORBIDDEN = 403
-const STATUS_CONFLICT = 409
-
 /** Attribution actor string for a UI resolution: `ui:<adminName>`. */
 function uiActor(session: UiSession): string {
   return `ui:${session.adminName}`
@@ -63,11 +68,11 @@ async function renderPage(deps: ApprovalsHandlerDeps, ctx: UiRequestContext): Pr
     csrfToken,
     ...(currentAdmin !== undefined ? { currentAdmin } : {}),
   })
-  return { kind: 'response', status: STATUS_OK, body: html }
+  return { kind: 'response', status: HTTP_STATUS_OK, body: html }
 }
 
 async function renderApi(deps: ApprovalsHandlerDeps): Promise<UiResult> {
-  return jsonResult(STATUS_OK, { approvals: await loadCards(deps) })
+  return jsonResult(HTTP_STATUS_OK, { approvals: await loadCards(deps) })
 }
 
 /**
@@ -82,11 +87,18 @@ async function resolveAction(
 ): Promise<UiResult> {
   const session = ctx.session
   if (session === undefined) {
-    return jsonResult(STATUS_FORBIDDEN, { status: 'forbidden', message: 'Not authenticated.' })
+    return jsonResult(HTTP_STATUS_FORBIDDEN, { status: 'forbidden', message: 'Not authenticated.' })
   }
   const id = ctx.params.id
   if (id === undefined || id === '') {
-    return jsonResult(STATUS_BAD_REQUEST, { status: 'error', message: 'Missing approval id.' })
+    return jsonResult(HTTP_STATUS_BAD_REQUEST, { status: 'error', message: 'Missing approval id.' })
+  }
+  // Validate the SHAPE at the boundary, not just deep inside the queue: the id
+  // comes straight off the URL and is used to build a file path. The queue is
+  // fail-closed on its own, but a rejected id must read as a client error here
+  // rather than as an indistinguishable "already resolved".
+  if (!isValidApprovalId(id)) {
+    return jsonResult(HTTP_STATUS_BAD_REQUEST, { status: 'error', message: 'Invalid approval id.' })
   }
   const reason = optionalReason(ctx)
   const result = await deps.queue.resolve(id, {
@@ -95,12 +107,12 @@ async function resolveAction(
     ...(reason !== undefined ? { reason } : {}),
   })
   if (!result.ok) {
-    return jsonResult(STATUS_CONFLICT, {
+    return jsonResult(HTTP_STATUS_CONFLICT, {
       status: 'already-resolved',
       message: 'This request was already resolved (first resolve wins).',
     })
   }
-  return jsonResult(STATUS_OK, { status: 'ok', outcome: result.record.resolution.outcome })
+  return jsonResult(HTTP_STATUS_OK, { status: 'ok', outcome: result.record.resolution.outcome })
 }
 
 /** Extracts an optional operator `reason` from the request body. */

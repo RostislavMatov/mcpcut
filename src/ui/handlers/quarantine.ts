@@ -1,4 +1,10 @@
 import type { InventoryStoreData } from '../../policy/inventory-store.js'
+import {
+  HTTP_STATUS_BAD_REQUEST,
+  HTTP_STATUS_FORBIDDEN,
+  HTTP_STATUS_NOT_FOUND,
+  HTTP_STATUS_OK,
+} from '../constants.js'
 import { headerValue, parseBodyFields, type UiHandler, type UiRequestContext, type UiResult } from '../routes.js'
 import { renderQuarantinePage, toQuarantineCards } from '../pages/quarantine.js'
 import type { UiSession } from '../auth.js'
@@ -39,11 +45,6 @@ export interface QuarantineHandlers {
   readonly quarantineReject: UiHandler
 }
 
-const STATUS_OK = 200
-const STATUS_BAD_REQUEST = 400
-const STATUS_FORBIDDEN = 403
-const STATUS_NOT_FOUND = 404
-
 function jsonResult(status: number, payload: unknown): UiResult {
   return { kind: 'response', status, body: Buffer.from(JSON.stringify(payload), 'utf8') }
 }
@@ -60,7 +61,7 @@ async function renderPage(deps: QuarantineHandlerDeps, ctx: UiRequestContext): P
     csrfToken: ctx.session?.csrfToken ?? '',
     ...(currentAdmin !== undefined ? { currentAdmin } : {}),
   })
-  return { kind: 'response', status: STATUS_OK, body: html }
+  return { kind: 'response', status: HTTP_STATUS_OK, body: html }
 }
 
 /** Shared approve/reject action, keyed by which store mutation to run. */
@@ -71,13 +72,13 @@ async function mutateAction(
 ): Promise<UiResult> {
   const session = ctx.session
   if (session === undefined) {
-    return jsonResult(STATUS_FORBIDDEN, { status: 'forbidden', message: 'Not authenticated.' })
+    return jsonResult(HTTP_STATUS_FORBIDDEN, { status: 'forbidden', message: 'Not authenticated.' })
   }
   const fields = parseBodyFields(ctx.body, headerValue(ctx.headers, 'content-type'))
   const serverName = fields.server
   const toolName = fields.tool
   if (serverName === undefined || serverName === '' || toolName === undefined || toolName === '') {
-    return jsonResult(STATUS_BAD_REQUEST, {
+    return jsonResult(HTTP_STATUS_BAD_REQUEST, {
       status: 'error',
       message: 'Both "server" and "tool" are required.',
     })
@@ -85,13 +86,13 @@ async function mutateAction(
   const mutate = action === 'approve' ? deps.approve : deps.reject
   const changed = await mutate(serverName, toolName)
   if (!changed) {
-    return jsonResult(STATUS_NOT_FOUND, {
+    return jsonResult(HTTP_STATUS_NOT_FOUND, {
       status: 'not-quarantined',
       message: `"${toolName}" is not quarantined for server "${serverName}".`,
     })
   }
   deps.audit?.({ action, serverName, toolName, adminName: session.adminName })
-  return jsonResult(STATUS_OK, { status: 'ok', action, serverName, toolName })
+  return jsonResult(HTTP_STATUS_OK, { status: 'ok', action, serverName, toolName })
 }
 
 /** Factory: binds the quarantine handlers to the inventory store operations. */

@@ -3,12 +3,15 @@ import type { AdminRecord } from '../admin/store.js'
 import type { Role } from './authz.js'
 import {
   CSRF_TOKEN_RANDOM_BYTES,
+  LOGIN_GLOBAL_MAX_FAILURES,
   LOGIN_MAX_FAILURES,
+  LOGIN_RATE_LIMIT_MAX_KEYS,
   LOGIN_RATE_WINDOW_MS,
   MAX_SESSIONS,
   SESSION_COOKIE_NAME,
   SESSION_ID_RANDOM_BYTES,
   SESSION_TTL_MS,
+  SESSIONS_PER_ADMIN_MAX,
 } from './constants.js'
 
 /**
@@ -52,6 +55,7 @@ export interface SessionManagerOptions {
   readonly clock?: () => number
   readonly ttlMs?: number
   readonly maxSessions?: number
+  readonly maxSessionsPerAdmin?: number
 }
 
 export interface CreatedSession {
@@ -59,9 +63,30 @@ export interface CreatedSession {
   readonly session: UiSession
 }
 
+/**
+ * Outcome of a login. A refusal is NOT an error: the caps exist to bound
+ * memory, and (crucially) refusing is what keeps a flood of low-privilege
+ * logins from evicting a live `owner` session — the previous behaviour, where
+ * the oldest LIVE session was dropped to make room, was a denial-of-service
+ * primitive available to any valid token holder.
+ */
+export type CreateSessionResult =
+  | ({ readonly ok: true } & CreatedSession)
+  | { readonly ok: false; readonly reason: 'at-capacity' | 'per-admin-capacity' }
+
+/** A session that has just been dropped, for anyone holding resources keyed on it. */
+export interface DroppedSession {
+  readonly sessionId: string
+  readonly adminName: string
+}
+
 export interface SessionManager {
-  /** Mints a session for a freshly authenticated admin; returns the cookie id. */
-  create(admin: AdminRecord): CreatedSession
+  /**
+   * Mints a session for a freshly authenticated admin. Expired sessions are
+   * reaped first; if a cap is still met the login is REFUSED — a live session
+   * is never evicted to make room for a new one.
+   */
+  create(admin: AdminRecord): CreateSessionResult
   /**
    * Resolves a cookie's session id to a still-valid session, RE-CHECKING it
    * against the live admin store: an admin removed, rotated or role-changed
@@ -69,8 +94,19 @@ export interface SessionManager {
    * kill exactly that admin's live sessions and no others.
    */
   resolve(sessionId: string | undefined, resolver: AdminResolver): Promise<UiSession | undefined>
+  /**
+   * True when the session still resolves; drops it (and notifies listeners)
+   * when it does not. The periodic liveness probe behind long-lived resources
+   * such as SSE streams, which have no "next request" to be re-checked on.
+   */
+  isLive(sessionId: string, resolver: AdminResolver): Promise<boolean>
   /** Drops a session by id (logout). Idempotent. */
   destroy(sessionId: string | undefined): void
+  /**
+   * Registers a listener notified whenever a session is dropped (logout, TTL,
+   * or a failed re-validation). Used to tear down resources bound to it.
+   */
+  onDropped(listener: (dropped: DroppedSession) => void): void
   /** Live (unexpired) session count — for tests and the cap. */
   size(): number
 }
@@ -87,23 +123,45 @@ export function createSessionManager(opts: SessionManagerOptions = {}): SessionM
   const clock = opts.clock ?? (() => Date.now())
   const ttlMs = opts.ttlMs ?? SESSION_TTL_MS
   const maxSessions = opts.maxSessions ?? MAX_SESSIONS
+  const maxPerAdmin = opts.maxSessionsPerAdmin ?? SESSIONS_PER_ADMIN_MAX
   /** Insertion-ordered so the oldest session is the first key. */
   const sessions = new Map<string, SessionEntry>()
+  const dropListeners: Array<(dropped: DroppedSession) => void> = []
 
-  function evictExpired(now: number): void {
-    for (const [id, entry] of sessions) {
-      if (entry.expiresAt <= now) sessions.delete(id)
+  /** Removes one session and tells everyone holding resources keyed on it. */
+  function drop(sessionId: string): void {
+    const entry = sessions.get(sessionId)
+    if (entry === undefined) return
+    sessions.delete(sessionId)
+    for (const listener of dropListeners) listener({ sessionId, adminName: entry.adminName })
+  }
+
+  function reapExpired(now: number): void {
+    for (const [id, entry] of [...sessions]) {
+      if (entry.expiresAt <= now) drop(id)
     }
   }
 
-  function create(admin: AdminRecord): CreatedSession {
+  function countFor(adminName: string): number {
+    let total = 0
+    for (const entry of sessions.values()) {
+      if (entry.adminName === adminName) total += 1
+    }
+    return total
+  }
+
+  function create(admin: AdminRecord): CreateSessionResult {
     const now = clock()
-    evictExpired(now)
-    // Enforce the cap by dropping the oldest live session (Map is insertion-ordered).
-    while (sessions.size >= maxSessions) {
-      const oldest = sessions.keys().next().value
-      if (oldest === undefined) break
-      sessions.delete(oldest)
+    // Reap first: an expired session is not a live one and must not block a login.
+    reapExpired(now)
+    if (countFor(admin.name) >= maxPerAdmin) {
+      return { ok: false, reason: 'per-admin-capacity' }
+    }
+    if (sessions.size >= maxSessions) {
+      // Refuse rather than evict: evicting the oldest LIVE session would let
+      // any valid token log in `maxSessions` times and silently sign out
+      // every other admin, owners included.
+      return { ok: false, reason: 'at-capacity' }
     }
     const id = randomBytes(SESSION_ID_RANDOM_BYTES).toString('base64url')
     const entry: SessionEntry = {
@@ -115,7 +173,7 @@ export function createSessionManager(opts: SessionManagerOptions = {}): SessionM
       expiresAt: now + ttlMs,
     }
     sessions.set(id, entry)
-    return { sessionId: id, session: publicView(entry) }
+    return { ok: true, sessionId: id, session: publicView(entry) }
   }
 
   async function resolve(
@@ -126,7 +184,7 @@ export function createSessionManager(opts: SessionManagerOptions = {}): SessionM
     const entry = sessions.get(sessionId)
     if (entry === undefined) return undefined
     if (entry.expiresAt <= clock()) {
-      sessions.delete(sessionId)
+      drop(sessionId)
       return undefined
     }
     const admin = await resolver.getActiveAdmin(entry.adminName)
@@ -136,22 +194,30 @@ export function createSessionManager(opts: SessionManagerOptions = {}): SessionM
       admin.role !== entry.role ||
       admin.tokenHash !== entry.tokenHash
     ) {
-      sessions.delete(sessionId)
+      drop(sessionId)
       return undefined
     }
     return publicView(entry)
   }
 
+  async function isLive(sessionId: string, resolver: AdminResolver): Promise<boolean> {
+    return (await resolve(sessionId, resolver)) !== undefined
+  }
+
   function destroy(sessionId: string | undefined): void {
-    if (sessionId !== undefined) sessions.delete(sessionId)
+    if (sessionId !== undefined) drop(sessionId)
+  }
+
+  function onDropped(listener: (dropped: DroppedSession) => void): void {
+    dropListeners.push(listener)
   }
 
   function size(): number {
-    evictExpired(clock())
+    reapExpired(clock())
     return sessions.size
   }
 
-  return { create, resolve, destroy, size }
+  return { create, resolve, isLive, destroy, onDropped, size }
 }
 
 function publicView(entry: SessionEntry): UiSession {
@@ -162,42 +228,86 @@ function publicView(entry: SessionEntry): UiSession {
 // Login rate limiter (sliding window over failed attempts)
 // ---------------------------------------------------------------------------
 
+/**
+ * Failed logins are counted PER CLIENT (the peer address), not globally: an
+ * unkeyed counter turns five wrong guesses from one machine into a lockout of
+ * every admin, which is a denial-of-service any unauthenticated caller can
+ * trigger at will. A looser global ceiling stays as a backstop for a
+ * distributed flood, since per-key windows alone are unbounded work.
+ *
+ * The key map is capped (`LOGIN_RATE_LIMIT_MAX_KEYS`) so a spoofed-source flood
+ * cannot grow it without bound; the oldest-touched key is dropped when full,
+ * which at worst forgives one attacker's history — never a lockout.
+ */
 export interface LoginRateLimiter {
-  /** True if another attempt is allowed right now. */
-  allow(): boolean
-  /** Records a failed login (counts toward the window). */
-  recordFailure(): void
-  /** Clears the window on a successful login. */
-  recordSuccess(): void
+  /** True if another attempt from `key` is allowed right now. */
+  allow(key: string): boolean
+  /** Records a failed login from `key` (counts toward both windows). */
+  recordFailure(key: string): void
+  /** Clears that key's window on a successful login. */
+  recordSuccess(key: string): void
 }
 
 export interface RateLimiterOptions {
   readonly clock?: () => number
+  /** Failures tolerated from ONE key within the window. */
   readonly maxFailures?: number
+  /** Failures tolerated across ALL keys within the window (flood backstop). */
+  readonly globalMaxFailures?: number
   readonly windowMs?: number
+  /** Cap on tracked keys before the least-recently-touched is forgotten. */
+  readonly maxKeys?: number
+}
+
+/** Drops timestamps older than the window; returns the surviving ones. */
+function withinWindow(timestamps: readonly number[], cutoff: number): number[] {
+  return timestamps.filter((ts) => ts > cutoff)
 }
 
 export function createLoginRateLimiter(opts: RateLimiterOptions = {}): LoginRateLimiter {
   const clock = opts.clock ?? (() => Date.now())
   const maxFailures = opts.maxFailures ?? LOGIN_MAX_FAILURES
+  const globalMaxFailures = opts.globalMaxFailures ?? LOGIN_GLOBAL_MAX_FAILURES
   const windowMs = opts.windowMs ?? LOGIN_RATE_WINDOW_MS
-  let failures: number[] = []
+  const maxKeys = opts.maxKeys ?? LOGIN_RATE_LIMIT_MAX_KEYS
+  /** Insertion-ordered: re-inserting on touch makes the first key the LRU one. */
+  const perKey = new Map<string, number[]>()
+  let global: number[] = []
 
-  function prune(now: number): void {
+  function prune(key: string, now: number): number[] {
     const cutoff = now - windowMs
-    failures = failures.filter((ts) => ts > cutoff)
+    global = withinWindow(global, cutoff)
+    const kept = withinWindow(perKey.get(key) ?? [], cutoff)
+    if (kept.length === 0) perKey.delete(key)
+    else perKey.set(key, kept)
+    return kept
+  }
+
+  function touch(key: string, timestamps: number[]): void {
+    // Re-insert so the key moves to the back of the LRU order.
+    perKey.delete(key)
+    perKey.set(key, timestamps)
+    while (perKey.size > maxKeys) {
+      const lru = perKey.keys().next().value
+      if (lru === undefined) break
+      perKey.delete(lru)
+    }
   }
 
   return {
-    allow(): boolean {
-      prune(clock())
-      return failures.length < maxFailures
+    allow(key: string): boolean {
+      const now = clock()
+      const kept = prune(key, now)
+      return kept.length < maxFailures && global.length < globalMaxFailures
     },
-    recordFailure(): void {
-      failures.push(clock())
+    recordFailure(key: string): void {
+      const now = clock()
+      const kept = prune(key, now)
+      touch(key, [...kept, now])
+      global = [...global, now]
     },
-    recordSuccess(): void {
-      failures = []
+    recordSuccess(key: string): void {
+      perKey.delete(key)
     },
   }
 }

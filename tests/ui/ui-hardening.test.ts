@@ -7,7 +7,8 @@ import { createAdminStore, type AdminStore } from '../../src/admin/store.js'
 import { ROUTE_TABLE, roleSatisfies, type RouteEntry, type Role } from '../../src/ui/authz.js'
 import { REQUIRED_HANDLER_KEYS, type UiHandlers } from '../../src/ui/routes.js'
 import { createUiServer, type UiServer, type UiServerOptions } from '../../src/ui/server.js'
-import { CONTENT_SECURITY_POLICY } from '../../src/ui/constants.js'
+import { createLoginRateLimiter } from '../../src/ui/auth.js'
+import { CONTENT_SECURITY_POLICY, SESSIONS_PER_ADMIN_MAX } from '../../src/ui/constants.js'
 
 /**
  * Hardening tests for the admin UI HTTP core (M4 Task 9) — written before the
@@ -40,7 +41,7 @@ function stubHandlers(): UiHandlers {
     out[key] = (ctx) => ({
       kind: 'response',
       status: 200,
-      body: `handler:${key} admin:${ctx.session?.adminName ?? 'anon'}`,
+      body: `handler:${key} admin:${ctx.session?.adminName ?? 'anon'} csrf:${ctx.session?.csrfToken ?? ''}`,
     })
   }
   return out
@@ -74,19 +75,26 @@ async function startUi(overrides: Partial<UiServerOptions> = {}): Promise<Starte
   const { port } = await server.listen(0)
   const base = `http://127.0.0.1:${port}`
 
+  /**
+   * A successful login answers 303 → `/` (review M-2), so the cookie is read
+   * off the redirect and the CSRF token off the page it points at — the stub
+   * handlers echo it where the real layout puts `<meta name="csrf-token">`.
+   */
   async function login(token: string): Promise<{ cookie: string; csrf: string; status: number }> {
     const res = await fetch(`${base}/login`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ token }),
+      redirect: 'manual',
     })
     const setCookie = res.headers.get('set-cookie') ?? ''
     const cookie = setCookie.split(';')[0] ?? ''
-    const text = await res.text()
-    seenBodies.push(text)
-    let csrf = ''
-    if (res.status === 200) csrf = (JSON.parse(text) as { csrfToken: string }).csrfToken
-    return { cookie, csrf, status: res.status }
+    seenBodies.push(await res.text())
+    if (res.status !== 303) return { cookie, csrf: '', status: res.status }
+    const page = await fetch(`${base}/`, { headers: { cookie } })
+    const pageText = await page.text()
+    seenBodies.push(pageText)
+    return { cookie, csrf: /csrf:(\S*)/.exec(pageText)?.[1] ?? '', status: res.status }
   }
 
   return {
@@ -289,6 +297,98 @@ describe('login credential handling', () => {
     })
     expect(blocked.status).toBe(429)
     expect(started.warn.lines.some((line) => line.includes('rate limit'))).toBe(true)
+  })
+})
+
+describe('login rate limiting is per client, not global (M-1)', () => {
+  // The server keys the window by `req.socket.remoteAddress`; every test client
+  // here shares 127.0.0.1, so the keying itself is exercised at the limiter.
+  test('failures from one address do not lock out another', () => {
+    const limiter = createLoginRateLimiter({ maxFailures: 3, windowMs: 60_000 })
+    for (let i = 0; i < 5; i += 1) limiter.recordFailure('10.0.0.1')
+
+    expect(limiter.allow('10.0.0.1')).toBe(false)
+    expect(limiter.allow('10.0.0.2')).toBe(true)
+  })
+
+  test('a successful login clears only that address window', () => {
+    const limiter = createLoginRateLimiter({ maxFailures: 2, windowMs: 60_000 })
+    limiter.recordFailure('10.0.0.1')
+    limiter.recordFailure('10.0.0.1')
+    limiter.recordFailure('10.0.0.2')
+    limiter.recordFailure('10.0.0.2')
+
+    limiter.recordSuccess('10.0.0.1')
+
+    expect(limiter.allow('10.0.0.1')).toBe(true)
+    expect(limiter.allow('10.0.0.2')).toBe(false)
+  })
+
+  test('the window slides: failures older than it stop counting', () => {
+    let now = 1_000_000
+    const limiter = createLoginRateLimiter({ maxFailures: 2, windowMs: 1000, clock: () => now })
+    limiter.recordFailure('10.0.0.1')
+    limiter.recordFailure('10.0.0.1')
+    expect(limiter.allow('10.0.0.1')).toBe(false)
+
+    now += 2000
+
+    expect(limiter.allow('10.0.0.1')).toBe(true)
+  })
+
+  test('the global ceiling still stops a distributed flood', () => {
+    const limiter = createLoginRateLimiter({
+      maxFailures: 3,
+      globalMaxFailures: 10,
+      windowMs: 60_000,
+    })
+    for (let i = 0; i < 10; i += 1) limiter.recordFailure(`10.0.0.${i}`)
+
+    // Each address is well under its own window, but the flood is not.
+    expect(limiter.allow('10.0.0.250')).toBe(false)
+  })
+
+  test('the tracked-key map is bounded and forgets the least-recently-seen', () => {
+    const limiter = createLoginRateLimiter({ maxFailures: 1, maxKeys: 2, windowMs: 60_000 })
+    limiter.recordFailure('a')
+    limiter.recordFailure('b')
+    limiter.recordFailure('c')
+
+    // 'a' was pushed out — forgiveness, never a lockout of an untouched client.
+    expect(limiter.allow('a')).toBe(true)
+    expect(limiter.allow('c')).toBe(false)
+  })
+})
+
+describe('session caps (M-4)', () => {
+  test('one admin cannot hold more than the per-admin cap of sessions', async () => {
+    started = await startUi({ maxSessions: 64 })
+    const opened: string[] = []
+    for (let i = 0; i < SESSIONS_PER_ADMIN_MAX; i += 1) {
+      const result = await started.login(started.tokens.owner)
+      expect(result.status, `login #${i + 1}`).toBe(303)
+      opened.push(result.cookie)
+    }
+
+    const refused = await started.login(started.tokens.owner)
+
+    expect(refused.status).toBe(429)
+    // Every earlier session of that admin is still usable.
+    for (const cookie of opened) {
+      const res = await fetch(`${started.base}/`, { headers: { cookie }, redirect: 'manual' })
+      expect(res.status).toBe(200)
+      await res.text()
+    }
+  })
+
+  test('another admin is unaffected by a peer at the per-admin cap', async () => {
+    started = await startUi()
+    for (let i = 0; i < SESSIONS_PER_ADMIN_MAX; i += 1) {
+      await started.login(started.tokens.viewer)
+    }
+    expect((await started.login(started.tokens.viewer)).status).toBe(429)
+
+    expect((await started.login(started.tokens.owner)).status).toBe(303)
   })
 })
 

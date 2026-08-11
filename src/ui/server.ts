@@ -11,12 +11,12 @@ import {
   createLoginRateLimiter,
   createSessionManager,
   parseSessionCookie,
-  serializeSessionCookie,
   tokensEqual,
   type LoginRateLimiter,
   type SessionManager,
 } from './auth.js'
 import { authorize, matchRoute, type RouteEntry } from './authz.js'
+import { handleLoginRequest } from './login-flow.js'
 import {
   assertHandlersComplete,
   describeError,
@@ -24,6 +24,7 @@ import {
   parseBodyFields,
   parseTarget,
   readRequestBody,
+  type StreamIdentity,
   type UiHandlers,
   type UiRequestContext,
   type UiResult,
@@ -34,8 +35,6 @@ import {
   BODY_INTERNAL,
   BODY_NOT_IMPLEMENTED,
   BODY_PAYLOAD_TOO_LARGE,
-  BODY_TOO_MANY_REQUESTS,
-  BODY_UNAUTHORIZED,
   CONTENT_TYPE_HTML,
   CONTENT_TYPE_JSON,
   CSRF_FIELD_NAME,
@@ -47,9 +46,6 @@ import {
   HTTP_STATUS_NOT_IMPLEMENTED,
   HTTP_STATUS_OK,
   HTTP_STATUS_PAYLOAD_TOO_LARGE,
-  HTTP_STATUS_TOO_MANY_REQUESTS,
-  HTTP_STATUS_UNAUTHORIZED,
-  LOGIN_RATE_LIMIT_WARNING,
   MAX_UI_BODY_BYTES,
   NON_LOCALHOST_BIND_WARNING,
   SSE_HEADERS,
@@ -92,7 +88,14 @@ export interface UiServerOptions {
   /** Exact-match additions to the Origin allowlist. */
   readonly allowedOrigins?: readonly string[]
   readonly maxBodyBytes?: number
-  /** Session lifetime / cap overrides (tests). */
+  /**
+   * The session manager. Supply one when something outside the server holds
+   * resources keyed on a session — the SSE hub subscribes to its drop events
+   * and probes it on every heartbeat, which is what stops a live stream from
+   * outliving the session that opened it. Omitted, the server builds its own.
+   */
+  readonly sessions?: SessionManager
+  /** Session lifetime / cap overrides (tests). Ignored when `sessions` is given. */
   readonly sessionTtlMs?: number
   readonly maxSessions?: number
   /** Login rate-limit overrides (tests). */
@@ -126,11 +129,13 @@ export function createUiServer(opts: UiServerOptions): UiServer {
   const allowedOrigins = opts.allowedOrigins ?? []
   const maxBodyBytes = opts.maxBodyBytes ?? MAX_UI_BODY_BYTES
   const clock = opts.clock ?? (() => Date.now())
-  const sessions: SessionManager = createSessionManager({
-    clock,
-    ...(opts.sessionTtlMs !== undefined ? { ttlMs: opts.sessionTtlMs } : {}),
-    ...(opts.maxSessions !== undefined ? { maxSessions: opts.maxSessions } : {}),
-  })
+  const sessions: SessionManager =
+    opts.sessions ??
+    createSessionManager({
+      clock,
+      ...(opts.sessionTtlMs !== undefined ? { ttlMs: opts.sessionTtlMs } : {}),
+      ...(opts.maxSessions !== undefined ? { maxSessions: opts.maxSessions } : {}),
+    })
   const rateLimiter: LoginRateLimiter = createLoginRateLimiter({
     clock,
     ...(opts.loginMaxFailures !== undefined ? { maxFailures: opts.loginMaxFailures } : {}),
@@ -143,13 +148,16 @@ export function createUiServer(opts: UiServerOptions): UiServer {
 
   // --- response writing ---------------------------------------------------
 
-  function writeResult(res: ServerResponse, result: UiResult): void {
+  function writeResult(res: ServerResponse, result: UiResult, identity?: StreamIdentity): void {
     if (result.kind === 'stream') {
-      res.writeHead(HTTP_STATUS_OK, { ...securityHeaders(), ...SSE_HEADERS })
-      result.onStream(res)
+      res.writeHead(HTTP_STATUS_OK, { ...SSE_HEADERS, ...securityHeaders() })
+      result.onStream(res, identity)
       return
     }
-    const headers: Record<string, string> = { ...securityHeaders(), ...(result.headers ?? {}) }
+    // Security headers are spread LAST: a handler may pick its own content type
+    // and cache policy (assets do), but must not be able to weaken the CSP,
+    // nosniff, referrer or frame policy — accidentally or otherwise.
+    const headers: Record<string, string> = { ...(result.headers ?? {}), ...securityHeaders() }
     if (result.body !== undefined && headers['content-type'] === undefined) {
       headers['content-type'] =
         typeof result.body === 'string' ? CONTENT_TYPE_HTML : CONTENT_TYPE_JSON
@@ -207,33 +215,6 @@ export function createUiServer(opts: UiServerOptions): UiServer {
     return tokensEqual(submitted, session.csrfToken)
   }
 
-  async function handleLogin(ctx: UiRequestContext, res: ServerResponse): Promise<void> {
-    if (!rateLimiter.allow()) {
-      stderr.write(`${LOGIN_RATE_LIMIT_WARNING}\n`)
-      sendPlan(res, HTTP_STATUS_TOO_MANY_REQUESTS, BODY_TOO_MANY_REQUESTS)
-      return
-    }
-    const fields = parseBodyFields(ctx.body, headerValue(ctx.headers, 'content-type'))
-    const token = fields.token
-    const admin =
-      token !== undefined && token !== '' ? await opts.adminStore.findAdminByToken(token) : undefined
-    if (admin === undefined) {
-      rateLimiter.recordFailure()
-      sendPlan(res, HTTP_STATUS_UNAUTHORIZED, BODY_UNAUTHORIZED)
-      return
-    }
-    rateLimiter.recordSuccess()
-    const { sessionId, session } = sessions.create(admin)
-    const cookie = serializeSessionCookie(sessionId, { secure: behindTls })
-    const body = Buffer.from(JSON.stringify({ status: 'ok', csrfToken: session.csrfToken }), 'utf8')
-    writeResult(res, {
-      kind: 'response',
-      status: HTTP_STATUS_OK,
-      headers: { 'content-type': CONTENT_TYPE_JSON, 'set-cookie': cookie },
-      body,
-    })
-  }
-
   async function handleProtected(
     entry: RouteEntry,
     req: IncomingMessage,
@@ -246,6 +227,10 @@ export function createUiServer(opts: UiServerOptions): UiServer {
     const sessionId = parseSessionCookie(headerValue(req.headers, 'cookie'))
     const session = await sessions.resolve(sessionId, opts.adminStore)
     const decision = authorize(entry, session)
+    const identity: StreamIdentity | undefined =
+      sessionId !== undefined && session !== undefined
+        ? { sessionId, adminName: session.adminName }
+        : undefined
     // No existence oracle: a missing session, an insufficient role and an
     // unlisted route all collapse to the SAME byte-identical 403. Redirecting
     // an anonymous GET to `/login` would let anyone enumerate real routes
@@ -269,7 +254,7 @@ export function createUiServer(opts: UiServerOptions): UiServer {
       })
       return
     }
-    writeResult(res, await dispatchInjected(entry.handler, ctx))
+    writeResult(res, await dispatchInjected(entry.handler, ctx), identity)
   }
 
   async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -293,7 +278,15 @@ export function createUiServer(opts: UiServerOptions): UiServer {
     const { entry, params } = match
     if (entry.minRole === 'public') {
       if (entry.handler === '@login') {
-        await handleLogin(buildContext(req, parsed.path, params, parsed.query, undefined, body), res)
+        const loginCtx = buildContext(req, parsed.path, params, parsed.query, undefined, body)
+        writeResult(
+          res,
+          await handleLoginRequest(
+            { adminStore: opts.adminStore, sessions, rateLimiter, behindTls, stderr },
+            loginCtx,
+            req,
+          ),
+        )
         return
       }
       const ctx = buildContext(req, parsed.path, params, parsed.query, undefined, body)

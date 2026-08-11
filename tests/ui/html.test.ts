@@ -364,3 +364,27 @@ describe('layout — CSP-safe page shell', () => {
     expect(out).toContain('<em>fine</em>')
   })
 })
+
+describe('Html is not constructible from outside this module (LOW-1)', () => {
+  test('new Html(untrusted) throws instead of minting unescaped markup', () => {
+    // TypeScript refuses this outright (private constructor); the cast proves
+    // the guarantee also survives type erasure — a JS caller cannot bypass it.
+    const Constructible = Html as unknown as new (value: string) => Html
+    expect(() => new Constructible('<script>alert(1)</script>')).toThrow(TypeError)
+  })
+
+  test('the two-argument form with a forged key is refused too', () => {
+    const Constructible = Html as unknown as new (key: symbol, value: string) => Html
+    expect(() => new Constructible(Symbol('Html.construct'), '<script>x</script>')).toThrow(
+      TypeError,
+    )
+  })
+
+  test('fragments built by the tag still render and compose normally', () => {
+    const fragment = html`<p>${'<b>x</b>'}</p>`
+    expect(render(fragment)).toBe('<p>&lt;b&gt;x&lt;/b&gt;</p>')
+    expect(render(join([fragment, fragment]))).toBe(
+      '<p>&lt;b&gt;x&lt;/b&gt;</p><p>&lt;b&gt;x&lt;/b&gt;</p>',
+    )
+  })
+})

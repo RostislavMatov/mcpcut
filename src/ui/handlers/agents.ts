@@ -1,5 +1,14 @@
-import type { MethodGrantsInput } from '../../agents/store.js'
-import type { AgentsStore } from '../../agents/store.js'
+import {
+  AgentExistsError,
+  AgentNotFoundError,
+  InvalidAgentNameError,
+  InvalidPromptPatternError,
+  InvalidResourcePatternError,
+  InvalidServerNameError,
+  InvalidToolPatternError,
+  type AgentsStore,
+  type MethodGrantsInput,
+} from '../../agents/store.js'
 import type { UiSession } from '../auth.js'
 import {
   BODY_FORBIDDEN,
@@ -9,6 +18,7 @@ import {
   HTTP_STATUS_OK,
 } from '../constants.js'
 import { renderAgentNotice, renderAgentsPage, renderAgentTokenOnce } from '../pages/agents.js'
+import { internalErrorResult, isKnownStoreError, type ErrorClass } from './store-errors.js'
 import { headerValue, parseBodyFields, type UiHandler, type UiRequestContext, type UiResult } from '../routes.js'
 
 /**
@@ -57,8 +67,29 @@ function fields(ctx: UiRequestContext): Readonly<Record<string, string>> {
   return parseBodyFields(ctx.body, headerValue(ctx.headers, 'content-type'))
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : 'unexpected error'
+/**
+ * Agent-store errors caused by what the operator typed. `AgentsFileInvalidError`
+ * is deliberately ABSENT: a corrupt `agents.json` is a broken plane, not a bad
+ * form, and must not be reported as the operator's mistake.
+ */
+const AGENT_INPUT_ERRORS: readonly ErrorClass[] = [
+  AgentExistsError,
+  AgentNotFoundError,
+  InvalidAgentNameError,
+  InvalidServerNameError,
+  InvalidToolPatternError,
+  InvalidResourcePatternError,
+  InvalidPromptPatternError,
+]
+
+/**
+ * Renders a store failure: a known input fault as a readable 400 notice,
+ * anything else as the detail-free 500 the server's catch-all would have given.
+ */
+function storeFailure(error: unknown, session: UiSession): UiResult {
+  if (!isKnownStoreError(error, AGENT_INPUT_ERRORS)) return internalErrorResult()
+  const message = error instanceof Error ? error.message : 'unexpected error'
+  return htmlResult(HTTP_STATUS_BAD_REQUEST, renderAgentNotice({ message, ok: false, session }))
 }
 
 /** Splits a whitespace/comma-separated pattern field into trimmed non-empty entries. */
@@ -117,7 +148,7 @@ export function createAgentsHandlers(deps: AgentsHandlersDeps): AgentsHandlers {
       record(session, 'agents.create', name)
       return htmlResult(HTTP_STATUS_OK, renderAgentTokenOnce({ agent: created.agent.name, token: created.token, session }))
     } catch (error) {
-      return htmlResult(HTTP_STATUS_BAD_REQUEST, renderAgentNotice({ message: errorMessage(error), ok: false, session }))
+      return storeFailure(error, session)
     }
   }
 
@@ -137,7 +168,7 @@ export function createAgentsHandlers(deps: AgentsHandlersDeps): AgentsHandlers {
       record(session, 'agents.grant', `${agent}/${server}`)
       return htmlResult(HTTP_STATUS_OK, renderAgentNotice({ message: `granted ${server} to ${agent}`, ok: true, session }))
     } catch (error) {
-      return htmlResult(HTTP_STATUS_BAD_REQUEST, renderAgentNotice({ message: errorMessage(error), ok: false, session }))
+      return storeFailure(error, session)
     }
   }
 
@@ -155,7 +186,7 @@ export function createAgentsHandlers(deps: AgentsHandlersDeps): AgentsHandlers {
       record(session, 'agents.ungrant', `${agent}/${server}`)
       return htmlResult(HTTP_STATUS_OK, renderAgentNotice({ message: `removed ${server} from ${agent}`, ok: true, session }))
     } catch (error) {
-      return htmlResult(HTTP_STATUS_BAD_REQUEST, renderAgentNotice({ message: errorMessage(error), ok: false, session }))
+      return storeFailure(error, session)
     }
   }
 
@@ -171,7 +202,7 @@ export function createAgentsHandlers(deps: AgentsHandlersDeps): AgentsHandlers {
       record(session, 'agents.revoke', agent)
       return htmlResult(HTTP_STATUS_OK, renderAgentNotice({ message: `revoked ${agent}`, ok: true, session }))
     } catch (error) {
-      return htmlResult(HTTP_STATUS_BAD_REQUEST, renderAgentNotice({ message: errorMessage(error), ok: false, session }))
+      return storeFailure(error, session)
     }
   }
 

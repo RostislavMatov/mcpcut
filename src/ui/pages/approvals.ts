@@ -91,8 +91,17 @@ function renderWaitLine(card: ApprovalCardView): Html {
   >`
 }
 
+/**
+ * One approve/deny control. `action=` (the no-JS native POST) and
+ * `data-action=` (the URL `assets/app-js.ts` fetches) MUST carry the SAME full
+ * path: the client script calls `preventDefault()` on the form and fetches
+ * whatever `data-action` holds, so a bare verb there would resolve to a route
+ * that does not exist and collapse into the uniform 403. Pinned by
+ * `tests/ui/page-contracts.test.ts`.
+ */
 function renderActionForm(card: ApprovalCardView, action: string, label: string, csrfToken: string): Html {
-  return html`<form method="post" action="/approvals/${card.approvalId}/${action}" data-action="${action}">
+  const target = `/approvals/${card.approvalId}/${action}`
+  return html`<form method="post" action="${target}" data-action="${target}">
     <input type="hidden" name="csrf_token" value="${csrfToken}" />
     <button type="submit">${label}</button>
   </form>`
@@ -131,14 +140,32 @@ export interface ApprovalsPageInput {
   readonly currentAdmin?: CurrentAdmin
 }
 
+/**
+ * SSE topics that must re-render the approvals list, in the exact form
+ * `assets/app-js.ts` reads them (`data-live-region` holds a space-separated
+ * topic list; the script also looks the region up by this exact value in the
+ * refetched document, so it must stay stable between the two renders).
+ */
+const APPROVALS_LIVE_TOPICS = 'approval-pending approval-resolved'
+
+/** Where the client refetches this region from (`GET /` serves this page). */
+const APPROVALS_LIVE_SRC = '/'
+
 /** Renders the full approvals document (string ready for the HTTP body). */
 export function renderApprovalsPage(input: ApprovalsPageInput): string {
   const body =
     input.cards.length === 0
       ? html`<p class="empty">No pending approvals.</p>`
       : join(input.cards.map((card) => renderCard(card, input.csrfToken)))
-  const content = html`<section class="approvals" data-live="approvals">
+  const content = html`<section
+    class="approvals"
+    data-live-region="${APPROVALS_LIVE_TOPICS}"
+    data-live-src="${APPROVALS_LIVE_SRC}"
+  >
     <h1>Approvals</h1>
+    <p class="pending-count" data-pending-count="${input.cards.length}">
+      ${input.cards.length} pending
+    </p>
     ${body}
   </section>`
   return renderLayout({

@@ -1,5 +1,12 @@
 import { type AdminRole, isAdminRole } from '../../admin/constants.js'
-import type { AdminStore } from '../../admin/store.js'
+import {
+  AdminExistsError,
+  AdminNotFoundError,
+  InvalidAdminNameError,
+  InvalidAdminRoleError,
+  LastOwnerError,
+  type AdminStore,
+} from '../../admin/store.js'
 import type { UiSession } from '../auth.js'
 import {
   BODY_FORBIDDEN,
@@ -10,6 +17,7 @@ import {
 } from '../constants.js'
 import { renderAdminNotice, renderAdminsPage, renderAdminTokenOnce } from '../pages/admins.js'
 import type { UiAuditSink } from './agents.js'
+import { internalErrorResult, isKnownStoreError, type ErrorClass } from './store-errors.js'
 import { headerValue, parseBodyFields, type UiHandler, type UiRequestContext, type UiResult } from '../routes.js'
 
 /**
@@ -46,8 +54,27 @@ function fields(ctx: UiRequestContext): Readonly<Record<string, string>> {
   return parseBodyFields(ctx.body, headerValue(ctx.headers, 'content-type'))
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : 'unexpected error'
+/**
+ * Admin-store errors caused by what the operator typed. `AdminsFileInvalidError`
+ * is deliberately ABSENT: a corrupt `admins.json` is a broken plane, not a bad
+ * form, and must not be reported as the operator's mistake.
+ */
+const ADMIN_INPUT_ERRORS: readonly ErrorClass[] = [
+  AdminExistsError,
+  AdminNotFoundError,
+  InvalidAdminNameError,
+  InvalidAdminRoleError,
+  LastOwnerError,
+]
+
+/**
+ * Renders a store failure: a known input fault as a readable 400 notice,
+ * anything else as the detail-free 500 the server's catch-all would have given.
+ */
+function storeFailure(error: unknown, session: UiSession): UiResult {
+  if (!isKnownStoreError(error, ADMIN_INPUT_ERRORS)) return internalErrorResult()
+  const message = error instanceof Error ? error.message : 'unexpected error'
+  return htmlResult(HTTP_STATUS_BAD_REQUEST, renderAdminNotice({ message, ok: false, session }))
 }
 
 export function createAdminsHandlers(deps: AdminsHandlersDeps): AdminsHandlers {
@@ -81,7 +108,7 @@ export function createAdminsHandlers(deps: AdminsHandlersDeps): AdminsHandlers {
       record(session, 'admins.add', name)
       return htmlResult(HTTP_STATUS_OK, renderAdminTokenOnce({ admin: created.admin.name, token: created.token, action: 'created', session }))
     } catch (error) {
-      return htmlResult(HTTP_STATUS_BAD_REQUEST, renderAdminNotice({ message: errorMessage(error), ok: false, session }))
+      return storeFailure(error, session)
     }
   }
 
@@ -97,7 +124,7 @@ export function createAdminsHandlers(deps: AdminsHandlersDeps): AdminsHandlers {
       record(session, 'admins.rotate', name)
       return htmlResult(HTTP_STATUS_OK, renderAdminTokenOnce({ admin: rotated.admin.name, token: rotated.token, action: 'rotated', session }))
     } catch (error) {
-      return htmlResult(HTTP_STATUS_BAD_REQUEST, renderAdminNotice({ message: errorMessage(error), ok: false, session }))
+      return storeFailure(error, session)
     }
   }
 
@@ -113,7 +140,7 @@ export function createAdminsHandlers(deps: AdminsHandlersDeps): AdminsHandlers {
       record(session, 'admins.remove', name)
       return htmlResult(HTTP_STATUS_OK, renderAdminNotice({ message: `removed ${name}`, ok: true, session }))
     } catch (error) {
-      return htmlResult(HTTP_STATUS_BAD_REQUEST, renderAdminNotice({ message: errorMessage(error), ok: false, session }))
+      return storeFailure(error, session)
     }
   }
 
@@ -138,7 +165,7 @@ export function createAdminsHandlers(deps: AdminsHandlersDeps): AdminsHandlers {
       record(session, 'admins.role', `${name}:${role}`)
       return htmlResult(HTTP_STATUS_OK, renderAdminNotice({ message: `set ${name} to ${role}`, ok: true, session }))
     } catch (error) {
-      return htmlResult(HTTP_STATUS_BAD_REQUEST, renderAdminNotice({ message: errorMessage(error), ok: false, session }))
+      return storeFailure(error, session)
     }
   }
 

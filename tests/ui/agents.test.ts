@@ -2,8 +2,13 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { ZodError } from 'zod'
 import type { AgentRecord } from '../../src/agents/schema.js'
-import { createAgentsStore, type AgentsStore } from '../../src/agents/store.js'
+import {
+  AgentsFileInvalidError,
+  createAgentsStore,
+  type AgentsStore,
+} from '../../src/agents/store.js'
 import type { UiSession } from '../../src/ui/auth.js'
 import {
   createAgentsHandlers,
@@ -238,5 +243,56 @@ describe('CSRF and owner-only nav link', () => {
     expect(asOwner).toContain('/admins')
     expect(asOperator).not.toContain('/admins')
     expect(asViewer).not.toContain('/admins')
+  })
+})
+
+describe('store failures are classified, not flattened to 400 (T-2)', () => {
+  /** A store whose every mutation fails the way a broken plane fails. */
+  function brokenStore(failure: Error): AgentsStore {
+    return {
+      ...store,
+      createAgent: () => Promise.reject(failure),
+      grantServer: () => Promise.reject(failure),
+      ungrantServer: () => Promise.reject(failure),
+      revokeAgent: () => Promise.reject(failure),
+    } as AgentsStore
+  }
+
+  test('an unrecognized store error is a detail-free 500, not a 400 echoing it', async () => {
+    const secretish = 'EACCES: /home/alice/.mcp-journal/agents.json.lock held by pid 4242'
+    const failing = createAgentsHandlers({ agentsStore: brokenStore(new Error(secretish)) })
+    const admin = session('operator')
+
+    for (const result of [
+      await failing.agentsCreate(postCtx({ name: 'bot' }, admin)),
+      await failing.agentsGrant(postCtx({ agent: 'bot', server: 'github' }, admin)),
+      await failing.agentsUngrant(postCtx({ agent: 'bot', server: 'github' }, admin)),
+      await failing.agentsRevoke(postCtx({ agent: 'bot' }, admin)),
+    ]) {
+      if (result.kind === 'response') expect(result.status).toBe(500)
+      expect(bodyOf(result)).not.toContain(secretish)
+      expect(bodyOf(result)).not.toContain('agents.json')
+    }
+  })
+
+  test('a corrupt agents.json is infrastructure (500), not operator error (400)', async () => {
+    const failing = createAgentsHandlers({
+      agentsStore: brokenStore(
+        new AgentsFileInvalidError(new ZodError([{ code: 'custom', path: [], message: 'corrupt' }])),
+      ),
+    })
+    const result = await failing.agentsCreate(postCtx({ name: 'bot' }, session('operator')))
+    if (result.kind === 'response') expect(result.status).toBe(500)
+  })
+
+  test('known validation errors still yield a 400 carrying their message', async () => {
+    await store.createAgent('bot')
+    const duplicate = await handlers.agentsCreate(postCtx({ name: 'bot' }, session('operator')))
+    if (duplicate.kind === 'response') expect(duplicate.status).toBe(400)
+    expect(bodyOf(duplicate)).toMatch(/exists/i)
+
+    const missing = await handlers.agentsRevoke(postCtx({ agent: 'ghost' }, session('operator')))
+    if (missing.kind === 'response') expect(missing.status).toBe(400)
+    expect(bodyOf(missing)).toMatch(/ghost|not/i)
   })
 })

@@ -6,6 +6,7 @@ import { JOURNAL_DIR } from '../config.js'
 import { formatReadableField } from '../journal/format.js'
 import { INVENTORY_FILE_NAME } from '../policy/inventory.js'
 import { createRegistryStore, type RegistryStore } from '../registry/store.js'
+import { createSessionManager } from '../ui/auth.js'
 import { createUiServer, type UiServer } from '../ui/server.js'
 import { createEventHub, type EventHub } from '../ui/events.js'
 import { createQueueWatcher, type QueueWatcher } from '../ui/watch.js'
@@ -159,7 +160,18 @@ function buildRuntime(flags: UiFlags, io: UiCliIo, opts: UiCommandOptions): UiRu
   const agents = opts.stores?.agents ?? createAgentsStore({ journalDir, warn })
   const registry = opts.stores?.registry ?? createRegistryStore(journalDir, { warn })
   const vault = opts.stores?.vault ?? createVaultStore({ journalDir, warn })
-  const hub = createEventHub()
+
+  // Sessions are built here, ahead of the hub and the server, because BOTH need
+  // them: the server to authenticate each request, the hub to re-check the
+  // sessions behind its never-ending SSE streams. Without that second link a
+  // revoked admin keeps receiving events until they close the tab.
+  const sessions = createSessionManager(opts.clock !== undefined ? { clock: opts.clock } : {})
+  const hub = createEventHub({
+    isSessionLive: (identity) => sessions.isLive(identity.sessionId, adminStore),
+  })
+  sessions.onDropped((dropped) => {
+    hub.closeSession(dropped.sessionId)
+  })
 
   const composed = composeUi({
     journalDir,
@@ -185,6 +197,7 @@ function buildRuntime(flags: UiFlags, io: UiCliIo, opts: UiCommandOptions): UiRu
   const server = createUiServer({
     adminStore,
     handlers: composed.handlers,
+    sessions,
     behindTls: flags.behindTls,
     allowedHosts: flags.allowedHosts,
     allowedOrigins: flags.allowedOrigins,

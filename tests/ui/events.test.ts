@@ -236,6 +236,130 @@ describe('createEventHub: teardown and leaks', () => {
   })
 })
 
+describe('createEventHub: session-bound streams (HIGH-2)', () => {
+  const ALICE = { sessionId: 'sid-alice-1', adminName: 'alice' }
+  const ALICE_2 = { sessionId: 'sid-alice-2', adminName: 'alice' }
+  const BOB = { sessionId: 'sid-bob-1', adminName: 'bob' }
+
+  test('closeSession ends exactly the streams opened under that session id', () => {
+    const hub = createEventHub({ scheduler: new FakeScheduler() })
+    const alice1 = new FakeSink()
+    const alice2 = new FakeSink()
+    const bob = new FakeSink()
+    hub.subscribe(alice1, ALICE)
+    hub.subscribe(alice2, ALICE_2)
+    hub.subscribe(bob, BOB)
+
+    expect(hub.closeSession(ALICE.sessionId)).toBe(1)
+
+    expect(alice1.ended).toBe(true)
+    expect(alice2.ended).toBe(false)
+    expect(bob.ended).toBe(false)
+    expect(hub.subscriberCount()).toBe(2)
+  })
+
+  test('closeForAdmin ends every stream of that admin and leaves the others open', () => {
+    const hub = createEventHub({ scheduler: new FakeScheduler() })
+    const alice1 = new FakeSink()
+    const alice2 = new FakeSink()
+    const bob = new FakeSink()
+    hub.subscribe(alice1, ALICE)
+    hub.subscribe(alice2, ALICE_2)
+    hub.subscribe(bob, BOB)
+
+    expect(hub.closeForAdmin('alice')).toBe(2)
+
+    expect(alice1.ended).toBe(true)
+    expect(alice2.ended).toBe(true)
+    expect(bob.ended).toBe(false)
+    expect(hub.subscriberCount()).toBe(1)
+  })
+
+  test('the sweep ends streams whose session no longer resolves and keeps live ones', async () => {
+    const live = new Set([BOB.sessionId])
+    const hub = createEventHub({
+      scheduler: new FakeScheduler(),
+      isSessionLive: (identity) => live.has(identity.sessionId),
+    })
+    const alice = new FakeSink()
+    const bob = new FakeSink()
+    hub.subscribe(alice, ALICE)
+    hub.subscribe(bob, BOB)
+
+    expect(await hub.sweepSessions()).toBe(1)
+
+    expect(alice.ended).toBe(true)
+    expect(bob.ended).toBe(false)
+    expect(hub.subscriberCount()).toBe(1)
+  })
+
+  test('the sweep is fail-closed: a stream with no identity is ended when a probe is configured', async () => {
+    const hub = createEventHub({ scheduler: new FakeScheduler(), isSessionLive: () => true })
+    const anonymous = new FakeSink()
+    hub.subscribe(anonymous)
+
+    expect(await hub.sweepSessions()).toBe(1)
+
+    expect(anonymous.ended).toBe(true)
+    expect(hub.subscriberCount()).toBe(0)
+  })
+
+  test('without a probe the sweep is a no-op (unit-test and no-session-binding use)', async () => {
+    const hub = createEventHub({ scheduler: new FakeScheduler() })
+    const sink = new FakeSink()
+    hub.subscribe(sink, ALICE)
+
+    expect(await hub.sweepSessions()).toBe(0)
+
+    expect(sink.ended).toBe(false)
+  })
+
+  test('a probe that throws is treated as "not live" (fail-closed)', async () => {
+    const hub = createEventHub({
+      scheduler: new FakeScheduler(),
+      isSessionLive: () => {
+        throw new Error('store unreadable')
+      },
+    })
+    const sink = new FakeSink()
+    hub.subscribe(sink, ALICE)
+
+    expect(await hub.sweepSessions()).toBe(1)
+
+    expect(sink.ended).toBe(true)
+  })
+
+  test('each heartbeat tick runs a sweep', async () => {
+    const scheduler = new FakeScheduler()
+    const probed: string[] = []
+    const hub = createEventHub({
+      scheduler,
+      isSessionLive: (identity) => {
+        probed.push(identity.sessionId)
+        return true
+      },
+    })
+    hub.subscribe(new FakeSink(), ALICE)
+
+    scheduler.tickAll()
+    await hub.sweepSessions()
+
+    expect(probed).toContain(ALICE.sessionId)
+    expect(hub.subscriberCount()).toBe(1)
+  })
+
+  test('closeSession and closeForAdmin are no-ops for an unknown key', () => {
+    const hub = createEventHub({ scheduler: new FakeScheduler() })
+    const sink = new FakeSink()
+    hub.subscribe(sink, ALICE)
+
+    expect(hub.closeSession('nope')).toBe(0)
+    expect(hub.closeForAdmin('nobody')).toBe(0)
+    expect(sink.ended).toBe(false)
+    expect(hub.subscriberCount()).toBe(1)
+  })
+})
+
 describe('createEventsHandler: GET /events', () => {
   // Contract change (SSE-seam fix): the handler now returns a `UiResult` like
   // every other injected handler and NEVER touches `res` directly. The server

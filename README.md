@@ -289,7 +289,7 @@ mcp-journal approvals approve <id> [--reason TEXT]
 mcp-journal approvals deny <id> [--reason TEXT]
 mcp-journal admin add <name> --role owner|operator|viewer
 mcp-journal admin list | remove <name> | rotate <name> | role <name> owner|operator|viewer
-mcp-journal ui [--port 8091] [--host 127.0.0.1]
+mcp-journal ui [--port 8091] [--host 127.0.0.1] [--behind-tls] [--allowed-host H] [--allowed-origin URL]
 ```
 
 ### Known limitation: trust boundary of the wrapped process
@@ -493,8 +493,14 @@ same way (first one wins, the other gets a clear "already resolved").
 ### Starting it
 
 ```
-mcp-journal ui [--port 8091] [--host 127.0.0.1]
+mcp-journal ui [--port 8091] [--host 127.0.0.1] [--behind-tls]
+               [--allowed-host <host[:port]>]... [--allowed-origin <origin>]...
 ```
+
+`--behind-tls` marks the session cookie `Secure` (use it when a reverse proxy
+terminates TLS in front). `--allowed-host` and `--allowed-origin` extend the
+`Host`/`Origin` allowlists by exact match — needed only when something other
+than a loopback name fronts the UI; both may be repeated.
 
 The UI is its own process on its own port — it is not part of `serve`, and
 `serve` does not need to be running for it to work. That matters because the
@@ -502,9 +508,18 @@ main M3 scenario (`connect`, stdio) never runs `serve` at all; if the queue
 only had a UI when `serve` was up, that scenario would have no UI ever.
 
 On the very first run, if `~/.mcp-journal/admins.json` does not exist yet,
-`mcp-journal ui` creates the first `owner` account for you and prints its
-bootstrap URL/token **to stderr only, once** — never to stdout, never to a
-file. Copy it before it scrolls away; there is no second printing.
+`mcp-journal ui` creates one `owner` account (named `owner`) and prints the
+sign-in URL and its plaintext token **to stderr only, once** — never to stdout,
+never to a file. The token is printed beside the URL, not embedded in it, so
+nothing here belongs in browser history:
+
+```
+[ui] no admins found: created "owner" with role owner
+[ui] sign in at http://127.0.0.1:8091/login as "owner" with token: mcpa_…
+```
+
+Copy it before it scrolls away; there is no second printing. Rotate it with
+`mcp-journal admin rotate owner`.
 
 ### Admins and roles
 
@@ -549,7 +564,7 @@ true.
   it in a reverse proxy in front of the UI and let the UI keep listening on
   loopback, exactly like `serve`.
 - **Auth**: a token exchanges for a session cookie (`HttpOnly`,
-  `SameSite=Strict`, `Path=/`, `Secure` when run behind TLS termination).
+  `SameSite=Strict`, `Path=/`, and `Secure` when started with `--behind-tls`).
   Sessions live in the UI process's memory only — nothing about a session is
   written to disk, so a restart logs every admin out.
 - **CSRF**: `SameSite=Strict` plus a double-submit token embedded in every
