@@ -43,9 +43,14 @@ import { setTimeout as sleep } from 'node:timers/promises'
  * lock. The escape is deliberately limited: the lock is removed regardless of
  * content only when its mtime is old enough (`staleMs` for unparseable
  * content, `FORCE_RECOVERY_STALE_FACTOR × staleMs` when a parseable record
- * still claims a live holder) AND unchanged between two checks — a changing
- * mtime is a live writer and is never stolen (fail closed). Every forced
- * removal emits one operator-visible line through the injectable `warn`.
+ * still claims a live holder) AND unchanged across two observations at least
+ * `pollMs` apart. Be honest about what that second condition buys: it
+ * excludes only a writer that keeps refreshing the lockfile's mtime while
+ * holding it — which no current holder does — so it is a race-narrowing
+ * heuristic against a *concurrent recoverer mid-steal*, not proof of
+ * abandonment. Correctness under a wrongly stolen lock still rests on the
+ * nonce re-check (`ownsFileLock`) in the stores. Every forced removal emits
+ * one operator-visible line through the injectable `warn`.
  */
 
 /** Tunables of one lock. Callers own their own budgets: a one-shot CLI and a long-lived `serve` do not want the same waits. */
@@ -83,6 +88,14 @@ const NONCE_BYTES = 16
  * staleness windows old and unchanged between checks. More conservative than
  * the plain `staleMs` used for unparseable content, because here the content
  * actively disagrees with the removal.
+ *
+ * Assumption worth stating: the mtime comparison trusts the FILESYSTEM's
+ * clock against this process's `Date.now()`. On a shared/NFS journal dir, or
+ * with a filesystem clock skewed by more than ~this factor × `staleMs`
+ * (90 s at the defaults), the emergency path can steal a LIVE holder's lock.
+ * That does not corrupt the store: the double-hold is caught by the nonce
+ * re-check (`ownsFileLock`) before either side commits a write — the skewed
+ * setup pays with a retried/failed update, not with a lost one.
  */
 export const FORCE_RECOVERY_STALE_FACTOR = 3
 
@@ -224,10 +237,6 @@ type StealOutcome =
   | { readonly acquired: true }
   | { readonly acquired: false; readonly observedMtimeMs: number | null }
 
-function asOutcome(acquired: boolean, observedMtimeMs: number | null): StealOutcome {
-  return acquired ? { acquired: true } : { acquired: false, observedMtimeMs }
-}
-
 /**
  * Steals a stale lock. `acquired: true` iff THIS call now holds the lock (it
  * won the atomic re-create, or there was nothing left to steal and it created
@@ -248,14 +257,28 @@ async function stealIfStale(
 ): Promise<StealOutcome> {
   const { lockPath } = handle
   const raw = await readLockFileRaw(lockPath)
-  if (raw === null) return asOutcome(await tryCreateLockFile(handle, options.fileMode), null)
+  if (raw === null) {
+    return (await tryCreateLockFile(handle, options.fileMode))
+      ? { acquired: true }
+      : { acquired: false, observedMtimeMs: null }
+  }
 
   const mtimeMs = await lockMtimeMs(lockPath)
-  if (mtimeMs === null) return asOutcome(await tryCreateLockFile(handle, options.fileMode), null)
+  if (mtimeMs === null) {
+    return (await tryCreateLockFile(handle, options.fileMode))
+      ? { acquired: true }
+      : { acquired: false, observedMtimeMs: null }
+  }
 
   const record = parseLockRecord(raw)
   if (record !== null && Date.now() - record.createdAtMs >= options.staleMs) {
-    return asOutcome(await removeAndReclaim(handle, options, raw), mtimeMs)
+    // After a removal attempt the earlier mtime describes a file that no
+    // longer exists (or was just replaced): observing it would let the NEXT
+    // attempt "confirm" abandonment against a stale sighting, so the
+    // observation is reset instead of carried over.
+    return (await removeAndReclaim(handle, options, raw))
+      ? { acquired: true }
+      : { acquired: false, observedMtimeMs: null }
   }
   return recoverAbandonedLock(handle, options, { raw, record, mtimeMs, lastMtimeMs })
 }
@@ -270,10 +293,14 @@ interface AbandonmentEvidence {
 
 /**
  * The limited emergency escape: removes a lock REGARDLESS of its content when
- * the file's own mtime proves abandonment — old enough for its trust level
- * AND unchanged since the previous attempt's observation. A changing mtime is
- * a live writer and is never stolen, no matter how old the timestamps look:
- * fail closed, at the price of waiting out `totalWaitMs`.
+ * the file's own mtime is old enough for its trust level AND unchanged across
+ * two observations at least `pollMs` apart. That is evidence, not proof (see
+ * the module doc): it rules out a writer refreshing the file's mtime — which
+ * no current holder does — and otherwise narrows, without closing, the race
+ * against a concurrent recoverer; a wrongly stolen lock is caught by the
+ * stores' nonce re-check. A changing mtime is treated as a live writer and
+ * never stolen, no matter how old the timestamps look: fail closed, at the
+ * price of waiting out `totalWaitMs`.
  */
 async function recoverAbandonedLock(
   handle: FileLockHandle,
@@ -287,7 +314,12 @@ async function recoverAbandonedLock(
   if (mtimeAgeMs < options.staleMs * factor) return notYet // recently touched
   if (mtimeMs !== lastMtimeMs) return notYet // first sighting, or a live writer; look again
   const line = describeForcedRemoval(handle.lockPath, record, mtimeAgeMs)
-  return asOutcome(await removeAndReclaim(handle, options, raw, line), mtimeMs)
+  // The observation is reset after the attempt: whatever sits at the path now
+  // is either our own fresh lock or a rival's — the removed file's mtime must
+  // not "confirm" a second removal (see `stealIfStale`).
+  return (await removeAndReclaim(handle, options, raw, line))
+    ? { acquired: true }
+    : { acquired: false, observedMtimeMs: null }
 }
 
 /**

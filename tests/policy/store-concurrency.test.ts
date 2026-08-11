@@ -300,7 +300,13 @@ describe('M4-T2: limited emergency recovery of a broken foreign lock', () => {
     const rewriter = setInterval(() => {
       tick += 1
       const past = new Date(Date.now() - 120_000 - tick * 1_000)
-      utimesSync(lockPath(), past, past)
+      try {
+        utimesSync(lockPath(), past, past)
+      } catch {
+        // If the lock IS wrongly stolen, utimes hits ENOENT; swallowing it
+        // here lets the assertions below report the clean failure instead of
+        // an unhandled exception crashing the worker.
+      }
     }, 3)
 
     try {

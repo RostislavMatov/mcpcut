@@ -1,5 +1,6 @@
 import { parseArgs } from 'node:util'
 import { loadPolicy, type LoadPolicyOptions, type PolicyLoadResult } from '../policy/load.js'
+import { resolvePolicySource } from '../policy/source.js'
 import type { Policy } from '../policy/schema.js'
 import { runWrap, type RunWrapOptions } from '../proxy/wrap.js'
 
@@ -125,10 +126,13 @@ interface PolicyOutcome {
 
 /**
  * `--no-policy` skips loading entirely (mode A), regardless of any `--policy`
- * also given. Otherwise: `status: 'error'` (broken/missing-and-named file)
- * is a hard stop -- a broken policy must never fall back to allow-all;
- * `'disabled'` (no file found anywhere) falls back to mode A with one stderr
- * note; `'loaded'` selects mode B.
+ * also given. Otherwise the source is resolved through `resolvePolicySource`
+ * (`wrap` is an `operator-launched` entry point — ADR-0005 — so the full
+ * four-source order applies unchanged; going through the rule module makes
+ * that a decision on record, symmetric with `serve`), then: `status: 'error'`
+ * (broken/missing-and-named file) is a hard stop -- a broken policy must
+ * never fall back to allow-all; `'disabled'` (no file found anywhere) falls
+ * back to mode A with one stderr note; `'loaded'` selects mode B.
  */
 async function resolvePolicy(
   flags: WrapFlags,
@@ -139,10 +143,24 @@ async function resolvePolicy(
     return {}
   }
 
-  const result = await loadPolicy({
-    ...loadPolicyOpts,
+  const source = await resolvePolicySource({
+    entryPoint: 'wrap',
+    ...(loadPolicyOpts.journalDir !== undefined ? { journalDir: loadPolicyOpts.journalDir } : {}),
+    ...(loadPolicyOpts.env !== undefined ? { env: loadPolicyOpts.env } : {}),
+    ...(loadPolicyOpts.cwd !== undefined ? { cwd: loadPolicyOpts.cwd } : {}),
+    ...(loadPolicyOpts.readFile !== undefined ? { readFile: loadPolicyOpts.readFile } : {}),
     ...(flags.policy !== undefined ? { explicitPath: flags.policy } : {}),
   })
+
+  if (source.status === 'refused') {
+    // Unreachable for an operator-launched entry point; handled rather than
+    // asserted so a future trust-class change cannot run a wrapped server on
+    // a policy the rule module just refused.
+    io.stderr.write(`wrap: policy source refused (${source.reason})\n`)
+    return { exitCode: 1 }
+  }
+
+  const result = await loadPolicy(source.loadOptions)
 
   if (result.status === 'error') {
     io.stderr.write(formatPolicyLoadErrors(result))

@@ -59,6 +59,13 @@ export interface DecisionInfo {
   readonly quarantineState: QuarantineState
   readonly argsHash: string
   readonly approvalId?: string
+  /**
+   * Which agent identity asked (serve sessions; absent for `wrap`/`connect`
+   * runs without one). Was already written by `gate-approvals.ts` via spread —
+   * declared here so the field is part of the record's contract, not a leak
+   * past it (M4 Wave 1).
+   */
+  readonly agentName?: string
   readonly latencyMs?: number
 }
 

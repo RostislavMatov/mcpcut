@@ -4,7 +4,7 @@ import {
   type Server,
   type ServerResponse,
 } from 'node:http'
-import { isHostAllowed, LOCALHOST_HOSTNAMES } from '../../net/origin-host.js'
+import { isHostAllowed, isWildcardBindHost, LOCALHOST_HOSTNAMES } from '../../net/origin-host.js'
 import { authenticate, type TokenResolver } from './auth.js'
 import { isOriginAllowed, parseRoute, type RouteMatch } from './routes.js'
 import {
@@ -20,6 +20,7 @@ import {
   HTTP_STATUS_UNAUTHORIZED,
   MAX_REQUEST_BODY_BYTES,
   NON_LOCALHOST_BIND_WARNING,
+  WILDCARD_BIND_WARNING,
 } from './server-constants.js'
 import { CONTENT_TYPE_JSON, HTTP_STATUS_NOT_FOUND } from './constants.js'
 import {
@@ -232,6 +233,9 @@ export function createHttpFront(opts: HttpFrontOptions): HttpFront {
     const bindHost = host ?? DEFAULT_HTTP_HOST
     if (!LOCALHOST_HOSTNAMES.includes(bindHost)) {
       stderr.write(`${NON_LOCALHOST_BIND_WARNING}\n`)
+      if (isWildcardBindHost(bindHost)) {
+        stderr.write(`${WILDCARD_BIND_WARNING}\n`)
+      }
     }
     return new Promise((resolve, reject) => {
       const instance = createServer(onRequest)
@@ -253,6 +257,10 @@ export function createHttpFront(opts: HttpFrontOptions): HttpFront {
   async function doClose(): Promise<void> {
     const instance = server
     server = null
+    // Back to the pre-listen state: any straggler request racing the close is
+    // refused by the fail-closed Host check rather than screened against an
+    // endpoint that no longer exists.
+    bound = null
     if (instance === null) {
       await manager.close()
       return

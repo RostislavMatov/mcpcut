@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import type { Mode, PathLike } from 'node:fs'
 import type { FileHandle } from 'node:fs/promises'
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
@@ -184,5 +184,22 @@ describe('withVaultLock holder token', () => {
     await withVaultLock(lockPath, async () => undefined)
 
     await expect(readFile(lockPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  test('a forced removal of an abandoned foreign lock reaches the injected warn sink', async () => {
+    const lockPath = join(dir, 'vault.lock')
+    await writeFile(lockPath, 'not a lock record at all', 'utf8')
+    // Untouched for 60s: older than the default 30s staleness window.
+    const past = new Date(Date.now() - 60_000)
+    await utimes(lockPath, past, past)
+    const warnings: string[] = []
+
+    const result = await withVaultLock(lockPath, async () => 'done', {
+      warn: (line) => warnings.push(line),
+    })
+
+    expect(result).toBe('done')
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain(lockPath)
   })
 })

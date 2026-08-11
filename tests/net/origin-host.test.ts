@@ -4,6 +4,7 @@ import { afterEach, describe, expect, test } from 'vitest'
 import {
   isHostAllowed,
   isOriginAllowed,
+  isWildcardBindHost,
   LOCALHOST_HOSTNAMES,
 } from '../../src/net/origin-host.js'
 import { startFront, type StartedFront } from '../transport/http/front-harness.js'
@@ -78,6 +79,13 @@ describe('isHostAllowed (unit)', () => {
     expect(isHostAllowed('[::1]:8090', bound)).toBe(true)
   })
 
+  test('an expanded IPv6 bound host matches its compressed Host form (one canonicalizer)', () => {
+    const bound = { boundHost: 'fd00:0:0:0:0:0:0:5', port: 8090, extraAllowed: [] }
+
+    expect(isHostAllowed('[fd00::5]:8090', bound)).toBe(true)
+    expect(isHostAllowed('[fd00::6]:8090', bound)).toBe(false)
+  })
+
   test('an extraAllowed entry (reverse-proxy name) matches exactly — and only exactly', () => {
     const bound = { ...BOUND, extraAllowed: ['mcp.internal.example'] }
 
@@ -86,10 +94,39 @@ describe('isHostAllowed (unit)', () => {
     expect(isHostAllowed('other.internal.example', bound)).toBe(false)
   })
 
+  test('extraAllowed matches case-insensitively (RFC 9110: host names are case-insensitive)', () => {
+    const bound = { ...BOUND, extraAllowed: ['MCP.Internal.Example'] }
+
+    expect(isHostAllowed('mcp.internal.example', bound)).toBe(true)
+    expect(isHostAllowed('MCP.INTERNAL.EXAMPLE', bound)).toBe(true)
+    expect(isHostAllowed('other.internal.example', bound)).toBe(false)
+  })
+
+  test.each(['0.0.0.0', '::'])(
+    'a wildcard bind (%s) never matches itself as a Host value — only localhost names and extraAllowed',
+    (wildcard) => {
+      const bound = { boundHost: wildcard, port: 8090, extraAllowed: ['proxy.example'] }
+
+      // The bind address is not a meaningful Host value; matching it would
+      // admit `Host: 0.0.0.0:port` (a rebinding-friendly alias for loopback
+      // on several stacks) while still refusing every legitimate remote name.
+      expect(isHostAllowed('0.0.0.0:8090', bound)).toBe(false)
+      expect(isHostAllowed('[::]:8090', bound)).toBe(false)
+      expect(isHostAllowed('127.0.0.1:8090', bound)).toBe(true)
+      expect(isHostAllowed('localhost:8090', bound)).toBe(true)
+      expect(isHostAllowed('proxy.example', bound)).toBe(true)
+      expect(isHostAllowed('evil.com:8090', bound)).toBe(false)
+    },
+  )
+
   test.each([
     '',
     'not a host',
     '127.0.0.1:8090/path',
+    '127.0.0.1:8090/',
+    'localhost:8090/',
+    '127.0.0.1:',
+    'localhost:',
     'user@127.0.0.1:8090',
     '127.0.0.1:8090?x=1',
     '127.0.0.1:8090#frag',
@@ -97,6 +134,23 @@ describe('isHostAllowed (unit)', () => {
   ])('malformed Host %j is rejected', (header) => {
     expect(isHostAllowed(header, BOUND)).toBe(false)
   })
+})
+
+// ---------------------------------------------------------------------------
+// isWildcardBindHost (unit)
+// ---------------------------------------------------------------------------
+
+describe('isWildcardBindHost', () => {
+  test.each(['0.0.0.0', '::', '[::]'])('%s is a wildcard bind', (host) => {
+    expect(isWildcardBindHost(host)).toBe(true)
+  })
+
+  test.each(['127.0.0.1', 'localhost', '::1', '[::1]', '192.168.0.5', 'fd00::5'])(
+    '%s is not a wildcard bind',
+    (host) => {
+      expect(isWildcardBindHost(host)).toBe(false)
+    },
+  )
 })
 
 // ---------------------------------------------------------------------------

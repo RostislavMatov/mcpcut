@@ -233,6 +233,28 @@ describe('listen and close', () => {
     )
   })
 
+  test.each(['0.0.0.0', '::'])(
+    'a wildcard bind (%s) additionally warns that remote clients need --allowed-host',
+    async (wildcard) => {
+      started = await startFront()
+      const warned = collectStderr()
+      const { createHttpFront } = await import('../../../src/transport/http/server.js')
+      const bare = createHttpFront({
+        agentsStore: started.agentsStore,
+        openSession: started.factory.openSession,
+        stderr: warned.sink,
+      })
+
+      await bare.listen(0, wildcard)
+      await bare.close()
+
+      const output = warned.lines.join('')
+      expect(output).toContain('[http] binding to non-localhost host; put TLS in front')
+      expect(output).toContain('--allowed-host')
+    },
+  )
+
+
   test('close() tears down live sessions and stops accepting connections', async () => {
     started = await startFront()
     await started.call('POST', started.path(), { body: INITIALIZE_BODY })
