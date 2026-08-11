@@ -3,13 +3,22 @@ import { mkdir, open, readFile, rename, rm, stat } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { JOURNAL_DIR_MODE, JOURNAL_FILE_MODE } from '../config.js'
+import {
+  acquireFileLock,
+  ownsFileLock,
+  releaseFileLock,
+  type FileLockOptions,
+} from '../lockfile.js'
 
 /**
- * File-level plumbing for the vault store: durable atomic tmp+rename writes
- * and a cross-process lockfile, mirroring `policy/store.ts`. Not shared with
- * that module because `createJsonStore` owns exactly one file per store, while
- * a rekey must interleave writes to vault.key and vault.enc in a specific
- * order (see `store.ts`); these helpers expose the individual steps instead.
+ * File-level plumbing for the vault store: durable atomic tmp+rename writes,
+ * plus the vault's use of the shared lockfile mutex (`src/lockfile.ts`). The
+ * STORE is deliberately not shared with `policy/store.ts` — `createJsonStore`
+ * owns exactly one file, while a rekey must interleave writes to vault.key and
+ * vault.enc in a specific order (see `store.ts`), so these helpers expose the
+ * individual steps instead. The LOCK is shared: it is a generic
+ * `(lockPath) -> handle` primitive with no bearing on how many files a store
+ * owns, and the two hand-rolled copies had already drifted apart.
  *
  * Durability is not optional here, unlike in the policy store: a rename can
  * reach the disk before the bytes it points at, so a power loss between
@@ -29,11 +38,34 @@ const LOCK_POLL_MS = 25
 /** A lockfile older than this is presumed orphaned (crashed holder) and stolen. */
 const LOCK_STALE_MS = 30_000
 
+const LOCK_OPTIONS: FileLockOptions = {
+  totalWaitMs: LOCK_TOTAL_WAIT_MS,
+  pollMs: LOCK_POLL_MS,
+  staleMs: LOCK_STALE_MS,
+  fileMode: JOURNAL_FILE_MODE,
+}
+
 /** Raised when the cross-process lock could not be acquired in time. */
 export class VaultLockError extends Error {
   constructor(lockPath: string) {
     super(`vault is locked by another process ("${lockPath}"); timed out acquiring the lock`)
     this.name = 'VaultLockError'
+  }
+}
+
+/**
+ * Raised when the lock was held but had been stolen by the time the operation
+ * finished. The work already hit the disk — this says the result cannot be
+ * trusted, not that nothing happened. Extends `VaultLockError` so existing
+ * callers keep catching it.
+ */
+export class VaultLockLostError extends VaultLockError {
+  constructor(lockPath: string) {
+    super(lockPath)
+    this.message =
+      `vault lock ("${lockPath}") was stolen while the operation was running; ` +
+      `the vault may now be inconsistent — verify vault.key and vault.enc before writing again`
+    this.name = 'VaultLockLostError'
   }
 }
 
@@ -194,77 +226,31 @@ export function decodeBase64Buffer(input: Uint8Array): Buffer | null {
 }
 
 /**
- * Runs `fn` under an `O_EXCL`-lockfile mutex, mirroring `policy/store.ts`:
- * in-process callers of one store instance are additionally serialized by the
- * store's own queue; this lock protects against a *second process* (e.g. a
- * `vault set` racing a `serve` session's resolve) doing a lost-update
- * read-modify-write. A stale lock (crashed holder) is stolen after
- * `LOCK_STALE_MS`, with a content re-check right before the steal so a fresh
- * lock re-acquired by a concurrent recoverer is never clobbered.
+ * Runs `fn` under the shared lockfile mutex (`src/lockfile.ts`): in-process
+ * callers of one store instance are additionally serialized by the store's own
+ * queue; this lock protects against a *second process* (a `vault set` racing a
+ * `serve` session's resolve) doing a lost-update read-modify-write.
+ *
+ * Unlike the policy store, a lost lock here cannot be recovered by re-running
+ * `fn`: it is an arbitrary, order-sensitive sequence — a rekey interleaves
+ * `vault.key` and `vault.enc` writes — and replaying it is not safe. So the
+ * lock loss is REPORTED instead. Returning `fn`'s value would tell the caller
+ * a rekey succeeded while another process wrote the other half of the pair
+ * under a different key, leaving `vault.key` of one generation paired with
+ * `vault.enc` of another and every secret in the vault undecryptable. A
+ * `VaultLockError` after the fact is not a repair, but it is the difference
+ * between a loud inconsistency and a silent one.
  */
 export async function withVaultLock<T>(lockPath: string, fn: () => Promise<T>): Promise<T> {
   await ensureDir(dirname(lockPath))
-  const deadline = Date.now() + LOCK_TOTAL_WAIT_MS
-  for (;;) {
-    if (await tryCreateLockFile(lockPath)) break
-    if (await stealIfStale(lockPath)) break
-    if (Date.now() >= deadline) throw new VaultLockError(lockPath)
-    await sleep(LOCK_POLL_MS)
-  }
+  const handle = await acquireFileLock(lockPath, LOCK_OPTIONS)
+  if (handle === null) throw new VaultLockError(lockPath)
   try {
-    return await fn()
+    const result = await fn()
+    if (!(await ownsFileLock(handle))) throw new VaultLockLostError(lockPath)
+    return result
   } finally {
-    await rm(lockPath, { force: true })
+    await releaseFileLock(handle)
   }
 }
 
-/** Atomically creates the lockfile with an ownership record. `false` only on EEXIST. */
-async function tryCreateLockFile(lockPath: string): Promise<boolean> {
-  try {
-    const handle = await open(lockPath, 'wx', JOURNAL_FILE_MODE)
-    try {
-      await handle.writeFile(JSON.stringify({ pid: process.pid, createdAtMs: Date.now() }))
-    } finally {
-      await handle.close()
-    }
-    return true
-  } catch (error: unknown) {
-    if (hasErrorCode(error, 'EEXIST')) return false
-    throw error
-  }
-}
-
-/**
- * Steals a stale lock. `true` iff THIS call now holds the lock; `false`
- * means "held by a live process (or just re-acquired by someone else) —
- * keep waiting".
- */
-async function stealIfStale(lockPath: string): Promise<boolean> {
-  const raw = await readFileIfExists(lockPath)
-  if (raw === null) return tryCreateLockFile(lockPath) // vanished; claim it
-
-  const age = await lockAgeMs(lockPath, raw)
-  if (age === null) return tryCreateLockFile(lockPath) // vanished between read and stat
-  if (age < LOCK_STALE_MS) return false // held by a live process
-
-  // Only steal a lock whose content is still exactly what was judged stale.
-  const confirm = await readFileIfExists(lockPath)
-  if (confirm !== raw) return false
-  await rm(lockPath, { force: true })
-  return tryCreateLockFile(lockPath)
-}
-
-/** Age from the lock's own record, falling back to fs mtime for foreign content. */
-async function lockAgeMs(lockPath: string, raw: string): Promise<number | null> {
-  try {
-    const record = JSON.parse(raw) as { createdAtMs?: unknown }
-    if (typeof record.createdAtMs === 'number') return Date.now() - record.createdAtMs
-  } catch {
-    // fall through to mtime
-  }
-  try {
-    return Date.now() - (await stat(lockPath)).mtimeMs
-  } catch {
-    return null
-  }
-}

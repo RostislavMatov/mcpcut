@@ -86,8 +86,13 @@ export function createRegistryStore(journalDir?: string): RegistryStore {
   }
 
   async function removeServer(name: string): Promise<RemoveServerResult> {
+    // `update` may re-run this callback when a concurrent process steals the
+    // store lock, so the captured result must be reset at the top of EVERY
+    // attempt: a first attempt that saw the record, followed by a retry that
+    // no longer does, would otherwise report a removal that never happened.
     let removed: ServerRecord | undefined
     await store.update((current) => {
+      removed = undefined
       const existing = ownRecord(current.servers, name)
       if (existing === undefined) {
         return current

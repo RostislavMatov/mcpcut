@@ -9,6 +9,8 @@ import {
   decodeBase64Buffer,
   readFileBufferIfExists,
   renameDurable,
+  VaultLockLostError,
+  withVaultLock,
   writeFileAtomic,
 } from '../../src/vault/files.js'
 
@@ -155,5 +157,32 @@ describe('decodeBase64Buffer', () => {
 
   test('an empty input decodes to an empty buffer', () => {
     expect(decodeBase64Buffer(Buffer.alloc(0))?.length).toBe(0)
+  })
+})
+
+describe('withVaultLock holder token', () => {
+  test('a lock stolen while fn runs is reported, and the new owner’s lock is left alone', async () => {
+    const lockPath = join(dir, 'vault.lock')
+    const foreign = JSON.stringify({ pid: 999_999, createdAtMs: Date.now(), nonce: 'foreign' })
+
+    // A stale-lock recoverer takes over mid-flight: our own lock is gone and a
+    // lock belonging to someone else sits in its place. `fn` already wrote to
+    // disk, so the result cannot be trusted -- that must be raised, not
+    // returned as success -- and the new owner's lockfile must survive.
+    await expect(
+      withVaultLock(lockPath, async () => {
+        await writeFile(lockPath, foreign, 'utf8')
+      }),
+    ).rejects.toBeInstanceOf(VaultLockLostError)
+
+    expect(await readFile(lockPath, 'utf8')).toBe(foreign)
+  })
+
+  test('a lock still ours at the end is released', async () => {
+    const lockPath = join(dir, 'vault.lock')
+
+    await withVaultLock(lockPath, async () => undefined)
+
+    await expect(readFile(lockPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })

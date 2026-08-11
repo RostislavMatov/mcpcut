@@ -1,8 +1,15 @@
+import { readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
-import { StoreCorruptError, createJsonStore, type JsonStore } from '../../src/policy/store.js'
+import {
+  StoreCorruptError,
+  StoreLockError,
+  StoreLockLostError,
+  createJsonStore,
+  type JsonStore,
+} from '../../src/policy/store.js'
 
 /**
  * `rename` is wrapped so a single test (TS-LOW-1) can force it to fail
@@ -58,6 +65,15 @@ afterEach(async () => {
 
 function open(): JsonStore<CounterStore> {
   return createJsonStore<CounterStore>(filePath, { validate, defaultValue: DEFAULT })
+}
+
+/** Same store with a short acquisition budget, for the contended paths. */
+function openImpatient(): JsonStore<CounterStore> {
+  return createJsonStore<CounterStore>(filePath, {
+    validate,
+    defaultValue: DEFAULT,
+    lock: { totalWaitMs: 150 },
+  })
 }
 
 describe('H5/TS-H2: concurrent stores do not lose writes', () => {
@@ -147,5 +163,83 @@ describe('TS-LOW-1: writeAtomic never leaks its .tmp file on a permanent rename 
 
     const leftover = (await readdir(dir)).filter((name) => name.endsWith('.tmp'))
     expect(leftover).toEqual([])
+  })
+})
+
+describe('holder token: a stolen lock is detected instead of assumed', () => {
+  /**
+   * The stale-lock steal narrowed the double-steal window but could not close
+   * it: a recoverer that captured the stale content just before our create
+   * still removes our fresh lock and takes over. The holder must therefore
+   * verify it STILL owns the lock before committing, and re-run the
+   * read-modify-write when it does not — otherwise its write is computed from
+   * a snapshot the new owner has already superseded.
+   *
+   * The interleaving is forced deterministically: the update function itself
+   * plays the concurrent recoverer (steal, write, release) on the first call
+   * only, so the outer update wakes up holding nothing and must redo its work
+   * on top of the value the recoverer committed.
+   */
+  test('the stolen holder redoes its read-modify-write instead of clobbering the new owner', async () => {
+    const lockPath = `${filePath}.lock`
+    let sabotaged = false
+
+    const final = await open().update((current) => {
+      if (!sabotaged) {
+        sabotaged = true
+        // A concurrent recoverer steals the lock, commits its own write, and releases.
+        writeFileSync(lockPath, JSON.stringify({ pid: 999_999, createdAtMs: Date.now() }), 'utf8')
+        writeFileSync(filePath, JSON.stringify({ version: 1, items: { b: 2 } }), 'utf8')
+        rmSync(lockPath, { force: true })
+      }
+      return { ...current, items: { ...current.items, a: 1 } }
+    })
+
+    expect(final.items).toEqual({ a: 1, b: 2 })
+    expect((await open().read()).items).toEqual({ a: 1, b: 2 })
+  })
+
+  test('releasing a lock we no longer own leaves the new owner’s lock in place', async () => {
+    const lockPath = `${filePath}.lock`
+    const foreign = JSON.stringify({ pid: 999_999, createdAtMs: Date.now() })
+    let sabotaged = false
+
+    // The new owner here is live and never releases, so the stolen holder
+    // cannot get the lock back: the update must fail loudly rather than write
+    // without the lock -- and must leave the live holder's lockfile alone.
+    await expect(
+      openImpatient().update((current) => {
+        if (!sabotaged) {
+          sabotaged = true
+          writeFileSync(lockPath, foreign, 'utf8')
+        }
+        return current
+      }),
+    ).rejects.toBeInstanceOf(StoreLockError)
+
+    expect(readFileSync(lockPath, 'utf8')).toBe(foreign)
+  })
+
+  test('losing the lock on every attempt fails loudly and writes nothing', async () => {
+    const lockPath = `${filePath}.lock`
+    let attempts = 0
+
+    // Every attempt is sabotaged, so no attempt ever reaches its commit. The
+    // planted lock is already stale, so the next attempt steals it promptly
+    // instead of waiting out the acquisition budget.
+    await expect(
+      openImpatient().update((current) => {
+        attempts += 1
+        writeFileSync(
+          lockPath,
+          JSON.stringify({ pid: 999_999, createdAtMs: Date.now() - 60_000, nonce: 'foreign' }),
+          'utf8',
+        )
+        return { ...current, items: { ...current.items, a: 1 } }
+      }),
+    ).rejects.toBeInstanceOf(StoreLockLostError)
+
+    expect(attempts).toBe(3)
+    expect((await open().read()).items).toEqual({})
   })
 })
