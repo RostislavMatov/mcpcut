@@ -23,9 +23,13 @@ import {
  *
  * Layering invariant: NOTHING here reaches the vault's value-reading path — the
  * vault handler reads only `listSecrets()`, names and dates, so a secret value
- * has no route to the browser. Enforcement today is the source check in
- * `tests/ui/servers.test.ts`; the architecture import test does not yet cover
- * `src/ui/**` — mechanizing it there is Wave 5's job. Registry mutations reuse
+ * has no route to the browser. This is enforced mechanically for the WHOLE UI
+ * layer, not just this file: `tests/architecture/imports.test.ts` fails if any
+ * `src/ui/**` module imports the vault's secret-resolution module or so much as
+ * names its value-reading export (the file-local source check in
+ * `tests/ui/servers.test.ts` remains as the close-range regression guard — and
+ * is why neither that module path nor that export is spelled out here).
+ * Registry mutations reuse
  * the SAME validation as the CLI (`parseServerRecord`), which rejects any
  * secret-shaped literal with the same "put it in the vault" hint, and every
  * mutation is attributed to the acting admin via the optional `audit` sink

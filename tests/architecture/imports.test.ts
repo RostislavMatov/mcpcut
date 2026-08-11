@@ -233,3 +233,107 @@ describe('src/net stays dependency-free', () => {
     )
   })
 })
+
+// ---------------------------------------------------------------------------
+// The admin UI layer (M4, ADR-0004 §6). Three rules, mechanized here — before
+// Task 18 the "UI never reaches the vault's value path" guarantee was only a
+// source check inside `tests/ui/servers.test.ts`, which covered one file.
+// ---------------------------------------------------------------------------
+
+/** Every `.ts` under `src/ui`, recursively. Empty before the directory exists. */
+function uiFiles(): string[] {
+  return collectTransportFiles(PROJECT_ROOT, ['src/ui'], new Set())
+}
+
+/**
+ * The ONLY modules outside `src/ui/**` allowed to import it. `ui-cmd.ts` is the
+ * process entry point, `ui-wiring.ts` its composition root, and `ui-constants.ts`
+ * re-exports the two bind defaults so the CLI's flag parsing does not fork them.
+ * Everything else must reach the UI through none of its internals: a second
+ * importer is how an operator surface quietly becomes a library.
+ */
+const UI_IMPORTER_ALLOWLIST: ReadonlySet<string> = new Set([
+  'src/cli/ui-cmd.ts',
+  'src/cli/ui-wiring.ts',
+  'src/cli/ui-constants.ts',
+])
+
+/**
+ * True for a specifier reaching into the traffic layer. `src/net/**` is
+ * deliberately NOT matched: `net/origin-host.ts` is the shared, dependency-free
+ * Host/Origin screen both HTTP fronts import (guarded by its own rule above).
+ */
+function isTrafficSpecifier(specifier: string): boolean {
+  return /(?:^|\/)proxy\//.test(specifier) || /(?:^|\/)transport\//.test(specifier)
+}
+
+/** True for a specifier reaching the vault's secret-VALUE resolution path. */
+function isVaultValueSpecifier(specifier: string): boolean {
+  return /(?:^|\/)vault\/resolve(?:\.js)?$/.test(specifier)
+}
+
+/** True for a specifier that reaches into `src/ui/**` from outside it. */
+function isUiSpecifier(specifier: string): boolean {
+  return /(?:^|\/)ui\//.test(specifier)
+}
+
+describe('the admin UI is an operator surface, not a traffic or secret surface', () => {
+  test.each(uiFiles())('%s imports no proxy/transport module', (relativePath) => {
+    const source = readFileSync(join(PROJECT_ROOT, relativePath), 'utf8')
+
+    const forbidden = importSpecifiersOf(source).filter(isTrafficSpecifier)
+
+    expect(forbidden).toEqual([])
+  })
+
+  test.each(uiFiles())('%s never reaches a vault secret value', (relativePath) => {
+    const source = readFileSync(join(PROJECT_ROOT, relativePath), 'utf8')
+
+    // Both halves matter: the import graph AND the symbol. A re-export
+    // elsewhere would defeat a specifier-only check.
+    expect(importSpecifiersOf(source).filter(isVaultValueSpecifier)).toEqual([])
+    expect(source).not.toContain('readSecretValues')
+  })
+
+  test('the UI directory is covered, and the rules are not vacuous', () => {
+    const files = uiFiles()
+    for (const expected of [
+      'src/ui/server.ts',
+      'src/ui/handlers/servers.ts',
+      'src/ui/pages/layout.ts',
+      'src/ui/assets/app-js.ts',
+    ]) {
+      expect(files).toContain(expected)
+    }
+    // Guards the guards: each matcher really does catch what it is named for.
+    expect(isTrafficSpecifier('../proxy/gate.js')).toBe(true)
+    expect(isTrafficSpecifier('../transport/http/server.js')).toBe(true)
+    expect(isVaultValueSpecifier('../vault/resolve.js')).toBe(true)
+    expect(isUiSpecifier('../ui/server.js')).toBe(true)
+    // …and that the one shared HTTP primitive the UI DOES import stays allowed.
+    expect(isTrafficSpecifier('../net/origin-host.js')).toBe(false)
+    expect(
+      importSpecifiersOf(readFileSync(join(PROJECT_ROOT, 'src/ui/server.ts'), 'utf8')),
+    ).toContain('../net/origin-host.js')
+  })
+
+  test('nothing outside the UI and its CLI entry points imports src/ui/**', () => {
+    const outsiders = collectTransportFiles(PROJECT_ROOT, ['src'], new Set()).filter(
+      (relativePath) =>
+        !relativePath.startsWith('src/ui/') && !UI_IMPORTER_ALLOWLIST.has(relativePath),
+    )
+
+    const offenders = outsiders.filter((relativePath) =>
+      importSpecifiersOf(readFileSync(join(PROJECT_ROOT, relativePath), 'utf8')).some(isUiSpecifier),
+    )
+
+    expect(offenders).toEqual([])
+  })
+
+  test('the importer allowlist names real files, so it cannot rot unnoticed', () => {
+    const all = collectTransportFiles(PROJECT_ROOT, ['src'], new Set())
+    for (const allowed of UI_IMPORTER_ALLOWLIST) {
+      expect(all).toContain(allowed)
+    }
+  })
+})
