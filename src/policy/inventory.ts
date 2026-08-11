@@ -10,6 +10,7 @@ import {
 } from './inventory-observe.js'
 import {
   EMPTY_SERVER_INVENTORY,
+  approvedRecordFrom,
   omitKey,
   openInventoryStore,
   withKey,
@@ -238,17 +239,18 @@ async function applyServerMutation(
   return changed
 }
 
-/** Pure: moves `toolName` from quarantined to approved, at its quarantined hash. */
+/** Pure: moves `toolName` from quarantined to approved (descriptor included), at its quarantined hash. */
 function withApprovedTool(serverEntry: ServerInventory, toolName: string, approvedAt: string): ServerMutationOutcome {
   const record = serverEntry.quarantined[toolName]
   if (!record) return { serverEntry, changed: false }
   return {
     changed: true,
     serverEntry: {
-      approved: withKey<ApprovedToolRecord>(serverEntry.approved, toolName, {
-        schemaHash: record.schemaHash,
-        approvedAt,
-      }),
+      approved: withKey<ApprovedToolRecord>(
+        serverEntry.approved,
+        toolName,
+        approvedRecordFrom(record, approvedAt),
+      ),
       quarantined: omitKey(serverEntry.quarantined, toolName),
     },
   }

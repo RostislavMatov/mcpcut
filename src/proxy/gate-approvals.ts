@@ -45,6 +45,8 @@ export interface ApprovalFlowDeps {
   readonly policy: Policy
   readonly serverName: string
   readonly sessionId: string
+  /** Name of the authenticated agent (M3 scope); absent on the ad-hoc `wrap` path. */
+  readonly agentName?: string
   readonly approvalQueue: GateApprovalQueue
   readonly approvalWaiter: ApprovalWaiter
   readonly grantRegistry: GrantRegistry
@@ -105,6 +107,10 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
     // (>> timeoutMs). A time-aware `resolve()` downgrades an approval landing
     // past `expiresAt` to `expired`, so `expiresAt` is derived from the grant
     // window here; the short wait timeout is applied separately below.
+    // `waitTimeoutMs` persists the wait window too (as `waitExpiresAt`), so
+    // an operator UI can tell "approve delivers the call now" from "approve
+    // only grants a retry"; `agentName`/`decisionRule` answer "who is asking
+    // and which rule sent them here" (M4).
     const { approvalId } = await approvalQueue.enqueue({
       serverName,
       toolName: facts.toolName,
@@ -112,10 +118,16 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
       args: call.args,
       sessionId: deps.sessionId,
       timeoutMs: policy.approval.grantTtlMs,
+      waitTimeoutMs: policy.approval.timeoutMs,
+      decisionRule: decision.rule,
+      ...(deps.agentName !== undefined ? { agentName: deps.agentName } : {}),
     })
     enqueuedUnresolved.add(approvalId)
     writeDecision(
-      decisionInfoOf(facts, 'require-approval-pending', decision.rule, { approvalId }),
+      decisionInfoOf(facts, 'require-approval-pending', decision.rule, {
+        approvalId,
+        ...(deps.agentName !== undefined ? { agentName: deps.agentName } : {}),
+      }),
       call.args,
     )
     await settleJournal()

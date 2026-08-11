@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import { agentScope } from '../../src/agents/scope.js'
-import type { AgentRecord } from '../../src/agents/schema.js'
+import type { AgentGrant, AgentRecord } from '../../src/agents/schema.js'
 
 const HASH = 'f'.repeat(64)
 const CREATED = '2026-08-05T10:00:00.000Z'
@@ -102,6 +102,136 @@ describe('agentScope: hostile tool names', () => {
 
     expect(scope.isGranted('__proto__')).toBe(false)
     expect(scope.isGranted('constructor')).toBe(false)
+    expect(({} as { granted?: unknown }).granted).toBeUndefined()
+  })
+})
+
+/** Record with one grant for `github`, built from a full grant object (M4). */
+function agentWithGrant(grant: AgentGrant, extra: Partial<AgentRecord> = {}): AgentRecord {
+  return {
+    name: 'research-bot',
+    tokenHash: HASH,
+    createdAt: CREATED,
+    grants: { github: grant },
+    ...extra,
+  }
+}
+
+describe('agentScope.methodGrants: defaults are M3 fail-closed', () => {
+  test('absent resources/prompts fields grant nothing and report no grant presence', () => {
+    const scope = agentScope(agentWithGrant({ tools: '*' }), 'github')
+
+    expect(scope.methodGrants.hasResourcesGrant()).toBe(false)
+    expect(scope.methodGrants.hasPromptsGrant()).toBe(false)
+    expect(scope.methodGrants.isResourceGranted('file:///project/readme.md')).toBe(false)
+    expect(scope.methodGrants.isPromptGranted('greeting')).toBe(false)
+  })
+
+  test('empty arrays are equivalent to absent fields (no grant presence)', () => {
+    const scope = agentScope(agentWithGrant({ tools: '*', resources: [], prompts: [] }), 'github')
+
+    expect(scope.methodGrants.hasResourcesGrant()).toBe(false)
+    expect(scope.methodGrants.hasPromptsGrant()).toBe(false)
+    expect(scope.methodGrants.isResourceGranted('file:///anything')).toBe(false)
+  })
+
+  test('a tools grant never bleeds into resources or prompts', () => {
+    const scope = agentScope(agentWithGrant({ tools: '*' }), 'github')
+
+    expect(scope.isGranted('any_tool')).toBe(true)
+    expect(scope.methodGrants.isResourceGranted('file:///x')).toBe(false)
+    expect(scope.methodGrants.isPromptGranted('any_tool')).toBe(false)
+  })
+
+  test('no grant for the server → no method grants either', () => {
+    const scope = agentScope(agentWithGrant({ tools: '*', resources: '*', prompts: '*' }), 'jira')
+
+    expect(scope.methodGrants.hasResourcesGrant()).toBe(false)
+    expect(scope.methodGrants.hasPromptsGrant()).toBe(false)
+  })
+})
+
+describe('agentScope.methodGrants: resources', () => {
+  test("'*' grants every URI and counts as grant presence", () => {
+    const scope = agentScope(agentWithGrant({ tools: [], resources: '*' }), 'github')
+
+    expect(scope.methodGrants.hasResourcesGrant()).toBe(true)
+    expect(scope.methodGrants.isResourceGranted('file:///etc/passwd')).toBe(true)
+    expect(scope.methodGrants.isResourceGranted('doc://anything')).toBe(true)
+  })
+
+  test.each<[patterns: string[], uri: string, granted: boolean]>([
+    // trailing-glob prefix match, same matcher as tools
+    [['file:///project/*'], 'file:///project/readme.md', true],
+    [['file:///project/*'], 'file:///project/sub/deep.txt', true],
+    [['file:///project/*'], 'file:///projects/readme.md', false],
+    [['file:///project/*'], 'file:///etc/passwd', false],
+    // exact match
+    [['doc://handbook'], 'doc://handbook', true],
+    [['doc://handbook'], 'doc://handbook2', false],
+    // a literal (no star) is never a prefix glob
+    [['file:///project/'], 'file:///project/readme.md', false],
+    // several patterns: any hit grants
+    [['doc://a', 'file:///p/*'], 'file:///p/x', true],
+    [['doc://a', 'file:///p/*'], 'doc://b', false],
+    // case-sensitive
+    [['File:///Project/*'], 'file:///project/x', false],
+  ])('resources %j, uri %j → granted=%s', (patterns, uri, granted) => {
+    const scope = agentScope(agentWithGrant({ tools: [], resources: patterns }), 'github')
+
+    expect(scope.methodGrants.hasResourcesGrant()).toBe(true)
+    expect(scope.methodGrants.isResourceGranted(uri)).toBe(granted)
+  })
+})
+
+describe('agentScope.methodGrants: prompts (same matcher semantics as tools)', () => {
+  test.each<[patterns: string[], name: string, granted: boolean]>([
+    [['greeting'], 'greeting', true],
+    [['greeting'], 'greeting2', false],
+    [['greet*'], 'greeting', true],
+    [['greet*'], 'greet', true],
+    [['greet*'], 'regret', false],
+    [['Greet*'], 'greeting', false],
+  ])('prompts %j, name %j → granted=%s', (patterns, name, granted) => {
+    const scope = agentScope(agentWithGrant({ tools: [], prompts: patterns }), 'github')
+
+    expect(scope.methodGrants.hasPromptsGrant()).toBe(true)
+    expect(scope.methodGrants.isPromptGranted(name)).toBe(granted)
+  })
+
+  test("prompts '*' grants every name", () => {
+    const scope = agentScope(agentWithGrant({ tools: [], prompts: '*' }), 'github')
+
+    expect(scope.methodGrants.isPromptGranted('anything')).toBe(true)
+  })
+})
+
+describe('agentScope.methodGrants: revoked agent', () => {
+  test('a revoked agent has NO method grants, even with wildcard grants', () => {
+    const revoked = agentWithGrant(
+      { tools: '*', resources: '*', prompts: '*' },
+      { revokedAt: '2026-08-06T00:00:00.000Z' },
+    )
+
+    const scope = agentScope(revoked, 'github')
+
+    expect(scope.methodGrants.hasResourcesGrant()).toBe(false)
+    expect(scope.methodGrants.hasPromptsGrant()).toBe(false)
+    expect(scope.methodGrants.isResourceGranted('file:///x')).toBe(false)
+    expect(scope.methodGrants.isPromptGranted('greeting')).toBe(false)
+  })
+})
+
+describe('agentScope.methodGrants: hostile subjects', () => {
+  test('reserved names as URI/prompt subjects never pollute and are not granted', () => {
+    const scope = agentScope(
+      agentWithGrant({ tools: [], resources: ['file:///p/*'], prompts: ['greet*'] }),
+      'github',
+    )
+
+    expect(scope.methodGrants.isResourceGranted('__proto__')).toBe(false)
+    expect(scope.methodGrants.isPromptGranted('__proto__')).toBe(false)
+    expect(scope.methodGrants.isPromptGranted('constructor')).toBe(false)
     expect(({} as { granted?: unknown }).granted).toBeUndefined()
   })
 })

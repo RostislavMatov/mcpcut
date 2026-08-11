@@ -183,7 +183,15 @@ export const TOOL_RULE_NAME_PATTERN = /^[A-Za-z0-9_.:-]+\*?$/
  * plumbing (`initialize`, `ping`, `tools/*`, `notifications/*`, `logging/*`)
  * is deliberately absent -- an agent session cannot work without it.
  *
- * Расширение грант-словаря на resources/prompts — бэклог M4.
+ * Since M4 (Task 6) this list is GRANT-MANAGED rather than an unconditional
+ * ban: the router first consults the enumerated grant vocabulary in
+ * `src/agents/method-grants.ts` (`resources/read|list|subscribe|unsubscribe`,
+ * `prompts/get|list`, `completion/complete`) against the agent's
+ * `resources`/`prompts` grants, and only what no grant covers — including
+ * every family member NOT enumerated there, and everything when the grant
+ * fields are absent — falls back to the fail-closed denial below, byte for
+ * byte the M3 behavior. Policy rules for these methods remain out of scope
+ * (M5 backlog): grants decide, the journal records.
  */
 export const AGENT_NON_GRANTABLE_METHODS: readonly string[] = [
   'resources/',
@@ -199,3 +207,35 @@ export const POLICY_FILE_NAME = 'policy.json'
 
 /** Environment variable that can point at an explicit policy file path. */
 export const POLICY_ENV_VAR = 'MCP_JOURNAL_POLICY'
+
+/**
+ * Max serialized (JSON) length of a stored `inputSchema` copy (M4, reversing
+ * the M10 "always drop the schema" decision so the quarantine UI/CLI can show
+ * a structural diff instead of "hashes diverged"). A schema past this cap is
+ * replaced by a top-level summary (property names + required) and the record
+ * is flagged `schemaTruncated`. The schema HASH is still computed on the
+ * original, uncapped descriptor, so truncation never affects detection.
+ */
+export const MAX_STORED_SCHEMA_CHARS = 4096
+
+/**
+ * Max property/required names kept in the summary that replaces an oversized
+ * stored `inputSchema`, and the max characters kept per name. Bounds the
+ * summary itself against a hostile schema with millions of huge names.
+ */
+export const MAX_SCHEMA_SUMMARY_NAMES = 100
+export const MAX_SCHEMA_SUMMARY_NAME_CHARS = 128
+
+/**
+ * Recursion cap for `schema-diff.ts`. Schemas come from an untrusted server;
+ * past this depth the diff stops descending and reports `truncated: true`
+ * instead of recursing without bound (it must never throw).
+ */
+export const SCHEMA_DIFF_MAX_DEPTH = 32
+
+/**
+ * Cap on the number of changes a single schema diff reports. A hostile server
+ * can add thousands of properties in one update; past this cap further
+ * changes are dropped and the diff reports `truncated: true`.
+ */
+export const SCHEMA_DIFF_MAX_CHANGES = 200

@@ -5,6 +5,14 @@ import { formatReadableField } from '../journal/format.js'
 import { POLICY_ENV_VAR, POLICY_FILE_NAME } from '../policy/constants.js'
 import { loadPolicy, PROJECT_POLICY_SUBDIR, type LoadPolicyOptions, type PolicyLoadResult } from '../policy/load.js'
 import type { Policy } from '../policy/schema.js'
+import {
+  ENTRY_POINTS,
+  isEntryPoint,
+  resolvePolicySource,
+  type EntryPoint,
+  type ResolvedPolicySource,
+} from '../policy/source.js'
+import { policyFlagRefusal, policySourceIgnoredNote } from './connect-constants.js'
 
 /**
  * `policy validate|show` -- operator-facing inspection of the resolved
@@ -40,7 +48,11 @@ const VALIDATE_USAGE = `Usage:
 `
 
 const SHOW_USAGE = `Usage:
-  policy show [--server <name>] [--json] [--policy <path>]   Print the effective policy (defaults applied)
+  policy show [--server <name>] [--json] [--policy <path>] [--entry-point <name>]
+                                Print the effective policy (defaults applied).
+                                --entry-point ${ENTRY_POINTS.join('|')}
+                                resolves the source the way that entry point does
+                                (see docs/adr/0005-policy-source-resolution.md)
 `
 
 /**
@@ -76,7 +88,7 @@ function reportValidateResult(result: PolicyLoadResult, io: PolicyCliIo, opts: P
     return 0
   }
   if (result.status === 'disabled') {
-    io.stderr.write(`${formatSearchedLocations(opts)}\n`)
+    io.stderr.write(`${formatSearchedLocations(opts, undefined)}\n`)
     return 1
   }
   io.stderr.write(formatErrorLines(result))
@@ -96,7 +108,14 @@ function formatErrorLines(result: Extract<PolicyLoadResult, { status: 'error' }>
  * `'disabled'` when missing, so items 1 and 2 below are always "not given" /
  * "not set" whenever this message is shown.
  */
-function formatSearchedLocations(opts: PolicyCliOptions): string {
+function formatSearchedLocations(
+  opts: PolicyCliOptions,
+  resolution: ResolvedPolicySource | undefined,
+): string {
+  if (resolution !== undefined) {
+    return formatEntryPointSearch(resolution)
+  }
+
   const cwd = opts.cwd ?? process.cwd()
   const journalDir = opts.journalDir ?? JOURNAL_DIR
   const projectPath = resolve(cwd, join(PROJECT_POLICY_SUBDIR, POLICY_FILE_NAME))
@@ -108,6 +127,25 @@ function formatSearchedLocations(opts: PolicyCliOptions): string {
     `  2. $${POLICY_ENV_VAR} (environment variable) -- not set`,
     `  3. ${projectPath}`,
     `  4. ${homePath}`,
+  ].join('\n')
+}
+
+/**
+ * The "nothing found" view for `--entry-point`: the candidate list comes from
+ * the resolution itself, so an `agent-launched` entry point is never shown
+ * locations it would refuse to read.
+ */
+function formatEntryPointSearch(resolution: ResolvedPolicySource): string {
+  const searched = resolution.candidates.map(
+    (candidate, index) => `  ${index + 1}. ${candidate.path}`,
+  )
+  const ignored = resolution.ignored.map(
+    (source) => `  ignored (${resolution.trustClass} entry point): ${source.descriptor}`,
+  )
+  return [
+    `no policy file found for entry point "${resolution.entryPoint}" (${resolution.trustClass}). Searched, in order:`,
+    ...searched,
+    ...ignored,
   ].join('\n')
 }
 
@@ -126,6 +164,7 @@ export async function runPolicyShow(
   let server: string | undefined
   let json: boolean
   let explicitPath: string | undefined
+  let entryPoint: EntryPoint | undefined
   try {
     const parsed = parseArgs({
       args: [...args],
@@ -133,6 +172,7 @@ export async function runPolicyShow(
         server: { type: 'string' },
         json: { type: 'boolean', default: false },
         policy: { type: 'string' },
+        'entry-point': { type: 'string' },
       },
       allowPositionals: true,
       strict: true,
@@ -140,18 +180,21 @@ export async function runPolicyShow(
     server = parsed.values.server
     json = parsed.values.json === true
     explicitPath = parsed.values.policy
+    entryPoint = parseEntryPoint(parsed.values['entry-point'])
   } catch {
     io.stderr.write(SHOW_USAGE)
     return 1
   }
 
-  const result = await loadPolicy({
-    ...opts,
-    ...(explicitPath !== undefined ? { explicitPath } : {}),
-  })
+  const source = await resolveShowSource({ entryPoint, explicitPath }, io, opts)
+  if (source.status === 'refused') {
+    return 1
+  }
+
+  const result = await loadPolicy(source.loadOptions)
 
   if (result.status === 'disabled') {
-    io.stderr.write(`${formatSearchedLocations(opts)}\n`)
+    io.stderr.write(`${formatSearchedLocations(opts, source.resolution)}\n`)
     return 1
   }
   if (result.status === 'error') {
@@ -159,13 +202,75 @@ export async function runPolicyShow(
     return 1
   }
 
-  return reportLoadedShow(result.sourcePath, result.policy, { server, json }, io)
+  return reportLoadedShow(result.sourcePath, result.policy, { server, json, resolution: source.resolution }, io)
+}
+
+/** Throws (into the usage handler above) on a name that is not an entry point: CLI input is untrusted. */
+function parseEntryPoint(raw: string | undefined): EntryPoint | undefined {
+  if (raw === undefined) return undefined
+  if (!isEntryPoint(raw)) {
+    throw new Error(`unknown entry point: expected one of ${ENTRY_POINTS.join(', ')}`)
+  }
+  return raw
+}
+
+type ShowSource =
+  | { readonly status: 'refused' }
+  | {
+      readonly status: 'resolved'
+      readonly loadOptions: LoadPolicyOptions
+      readonly resolution: ResolvedPolicySource | undefined
+    }
+
+/**
+ * Without `--entry-point`, `policy show` resolves the way it always has (this
+ * command is itself operator-launched). With it, resolution is delegated to
+ * `policy/source.ts` so the printed source is the one that entry point would
+ * really load -- including its refusals and its ignored-source notes, which is
+ * the whole point of the flag (ADR-0005).
+ */
+async function resolveShowSource(
+  view: { readonly entryPoint: EntryPoint | undefined; readonly explicitPath: string | undefined },
+  io: PolicyCliIo,
+  opts: PolicyCliOptions,
+): Promise<ShowSource> {
+  if (view.entryPoint === undefined) {
+    return {
+      status: 'resolved',
+      loadOptions: { ...opts, ...(view.explicitPath !== undefined ? { explicitPath: view.explicitPath } : {}) },
+      resolution: undefined,
+    }
+  }
+
+  const journalDir = opts.journalDir ?? JOURNAL_DIR
+  const resolution = await resolvePolicySource({
+    entryPoint: view.entryPoint,
+    journalDir,
+    ...(opts.env !== undefined ? { env: opts.env } : {}),
+    ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+    ...(opts.readFile !== undefined ? { readFile: opts.readFile } : {}),
+    ...(view.explicitPath !== undefined ? { explicitPath: view.explicitPath } : {}),
+    notes: { write: (chunk) => io.stderr.write(chunk), render: policySourceIgnoredNote },
+  })
+
+  if (resolution.status === 'refused') {
+    io.stderr.write(policyFlagRefusal(journalDir))
+    return { status: 'refused' }
+  }
+  return { status: 'resolved', loadOptions: resolution.loadOptions, resolution }
+}
+
+interface ShowView {
+  readonly server: string | undefined
+  readonly json: boolean
+  /** Present only when `--entry-point` was given; adds the entry point and its trust class to the output. */
+  readonly resolution: ResolvedPolicySource | undefined
 }
 
 function reportLoadedShow(
   sourcePath: string,
   policy: Policy,
-  view: { readonly server: string | undefined; readonly json: boolean },
+  view: ShowView,
   io: PolicyCliIo,
 ): number {
   if (view.server !== undefined && policy.servers?.[view.server] === undefined) {
@@ -173,12 +278,17 @@ function reportLoadedShow(
     return 1
   }
 
+  const entry =
+    view.resolution !== undefined
+      ? { entryPoint: view.resolution.entryPoint, trustClass: view.resolution.trustClass }
+      : {}
+
   if (view.json) {
-    io.stdout.write(`${JSON.stringify({ sourcePath, policy })}\n`)
+    io.stdout.write(`${JSON.stringify({ ...entry, sourcePath, policy })}\n`)
     return 0
   }
 
-  io.stdout.write(formatReadableShow(sourcePath, policy, view.server))
+  io.stdout.write(formatReadableShow(sourcePath, policy, view.server, view.resolution))
   return 0
 }
 
@@ -194,8 +304,16 @@ function formatUnknownServer(server: string, policy: Policy): string {
   return `Unknown server "${formatReadableField(server)}". Known servers: ${knownList}\n`
 }
 
-function formatReadableShow(sourcePath: string, policy: Policy, serverFilter: string | undefined): string {
+function formatReadableShow(
+  sourcePath: string,
+  policy: Policy,
+  serverFilter: string | undefined,
+  resolution: ResolvedPolicySource | undefined,
+): string {
   const lines = [
+    ...(resolution !== undefined
+      ? [`entry point: ${resolution.entryPoint} (${resolution.trustClass})`]
+      : []),
     `source: ${sourcePath}`,
     `defaultDecision: ${policy.defaultDecision}`,
     `classDefaults: ${JSON.stringify(policy.classDefaults ?? {})}`,

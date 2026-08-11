@@ -161,7 +161,11 @@ describe('M10: unbounded inventory growth is capped, fail closed', () => {
     expect(Object.keys(stored).length).toBeLessThanOrEqual(MAX_QUARANTINED_TOOLS_PER_SERVER)
   })
 
-  test('inputSchema is dropped from the stored copy but a schema change is still detected via the hash', async () => {
+  // M4 (Task 5) reversed the M10 "always drop inputSchema" decision: the
+  // stored copy now keeps a redacted, capped schema so the quarantine card can
+  // show a structural diff. The security guarantee of this test is unchanged:
+  // detection runs on the HASH of the original descriptor, never on the copy.
+  test('a stored (capped) inputSchema copy never weakens hash-based change detection', async () => {
     const inventory = createInventory('srv', { storePath })
     await inventory.observeToolsList([{ name: 't', inputSchema: { type: 'object', v: 1 } }])
     await inventory.approve('t')
@@ -172,7 +176,7 @@ describe('M10: unbounded inventory growth is capped, fail closed', () => {
 
     expect(changed.changed).toEqual(['t'])
     const stored = (await readStore(storePath)).servers['srv']?.quarantined['t']
-    expect(stored?.descriptor.inputSchema).toBeUndefined()
+    expect(stored?.descriptor.inputSchema).toEqual({ type: 'object', v: 2 })
   })
 
   test('an oversized descriptor is stored capped (annotations dropped past the byte cap)', async () => {

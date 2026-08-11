@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { DEFAULT_APPROVAL_TIMEOUT_MS, POLICY_ENV_VAR } from '../../src/policy/constants.js'
 import { formatPolicyErrors, loadPolicy } from '../../src/policy/load.js'
 import { policySchema } from '../../src/policy/schema.js'
+import { resolvePolicySource } from '../../src/policy/source.js'
 
 /** Minimal document that satisfies the schema: everything else has a default. */
 const VALID_POLICY_JSON = JSON.stringify({ version: 1 })
@@ -221,6 +222,58 @@ describe('loadPolicy: default cwd/env', () => {
     const result = await loadPolicy()
 
     expect(['disabled', 'loaded', 'error']).toContain(result.status)
+  })
+})
+
+/**
+ * `policy/source.ts` advertises the resolution order to operators (`policy
+ * show --entry-point`) from its own candidate table, while `loadPolicy` reads
+ * from its own. These tests pin the two together: an advertised order that
+ * drifts from the loaded one is exactly the "where did this allow come from?"
+ * failure the single-source rule exists to prevent (ADR-0005).
+ */
+describe('advertised candidates match what loadPolicy actually reads', () => {
+  test('operator entry: the first existing candidate is the file that loads, at every level', async () => {
+    const explicitPath = join(tempDir, 'explicit-policy.json')
+    const envPath = join(tempDir, 'env-policy.json')
+    await writeFile(explicitPath, VALID_POLICY_JSON, 'utf8')
+    await writeFile(envPath, VALID_POLICY_JSON, 'utf8')
+    await writeProjectPolicy()
+    await writeHomePolicy()
+
+    const cases = [
+      { args: { explicitPath, env: { [POLICY_ENV_VAR]: envPath } }, expected: explicitPath },
+      { args: { env: { [POLICY_ENV_VAR]: envPath } }, expected: envPath },
+      { args: { env: {} }, expected: projectPolicyPath() },
+    ]
+
+    for (const { args, expected } of cases) {
+      const resolution = await resolvePolicySource({ entryPoint: 'serve', cwd, journalDir, ...args })
+      expect(resolution.status).toBe('resolved')
+      if (resolution.status !== 'resolved') return
+      const result = await loadPolicy(resolution.loadOptions)
+
+      expect(resolution.candidates[0]?.path).toBe(expected)
+      expect(result.status === 'loaded' && result.sourcePath).toBe(expected)
+    }
+  })
+
+  test('agent-launched entry: the loaded file is one of the advertised state-directory candidates', async () => {
+    const homePath = await writeHomePolicy()
+    await writeProjectPolicy()
+
+    const resolution = await resolvePolicySource({
+      entryPoint: 'connect',
+      cwd,
+      journalDir,
+      env: { [POLICY_ENV_VAR]: homePath },
+    })
+    expect(resolution.status).toBe('resolved')
+    if (resolution.status !== 'resolved') return
+    const result = await loadPolicy(resolution.loadOptions)
+
+    expect(result.status === 'loaded' && result.sourcePath).toBe(homePath)
+    expect(resolution.candidates.map((candidate) => candidate.path)).toContain(homePath)
   })
 })
 

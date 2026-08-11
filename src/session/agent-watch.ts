@@ -76,6 +76,15 @@ export function startAgentWatch(deps: AgentWatchDeps): AgentWatch {
     agentName: record.name,
     isGranted: (tool: string) => currentScope.isGranted(tool),
     filterVisible: (tools: readonly string[]) => currentScope.filterVisible(tools),
+    // The method-grant dimension (M4 Task 6) delegates the same way, so a
+    // resources/prompts grant edit takes effect on the next poll, exactly
+    // like a tools edit.
+    methodGrants: Object.freeze({
+      isResourceGranted: (uri: string) => currentScope.methodGrants.isResourceGranted(uri),
+      isPromptGranted: (name: string) => currentScope.methodGrants.isPromptGranted(name),
+      hasResourcesGrant: () => currentScope.methodGrants.hasResourcesGrant(),
+      hasPromptsGrant: () => currentScope.methodGrants.hasPromptsGrant(),
+    }),
   })
 
   async function poll(): Promise<void> {
