@@ -13,8 +13,13 @@ import { CONTENT_SECURITY_POLICY } from './constants.js'
  *   'none'`.
  * - `X-Content-Type-Options: nosniff`: a JSON/asset response is never
  *   re-interpreted as HTML by content sniffing.
- * - `Referrer-Policy: no-referrer`: a session URL never leaks to any other
- *   origin (there are none, but defense in depth).
+ * - `Referrer-Policy: same-origin`: a session URL never leaks to any OTHER
+ *   origin, while same-origin requests keep their referrer. It must NOT be
+ *   tightened to `no-referrer`: per the Fetch spec a document under
+ *   `no-referrer` serializes the `Origin` header of its form POSTs as `null`,
+ *   which our own Origin screening rejects (opaque origins are a CSRF
+ *   surface) — locking every Chromium browser out of `/login`. Found by the
+ *   manual smoke 2026-08-11 (docs/smoke-m4.md); pinned by the hardening test.
  * - `X-Frame-Options: DENY`: belt-and-braces clickjacking cover for the same
  *   surface `frame-ancestors 'none'` protects, for older agents.
  */
@@ -22,7 +27,7 @@ export function securityHeaders(): Record<string, string> {
   return {
     'content-security-policy': CONTENT_SECURITY_POLICY,
     'x-content-type-options': 'nosniff',
-    'referrer-policy': 'no-referrer',
+    'referrer-policy': 'same-origin',
     'x-frame-options': 'DENY',
   }
 }

@@ -422,7 +422,12 @@ describe('security headers', () => {
     ]) {
       expect(res.headers.get('content-security-policy')).toBe(CONTENT_SECURITY_POLICY)
       expect(res.headers.get('x-content-type-options')).toBe('nosniff')
-      expect(res.headers.get('referrer-policy')).toBe('no-referrer')
+      // MUST be same-origin, never no-referrer: per the Fetch spec, a document
+      // under `Referrer-Policy: no-referrer` serializes the Origin header of
+      // its form POSTs as `null` — which our own Origin screening rejects,
+      // locking every Chromium browser out of /login (found by manual smoke
+      // 2026-08-11, docs/smoke-m4.md).
+      expect(res.headers.get('referrer-policy')).toBe('same-origin')
       await res.text()
     }
   })

@@ -144,7 +144,7 @@ describe('composed SSE seam', () => {
     // …together with the security headers, on the SAME response.
     expect(res.headers['content-security-policy']).toBe(CONTENT_SECURITY_POLICY)
     expect(res.headers['x-content-type-options']).toBe('nosniff')
-    expect(res.headers['referrer-policy']).toBe('no-referrer')
+    expect(res.headers['referrer-policy']).toBe('same-origin')
     // The hub actually registered the stream — no throw, no destroyed socket.
     expect(started.hub.subscriberCount()).toBe(1)
   })
