@@ -206,3 +206,30 @@ describe('transport modules stay ignorant of JSON-RPC/MCP semantics', () => {
     expect(isForbiddenSpecifier('../protocol/split.js')).toBe(false)
   })
 })
+
+/**
+ * `src/net/**` is the module both HTTP fronts (agent-facing `serve`, admin UI
+ * in M4) may import without pulling in transport machinery — which only holds
+ * while it depends on nothing but the platform. Any project-internal import
+ * would re-create the coupling the module exists to avoid.
+ */
+describe('src/net stays dependency-free', () => {
+  test.each(collectTransportFiles(PROJECT_ROOT, ['src/net'], new Set()))(
+    '%s imports only node:* modules',
+    (relativePath) => {
+      const source = readFileSync(join(PROJECT_ROOT, relativePath), 'utf8')
+
+      const offending = importSpecifiersOf(source).filter(
+        (specifier) => !specifier.startsWith('node:'),
+      )
+
+      expect(offending).toEqual([])
+    },
+  )
+
+  test('the net directory is present and covered (the rule is not vacuous)', () => {
+    expect(collectTransportFiles(PROJECT_ROOT, ['src/net'], new Set())).toContain(
+      'src/net/origin-host.ts',
+    )
+  })
+})

@@ -27,12 +27,30 @@ export function hashToken(token: string): string {
 }
 
 /**
+ * Floor on a token's entropy: 16 bytes = 128 bits, the accepted minimum for
+ * a bearer credential. `generateToken` refuses anything below it so a future
+ * caller binding its own parameters cannot silently mint a guessable token.
+ */
+export const MIN_TOKEN_RANDOM_BYTES = 16
+
+/**
  * Mints a new token — `prefix` followed by `randomByteCount` CSPRNG bytes as
  * base64url — and its hash. The caller owns both parameters (agent and admin
  * tokens each bind their own), so a leaked token's prefix identifies which
- * store it opens, the same way `ghp_`/`sk-` prefixes do.
+ * store it opens, the same way `ghp_`/`sk-` prefixes do. Both parameters are
+ * guarded: entropy below `MIN_TOKEN_RANDOM_BYTES` or an empty prefix (an
+ * unattributable token no secret scanner can flag) throws instead of minting.
  */
 export function generateToken(prefix: string, randomByteCount: number): GeneratedToken {
+  if (randomByteCount < MIN_TOKEN_RANDOM_BYTES) {
+    throw new Error(
+      `generateToken: randomByteCount ${randomByteCount} is below the ` +
+        `${MIN_TOKEN_RANDOM_BYTES}-byte floor for a bearer credential`,
+    )
+  }
+  if (prefix.length === 0) {
+    throw new Error('generateToken: prefix must be non-empty (it attributes a leaked token)')
+  }
   const token = `${prefix}${randomBytes(randomByteCount).toString('base64url')}`
   return { token, hash: hashToken(token) }
 }

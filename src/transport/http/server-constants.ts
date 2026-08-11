@@ -15,12 +15,25 @@ export const DEFAULT_HTTP_HOST = '127.0.0.1'
 /**
  * Hostnames considered local for the bind warning AND for the default Origin
  * allowlist (spec matrix §4.2: DNS rebinding targets localhost, so localhost
- * origins are the only ones allowed by default).
+ * origins are the only ones allowed by default). Re-exported from
+ * `src/net/origin-host.ts` — the single source of the list — so the screening
+ * side and the transport side can never drift apart (M4 review fix; the
+ * import direction transport → net is already established by `server.ts`).
  */
-export const LOCALHOST_HOSTNAMES: readonly string[] = ['127.0.0.1', 'localhost', '::1', '[::1]']
+export { LOCALHOST_HOSTNAMES } from '../../net/origin-host.js'
 
 /** Warning printed to stderr when `listen` binds a non-localhost host. */
 export const NON_LOCALHOST_BIND_WARNING = '[http] binding to non-localhost host; put TLS in front'
+
+/**
+ * Additional warning for a WILDCARD bind (`0.0.0.0`, `::`): the bind address
+ * is not a meaningful Host value, so Host screening admits only localhost
+ * names and explicit allowlist entries — without `--allowed-host`, every
+ * remote client is answered 403 no matter what token it carries.
+ */
+export const WILDCARD_BIND_WARNING =
+  '[http] wildcard bind: Host screening admits only localhost names and explicit ' +
+  'allowlist entries; remote clients will get 403 unless --allowed-host names them'
 
 /** Cap on one POST request body; larger → 413 (DoS bound, mirrors MAX_UPSTREAM_RESPONSE_BYTES). */
 export const MAX_REQUEST_BODY_BYTES = 8 * 1024 * 1024

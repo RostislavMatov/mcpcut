@@ -1,4 +1,5 @@
 import { rm } from 'node:fs/promises'
+import { request as httpRequest } from 'node:http'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
 import type { AgentRecord } from '../../src/agents/schema.js'
@@ -567,4 +568,64 @@ describe('runServe: live-session behaviour', () => {
 
     expect(response.status).toBe(200)
   })
+
+  test('--allowed-host admits a reverse-proxy Host name; others still answer 403', async () => {
+    const fixture = await startServe({
+      grant: '*',
+      argv: ['--allowed-host', 'mcp.internal.example'],
+    })
+    await addStdioServer(fixture, POLICY_SERVER)
+
+    const allowed = await rawHostPost(fixture, 'mcp.internal.example')
+    const refused = await rawHostPost(fixture, 'other.internal.example')
+
+    expect(allowed.status).toBe(200)
+    expect(refused.status).toBe(403)
+    expect(refused.body).toBe('{"error":"forbidden"}')
+  })
+
+  test('without --allowed-host a foreign Host name answers 403 (flag is the only way in)', async () => {
+    const fixture = await startServe({ grant: '*' })
+    await addStdioServer(fixture, POLICY_SERVER)
+
+    const refused = await rawHostPost(fixture, 'mcp.internal.example')
+
+    expect(refused.status).toBe(403)
+  })
 })
+
+/**
+ * `node:http` POST with full control over the Host header — `fetch` treats
+ * `Host` as a forbidden header and silently drops overrides, so the CLI flag
+ * cannot be exercised through the fixture's own `post`.
+ */
+function rawHostPost(
+  fixture: { readonly handle: { readonly port: number }; readonly path: string; readonly token: string },
+  hostHeader: string,
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      {
+        host: '127.0.0.1',
+        port: fixture.handle.port,
+        path: fixture.path,
+        method: 'POST',
+        setHost: false,
+        headers: {
+          host: hostHeader,
+          authorization: `Bearer ${fixture.token}`,
+          'content-type': 'application/json',
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = []
+        res.on('data', (chunk: Buffer) => chunks.push(chunk))
+        res.on('end', () =>
+          resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }),
+        )
+      },
+    )
+    req.on('error', reject)
+    req.end(INITIALIZE_BODY)
+  })
+}

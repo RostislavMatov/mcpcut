@@ -132,6 +132,12 @@ export interface AgentsStoreOptions {
   readonly journalDir?: string
   /** Clock override for deterministic timestamps in tests. */
   readonly clock?: () => Date
+  /**
+   * Receives the lock's forced-removal warning line (see `src/lockfile.ts`).
+   * Threaded from callers that own a diagnostics sink (CLI `io.stderr`);
+   * defaults to `process.stderr` inside the lock module.
+   */
+  readonly warn?: (line: string) => void
 }
 
 const EMPTY_FILE: AgentsFile = { version: 1, agents: {} }
@@ -205,6 +211,7 @@ export function createAgentsStore(opts: AgentsStoreOptions = {}): AgentsStore {
   const store: JsonStore<AgentsFile> = createJsonStore(join(journalDir, AGENTS_FILE_NAME), {
     validate: validateAgentsFile,
     defaultValue: EMPTY_FILE,
+    ...(opts.warn !== undefined ? { lock: { warn: opts.warn } } : {}),
   })
 
   async function createAgent(name: string): Promise<CreatedAgent> {

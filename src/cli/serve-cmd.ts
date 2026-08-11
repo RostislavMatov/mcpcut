@@ -108,6 +108,7 @@ interface ServeFlags {
   readonly policyPath: string | undefined
   readonly failClosed: boolean
   readonly allowedOrigins: readonly string[]
+  readonly allowedHosts: readonly string[]
 }
 
 type FlagResult = { readonly flags: ServeFlags } | { readonly error: string }
@@ -124,6 +125,7 @@ function parseServeFlags(argv: readonly string[]): FlagResult {
         policy: { type: 'string' },
         'fail-closed': { type: 'boolean', default: false },
         'allowed-origin': { type: 'string', multiple: true },
+        'allowed-host': { type: 'string', multiple: true },
       },
       allowPositionals: false,
       strict: true,
@@ -150,6 +152,9 @@ function parseServeFlags(argv: readonly string[]): FlagResult {
       failClosed: values['fail-closed'] === true,
       allowedOrigins: Array.isArray(values['allowed-origin'])
         ? (values['allowed-origin'] as string[])
+        : [],
+      allowedHosts: Array.isArray(values['allowed-host'])
+        ? (values['allowed-host'] as string[])
         : [],
     },
   }
@@ -232,9 +237,15 @@ function buildFront(
   policy: Policy,
   journalDir: string,
 ): HttpFront {
-  const agents = opts.stores?.agents ?? createAgentsStore({ journalDir })
-  const registry = opts.stores?.registry ?? createRegistryStore(journalDir)
-  const vault = opts.stores?.vault ?? createVaultStore({ journalDir })
+  // The lock's forced-removal warning belongs on THIS run's stderr, not on
+  // whatever `process.stderr` happens to be (M4 review fix: the injectable
+  // `warn` was never threaded by any production caller).
+  const warn = (line: string): void => {
+    io.stderr.write(`${line}\n`)
+  }
+  const agents = opts.stores?.agents ?? createAgentsStore({ journalDir, warn })
+  const registry = opts.stores?.registry ?? createRegistryStore(journalDir, { warn })
+  const vault = opts.stores?.vault ?? createVaultStore({ journalDir, warn })
   const hooks = createServeHooks()
 
   const openSession = createServeSessionFactory({
@@ -270,6 +281,7 @@ function buildFront(
     validateStatelessHeaders: hooks.validateStatelessHeaders,
     expectsResponse: hooks.expectsResponse,
     allowedOrigins: flags.allowedOrigins,
+    allowedHosts: flags.allowedHosts,
     stderr: io.stderr,
   })
 }

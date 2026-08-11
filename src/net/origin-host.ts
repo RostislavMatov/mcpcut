@@ -16,10 +16,10 @@
  */
 
 /**
- * Hostnames considered local. Kept in sync with `LOCALHOST_HOSTNAMES` in
- * `src/transport/http/server-constants.ts` (which cannot import this module
- * being the transport side, nor be imported from here — this module must
- * stay transport-free).
+ * Hostnames considered local — the single source of the list. The transport
+ * side re-exports it (`src/transport/http/server-constants.ts`): transport
+ * already imports this module for the screening functions, while this module
+ * must stay transport-free, so the dependency can only point this way.
  */
 export const LOCALHOST_HOSTNAMES: readonly string[] = ['127.0.0.1', 'localhost', '::1', '[::1]']
 
@@ -79,9 +79,14 @@ interface ParsedHost {
 /**
  * Parses a `Host` header value strictly: it must be nothing but
  * `hostname[:port]`. Userinfo, a path, a query or a fragment — the forms
- * URL parsing would otherwise quietly absorb — make it invalid.
+ * URL parsing would otherwise quietly absorb — make it invalid. A raw `/`
+ * anywhere (URL parsing silently drops a trailing one) and a trailing `:`
+ * (an empty port `URL` treats as no port) are refused up front.
  */
 function parseHostHeader(hostHeader: string): ParsedHost | null {
+  if (hostHeader.includes('/') || hostHeader.endsWith(':')) {
+    return null
+  }
   let parsed: URL
   try {
     parsed = new URL(`http://${hostHeader}`)
@@ -104,24 +109,52 @@ function parseHostHeader(hostHeader: string): ParsedHost | null {
 }
 
 /**
- * Normalizes a bound host to the hostname form `URL` produces: lowercase,
- * IPv6 literals bracketed (`::1` → `[::1]`).
+ * Normalizes a bound host to the CANONICAL hostname form `URL` produces:
+ * lowercase, IPv6 literals bracketed and compressed through the same parser
+ * that canonicalizes the Host header side (`fd00:0:0:0:0:0:0:5` ≡
+ * `[fd00::5]`) — two different spellings of one address must not defeat the
+ * comparison. An IPv6 literal `URL` cannot parse falls back to the plain
+ * bracketed-lowercase form (which then simply never matches a canonical
+ * header — fail closed).
  */
 function normalizeHostname(host: string): string {
   const lowered = host.toLowerCase()
-  if (lowered.includes(':') && !lowered.startsWith('[')) {
-    return `[${lowered}]`
+  if (!lowered.includes(':')) {
+    return lowered
   }
-  return lowered
+  const bare =
+    lowered.startsWith('[') && lowered.endsWith(']') ? lowered.slice(1, -1) : lowered
+  try {
+    return new URL(`http://[${bare}]`).hostname
+  } catch {
+    return lowered.startsWith('[') ? lowered : `[${lowered}]`
+  }
+}
+
+/**
+ * Wildcard bind addresses. A server bound to one of these listens on every
+ * interface, so the bound "host" is not a meaningful Host-header value and
+ * must not enter the comparison: `Host: 0.0.0.0:port` is an alias for
+ * loopback on several stacks (a rebinding-friendly shape), while legitimate
+ * remote clients arrive with a real name that only `extraAllowed` can admit.
+ */
+const WILDCARD_BIND_HOSTNAMES: readonly string[] = ['0.0.0.0', '[::]']
+
+/** True when `host` (as given to `listen`) binds every interface. */
+export function isWildcardBindHost(host: string): boolean {
+  return WILDCARD_BIND_HOSTNAMES.includes(normalizeHostname(host))
 }
 
 /**
  * Host screening, checked BEFORE authentication. Allowed values are: an
- * exact `extraAllowed` entry, or `hostname:port` where the port equals the
- * bound port (a portless header implies 80) and the hostname is the bound
- * host or any localhost name. Everything else — including a missing header
- * — is refused: a request whose Host names a foreign site is the DNS
- * rebinding shape regardless of what credentials it carries.
+ * `extraAllowed` entry (compared case-insensitively — RFC 9110 §4.2.3 makes
+ * host names case-insensitive; ports and the rest must still match exactly),
+ * or `hostname:port` where the port equals the bound port (a portless header
+ * implies 80) and the hostname is the bound host or any localhost name. A
+ * wildcard bind (`0.0.0.0`, `::`) contributes NO hostname of its own: only
+ * localhost names and `extraAllowed` pass. Everything else — including a
+ * missing header — is refused: a request whose Host names a foreign site is
+ * the DNS rebinding shape regardless of what credentials it carries.
  */
 export function isHostAllowed(
   hostHeader: string | undefined,
@@ -130,15 +163,19 @@ export function isHostAllowed(
   if (hostHeader === undefined) {
     return false
   }
-  if (opts.extraAllowed.includes(hostHeader)) {
+  const headerLowered = hostHeader.toLowerCase()
+  if (opts.extraAllowed.some((entry) => entry.toLowerCase() === headerLowered)) {
     return true
   }
   const parsed = parseHostHeader(hostHeader)
   if (parsed === null || parsed.port !== opts.port) {
     return false
   }
-  return (
-    parsed.hostname === normalizeHostname(opts.boundHost) ||
-    LOCALHOST_HOSTNAMES.includes(parsed.hostname)
-  )
+  if (LOCALHOST_HOSTNAMES.includes(parsed.hostname)) {
+    return true
+  }
+  if (isWildcardBindHost(opts.boundHost)) {
+    return false
+  }
+  return parsed.hostname === normalizeHostname(opts.boundHost)
 }

@@ -41,7 +41,7 @@ export const MAX_TCP_PORT = 65_535
 
 export const SERVE_USAGE = `Usage:
   mcp-journal serve [--port ${DEFAULT_SERVE_PORT}] [--host ${DEFAULT_SERVE_HOST}] [--policy <path>] [--fail-closed]
-                    [--allowed-origin <origin>]...
+                    [--allowed-origin <origin>]... [--allowed-host <host[:port]>]...
                                          Run the control plane's HTTP front for HTTP agents
 `
 

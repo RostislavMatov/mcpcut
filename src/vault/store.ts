@@ -89,6 +89,12 @@ export interface VaultStoreOptions {
   readonly journalDir?: string
   /** Clock for createdAt/updatedAt. Defaults to `Date.now`. Injectable for tests. */
   readonly now?: () => number
+  /**
+   * Receives the lock's forced-removal warning line (see `src/lockfile.ts`).
+   * Threaded from callers that own a diagnostics sink (CLI `io.stderr`);
+   * omitted, the lock module falls back to its process-wide default sink.
+   */
+  readonly warn?: (line: string) => void
 }
 
 export { VaultCorruptError } from './codec.js'
@@ -113,14 +119,19 @@ export function createVaultStore(opts: VaultStoreOptions = {}): VaultStore {
   let queue: Promise<void> = Promise.resolve()
 
   function runGuarded<T>(fn: () => Promise<T>): Promise<T | VaultFailure> {
+    const lockOptions = opts.warn !== undefined ? { warn: opts.warn } : {}
     const task = queue.then(() =>
-      withVaultLock(lockPath, async () => {
-        try {
-          return await fn()
-        } catch (error: unknown) {
-          return toFailure(error)
-        }
-      }),
+      withVaultLock(
+        lockPath,
+        async () => {
+          try {
+            return await fn()
+          } catch (error: unknown) {
+            return toFailure(error)
+          }
+        },
+        lockOptions,
+      ),
     )
     queue = task.then(
       () => undefined,

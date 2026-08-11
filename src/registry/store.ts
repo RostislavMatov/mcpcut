@@ -63,10 +63,23 @@ function ownRecord(servers: RegistryFile['servers'], name: string): ServerRecord
   return Object.hasOwn(servers, name) ? servers[name] : undefined
 }
 
-export function createRegistryStore(journalDir?: string): RegistryStore {
+export interface RegistryStoreOptions {
+  /**
+   * Receives the lock's forced-removal warning line (see `src/lockfile.ts`).
+   * Threaded from callers that own a diagnostics sink (CLI `io.stderr`);
+   * defaults to `process.stderr` inside the lock module.
+   */
+  readonly warn?: (line: string) => void
+}
+
+export function createRegistryStore(
+  journalDir?: string,
+  opts: RegistryStoreOptions = {},
+): RegistryStore {
   const store: JsonStore<RegistryFile> = createJsonStore(registryFilePath(journalDir), {
     validate: validateRegistry,
     defaultValue: EMPTY_REGISTRY,
+    ...(opts.warn !== undefined ? { lock: { warn: opts.warn } } : {}),
   })
 
   async function addServer(record: ServerRecord): Promise<ServerRecord> {

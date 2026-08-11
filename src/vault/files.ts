@@ -240,10 +240,18 @@ export function decodeBase64Buffer(input: Uint8Array): Buffer | null {
  * `vault.enc` of another and every secret in the vault undecryptable. A
  * `VaultLockError` after the fact is not a repair, but it is the difference
  * between a loud inconsistency and a silent one.
+ *
+ * `options.warn` routes the lock's forced-removal line to the caller's own
+ * sink (a CLI's `io.stderr`) instead of the lock module's process-wide
+ * default sink.
  */
-export async function withVaultLock<T>(lockPath: string, fn: () => Promise<T>): Promise<T> {
+export async function withVaultLock<T>(
+  lockPath: string,
+  fn: () => Promise<T>,
+  options: Pick<Partial<FileLockOptions>, 'warn'> = {},
+): Promise<T> {
   await ensureDir(dirname(lockPath))
-  const handle = await acquireFileLock(lockPath, LOCK_OPTIONS)
+  const handle = await acquireFileLock(lockPath, { ...LOCK_OPTIONS, ...options })
   if (handle === null) throw new VaultLockError(lockPath)
   try {
     const result = await fn()
