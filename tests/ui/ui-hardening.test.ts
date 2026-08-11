@@ -1,0 +1,415 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { request as httpRequest, type ServerResponse } from 'node:http'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, test } from 'vitest'
+import { createAdminStore, type AdminStore } from '../../src/admin/store.js'
+import { ROUTE_TABLE, roleSatisfies, type RouteEntry, type Role } from '../../src/ui/authz.js'
+import { REQUIRED_HANDLER_KEYS, type UiHandlers } from '../../src/ui/routes.js'
+import { createUiServer, type UiServer, type UiServerOptions } from '../../src/ui/server.js'
+import { CONTENT_SECURITY_POLICY } from '../../src/ui/constants.js'
+
+/**
+ * Hardening tests for the admin UI HTTP core (M4 Task 9) — written before the
+ * implementation. They pin the security surface: deny-by-default authz across
+ * every route × role, no existence oracle, CSRF, security headers, DNS
+ * rebinding, login rate limiting, session TTL, session-kill on
+ * rotate/remove/role, and the no-token-leak marker.
+ */
+
+interface WarnCapture {
+  readonly lines: string[]
+  write(chunk: string): boolean
+}
+
+function warnCapture(): WarnCapture {
+  const lines: string[] = []
+  return { lines, write: (chunk: string) => (lines.push(chunk), true) }
+}
+
+/** Records every response body so the marker test can scan them all. */
+const seenBodies: string[] = []
+
+function stubHandlers(): UiHandlers {
+  const out: Record<string, UiHandlers[string]> = {}
+  for (const key of REQUIRED_HANDLER_KEYS) {
+    if (key === 'events') {
+      out[key] = () => ({ kind: 'stream', onStream: (res: ServerResponse) => res.end() })
+      continue
+    }
+    out[key] = (ctx) => ({
+      kind: 'response',
+      status: 200,
+      body: `handler:${key} admin:${ctx.session?.adminName ?? 'anon'}`,
+    })
+  }
+  return out
+}
+
+let mutableNow = Date.UTC(2026, 7, 11, 12, 0, 0)
+
+interface Started {
+  readonly base: string
+  readonly server: UiServer
+  readonly adminStore: AdminStore
+  readonly warn: WarnCapture
+  readonly tokens: Record<Role, string>
+  login(token: string): Promise<{ cookie: string; csrf: string; status: number }>
+  dispose(): Promise<void>
+}
+
+async function startUi(overrides: Partial<UiServerOptions> = {}): Promise<Started> {
+  const journalDir = mkdtempSync(join(tmpdir(), 'mcp-ui-hardening-'))
+  const adminStore = createAdminStore({ journalDir })
+  const created = await adminStore.createAdmin('owner-admin', 'owner')
+  const opCreated = await adminStore.createAdmin('op-admin', 'operator')
+  const viewCreated = await adminStore.createAdmin('view-admin', 'viewer')
+  const tokens: Record<Role, string> = {
+    owner: created.token,
+    operator: opCreated.token,
+    viewer: viewCreated.token,
+  }
+  const warn = warnCapture()
+  const server = createUiServer({ adminStore, handlers: stubHandlers(), stderr: warn, ...overrides })
+  const { port } = await server.listen(0)
+  const base = `http://127.0.0.1:${port}`
+
+  async function login(token: string): Promise<{ cookie: string; csrf: string; status: number }> {
+    const res = await fetch(`${base}/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token }),
+    })
+    const setCookie = res.headers.get('set-cookie') ?? ''
+    const cookie = setCookie.split(';')[0] ?? ''
+    const text = await res.text()
+    seenBodies.push(text)
+    let csrf = ''
+    if (res.status === 200) csrf = (JSON.parse(text) as { csrfToken: string }).csrfToken
+    return { cookie, csrf, status: res.status }
+  }
+
+  return {
+    base,
+    server,
+    adminStore,
+    warn,
+    tokens,
+    login,
+    dispose: async () => {
+      await server.close()
+      rmSync(journalDir, { recursive: true, force: true })
+    },
+  }
+}
+
+/** Concrete path for a route pattern (`:id` → `x`, `*` → `app.js`). */
+function pathFor(entry: RouteEntry): string {
+  return entry.pattern
+    .split('/')
+    .map((segment) => {
+      if (segment === '*') return 'app.js'
+      if (segment.startsWith(':')) return 'x'
+      return segment
+    })
+    .join('/')
+}
+
+const ROLES: readonly Role[] = ['owner', 'operator', 'viewer']
+
+/** Raw GET (bypasses `fetch`'s forbidden-header list) returning the status code. */
+function rawGetStatus(port: number, path: string, headers: Record<string, string>): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      { hostname: '127.0.0.1', port, path, method: 'GET', headers },
+      (res) => {
+        res.resume()
+        resolve(res.statusCode ?? 0)
+      },
+    )
+    req.on('error', reject)
+    req.end()
+  })
+}
+
+let started: Started | null = null
+
+afterEach(async () => {
+  await started?.dispose()
+  started = null
+})
+
+describe('deny-by-default role matrix (every route × every role × no session)', () => {
+  test('unlisted routes are 403 for everyone including owner and no session', async () => {
+    started = await startUi()
+    const { cookie } = await started.login(started.tokens.owner)
+    for (const target of ['/nope', '/admins/nope', '/api/secret']) {
+      const anon = await fetch(`${started.base}${target}`)
+      expect(anon.status).toBe(403)
+      const asOwner = await fetch(`${started.base}${target}`, { headers: { cookie } })
+      expect(asOwner.status).toBe(403)
+    }
+  })
+
+  test('protected routes: role below minRole → 403, at/above → not 403, no session → 403', async () => {
+    started = await startUi()
+    const cookies: Record<Role, { cookie: string; csrf: string }> = {
+      owner: await started.login(started.tokens.owner),
+      operator: await started.login(started.tokens.operator),
+      viewer: await started.login(started.tokens.viewer),
+    }
+
+    for (const entry of ROUTE_TABLE) {
+      if (entry.minRole === 'public') continue
+      // Skip logout: exercising it would destroy the session mid-matrix.
+      if (entry.handler === '@logout') continue
+      const path = pathFor(entry)
+      const minRole = entry.minRole
+
+      // No session. Oracle fix: a missing session yields the SAME byte-identical
+      // 403 as an unlisted route (no more 302→/login for GET vs 403 for
+      // unlisted), so a protected route cannot be enumerated without a session.
+      const anon = await fetch(`${started.base}${path}`, { method: entry.method, redirect: 'manual' })
+      expect(anon.status, `no session → ${entry.method} ${path}`).toBe(403)
+
+      // Each role.
+      for (const role of ROLES) {
+        const { cookie, csrf } = cookies[role]
+        const headers: Record<string, string> = { cookie }
+        if (entry.method === 'POST') headers['x-csrf-token'] = csrf
+        const res = await fetch(`${started.base}${path}`, {
+          method: entry.method,
+          headers,
+          redirect: 'manual',
+        })
+        seenBodies.push(await res.text())
+        if (roleSatisfies(role, minRole)) {
+          expect(res.status, `${role} → ${entry.method} ${path}`).not.toBe(403)
+          expect(res.status, `${role} → ${entry.method} ${path}`).not.toBe(401)
+        } else {
+          expect(res.status, `${role} → ${entry.method} ${path}`).toBe(403)
+        }
+      }
+    }
+  })
+
+  test('viewer is refused on every POST route', async () => {
+    started = await startUi()
+    const { cookie, csrf } = await started.login(started.tokens.viewer)
+    // Every POST route a viewer is NOT entitled to (logout is a viewer action).
+    const postRoutes = ROUTE_TABLE.filter(
+      (entry) =>
+        entry.method === 'POST' &&
+        entry.minRole !== 'public' &&
+        !roleSatisfies('viewer', entry.minRole),
+    )
+    for (const entry of postRoutes) {
+      const res = await fetch(`${started.base}${pathFor(entry)}`, {
+        method: 'POST',
+        headers: { cookie, 'x-csrf-token': csrf },
+      })
+      expect(res.status, `viewer POST ${entry.pattern}`).toBe(403)
+    }
+  })
+
+  test('operator is refused on owner-only routes', async () => {
+    started = await startUi()
+    const { cookie, csrf } = await started.login(started.tokens.operator)
+    const ownerRoutes = ROUTE_TABLE.filter((entry) => entry.minRole === 'owner')
+    for (const entry of ownerRoutes) {
+      const headers: Record<string, string> = { cookie }
+      if (entry.method === 'POST') headers['x-csrf-token'] = csrf
+      const res = await fetch(`${started.base}${pathFor(entry)}`, {
+        method: entry.method,
+        headers,
+        redirect: 'manual',
+      })
+      expect(res.status, `operator ${entry.method} ${entry.pattern}`).toBe(403)
+    }
+  })
+})
+
+describe('no session', () => {
+  test('every protected route (incl. POST) is a uniform 403 without a cookie', async () => {
+    started = await startUi()
+    for (const entry of ROUTE_TABLE) {
+      if (entry.minRole === 'public') continue
+      const res = await fetch(`${started.base}${pathFor(entry)}`, {
+        method: entry.method,
+        redirect: 'manual',
+      })
+      // Same 403 as an unlisted route: no existence oracle for the anonymous.
+      expect(res.status, `no session → ${entry.method} ${entry.pattern}`).toBe(403)
+    }
+  })
+
+  test('public routes are reachable without a session', async () => {
+    started = await startUi()
+    const loginPage = await fetch(`${started.base}/login`, { redirect: 'manual' })
+    expect(loginPage.status).toBe(200)
+    const asset = await fetch(`${started.base}/assets/app.js`, { redirect: 'manual' })
+    expect(asset.status).toBe(200)
+  })
+})
+
+describe('login credential handling', () => {
+  test('a wrong token and a non-existent token are byte-identical 401s', async () => {
+    started = await startUi()
+    const wrong = await fetch(`${started.base}/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token: 'mcpa_wrongwrongwrong' }),
+    })
+    const missing = await fetch(`${started.base}/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    expect(wrong.status).toBe(401)
+    expect(missing.status).toBe(401)
+    const a = Buffer.from(await wrong.arrayBuffer())
+    const b = Buffer.from(await missing.arrayBuffer())
+    expect(a.equals(b)).toBe(true)
+  })
+
+  test('N failed logins → 429 and a warn line', async () => {
+    started = await startUi({ loginMaxFailures: 3, loginWindowMs: 60_000 })
+    for (let i = 0; i < 3; i += 1) {
+      const res = await fetch(`${started.base}/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ token: 'mcpa_bad' }),
+      })
+      expect(res.status).toBe(401)
+    }
+    const blocked = await fetch(`${started.base}/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token: 'mcpa_bad' }),
+    })
+    expect(blocked.status).toBe(429)
+    expect(started.warn.lines.some((line) => line.includes('rate limit'))).toBe(true)
+  })
+})
+
+describe('CSRF', () => {
+  test('a POST without a CSRF token is 403 even with a valid session', async () => {
+    started = await startUi()
+    const { cookie } = await started.login(started.tokens.operator)
+    const res = await fetch(`${started.base}/approvals/x/approve`, { method: 'POST', headers: { cookie } })
+    expect(res.status).toBe(403)
+  })
+
+  test('a POST with a wrong CSRF token is 403', async () => {
+    started = await startUi()
+    const { cookie } = await started.login(started.tokens.operator)
+    const res = await fetch(`${started.base}/approvals/x/approve`, {
+      method: 'POST',
+      headers: { cookie, 'x-csrf-token': 'not-the-token' },
+    })
+    expect(res.status).toBe(403)
+  })
+})
+
+describe('security headers', () => {
+  test('every response carries the exact CSP, nosniff and no-referrer', async () => {
+    started = await startUi()
+    const { cookie } = await started.login(started.tokens.viewer)
+    for (const res of [
+      await fetch(`${started.base}/`, { headers: { cookie } }),
+      await fetch(`${started.base}/nope`),
+      await fetch(`${started.base}/login`),
+    ]) {
+      expect(res.headers.get('content-security-policy')).toBe(CONTENT_SECURITY_POLICY)
+      expect(res.headers.get('x-content-type-options')).toBe('nosniff')
+      expect(res.headers.get('referrer-policy')).toBe('no-referrer')
+      await res.text()
+    }
+  })
+})
+
+describe('DNS rebinding (Host/Origin)', () => {
+  test('a foreign Host is 403 before authentication', async () => {
+    started = await startUi()
+    const { cookie } = await started.login(started.tokens.owner)
+    // `fetch` forbids overriding the Host header, so use a raw request.
+    const port = Number(new URL(started.base).port)
+    const status = await rawGetStatus(port, '/', { host: 'evil.com', cookie })
+    expect(status).toBe(403)
+  })
+
+  test('a foreign Origin is 403', async () => {
+    started = await startUi()
+    const { cookie } = await started.login(started.tokens.owner)
+    const res = await fetch(`${started.base}/`, {
+      headers: { cookie, origin: 'https://evil.com' },
+    })
+    expect(res.status).toBe(403)
+  })
+})
+
+describe('session lifecycle', () => {
+  test('a session expires after its TTL', async () => {
+    mutableNow = Date.UTC(2026, 7, 11, 12, 0, 0)
+    started = await startUi({ sessionTtlMs: 1000, clock: () => mutableNow })
+    const { cookie } = await started.login(started.tokens.viewer)
+    const before = await fetch(`${started.base}/`, { headers: { cookie }, redirect: 'manual' })
+    expect(before.status).toBe(200)
+    await before.text()
+    mutableNow += 2000
+    const after = await fetch(`${started.base}/`, { headers: { cookie }, redirect: 'manual' })
+    // An expired session is indistinguishable from none: uniform 403.
+    expect(after.status).toBe(403)
+  })
+
+  test('rotate kills that admin session; other admins keep theirs', async () => {
+    started = await startUi()
+    const op = await started.login(started.tokens.operator)
+    const viewer = await started.login(started.tokens.viewer)
+    await started.adminStore.rotateAdmin('op-admin')
+
+    const opRes = await fetch(`${started.base}/`, { headers: { cookie: op.cookie }, redirect: 'manual' })
+    expect(opRes.status).toBe(403)
+    const viewerRes = await fetch(`${started.base}/`, {
+      headers: { cookie: viewer.cookie },
+      redirect: 'manual',
+    })
+    expect(viewerRes.status).toBe(200)
+    await viewerRes.text()
+  })
+
+  test('remove kills that admin session', async () => {
+    started = await startUi()
+    const op = await started.login(started.tokens.operator)
+    await started.adminStore.removeAdmin('op-admin')
+    const res = await fetch(`${started.base}/`, { headers: { cookie: op.cookie }, redirect: 'manual' })
+    expect(res.status).toBe(403)
+  })
+
+  test('a role change kills the existing session (role mismatch)', async () => {
+    started = await startUi()
+    const viewer = await started.login(started.tokens.viewer)
+    await started.adminStore.setRole('view-admin', 'operator')
+    const res = await fetch(`${started.base}/`, {
+      headers: { cookie: viewer.cookie },
+      redirect: 'manual',
+    })
+    expect(res.status).toBe(403)
+  })
+})
+
+describe('token leak marker', () => {
+  test('no admin token appears in any collected response body or warn log', async () => {
+    started = await startUi()
+    const owner = await started.login(started.tokens.owner)
+    // Exercise a spread of endpoints.
+    await (await fetch(`${started.base}/`, { headers: { cookie: owner.cookie } })).text()
+    await (await fetch(`${started.base}/admins`, { headers: { cookie: owner.cookie } })).text()
+    await (await fetch(`${started.base}/nope`)).text()
+
+    const allText = seenBodies.join('\n') + '\n' + started.warn.lines.join('\n')
+    for (const token of Object.values(started.tokens)) {
+      expect(allText.includes(token)).toBe(false)
+    }
+  })
+})
