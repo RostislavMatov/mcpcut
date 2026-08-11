@@ -9,6 +9,7 @@ import {
   listAllQuarantined,
   rejectTool,
 } from '../../src/policy/inventory.js'
+import { validateInventoryStore } from '../../src/policy/inventory-store.js'
 import type { ToolDescriptor } from '../../src/protocol/mcp.js'
 
 let tempDir: string
@@ -212,6 +213,84 @@ describe('stored descriptor', () => {
     expect(storedDescription).toBeDefined()
     expect(storedDescription!.length).toBeLessThanOrEqual(MAX_STORED_DESCRIPTION_CHARS + 20)
     expect(storedDescription!.startsWith('x'.repeat(100))).toBe(true)
+  })
+})
+
+/**
+ * Review M3: the persisted descriptor is untrusted disk input; a renderer
+ * (`quarantine show`, admin UI) must only ever see the fields the validator
+ * actually checked. A hand-edited store with a non-string `description` or
+ * non-boolean annotation hints must come back cleaned, not double-cast.
+ */
+describe('stored descriptor fields are validated on load (M3)', () => {
+  test('a tampered description/annotation type is dropped, the record itself survives', () => {
+    const raw = {
+      version: 1,
+      servers: {
+        srv: {
+          approved: {
+            read_file: {
+              schemaHash: 'a'.repeat(64),
+              approvedAt: '2026-01-01T00:00:00.000Z',
+              descriptor: {
+                name: 'read_file',
+                description: { nested: 'not a string' },
+                annotations: { readOnlyHint: 'yes', destructiveHint: 1, vendor: 'kept' },
+              },
+            },
+          },
+          quarantined: {
+            new_tool: {
+              schemaHash: 'b'.repeat(64),
+              firstSeenAt: '2026-01-01T00:00:00.000Z',
+              state: 'new',
+              descriptor: { name: 'new_tool', description: 42 },
+            },
+          },
+        },
+      },
+    }
+
+    const store = validateInventoryStore(raw)
+
+    const approved = store.servers['srv']?.approved['read_file']
+    expect(approved?.descriptor?.name).toBe('read_file')
+    expect(approved?.descriptor?.description).toBeUndefined()
+    expect(approved?.descriptor?.annotations?.readOnlyHint).toBeUndefined()
+    expect(approved?.descriptor?.annotations?.destructiveHint).toBeUndefined()
+    expect(approved?.descriptor?.annotations?.['vendor']).toBe('kept')
+
+    const quarantined = store.servers['srv']?.quarantined['new_tool']
+    expect(quarantined?.descriptor.name).toBe('new_tool')
+    expect(quarantined?.descriptor.description).toBeUndefined()
+  })
+
+  test('valid string description and boolean hints round-trip untouched', () => {
+    const raw = {
+      version: 1,
+      servers: {
+        srv: {
+          approved: {},
+          quarantined: {
+            read_file: {
+              schemaHash: 'c'.repeat(64),
+              firstSeenAt: '2026-01-01T00:00:00.000Z',
+              state: 'new',
+              descriptor: {
+                name: 'read_file',
+                description: 'reads a file',
+                annotations: { readOnlyHint: true, destructiveHint: false },
+              },
+            },
+          },
+        },
+      },
+    }
+
+    const record = validateInventoryStore(raw).servers['srv']?.quarantined['read_file']
+
+    expect(record?.descriptor.description).toBe('reads a file')
+    expect(record?.descriptor.annotations).toEqual({ readOnlyHint: true, destructiveHint: false })
   })
 })
 

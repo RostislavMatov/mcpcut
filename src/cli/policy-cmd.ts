@@ -164,7 +164,7 @@ export async function runPolicyShow(
   let server: string | undefined
   let json: boolean
   let explicitPath: string | undefined
-  let entryPoint: EntryPoint | undefined
+  let entryPointRaw: string | undefined
   try {
     const parsed = parseArgs({
       args: [...args],
@@ -180,11 +180,21 @@ export async function runPolicyShow(
     server = parsed.values.server
     json = parsed.values.json === true
     explicitPath = parsed.values.policy
-    entryPoint = parseEntryPoint(parsed.values['entry-point'])
+    entryPointRaw = parsed.values['entry-point']
   } catch {
     io.stderr.write(SHOW_USAGE)
     return 1
   }
+
+  // Validated OUTSIDE the parseArgs catch, so a typo gets an actionable
+  // message instead of the generic usage text. The raw name is untrusted CLI
+  // input and is deliberately not echoed back.
+  if (entryPointRaw !== undefined && !isEntryPoint(entryPointRaw)) {
+    io.stderr.write(`--entry-point: expected one of ${ENTRY_POINTS.join(', ')}\n`)
+    io.stderr.write(SHOW_USAGE)
+    return 1
+  }
+  const entryPoint: EntryPoint | undefined = entryPointRaw
 
   const source = await resolveShowSource({ entryPoint, explicitPath }, io, opts)
   if (source.status === 'refused') {
@@ -203,15 +213,6 @@ export async function runPolicyShow(
   }
 
   return reportLoadedShow(result.sourcePath, result.policy, { server, json, resolution: source.resolution }, io)
-}
-
-/** Throws (into the usage handler above) on a name that is not an entry point: CLI input is untrusted. */
-function parseEntryPoint(raw: string | undefined): EntryPoint | undefined {
-  if (raw === undefined) return undefined
-  if (!isEntryPoint(raw)) {
-    throw new Error(`unknown entry point: expected one of ${ENTRY_POINTS.join(', ')}`)
-  }
-  return raw
 }
 
 type ShowSource =

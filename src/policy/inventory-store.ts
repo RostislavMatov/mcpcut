@@ -185,17 +185,17 @@ function toQuarantinedRecord(raw: unknown): QuarantinedToolRecord | null {
     !isPlainObject(raw) ||
     typeof raw['schemaHash'] !== 'string' ||
     typeof raw['firstSeenAt'] !== 'string' ||
-    (raw['state'] !== 'new' && raw['state'] !== 'changed') ||
-    !isPlainObject(raw['descriptor']) ||
-    typeof raw['descriptor']['name'] !== 'string'
+    (raw['state'] !== 'new' && raw['state'] !== 'changed')
   ) {
     return null
   }
+  const descriptor = toStoredToolDescriptor(raw['descriptor'])
+  if (descriptor === null) return null
   return {
     schemaHash: raw['schemaHash'],
     firstSeenAt: raw['firstSeenAt'],
     state: raw['state'],
-    descriptor: raw['descriptor'] as unknown as ToolDescriptor,
+    descriptor,
     ...(raw['schemaTruncated'] === true ? { schemaTruncated: true } : {}),
     ...(isSurfaceDelta(raw['surfaceDelta']) ? { surfaceDelta: raw['surfaceDelta'] } : {}),
   }
@@ -214,11 +214,39 @@ function isSurfaceDelta(value: unknown): value is SurfaceDelta {
 function optionalDescriptorFields(
   raw: Record<string, unknown>,
 ): Pick<ApprovedToolRecord, 'descriptor' | 'schemaTruncated'> {
-  const descriptorRaw = raw['descriptor']
-  const hasValidDescriptor = isPlainObject(descriptorRaw) && typeof descriptorRaw['name'] === 'string'
+  const descriptor = toStoredToolDescriptor(raw['descriptor'])
   return {
-    ...(hasValidDescriptor ? { descriptor: descriptorRaw as unknown as ToolDescriptor } : {}),
+    ...(descriptor !== null ? { descriptor } : {}),
     ...(raw['schemaTruncated'] === true ? { schemaTruncated: true } : {}),
+  }
+}
+
+/**
+ * Narrows an untrusted descriptor to what `ToolDescriptor` actually PROMISES
+ * (review M3): the store is hand-editable disk input, and a future renderer
+ * (`quarantine show`, admin UI) will trust the typed fields. A non-string
+ * `description` and non-boolean `readOnlyHint`/`destructiveHint` are dropped
+ * (never the whole record); unknown annotation keys stay, as typed. `null`
+ * only for a value that is not a named descriptor at all.
+ */
+export function toStoredToolDescriptor(raw: unknown): ToolDescriptor | null {
+  if (!isPlainObject(raw) || typeof raw['name'] !== 'string') return null
+  const annotations = raw['annotations']
+  return {
+    name: raw['name'],
+    ...(typeof raw['description'] === 'string' ? { description: raw['description'] } : {}),
+    ...('inputSchema' in raw ? { inputSchema: raw['inputSchema'] } : {}),
+    ...(isPlainObject(annotations) ? { annotations: sanitizedAnnotations(annotations) } : {}),
+  }
+}
+
+/** Keeps only boolean hint values on the two typed annotation fields. */
+function sanitizedAnnotations(raw: Record<string, unknown>): NonNullable<ToolDescriptor['annotations']> {
+  const { readOnlyHint, destructiveHint, ...rest } = raw
+  return {
+    ...rest,
+    ...(typeof readOnlyHint === 'boolean' ? { readOnlyHint } : {}),
+    ...(typeof destructiveHint === 'boolean' ? { destructiveHint } : {}),
   }
 }
 

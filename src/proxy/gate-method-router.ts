@@ -11,6 +11,7 @@ import type { Verdict } from './pipeline.js'
 import {
   DROP,
   FORWARD,
+  GATE_ERROR_RULE,
   argsHashOf,
   bookkeepingDecisionInfo,
   createBoundedIdSet,
@@ -40,6 +41,21 @@ const MAX_TRACKED_METHOD_LIST_IDS = 65_536
 
 /** `rule` journaled when the outstanding grant-managed list id tracker had to evict an id. */
 const METHOD_LIST_OVERFLOW_RULE = 'method-list-tracking-overflow'
+
+/**
+ * Cap on removed-subject strings journaled for one filtered listing (review
+ * M5): resource URIs run up to 2048 chars each, so an unbounded `removed`
+ * list would let one hostile listing amplify itself into the journal by
+ * orders of magnitude. Past the cap a `+N more` tail carries the count.
+ */
+const MAX_JOURNALED_REMOVED_SUBJECTS = 20
+
+/** The journal-safe view of a removed-subject list: capped, with a count tail. */
+function capRemovedSubjects(removed: readonly string[]): readonly string[] {
+  if (removed.length <= MAX_JOURNALED_REMOVED_SUBJECTS) return removed
+  const overflow = removed.length - MAX_JOURNALED_REMOVED_SUBJECTS
+  return [...removed.slice(0, MAX_JOURNALED_REMOVED_SUBJECTS), `+${overflow} more`]
+}
 
 /** The structural subset of a classified request this module needs. */
 export interface MethodRequestFrame {
@@ -115,12 +131,34 @@ export function createMethodGrantRouter(deps: MethodGrantRouterDeps): MethodGran
     if (outcome.action === 'fallback') return deps.denyFallback(frame)
     if (outcome.action === 'deny') return denyFrame(frame, outcome)
 
-    writeDecision(methodDecisionInfo(serverName, frame.method, 'allow', outcome), outcome.params)
-    await settleJournal()
+    // The ALLOW path is as fail-closed as the deny path (review H1): a journal
+    // that cannot settle (ENOSPC, EACCES) must never surface as an unhandled
+    // rejection, and must never let the frame through without a durable record.
+    try {
+      writeDecision(methodDecisionInfo(serverName, frame.method, 'allow', outcome), outcome.params)
+      await settleJournal()
+    } catch (error: unknown) {
+      return failClosedOnJournalError(frame, error)
+    }
     if (outcome.list !== undefined && frame.kind === 'request' && frame.id !== null) {
       pendingListIds[outcome.list].add(idKeyOf(frame.id))
     }
     return FORWARD
+  }
+
+  /** Journal failure on an allow path: report, answer a local denial, drop. */
+  async function failClosedOnJournalError(frame: MethodFrame, error: unknown): Promise<Verdict> {
+    onError(error)
+    try {
+      if (frame.kind === 'request') {
+        await answerLocally(frame.id, (sid) =>
+          denialBytesFor(sid, { toolName: frame.method, serverName, rule: GATE_ERROR_RULE }),
+        )
+      }
+    } catch (answerError: unknown) {
+      onError(answerError)
+    }
+    return DROP
   }
 
   /** Same shape as every other local denial: journal, settle, answer (requests only), drop. */
@@ -161,16 +199,28 @@ export function createMethodGrantRouter(deps: MethodGrantRouterDeps): MethodGran
     if (filtered === null || (filtered.removed.length === 0 && filtered.droppedUnreadable === 0)) {
       return FORWARD
     }
-    writeDecision(
-      bookkeepingDecisionInfo(
-        serverName,
-        `${AGENT_METHOD_LIST_FILTERED_RULE_PREFIX}: ${list}/list`,
-        `${list}/list`,
-        filtered.removed,
-      ),
-      { removed: filtered.removed, droppedUnreadable: filtered.droppedUnreadable },
-    )
-    await settleJournal()
+    // Fail closed on journal failure (review H1): a rewritten listing must
+    // not be emitted without its record; the dropped response is retryable.
+    const removedForJournal = capRemovedSubjects(filtered.removed)
+    try {
+      writeDecision(
+        bookkeepingDecisionInfo(
+          serverName,
+          `${AGENT_METHOD_LIST_FILTERED_RULE_PREFIX}: ${list}/list`,
+          `${list}/list`,
+          removedForJournal,
+        ),
+        {
+          removed: removedForJournal,
+          removedCount: filtered.removed.length,
+          droppedUnreadable: filtered.droppedUnreadable,
+        },
+      )
+      await settleJournal()
+    } catch (error: unknown) {
+      onError(error)
+      return DROP
+    }
     return { action: 'emit', bytes: Buffer.from(filtered.serialized, 'utf8') }
   }
 

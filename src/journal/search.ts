@@ -9,7 +9,12 @@ import {
   type JournalReadDeps,
   type SessionFile,
 } from './line-source.js'
-import type { JournalDirection, JournalRecord } from './record.js'
+import type { JournalRecord } from './record.js'
+import {
+  matchesWithNeedle,
+  textNeedleOf,
+  type JournalFilters,
+} from './search-filters.js'
 import { assertValidSessionId } from './session-id.js'
 
 /**
@@ -59,18 +64,8 @@ export const DEADLINE_CHECK_LINE_INTERVAL = 500
 /** Re-exported so a caller gets the whole read layer from one module. */
 export { defaultJournalReadDeps, type JournalFileStat, type JournalReadDeps } from './line-source.js'
 
-/** Filters shared by single-session and cross-session searches. */
-export interface JournalFilters {
-  readonly kind?: string
-  readonly direction?: JournalDirection
-  readonly method?: string
-  /** Tool name of a `decision` record. */
-  readonly toolName?: string
-  /** Policy outcome of a `decision` record. */
-  readonly outcome?: string
-  /** Case-insensitive substring over payload, method and decision fields. */
-  readonly text?: string
-}
+/** Re-exported so filter callers keep one import surface (impl: `search-filters.ts`). */
+export { matchesFilters, type JournalFilters } from './search-filters.js'
 
 export interface SessionPageOptions extends JournalFilters {
   readonly dir?: string
@@ -136,6 +131,7 @@ export async function searchSession(
   const filePath = journalPath(options.dir ?? JOURNAL_DIR, sessionId)
 
   const records: JournalRecord[] = []
+  const textNeedle = textNeedleOf(options)
   let matchedCount = 0
   let scannedLineCount = 0
   let skippedLineCount = 0
@@ -153,7 +149,7 @@ export async function searchSession(
       skippedLineCount += isBlankLine(line) ? 0 : 1
       continue
     }
-    if (!matchesFilters(record, options)) {
+    if (!matchesWithNeedle(record, options, textNeedle)) {
       continue
     }
     matchedCount += 1
@@ -298,6 +294,7 @@ async function scanFileForHits(
   budget: FileScanBudget,
 ): Promise<FileScanOutcome> {
   const hits: CrossSessionHit[] = []
+  const textNeedle = textNeedleOf(filters)
   let bytesRead = 0
   let skippedLineCount = 0
   let linesSinceClockCheck = 0
@@ -308,7 +305,7 @@ async function scanFileForHits(
     const record = parseJournalLine(line)
     if (record === null) {
       skippedLineCount += isBlankLine(line) ? 0 : 1
-    } else if (matchesFilters(record, filters)) {
+    } else if (matchesWithNeedle(record, filters, textNeedle)) {
       hits.push({ sessionId, record })
     }
     if (hits.length >= budget.remainingHits) {
@@ -330,58 +327,6 @@ async function scanFileForHits(
   }
 
   return { hits, bytesRead, skippedLineCount, stoppedBy }
-}
-
-/** True when `record` satisfies every filter that was supplied. */
-export function matchesFilters(record: JournalRecord, filters: JournalFilters): boolean {
-  if (filters.kind !== undefined && record.kind !== filters.kind) {
-    return false
-  }
-  if (filters.direction !== undefined && record.direction !== filters.direction) {
-    return false
-  }
-  if (filters.method !== undefined && record.method !== filters.method) {
-    return false
-  }
-  if (filters.toolName !== undefined && record.decision?.toolName !== filters.toolName) {
-    return false
-  }
-  if (filters.outcome !== undefined && record.decision?.outcome !== filters.outcome) {
-    return false
-  }
-  if (filters.text !== undefined && filters.text.length > 0) {
-    return searchableText(record).includes(filters.text.toLowerCase())
-  }
-  return true
-}
-
-/**
- * The text a substring filter runs against: payload, method and the decision's
- * short fields. Built only when a substring filter is present, because
- * serializing every payload of every scanned record is the expensive part of a
- * text search.
- */
-function searchableText(record: JournalRecord): string {
-  const decision = record.decision
-  const parts = [
-    record.method ?? '',
-    decision === undefined ? '' : `${decision.toolName} ${decision.rule} ${decision.serverName}`,
-    stringifyPayload(record.payload),
-  ]
-  return parts.join(' ').toLowerCase()
-}
-
-function stringifyPayload(payload: unknown): string {
-  if (typeof payload === 'string') {
-    return payload
-  }
-  try {
-    return JSON.stringify(payload) ?? ''
-  } catch {
-    // A payload that cannot be serialized (cyclic, BigInt) is not searchable,
-    // but it must not break the scan it appears in.
-    return ''
-  }
 }
 
 function normalizeOffset(offset: number | undefined): number {

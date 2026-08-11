@@ -1,5 +1,6 @@
 import { matchToolRule } from '../policy/match.js'
 import type { AgentMethodGrants } from './method-grants.js'
+import { resourceUriMatcher } from './resource-match.js'
 import type { AgentRecord } from './schema.js'
 
 export type { AgentMethodGrants } from './method-grants.js'
@@ -15,8 +16,11 @@ export type { AgentMethodGrants } from './method-grants.js'
  * into a rule map and matched with `policy/match.ts`'s `matchToolRule`
  * (exact name wins, else longest trailing-`*` prefix), so grants and policy
  * rules can never drift apart. The M4 method-grant dimension (`resources`/
- * `prompts` fields, `methodGrants` below) reuses the SAME matcher for URIs
- * and prompt names — one pattern syntax across the whole grant dictionary.
+ * `prompts` fields, `methodGrants` below) keeps that matcher for PROMPT
+ * NAMES, but resource URIs go through `resource-match.ts` instead: same
+ * "exact or trailing-`*`" surface syntax, but matched on NORMALIZED URIs
+ * with segment-boundary prefixes, because a lexical prefix over a URI is
+ * traversable (`..`, percent-encoding — see that module's header).
  */
 export interface AgentScope {
   /** True iff the agent's grant for this server covers `tool`. */
@@ -59,6 +63,18 @@ function grantedBy(rules: GrantRules): (subject: string) => boolean {
   return (subject) => matchToolRule(rules, subject) !== null
 }
 
+/**
+ * Membership predicate for the resources dimension: normalized URI matching,
+ * fail-closed on unparseable URIs. `'all'` is total by declaration and skips
+ * parsing — with everything granted there is no prefix boundary to bypass,
+ * and denying odd-but-real resource ids under `'*'` would only break servers.
+ */
+function resourceGrantedBy(rules: GrantRules): (uri: string) => boolean {
+  if (rules === 'all') return () => true
+  if (rules === 'none') return () => false
+  return resourceUriMatcher(Object.keys(rules))
+}
+
 /** Builds the scope for `(agent, server)`. A revoked agent has nothing granted. */
 export function agentScope(agent: AgentRecord, server: string): AgentScope {
   const isGranted = grantedBy(resolveGrantRules(agent, server, 'tools'))
@@ -69,7 +85,7 @@ export function agentScope(agent: AgentRecord, server: string): AgentScope {
     isGranted,
     filterVisible: (tools) => tools.filter(isGranted),
     methodGrants: {
-      isResourceGranted: grantedBy(resourceRules),
+      isResourceGranted: resourceGrantedBy(resourceRules),
       isPromptGranted: grantedBy(promptRules),
       hasResourcesGrant: () => resourceRules !== 'none',
       hasPromptsGrant: () => promptRules !== 'none',

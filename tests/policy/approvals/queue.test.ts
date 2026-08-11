@@ -398,6 +398,78 @@ describe('createApprovalQueue: resolve', () => {
     expect(result.record.resolution).toEqual({ outcome: 'expired' })
   })
 
+  test('H2: a pending file with an unparseable expiresAt can never be resolved to approved', async () => {
+    // The queue files are hand-editable; Date.parse(garbage) is NaN and every
+    // NaN comparison is false, which used to fail OPEN in resolve().
+    const queue = createApprovalQueue({ baseDir })
+    const approvalId = '01HZZZZZZZZZZZZZZZZZZZZZZZ'
+    await mkdir(join(baseDir, 'pending'), { recursive: true })
+    await writeFile(
+      join(baseDir, 'pending', `${approvalId}.json`),
+      JSON.stringify({
+        approvalId,
+        serverName: 'github',
+        toolName: 'create_issue',
+        toolClass: 'write',
+        argsRedacted: {},
+        argsHash: 'a'.repeat(64),
+        sessionId: 'session-1',
+        requestedAt: '2026-01-01T00:00:00.000Z',
+        expiresAt: 'not-a-timestamp',
+      }),
+      'utf8',
+    )
+
+    const result = await queue.resolve(approvalId, { outcome: 'approved', actor: 'alice' })
+
+    expect(result.ok).toBe(false)
+    await expect(access(join(baseDir, 'resolved', `${approvalId}.json`))).rejects.toThrow()
+    // ...and list() does not present it as an actionable pending request either.
+    await expect(queue.list()).resolves.toEqual([])
+  })
+
+  test('H2: a pending file with an unparseable waitExpiresAt is rejected too', async () => {
+    const queue = createApprovalQueue({ baseDir })
+    const approvalId = '01HYYYYYYYYYYYYYYYYYYYYYYY'
+    await mkdir(join(baseDir, 'pending'), { recursive: true })
+    await writeFile(
+      join(baseDir, 'pending', `${approvalId}.json`),
+      JSON.stringify({
+        approvalId,
+        serverName: 'github',
+        toolName: 'create_issue',
+        toolClass: 'write',
+        argsRedacted: {},
+        argsHash: 'a'.repeat(64),
+        sessionId: 'session-1',
+        requestedAt: '2026-01-01T00:00:00.000Z',
+        expiresAt: '2026-01-01T00:01:00.000Z',
+        waitExpiresAt: 'garbage',
+      }),
+      'utf8',
+    )
+
+    await expect(queue.list()).resolves.toEqual([])
+    const result = await queue.resolve(approvalId, { outcome: 'approved' })
+    expect(result.ok).toBe(false)
+  })
+
+  test('H2: resolving exactly at expiresAt is already expired (list and resolve agree on >= )', async () => {
+    let nowMs = Date.UTC(2026, 0, 1)
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
+    const { approvalId } = await queue.enqueue(baseRequest({ timeoutMs: 60_000 }))
+
+    nowMs += 60_000 // exactly the expiry instant
+
+    const listed = await queue.list()
+    expect(listed[0]?.expired).toBe(true)
+
+    const result = await queue.resolve(approvalId, { outcome: 'approved', actor: 'alice' })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error('expected ok result')
+    expect(result.record.resolution.outcome).toBe('expired')
+  })
+
   test('an approval id with path-traversal characters is rejected, not resolved', async () => {
     const queue = createApprovalQueue({ baseDir });
     const result = await queue.resolve('../../etc/passwd', { outcome: 'approved' })

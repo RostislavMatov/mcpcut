@@ -780,7 +780,7 @@ describe('message-level gate: method grants open the M3-denied methods (M4)', ()
     expect(String(answer.error.data.rule)).toBe('agent: no prompts grant for secret-prompt')
   })
 
-  test('completion/complete needs at least one prompts- or resources-grant', async () => {
+  test('completion/complete is gated by the subject of params.ref, not by mere grant presence (review M1)', async () => {
     const withPrompts = createMessageHarness({
       agentScope: methodScopeOf({ prompts: ['greet*'] }),
       sessionId: `${SESSION_ID}-mg-completion-prompts`,
@@ -794,12 +794,37 @@ describe('message-level gate: method grants open the M3-denied methods (M4)', ()
       sessionId: `${SESSION_ID}-mg-completion-neither`,
     })
 
-    expect(await withPrompts.gate.gateClientMessage(requestOf(51, 'completion/complete', {}))).toEqual(
-      { action: 'forward' },
-    )
+    // a granted subject forwards
     expect(
-      await withResources.gate.gateClientMessage(requestOf(52, 'completion/complete', {})),
+      await withPrompts.gate.gateClientMessage(
+        requestOf(51, 'completion/complete', { ref: { type: 'ref/prompt', name: 'greeting' } }),
+      ),
     ).toEqual({ action: 'forward' })
+    expect(
+      await withResources.gate.gateClientMessage(
+        requestOf(52, 'completion/complete', { ref: { type: 'ref/resource', uri: 'file:///p/x' } }),
+      ),
+    ).toEqual({ action: 'forward' })
+
+    // an ungranted resource subject is denied with a rule naming the URI
+    expect(
+      await withResources.gate.gateClientMessage(
+        requestOf(56, 'completion/complete', { ref: { type: 'ref/resource', uri: 'file:///etc/passwd' } }),
+      ),
+    ).toEqual({ action: 'drop' })
+    const uncoveredAnswer = JSON.parse(withResources.answered[0]!.bytes.toString('utf8'))
+    expect(String(uncoveredAnswer.error.data.rule)).toBe(
+      'agent: no resources grant for file:///etc/passwd',
+    )
+
+    // an ungranted subject is denied even though the OTHER vocabulary is granted
+    expect(
+      await withPrompts.gate.gateClientMessage(
+        requestOf(54, 'completion/complete', { ref: { type: 'ref/prompt', name: 'secret' } }),
+      ),
+    ).toEqual({ action: 'drop' })
+
+    // no grant at all stays the byte-identical M3 denial
     expect(await withNeither.gate.gateClientMessage(requestOf(53, 'completion/complete', {}))).toEqual(
       { action: 'drop' },
     )
@@ -843,6 +868,125 @@ describe('message-level gate: method grants open the M3-denied methods (M4)', ()
     expect(String(answer.error.data.rule)).toBe(
       'agent: method not grantable in M3: resources/templates/list',
     )
+  })
+})
+
+/**
+ * Review H1: the method-grant ALLOW path must be as fail-closed as the deny
+ * path. A journal that cannot settle (ENOSPC, EACCES) must never crash the
+ * process with an unhandled rejection, and must never forward a frame whose
+ * decision record is not durable.
+ */
+describe('message-level gate: method-grant paths fail closed on journal failure (H1)', () => {
+  function failingFlushHarness(sessionId: string) {
+    const answered: McpMessage[] = []
+    let failFlush = false
+    const gate = createMessagePolicyGate({
+      policy: policyOf({ defaultDecision: 'allow', journal: { failClosed: true } }),
+      serverName: SERVER_NAME,
+      sessionId,
+      inventory: trustedInventory(),
+      approvalQueue: queue,
+      approvalWaiter: createApprovalWaiter({ pollIntervalMs: 5 }),
+      grantRegistry: createGrantRegistry(),
+      sink: {
+        write: () => undefined,
+        flush: () => (failFlush ? Promise.reject(new Error('disk full')) : Promise.resolve()),
+      },
+      approvalsBaseDir: approvalsDir,
+      agentScope: methodScopeOf({ resources: ['file:///project/*'] }),
+      onError: (error: unknown) => errors.push(error),
+      clientSink: {
+        write: (message: McpMessage) => {
+          answered.push(message)
+          return Promise.resolve()
+        },
+      },
+    })
+    return { gate, answered, setFailFlush: (value: boolean) => (failFlush = value) }
+  }
+
+  test('a granted resources/read is denied and dropped, never forwarded or rejected, when the flush fails', async () => {
+    const harness = failingFlushHarness(`${SESSION_ID}-mg-flushfail-read`)
+    harness.setFailFlush(true)
+
+    await expect(
+      harness.gate.gateClientMessage(
+        requestOf(61, 'resources/read', { uri: 'file:///project/readme.md' }),
+      ),
+    ).resolves.toEqual({ action: 'drop' })
+
+    expect(errors.length).toBeGreaterThanOrEqual(1)
+    const answer = JSON.parse(harness.answered[0]!.bytes.toString('utf8'))
+    expect(answer.id).toBe(61)
+    expect(answer.error.code).toBe(ERROR_CODE_POLICY_DENIED)
+  })
+
+  test('a grant-filtered list response is dropped, never emitted unjournaled, when the flush fails', async () => {
+    const harness = failingFlushHarness(`${SESSION_ID}-mg-flushfail-list`)
+
+    await expect(harness.gate.gateClientMessage(requestOf(62, 'resources/list'))).resolves.toEqual({
+      action: 'forward',
+    })
+    harness.setFailFlush(true)
+
+    await expect(
+      harness.gate.gateServerMessage(
+        serverMessage(
+          Buffer.from(
+            JSON.stringify({
+              jsonrpc: '2.0',
+              id: 62,
+              result: {
+                resources: [
+                  { uri: 'file:///project/a.txt', name: 'A' },
+                  { uri: 'file:///etc/passwd', name: 'P' },
+                ],
+              },
+            }),
+          ),
+        ),
+      ),
+    ).resolves.toEqual({ action: 'drop' })
+    expect(errors.length).toBeGreaterThanOrEqual(1)
+  })
+})
+
+/** Review M5: the journaled `removed` list of a grant-filtered listing is capped. */
+describe('message-level gate: grant-filtered listing journals a bounded removed list (M5)', () => {
+  test('at most 20 removed subjects are journaled, with a "+N more" tail carrying the count', async () => {
+    const harness = createMessageHarness({
+      agentScope: methodScopeOf({ resources: ['file:///project/*'] }),
+      sessionId: `${SESSION_ID}-mg-removed-cap`,
+    })
+    const ungranted = Array.from({ length: 25 }, (_, index) => ({
+      uri: `file:///secret/${index}.txt`,
+      name: `S${index}`,
+    }))
+
+    await harness.gate.gateClientMessage(requestOf(63, 'resources/list'))
+    const verdict = await harness.gate.gateServerMessage(
+      serverMessage(
+        Buffer.from(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 63,
+            result: { resources: [{ uri: 'file:///project/a.txt', name: 'A' }, ...ungranted] },
+          }),
+        ),
+      ),
+    )
+
+    expect(verdict).toMatchObject({ action: 'emit' })
+    const decisions = await harness.decisions()
+    const record = decisions.find((entry) =>
+      entry.decision?.rule.startsWith('agent: grant-filtered'),
+    )
+    expect(record).toBeDefined()
+    const payload = record?.payload as { removed: string[]; removedCount: number }
+    expect(payload.removed).toHaveLength(21)
+    expect(payload.removed.at(-1)).toBe('+5 more')
+    expect(payload.removedCount).toBe(25)
   })
 })
 

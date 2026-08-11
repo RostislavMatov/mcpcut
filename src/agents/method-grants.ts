@@ -34,10 +34,12 @@ export const MAX_RESOURCE_PATTERN_CHARS = 2048
 
 /**
  * Shape of a resource grant pattern: an exact URI, or a URI prefix with a
- * single trailing `*` — the same "exact or one trailing glob" semantics as
- * tool patterns, widened to URI characters. Whitespace, control characters
+ * single trailing `*` — the same "exact or one trailing glob" SURFACE syntax
+ * as tool patterns, widened to URI characters. Whitespace, control characters
  * and embedded `*` are rejected; a lone `*` is rejected too (the `'*'`
- * literal on the grant field is the way to say "everything").
+ * literal on the grant field is the way to say "everything"). MATCHING is not
+ * lexical, though: both sides are normalized and prefixes bind on path-segment
+ * boundaries (`agents/resource-match.ts` — security fix, M4 wave-1 review).
  */
 export const RESOURCE_GRANT_PATTERN = /^[^\s\u0000-\u001f\u007f*]+\*?$/u
 
@@ -154,13 +156,58 @@ export function decideMethodGrant(
         list: spec.list,
       }
     case 'completion':
-      if (!grants.hasResourcesGrant() && !grants.hasPromptsGrant()) return FALLBACK
-      return {
-        action: 'forward',
-        rule: grantedRuleOf(method),
-        toolClass: spec.toolClass,
-        params: paramsOf(raw),
-      }
+      return decideCompletion(method, raw, spec.toolClass, grants)
+  }
+}
+
+/** The subject of a `completion/complete`: which vocabulary its `ref` names. */
+type CompletionSubject =
+  | { readonly kind: 'prompts'; readonly value: string }
+  | { readonly kind: 'resources'; readonly value: string }
+
+function completionSubjectOf(ref: unknown): CompletionSubject | null {
+  if (!isPlainObject(ref)) return null
+  if (ref['type'] === 'ref/prompt' && typeof ref['name'] === 'string') {
+    return { kind: 'prompts', value: ref['name'] }
+  }
+  if (ref['type'] === 'ref/resource' && typeof ref['uri'] === 'string') {
+    return { kind: 'resources', value: ref['uri'] }
+  }
+  return null
+}
+
+/**
+ * `completion/complete` is gated by the SUBJECT of its `ref`, not by mere
+ * grant presence (review M1): a `ref/prompt` must be covered by the prompts
+ * grant, a `ref/resource` by the resources grant. A readable ref whose
+ * vocabulary is not granted at all falls back to the M3 denial (like every
+ * other method of an ungranted family); an unreadable ref is denied as
+ * malformed, worst-case class (mirrors `decideSubject`).
+ */
+function decideCompletion(
+  method: string,
+  raw: string,
+  toolClass: ToolClass,
+  grants: AgentMethodGrants,
+): MethodGrantOutcome {
+  if (!grants.hasResourcesGrant() && !grants.hasPromptsGrant()) return FALLBACK
+  const params = paramsOf(raw)
+  const subject = completionSubjectOf(isPlainObject(params) ? params['ref'] : undefined)
+  if (subject === null) return malformedDeny(method, params)
+
+  const hasGrant = subject.kind === 'prompts' ? grants.hasPromptsGrant() : grants.hasResourcesGrant()
+  if (!hasGrant) return FALLBACK
+
+  const granted =
+    subject.kind === 'prompts'
+      ? grants.isPromptGranted(subject.value)
+      : grants.isResourceGranted(subject.value)
+  if (granted) return { action: 'forward', rule: grantedRuleOf(method), toolClass, params }
+  return {
+    action: 'deny',
+    rule: `agent: no ${subject.kind} grant for ${subject.value}`,
+    toolClass,
+    params,
   }
 }
 
@@ -175,17 +222,9 @@ function decideSubject(
 ): MethodGrantOutcome {
   if (!hasGrant) return FALLBACK
   const params = paramsOf(raw)
-  const subject = isPlainObject(params) && typeof params[field] === 'string' ? (params[field] as string) : null
-  if (subject === null) {
-    // Fail closed with the worst-case class: the frame claimed a checked
-    // method but carried no checkable subject (mirrors unsafe-frame handling).
-    return {
-      action: 'deny',
-      rule: `${AGENT_METHOD_MALFORMED_RULE_PREFIX}: ${method}`,
-      toolClass: 'destructive',
-      params,
-    }
-  }
+  const fieldValue = isPlainObject(params) ? params[field] : undefined
+  const subject = typeof fieldValue === 'string' ? fieldValue : null
+  if (subject === null) return malformedDeny(method, params)
   if (matcher.isGranted(subject)) {
     return { action: 'forward', rule: grantedRuleOf(method), toolClass, params }
   }
@@ -199,6 +238,19 @@ function decideSubject(
 
 function grantedRuleOf(method: string): string {
   return `${AGENT_METHOD_GRANTED_RULE_PREFIX}: ${method}`
+}
+
+/**
+ * Fail closed with the worst-case class: the frame claimed a checked method
+ * but carried no checkable subject (mirrors unsafe-frame handling).
+ */
+function malformedDeny(method: string, params: unknown): MethodGrantOutcome {
+  return {
+    action: 'deny',
+    rule: `${AGENT_METHOD_MALFORMED_RULE_PREFIX}: ${method}`,
+    toolClass: 'destructive',
+    params,
+  }
 }
 
 function hasListGrant(grants: AgentMethodGrants, list: MethodListKind): boolean {

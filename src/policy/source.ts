@@ -1,5 +1,5 @@
-import { readFile as fsReadFile } from 'node:fs/promises'
-import { isAbsolute, join, resolve } from 'node:path'
+import { access, constants as fsConstants } from 'node:fs/promises'
+import { join, resolve } from 'node:path'
 import { JOURNAL_DIR } from '../config.js'
 import { POLICY_ENV_VAR, POLICY_FILE_NAME } from './constants.js'
 import { PROJECT_POLICY_SUBDIR, type LoadPolicyOptions } from './load.js'
@@ -219,11 +219,8 @@ function resolveCandidate(cwd: string, value: string): string {
   if (value.length === 0 || value.includes('\0')) {
     return value
   }
-  const resolved = resolve(cwd, value)
-  if (!isAbsolute(resolved)) {
-    throw new Error(`resolved policy path is not absolute: ${resolved}`)
-  }
-  return resolved
+  // `path.resolve` output is absolute by contract; no result union needed here.
+  return resolve(cwd, value)
 }
 
 /**
@@ -263,18 +260,25 @@ function writeNotes(
   }
 }
 
+/**
+ * Existence/readability probe for the ignored-source note. The default path
+ * uses `fs.access` — this file is agent-controlled and only a NOTE depends on
+ * it, so its content must never be read into memory here (review M2). An
+ * injected `readFile` (the test seam shared with `loadPolicy`) is still
+ * honored so tests control the probe the same way they control the loader.
+ */
 async function isReadable(
   path: string,
   readFile: LoadPolicyOptions['readFile'] | undefined,
 ): Promise<boolean> {
   try {
-    await (readFile ?? defaultReadFile)(path)
+    if (readFile !== undefined) {
+      await readFile(path)
+      return true
+    }
+    await access(path, fsConstants.R_OK)
     return true
   } catch {
     return false
   }
-}
-
-function defaultReadFile(path: string): Promise<string> {
-  return fsReadFile(path, 'utf8')
 }
