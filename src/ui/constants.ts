@@ -46,8 +46,20 @@ export const CSRF_FIELD_NAME = 'csrf_token'
  */
 export const SESSION_TTL_MS = 8 * 60 * 60 * 1000
 
-/** Max concurrent in-memory sessions; the oldest is evicted past the cap. */
+/**
+ * Max concurrent in-memory sessions across all admins. Past the cap a login is
+ * REFUSED (429); a live session is never evicted to make room, because evicting
+ * one would hand any valid low-privilege token a way to sign every owner out.
+ * Expired sessions are reaped before the cap is tested.
+ */
 export const MAX_SESSIONS = 64
+
+/**
+ * Max concurrent sessions for ONE admin. Bounds a single account's share of the
+ * global cap (a few browsers/tabs per person is generous), so one admin
+ * re-logging in a loop cannot consume every slot.
+ */
+export const SESSIONS_PER_ADMIN_MAX = 8
 
 // --- Server-Sent Events (SSE) ---------------------------------------------
 
@@ -86,8 +98,26 @@ export const UI_QUEUE_POLL_INTERVAL_MS = 1000
 
 // --- Login rate limiting --------------------------------------------------
 
-/** Failed logins tolerated within the window before `/login` answers 429. */
+/**
+ * Failed logins tolerated from ONE client address within the window before
+ * `/login` answers 429 to that address. Keyed rather than global: an unkeyed
+ * counter lets one wrong-guessing client lock out every other admin.
+ */
 export const LOGIN_MAX_FAILURES = 5
+
+/**
+ * Failed logins tolerated across ALL addresses within the window — the backstop
+ * against a distributed flood that never trips a per-address window. Set well
+ * above `LOGIN_MAX_FAILURES` so ordinary mistyping never reaches it.
+ */
+export const LOGIN_GLOBAL_MAX_FAILURES = 100
+
+/**
+ * Cap on tracked client addresses. Bounds the limiter's memory against a
+ * spoofed-source flood; past it the least-recently-seen address is forgotten,
+ * which at worst forgives one client's history and never locks anyone out.
+ */
+export const LOGIN_RATE_LIMIT_MAX_KEYS = 1024
 
 /** Sliding window over which failed logins are counted. */
 export const LOGIN_RATE_WINDOW_MS = 60_000
@@ -95,17 +125,40 @@ export const LOGIN_RATE_WINDOW_MS = 60_000
 /** Emitted to the warn sink when the login rate limit trips. */
 export const LOGIN_RATE_LIMIT_WARNING = '[ui] login rate limit exceeded; refusing further attempts'
 
+/** Emitted when a login is refused because a session cap is already met. */
+export const SESSION_CAPACITY_WARNING =
+  '[ui] session capacity reached; refusing the login rather than evicting a live session'
+
+/**
+ * Where a successful `POST /login` sends the browser. A 303 to a page (not a
+ * JSON body) is what makes the plain, script-free HTML form usable; the CSRF
+ * token travels in the destination page's `<meta name="csrf-token">`, never in
+ * this URL.
+ */
+export const POST_LOGIN_LOCATION = '/'
+
 // --- HTTP statuses --------------------------------------------------------
 
+/**
+ * Every status the UI can answer with, declared once. Handlers import from
+ * here rather than redeclaring their own locals: three parallel naming schemes
+ * across seven files is how `303` ends up meaning something different in two of
+ * them.
+ */
 export const HTTP_STATUS_OK = 200
 export const HTTP_STATUS_FOUND = 302
+export const HTTP_STATUS_SEE_OTHER = 303
+export const HTTP_STATUS_NOT_MODIFIED = 304
 export const HTTP_STATUS_BAD_REQUEST = 400
 export const HTTP_STATUS_UNAUTHORIZED = 401
 export const HTTP_STATUS_FORBIDDEN = 403
+export const HTTP_STATUS_NOT_FOUND = 404
+export const HTTP_STATUS_CONFLICT = 409
 export const HTTP_STATUS_PAYLOAD_TOO_LARGE = 413
 export const HTTP_STATUS_TOO_MANY_REQUESTS = 429
 export const HTTP_STATUS_INTERNAL_ERROR = 500
 export const HTTP_STATUS_NOT_IMPLEMENTED = 501
+export const HTTP_STATUS_SERVICE_UNAVAILABLE = 503
 
 // --- Fixed response bodies (uniform, detail-free; no existence oracle) -----
 

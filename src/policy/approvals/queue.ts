@@ -143,7 +143,12 @@ function isEnoent(error: unknown): boolean {
   )
 }
 
-function isValidApprovalId(approvalId: string): boolean {
+/**
+ * True when `approvalId` has the safe shape the queue accepts. Exported so
+ * callers can reject a malformed id at their own boundary (the UI action
+ * handler does) instead of only learning about it as a failed resolve.
+ */
+export function isValidApprovalId(approvalId: string): boolean {
   return APPROVAL_ID_PATTERN.test(approvalId)
 }
 

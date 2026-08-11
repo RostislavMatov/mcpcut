@@ -3,6 +3,12 @@ import { parseServerRecord } from '../../registry/schema.js'
 import type { RegistryStore } from '../../registry/store.js'
 import type { AgentsStore } from '../../agents/store.js'
 import type { VaultStore } from '../../vault/store.js'
+import {
+  HTTP_STATUS_BAD_REQUEST,
+  HTTP_STATUS_NOT_FOUND,
+  HTTP_STATUS_OK,
+  HTTP_STATUS_SEE_OTHER,
+} from '../constants.js'
 import { parseBodyFields, headerValue, type UiHandler, type UiRequestContext, type UiResult } from '../routes.js'
 import type { CurrentAdmin } from '../pages/layout.js'
 import {
@@ -15,20 +21,16 @@ import {
 /**
  * Handlers for the server registry and the read-only vault view (M4 Task 13).
  *
- * Layering invariant (checked by the Wave-5 import test and a source guard in
- * `tests/ui/servers.test.ts`): NOTHING here reaches the vault's value-reading
- * path — the vault handler reads only `listSecrets()`, names and dates, so a
- * secret value has no route to the browser. Registry mutations reuse the SAME
- * validation as the CLI
- * (`parseServerRecord`), which rejects any secret-shaped literal with the same
- * "put it in the vault" hint, and every mutation is attributed to the acting
- * admin via the optional `audit` sink (`actor: 'ui'` + `adminName`).
+ * Layering invariant: NOTHING here reaches the vault's value-reading path — the
+ * vault handler reads only `listSecrets()`, names and dates, so a secret value
+ * has no route to the browser. Enforcement today is the source check in
+ * `tests/ui/servers.test.ts`; the architecture import test does not yet cover
+ * `src/ui/**` — mechanizing it there is Wave 5's job. Registry mutations reuse
+ * the SAME validation as the CLI (`parseServerRecord`), which rejects any
+ * secret-shaped literal with the same "put it in the vault" hint, and every
+ * mutation is attributed to the acting admin via the optional `audit` sink
+ * (`actor: 'ui'` + `adminName`).
  */
-
-const HTTP_STATUS_OK = 200
-const HTTP_STATUS_SEE_OTHER = 303
-const HTTP_STATUS_BAD_REQUEST = 400
-const HTTP_STATUS_NOT_FOUND = 404
 
 /** One attributed UI mutation, for the audit sink. */
 export interface UiAuditEvent {

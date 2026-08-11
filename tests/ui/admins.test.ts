@@ -2,7 +2,13 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
-import { createAdminStore, type AdminRecord, type AdminStore } from '../../src/admin/store.js'
+import { ZodError } from 'zod'
+import {
+  AdminsFileInvalidError,
+  createAdminStore,
+  type AdminRecord,
+  type AdminStore,
+} from '../../src/admin/store.js'
 import type { UiSession } from '../../src/ui/auth.js'
 import type { UiAuditEvent } from '../../src/ui/handlers/agents.js'
 import { createAdminsHandlers, type AdminsHandlers } from '../../src/ui/handlers/admins.js'
@@ -169,5 +175,55 @@ describe('attribution', () => {
     await store.createAdmin('bob', 'operator')
     await handlers.adminsRole(postCtx({ name: 'bob', role: 'viewer' }, session('owner', 'alice')))
     expect(audit).toContainEqual({ actor: 'ui', adminName: 'alice', action: 'admins.role', target: 'bob:viewer' })
+  })
+})
+
+describe('store failures are classified, not flattened to 400 (T-2)', () => {
+  /** A store whose every mutation fails the way a broken plane fails. */
+  function brokenStore(failure: Error): AdminStore {
+    return {
+      ...store,
+      createAdmin: () => Promise.reject(failure),
+      rotateAdmin: () => Promise.reject(failure),
+      removeAdmin: () => Promise.reject(failure),
+      setRole: () => Promise.reject(failure),
+    } as AdminStore
+  }
+
+  test('an unrecognized store error is a detail-free 500, not a 400 echoing it', async () => {
+    const secretish = 'ENOENT: /home/alice/.mcp-journal/admins.json.lock held by pid 4242'
+    const failing = createAdminsHandlers({ adminStore: brokenStore(new Error(secretish)) })
+
+    for (const result of [
+      await failing.adminsAdd(postCtx({ name: 'bob', role: 'operator' }, session())),
+      await failing.adminsRotate(postCtx({ name: 'bob' }, session())),
+      await failing.adminsRemove(postCtx({ name: 'bob' }, session())),
+      await failing.adminsRole(postCtx({ name: 'bob', role: 'viewer' }, session())),
+    ]) {
+      if (result.kind === 'response') expect(result.status).toBe(500)
+      expect(bodyOf(result)).not.toContain(secretish)
+      expect(bodyOf(result)).not.toContain('admins.json')
+    }
+  })
+
+  test('a corrupt admins.json is infrastructure (500), not operator error (400)', async () => {
+    const failing = createAdminsHandlers({
+      adminStore: brokenStore(
+        new AdminsFileInvalidError(new ZodError([{ code: 'custom', path: [], message: 'corrupt' }])),
+      ),
+    })
+    const result = await failing.adminsAdd(postCtx({ name: 'bob', role: 'operator' }, session()))
+    if (result.kind === 'response') expect(result.status).toBe(500)
+  })
+
+  test('known validation errors still yield a 400 carrying their message', async () => {
+    await store.createAdmin('bob', 'operator')
+    const duplicate = await handlers.adminsAdd(postCtx({ name: 'bob', role: 'operator' }, session()))
+    if (duplicate.kind === 'response') expect(duplicate.status).toBe(400)
+    expect(bodyOf(duplicate)).toMatch(/exists/i)
+
+    const lastOwner = await handlers.adminsRemove(postCtx({ name: 'owner-admin' }, session()))
+    if (lastOwner.kind === 'response') expect(lastOwner.status).toBe(400)
+    expect(bodyOf(lastOwner)).toMatch(/owner/i)
   })
 })

@@ -85,8 +85,15 @@ function renderChanges(card: QuarantineCardView): Html {
   </ul>`
 }
 
+/**
+ * One approve/reject control. `action=` and `data-action=` carry the SAME full
+ * path — see the note in `pages/approvals.ts`: the client script fetches the
+ * `data-action` value verbatim, so a bare verb is a dead button. Pinned by
+ * `tests/ui/page-contracts.test.ts`.
+ */
 function renderActionForm(card: QuarantineCardView, action: string, label: string, csrfToken: string): Html {
-  return html`<form method="post" action="/quarantine/${action}" data-action="${action}">
+  const target = `/quarantine/${action}`
+  return html`<form method="post" action="${target}" data-action="${target}">
     <input type="hidden" name="csrf_token" value="${csrfToken}" />
     <input type="hidden" name="server" value="${card.serverName}" />
     <input type="hidden" name="tool" value="${card.toolName}" />
@@ -121,13 +128,23 @@ export interface QuarantinePageInput {
   readonly currentAdmin?: CurrentAdmin
 }
 
+/** The SSE topic that must re-render this list (see `assets/app-js.ts`). */
+const QUARANTINE_LIVE_TOPICS = 'quarantine-changed'
+
+/** Where the client refetches this region from (`GET /quarantine`). */
+const QUARANTINE_LIVE_SRC = '/quarantine'
+
 /** Renders the full quarantine document (string ready for the HTTP body). */
 export function renderQuarantinePage(input: QuarantinePageInput): string {
   const body =
     input.cards.length === 0
       ? html`<p class="empty">No quarantined tools.</p>`
       : join(input.cards.map((card) => renderCard(card, input.csrfToken)))
-  const content = html`<section class="quarantine" data-live="quarantine">
+  const content = html`<section
+    class="quarantine"
+    data-live-region="${QUARANTINE_LIVE_TOPICS}"
+    data-live-src="${QUARANTINE_LIVE_SRC}"
+  >
     <h1>Quarantine</h1>
     ${body}
   </section>`

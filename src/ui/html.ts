@@ -42,25 +42,54 @@ export function escapeHtml(value: string): string {
 }
 
 /**
+ * Module-private factory, assigned from inside the class body — the only place
+ * with access to the private constructor. Everything in this file builds `Html`
+ * through it; nothing outside the file can.
+ */
+let createHtml!: (value: string) => Html
+
+/**
+ * Key the constructor demands. TypeScript's `private` is erased at runtime, so
+ * a JavaScript caller (or an `as any` cast) could otherwise still reach
+ * `new Html(untrustedString)` and hand raw markup to `render()`. Requiring a
+ * module-private symbol makes the restriction real at runtime too — the same
+ * "runtime brand over pure type-level" reasoning as `isHtml`.
+ */
+const CONSTRUCTOR_KEY = Symbol('Html.construct')
+
+/**
  * An already-safe HTML fragment. The only ways to obtain one are the `html`
  * tagged template and `raw()` (which only re-wraps an existing `Html`), so a
  * value of this type is HTML that has already passed through escaping. The
  * wrapped string is private and read only via `render()` / `toString()`.
+ *
+ * The constructor is private AND key-guarded: `new Html('<script>…')` fails to
+ * compile, and fails at runtime as well.
  */
 export class Html {
   /** Brand: makes the class nominally unique and survives type erasure. */
   private readonly __safeHtml = true
   private readonly value: string
 
-  constructor(value: string) {
+  private constructor(key: symbol, value: string) {
+    if (key !== CONSTRUCTOR_KEY) {
+      throw new TypeError('Html is not constructible; build markup with the html`` tag')
+    }
     this.value = value
     void this.__safeHtml
+  }
+
+  static {
+    createHtml = (value: string): Html => new Html(CONSTRUCTOR_KEY, value)
   }
 
   toString(): string {
     return this.value
   }
 }
+
+/** The empty fragment, reused as the default `join` separator. */
+const EMPTY_HTML: Html = createHtml('')
 
 /** True when `value` is an `Html` built by this module. */
 export function isHtml(value: unknown): value is Html {
@@ -98,7 +127,7 @@ export function html(strings: TemplateStringsArray, ...values: readonly unknown[
   for (let i = 0; i < values.length; i += 1) {
     out += normalize(values[i]) + (strings[i + 1] ?? '')
   }
-  return new Html(out)
+  return createHtml(out)
 }
 
 /**
@@ -136,9 +165,9 @@ export function raw(node: Html): Html {
  * Each item is brand-checked, so a bare string in the list is rejected rather
  * than silently escaped-or-injected.
  */
-export function join(nodes: readonly Html[], separator: Html = new Html('')): Html {
+export function join(nodes: readonly Html[], separator: Html = EMPTY_HTML): Html {
   const parts = nodes.map((node) => render(node))
-  return new Html(parts.join(render(separator)))
+  return createHtml(parts.join(render(separator)))
 }
 
 /**

@@ -1,6 +1,11 @@
 import { APP_CSS } from '../assets/app-css.js'
 import { APP_JS } from '../assets/app-js.js'
 import type { Asset } from '../assets/app-css.js'
+import {
+  HTTP_STATUS_NOT_FOUND,
+  HTTP_STATUS_NOT_MODIFIED,
+  HTTP_STATUS_OK,
+} from '../constants.js'
 import { headerValue, type UiHandler, type UiRequestContext, type UiResult } from '../routes.js'
 
 /**
@@ -19,10 +24,6 @@ import { headerValue, type UiHandler, type UiRequestContext, type UiResult } fro
  * `304` when unchanged; otherwise `200` with the asset's own `Content-Type`,
  * `ETag` and `Cache-Control` (the server does not override these).
  */
-
-const HTTP_STATUS_OK = 200
-const HTTP_STATUS_NOT_MODIFIED = 304
-const HTTP_STATUS_NOT_FOUND = 404
 
 const CONTENT_TYPE_TEXT = 'text/plain; charset=utf-8'
 

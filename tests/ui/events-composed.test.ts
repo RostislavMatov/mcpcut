@@ -58,10 +58,13 @@ async function startUi(maxSubscribers: number): Promise<Started> {
   const base = `http://127.0.0.1:${port}`
 
   async function login(t: string): Promise<string> {
+    // `redirect: 'manual'`: a successful login answers 303 → `/`, and the
+    // Set-Cookie lives on that redirect, not on the page it points at.
     const res = await fetch(`${base}/login`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ token: t }),
+      redirect: 'manual',
     })
     await res.text()
     const setCookie = res.headers.get('set-cookie') ?? ''

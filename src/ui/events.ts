@@ -54,10 +54,32 @@ const defaultScheduler: Scheduler = {
   clearInterval: (handle) => clearInterval(handle as unknown as NodeJS.Timeout),
 }
 
+/**
+ * Who a stream belongs to. An SSE connection is the one request that never
+ * ends, so unlike every other route it cannot be re-authorized "on the next
+ * request" — the hub records the identity it was opened under and can therefore
+ * both close it by key and re-check it periodically.
+ */
+export interface SseIdentity {
+  readonly sessionId: string
+  readonly adminName: string
+}
+
 export interface EventHubOptions {
   readonly heartbeatIntervalMs?: number
   readonly maxSubscribers?: number
   readonly scheduler?: Scheduler
+  /**
+   * Liveness probe for an open stream, run on every heartbeat tick. Wiring it
+   * to the session manager is what makes a revoked/rotated/demoted admin — and
+   * a session that simply hit its TTL — lose its live streams without any new
+   * coupling between the admin store and the hub.
+   *
+   * Fail-closed: a probe that throws, and a stream with no identity at all, are
+   * both treated as dead. When no probe is configured (unit tests, embedders
+   * with no session model) the sweep does nothing.
+   */
+  readonly isSessionLive?: (identity: SseIdentity) => boolean | Promise<boolean>
 }
 
 export type SubscribeResult =
@@ -76,11 +98,25 @@ export interface EventHub {
    * already written. Does NOT write headers. Refuses (without side effects) if
    * the hub is closed or full — a defensive backstop to the `hasCapacity()`
    * pre-check, which the single-threaded request path makes race-free.
+   *
+   * `identity` binds the stream to the session that opened it, so it can be
+   * closed when that session dies. It is optional only for tests and embedders
+   * with no session model; the UI server always supplies it.
    */
-  subscribe(sink: SseSink): SubscribeResult
+  subscribe(sink: SseSink, identity?: SseIdentity): SubscribeResult
   /** Fans one event out to every open subscriber. No-op after `close()`. */
   publish(event: UiEvent): void
   subscriberCount(): number
+  /** Ends every stream opened under `sessionId`. Returns how many were closed. */
+  closeSession(sessionId: string): number
+  /** Ends every stream of one admin (all their sessions). Returns the count. */
+  closeForAdmin(adminName: string): number
+  /**
+   * Re-checks every open stream against `isSessionLive` and ends the dead ones.
+   * Runs on every heartbeat tick; exposed so callers (and tests) can force it.
+   * Returns how many streams were closed.
+   */
+  sweepSessions(): Promise<number>
   /** Ends every stream and stops the heartbeat. Idempotent. */
   close(): void
 }
@@ -103,11 +139,15 @@ export function createEventHub(opts: EventHubOptions = {}): EventHub {
   const heartbeatIntervalMs = opts.heartbeatIntervalMs ?? UI_SSE_HEARTBEAT_INTERVAL_MS
   const maxSubscribers = opts.maxSubscribers ?? UI_MAX_SSE_SUBSCRIBERS
 
-  const subscribers = new Set<SseSink>()
+  const isSessionLive = opts.isSessionLive
+  /** Roster: sink → the identity it was opened under (`undefined` = unbound). */
+  const subscribers = new Map<SseSink, SseIdentity | undefined>()
   let closed = false
 
   const heartbeat = scheduler.setInterval(() => {
-    for (const sink of subscribers) safeWrite(sink, ': heartbeat\n\n')
+    for (const sink of subscribers.keys()) safeWrite(sink, ': heartbeat\n\n')
+    // The same tick that keeps live streams open retires the dead ones.
+    void sweepSessions()
   }, heartbeatIntervalMs)
   heartbeat.unref?.()
 
@@ -120,15 +160,25 @@ export function createEventHub(opts: EventHubOptions = {}): EventHub {
     }
   }
 
+  /** Ends one stream and frees its slot. Safe on an already-torn-down peer. */
+  function endStream(sink: SseSink): void {
+    subscribers.delete(sink)
+    try {
+      sink.end()
+    } catch {
+      // A stream already torn down by its peer needs nothing from us.
+    }
+  }
+
   function hasCapacity(): boolean {
     return !closed && subscribers.size < maxSubscribers
   }
 
-  function subscribe(sink: SseSink): SubscribeResult {
+  function subscribe(sink: SseSink, identity?: SseIdentity): SubscribeResult {
     if (!hasCapacity()) {
       return { ok: false, reason: 'at-capacity' }
     }
-    subscribers.add(sink)
+    subscribers.set(sink, identity)
     // The peer dropping the connection frees its slot exactly once.
     sink.on('close', () => {
       subscribers.delete(sink)
@@ -141,18 +191,61 @@ export function createEventHub(opts: EventHubOptions = {}): EventHub {
   function publish(event: UiEvent): void {
     if (closed) return
     const chunk = encodeEvent(event)
-    for (const sink of subscribers) safeWrite(sink, chunk)
+    for (const sink of subscribers.keys()) safeWrite(sink, chunk)
   }
 
   function subscriberCount(): number {
     return subscribers.size
   }
 
+  /** Ends every stream whose identity satisfies `matches`; returns the count. */
+  function closeMatching(matches: (identity: SseIdentity) => boolean): number {
+    let ended = 0
+    for (const [sink, identity] of [...subscribers]) {
+      if (identity === undefined || !matches(identity)) continue
+      endStream(sink)
+      ended += 1
+    }
+    return ended
+  }
+
+  function closeSession(sessionId: string): number {
+    return closeMatching((identity) => identity.sessionId === sessionId)
+  }
+
+  function closeForAdmin(adminName: string): number {
+    return closeMatching((identity) => identity.adminName === adminName)
+  }
+
+  /** Fail-closed liveness: an absent identity or a throwing probe means dead. */
+  async function isLive(identity: SseIdentity | undefined): Promise<boolean> {
+    if (identity === undefined) return false
+    try {
+      return (await isSessionLive?.(identity)) === true
+    } catch {
+      return false
+    }
+  }
+
+  async function sweepSessions(): Promise<number> {
+    if (isSessionLive === undefined || closed) return 0
+    // Snapshot first: the probe awaits, and a peer may drop meanwhile.
+    const roster = [...subscribers]
+    let ended = 0
+    for (const [sink, identity] of roster) {
+      if (await isLive(identity)) continue
+      if (!subscribers.has(sink)) continue
+      endStream(sink)
+      ended += 1
+    }
+    return ended
+  }
+
   function close(): void {
     if (closed) return
     closed = true
     scheduler.clearInterval(heartbeat)
-    for (const sink of subscribers) {
+    for (const sink of subscribers.keys()) {
       try {
         sink.end()
       } catch {
@@ -162,5 +255,14 @@ export function createEventHub(opts: EventHubOptions = {}): EventHub {
     subscribers.clear()
   }
 
-  return Object.freeze({ hasCapacity, subscribe, publish, subscriberCount, close })
+  return Object.freeze({
+    hasCapacity,
+    subscribe,
+    publish,
+    subscriberCount,
+    closeSession,
+    closeForAdmin,
+    sweepSessions,
+    close,
+  })
 }

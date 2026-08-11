@@ -202,3 +202,33 @@ describe('approvalsApprove attribution', () => {
     expect(await queue.readResolution(id)).toBeNull()
   })
 })
+
+describe('approval id validation at the handler boundary (LOW-2)', () => {
+  test('a malformed id is a 400 and never reaches the queue', async () => {
+    const handlers = createApprovalsHandlers({ queue, clock: () => now })
+    const seen: string[] = []
+    const spying = createApprovalsHandlers({
+      queue: {
+        list: () => queue.list(),
+        resolve: (id, options) => {
+          seen.push(id)
+          return queue.resolve(id, options)
+        },
+      },
+      clock: () => now,
+    })
+
+    for (const id of ['../../etc/passwd', 'a'.repeat(65), 'has space', 'semi;colon']) {
+      const result = await spying.approvalsApprove(makeCtx({ method: 'POST', params: { id } }))
+      if (result.kind === 'response') expect(result.status, id).toBe(400)
+      expect(bodyText(result)).toMatch(/invalid approval id/i)
+    }
+    expect(seen).toEqual([])
+
+    // A well-formed (if unknown) id is still the queue's business to answer.
+    const unknown = await handlers.approvalsApprove(
+      makeCtx({ method: 'POST', params: { id: '01J0000000000000000000000A' } }),
+    )
+    if (unknown.kind === 'response') expect(unknown.status).toBe(409)
+  })
+})

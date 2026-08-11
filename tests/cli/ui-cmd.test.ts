@@ -238,17 +238,23 @@ interface LoggedIn {
   readonly setCookie: string
 }
 
-/** Exchanges an admin token for a session cookie + CSRF token via `/login`. */
+/**
+ * Exchanges an admin token for a session cookie + CSRF token via `/login`.
+ * The login answers 303 → `/` (review M-2), so the CSRF token is read where a
+ * browser reads it: the `<meta name="csrf-token">` of the page it lands on.
+ */
 async function loginSession(base: string, token: string): Promise<LoggedIn> {
   const response = await httpCall(base, '/login', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ token }),
   })
-  const parsed = JSON.parse(response.body) as { csrfToken?: string }
   const raw = response.headers['set-cookie']
   const setCookie = (Array.isArray(raw) ? raw[0] : raw) ?? ''
-  return { cookie: setCookie.split(';')[0] ?? '', csrf: parsed.csrfToken ?? '', setCookie }
+  const cookie = setCookie.split(';')[0] ?? ''
+  const page = await httpCall(base, response.headers.location ?? '/', { headers: { cookie } })
+  const csrf = /<meta name="csrf-token" content="([^"]*)">/.exec(page.body)?.[1] ?? ''
+  return { cookie, csrf, setCookie }
 }
 
 async function login(base: string, token: string): Promise<string> {

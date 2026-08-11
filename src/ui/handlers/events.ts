@@ -1,3 +1,4 @@
+import { HTTP_STATUS_SERVICE_UNAVAILABLE } from '../constants.js'
 import type { EventHub } from '../events.js'
 import type { UiHandler, UiResult } from '../routes.js'
 
@@ -23,7 +24,6 @@ import type { UiHandler, UiResult } from '../routes.js'
  * the slot in between; `hub.subscribe` still refuses defensively if it does.
  */
 
-const HTTP_STATUS_SERVICE_UNAVAILABLE = 503
 const RETRY_AFTER_SECONDS = '5'
 const CONTENT_TYPE_TEXT = 'text/plain; charset=utf-8'
 
@@ -40,8 +40,11 @@ export function createEventsHandler(hub: EventHub): UiHandler {
     }
     return {
       kind: 'stream',
-      onStream: (res) => {
-        hub.subscribe(res)
+      // The identity comes from the server (it owns the cookie), not from the
+      // request context: it binds this never-ending request to its session so
+      // the hub can end it when that session is revoked, rotated or expires.
+      onStream: (res, identity) => {
+        hub.subscribe(res, identity)
       },
     }
   }

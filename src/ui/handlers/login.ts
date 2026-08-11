@@ -1,3 +1,4 @@
+import { HTTP_STATUS_OK } from '../constants.js'
 import { renderLoginPage } from '../pages/login.js'
 import type { UiHandler, UiResult } from '../routes.js'
 
@@ -7,8 +8,6 @@ import type { UiHandler, UiResult } from '../routes.js'
  * renders the form. No dependencies — the page is static — but kept a factory
  * for symmetry with the other handler modules and future injectables.
  */
-
-const HTTP_STATUS_OK = 200
 
 /** Builds the injectable `loginPage` handler. */
 export function createLoginPage(): UiHandler {

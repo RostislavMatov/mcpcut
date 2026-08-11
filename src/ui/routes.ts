@@ -54,9 +54,24 @@ export type UiResult =
        * Called after the server writes `200` with security + SSE headers. The
        * handler owns the socket from here (writes events, registers with the
        * hub, cleans up on `res` close). It must not call `writeHead` again.
+       *
+       * `identity` names the session this never-ending request was opened
+       * under, so the holder can close the stream when that session dies. It is
+       * passed here rather than on `UiRequestContext` deliberately: the session
+       * id is not something a rendering handler should ever be able to reach.
        */
-      readonly onStream: (res: ServerResponse) => void
+      readonly onStream: (res: ServerResponse, identity?: StreamIdentity) => void
     }
+
+/**
+ * The session a streaming request belongs to. Mirrors `ui/events.ts`'s
+ * `SseIdentity` structurally; declared here so the handler contract does not
+ * depend on the SSE hub.
+ */
+export interface StreamIdentity {
+  readonly sessionId: string
+  readonly adminName: string
+}
 
 /** The signature every injected page/action/SSE handler implements. */
 export type UiHandler = (ctx: UiRequestContext) => Promise<UiResult> | UiResult
