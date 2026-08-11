@@ -8,6 +8,7 @@ import {
   AGENTS_FILE_NAME,
   GRANT_SERVER_NAME_PATTERN,
 } from './constants.js'
+import { MAX_RESOURCE_PATTERN_CHARS, RESOURCE_GRANT_PATTERN } from './method-grants.js'
 import { parseAgentsFile, type AgentGrant, type AgentRecord, type AgentsFile } from './schema.js'
 import { generateToken, verifyToken } from './tokens.js'
 
@@ -60,6 +61,24 @@ export class InvalidToolPatternError extends Error {
   }
 }
 
+/** Raised for a resource URI pattern outside `RESOURCE_GRANT_PATTERN` (M4 Task 6). */
+export class InvalidResourcePatternError extends Error {
+  constructor(pattern: string) {
+    super(
+      `invalid resource pattern "${pattern}": must be an exact URI or end with a single "*" (no whitespace)`,
+    )
+    this.name = 'InvalidResourcePatternError'
+  }
+}
+
+/** Raised for a prompt name pattern that is not an exact name or single trailing-`*` prefix. */
+export class InvalidPromptPatternError extends Error {
+  constructor(pattern: string) {
+    super(`invalid prompt pattern "${pattern}": must be an exact name or end with a single "*"`)
+    this.name = 'InvalidPromptPatternError'
+  }
+}
+
 /** Thrown by the injected validator; surfaced to callers wrapped in `StoreCorruptError`. */
 export class AgentsFileInvalidError extends Error {
   constructor(error: z.ZodError) {
@@ -83,11 +102,17 @@ export interface AgentsStore {
   createAgent(name: string): Promise<CreatedAgent>
   /** Marks the agent revoked. Idempotent: a repeat revoke keeps the original date. */
   revokeAgent(name: string): Promise<AgentRecord>
-  /** Replaces the agent's grant for `server` wholesale (no merging). */
+  /**
+   * Replaces the agent's grant for `server` wholesale (no merging). The
+   * optional `methods` argument (M4 Task 6) carries the resources/prompts
+   * dimension; omitted fields stay absent in the stored grant, which keeps
+   * the M3 fail-closed denial of the corresponding methods.
+   */
   grantServer(
     agentName: string,
     serverName: string,
     tools: readonly string[] | '*',
+    methods?: MethodGrantsInput,
   ): Promise<AgentRecord>
   /** Removes the grant for `server`; idempotent when no such grant exists. */
   ungrantServer(agentName: string, serverName: string): Promise<AgentRecord>
@@ -133,6 +158,32 @@ function assertValidToolPatterns(tools: readonly string[]): void {
   for (const pattern of tools) {
     if (!TOOL_RULE_NAME_PATTERN.test(pattern) || RESERVED_OBJECT_KEYS.includes(pattern)) {
       throw new InvalidToolPatternError(pattern)
+    }
+  }
+}
+
+/** The optional resources/prompts dimension of one grant (M4 Task 6). */
+export interface MethodGrantsInput {
+  readonly resources?: '*' | readonly string[]
+  readonly prompts?: '*' | readonly string[]
+}
+
+function assertValidResourcePatterns(patterns: readonly string[]): void {
+  for (const pattern of patterns) {
+    if (
+      pattern.length > MAX_RESOURCE_PATTERN_CHARS ||
+      !RESOURCE_GRANT_PATTERN.test(pattern) ||
+      RESERVED_OBJECT_KEYS.includes(pattern)
+    ) {
+      throw new InvalidResourcePatternError(pattern)
+    }
+  }
+}
+
+function assertValidPromptPatterns(patterns: readonly string[]): void {
+  for (const pattern of patterns) {
+    if (!TOOL_RULE_NAME_PATTERN.test(pattern) || RESERVED_OBJECT_KEYS.includes(pattern)) {
+      throw new InvalidPromptPatternError(pattern)
     }
   }
 }
@@ -187,10 +238,25 @@ export function createAgentsStore(opts: AgentsStoreOptions = {}): AgentsStore {
     agentName: string,
     serverName: string,
     tools: readonly string[] | '*',
+    methods: MethodGrantsInput = {},
   ): Promise<AgentRecord> {
     assertValidServerName(serverName)
     if (tools !== '*') assertValidToolPatterns(tools)
-    const grant: AgentGrant = { tools: tools === '*' ? '*' : [...tools] }
+    if (methods.resources !== undefined && methods.resources !== '*') {
+      assertValidResourcePatterns(methods.resources)
+    }
+    if (methods.prompts !== undefined && methods.prompts !== '*') {
+      assertValidPromptPatterns(methods.prompts)
+    }
+    const grant: AgentGrant = {
+      tools: tools === '*' ? '*' : [...tools],
+      ...(methods.resources !== undefined
+        ? { resources: methods.resources === '*' ? ('*' as const) : [...methods.resources] }
+        : {}),
+      ...(methods.prompts !== undefined
+        ? { prompts: methods.prompts === '*' ? ('*' as const) : [...methods.prompts] }
+        : {}),
+    }
 
     const next = await store.update((current) => {
       const record = requireAgent(current, agentName)

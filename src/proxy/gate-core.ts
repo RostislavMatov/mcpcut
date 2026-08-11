@@ -225,6 +225,9 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     policy,
     serverName,
     sessionId: deps.sessionId,
+    // The agent's name rides the pending file and the pending decision
+    // record, so an operator can see who is asking (M4).
+    ...(agentScope !== undefined ? { agentName: agentScope.agentName } : {}),
     approvalQueue,
     approvalWaiter,
     grantRegistry,
@@ -352,6 +355,10 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     ...(agentScope !== undefined
       ? { isGrantedToAgent: (tool: string) => agentScope.isGranted(tool) }
       : {}),
+    // The method-grant dimension (M4 Task 6): lets the router open the
+    // enumerated resources/prompts/completion methods per grant. Absent —
+    // including on every M3-era scope — the router's denial is M3 unchanged.
+    ...(agentScope?.methodGrants !== undefined ? { methodGrants: agentScope.methodGrants } : {}),
   })
 
   async function cancelPending(): Promise<void> {

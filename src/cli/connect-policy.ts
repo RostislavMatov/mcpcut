@@ -1,7 +1,5 @@
-import { readFile as fsReadFile } from 'node:fs/promises'
-import { join } from 'node:path'
-import { POLICY_ENV_VAR, POLICY_FILE_NAME } from '../policy/constants.js'
-import { loadPolicy, PROJECT_POLICY_SUBDIR, type LoadPolicyOptions, type PolicyLoadResult } from '../policy/load.js'
+import { loadPolicy, type LoadPolicyOptions, type PolicyLoadResult } from '../policy/load.js'
+import { resolvePolicySource } from '../policy/source.js'
 import { parsePolicy, type Policy } from '../policy/schema.js'
 import {
   EXIT_CODE_REFUSED,
@@ -19,20 +17,14 @@ import {
  * `--policy /tmp/allow-all.json` would otherwise neutralize approvals and
  * quarantine with one line in a config the agent already controls (grants
  * would still hold — they live in `agents.json` — but everything policy
- * decides would not). So on this command:
+ * decides would not).
  *
- *  - `--policy <path>` is a HARD refusal, with an explanation of where the
- *    policy actually has to live (it stays a recognized flag purely so the
- *    refusal can explain itself instead of collapsing into usage text);
- *  - `$MCP_JOURNAL_POLICY` and the project-level `<cwd>/.mcp-journal/` lookup
- *    are IGNORED, each with one note on stderr so an operator who set one is
- *    never left wondering why it had no effect;
- *  - the only source left is the journal directory — the plane's own state
- *    directory, which holds `registry.json`, `agents.json` and the vault, and
- *    which an agent has no more write access to than to those.
- *
- * `wrap`/`serve` keep the full four-source order of `policy/load.ts`: those
- * are started by the operator, not by the agent.
+ * That rule is not this file's to state: `connect` is simply the
+ * `agent-launched` entry point, and `policy/source.ts` decides what such an
+ * entry point may read (ADR-0005). What stays here is what only `connect`
+ * knows — the wording of its refusal and notes, the stream they go to (stderr:
+ * stdout is the protocol channel), and the policy a run gets when the state
+ * directory holds no file.
  *
  * `connect` has no "mode A": the agent dimension (grants gate `tools/call`
  * and filter `tools/list`) lives in the policy gate, so every connect session
@@ -93,7 +85,11 @@ export interface ResolveConnectPolicyArgs {
   readonly explicitPath?: string
   /** The environment `connect` was started with; read only to note an ignored override. */
   readonly env?: NodeJS.ProcessEnv
-  /** The agent-supplied working directory; read only to note an ignored project policy. */
+  /**
+   * The agent-supplied working directory; read only to note an ignored project
+   * policy. Omitted means `process.cwd()` — the directory this process was
+   * actually started in, which is the one the note is about.
+   */
   readonly cwd?: string
   /** Test seam: reads a file as UTF-8 text. Defaults to `node:fs/promises` `readFile`. */
   readonly readFile?: LoadPolicyOptions['readFile']
@@ -102,23 +98,25 @@ export interface ResolveConnectPolicyArgs {
 export async function resolveConnectPolicy(
   args: ResolveConnectPolicyArgs,
 ): Promise<ConnectPolicyOutcome> {
-  if (args.explicitPath !== undefined) {
+  const source = await resolvePolicySource({
+    entryPoint: 'connect',
+    journalDir: args.journalDir,
+    ...(args.env !== undefined ? { env: args.env } : {}),
+    ...(args.cwd !== undefined ? { cwd: args.cwd } : {}),
+    ...(args.explicitPath !== undefined ? { explicitPath: args.explicitPath } : {}),
+    ...(args.readFile !== undefined ? { readFile: args.readFile } : {}),
+    notes: {
+      write: (chunk) => args.io.stderr.write(chunk),
+      render: policySourceIgnoredNote,
+    },
+  })
+
+  if (source.status === 'refused') {
     args.io.stderr.write(policyFlagRefusal(args.journalDir))
     return { status: 'failed', exitCode: EXIT_CODE_REFUSED }
   }
 
-  await noteIgnoredSources(args)
-
-  const result = await loadPolicy({
-    // Every agent-controlled source is neutralized here, not merely
-    // deprioritized: an empty env removes `$MCP_JOURNAL_POLICY`, and pointing
-    // `cwd` at the journal directory keeps `loadPolicy`'s project-level
-    // candidate inside the operator's own directory too.
-    env: {},
-    cwd: args.journalDir,
-    journalDir: args.journalDir,
-    ...(args.readFile !== undefined ? { readFile: args.readFile } : {}),
-  })
+  const result = await loadPolicy(source.loadOptions)
 
   if (result.status === 'error') {
     args.io.stderr.write(formatPolicyLoadErrors(result))
@@ -130,39 +128,6 @@ export async function resolveConnectPolicy(
   }
   args.io.stderr.write(`policy: loaded from ${result.sourcePath}\n`)
   return { status: 'resolved', policy: result.policy }
-}
-
-/**
- * One note per agent-controlled source that exists and was ignored. Silence
- * otherwise: a note on every run would train operators to skip them.
- */
-async function noteIgnoredSources(args: ResolveConnectPolicyArgs): Promise<void> {
-  if (args.env?.[POLICY_ENV_VAR] !== undefined) {
-    args.io.stderr.write(policySourceIgnoredNote(`$${POLICY_ENV_VAR}`, args.journalDir))
-  }
-
-  const cwd = args.cwd
-  if (cwd === undefined) return
-  const projectPolicy = join(cwd, PROJECT_POLICY_SUBDIR, POLICY_FILE_NAME)
-  if (await isReadable(projectPolicy, args.readFile)) {
-    args.io.stderr.write(policySourceIgnoredNote(projectPolicy, args.journalDir))
-  }
-}
-
-async function isReadable(
-  path: string,
-  readFile: LoadPolicyOptions['readFile'] | undefined,
-): Promise<boolean> {
-  try {
-    await (readFile ?? defaultReadFile)(path)
-    return true
-  } catch {
-    return false
-  }
-}
-
-function defaultReadFile(path: string): Promise<string> {
-  return fsReadFile(path, 'utf8')
 }
 
 /** `result.errors` are already human-readable lines; each is prefixed with its source path. */

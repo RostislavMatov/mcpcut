@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
@@ -11,7 +11,12 @@ import { createGrantRegistry } from '../../src/policy/approvals/grants.js'
 import { createInventory, type Inventory } from '../../src/policy/inventory.js'
 import { parsePolicy, type Policy } from '../../src/policy/schema.js'
 import { createPolicyGate, type PolicyGate } from '../../src/proxy/gate.js'
-import { createAnswerGuard, createBoundedIdSet, type GateInventory } from '../../src/proxy/gate-helpers.js'
+import {
+  createAnswerGuard,
+  createBoundedIdSet,
+  type GateAgentScope,
+  type GateInventory,
+} from '../../src/proxy/gate-helpers.js'
 import {
   ERROR_CODE_APPROVAL,
   ERROR_CODE_POLICY_DENIED,
@@ -155,6 +160,12 @@ interface HarnessOptions {
   readonly inventory?: Inventory
   readonly controls?: InventoryControls
   readonly timeoutMs?: number
+  readonly agentScope?: GateAgentScope
+}
+
+/** An agent scope whose grant matrix covers everything: isolates the M4 metadata plumbing. */
+function grantAllScope(agentName: string): GateAgentScope {
+  return { agentName, isGranted: () => true, filterVisible: (tools) => [...tools] }
 }
 
 function createHarness(opts: HarnessOptions = {}): GateHarness {
@@ -164,6 +175,7 @@ function createHarness(opts: HarnessOptions = {}): GateHarness {
     serverName: SERVER_NAME,
     sessionId: SESSION_ID,
     inventory: asGateInventory(opts.inventory ?? inventory, opts.controls),
+    ...(opts.agentScope !== undefined ? { agentScope: opts.agentScope } : {}),
     approvalQueue: queue,
     approvalWaiter: createApprovalWaiter({ pollIntervalMs: POLL_INTERVAL_MS }),
     grantRegistry: createGrantRegistry(),
@@ -670,6 +682,97 @@ describe('createPolicyGate: require-approval', () => {
     expect(await verdictPromise).toEqual({ action: 'drop' })
     expect(written).toHaveLength(1)
     expect(parseWritten(written[0]!).error.data.reason).toBe('approval_timeout')
+  })
+})
+
+describe('createPolicyGate: approval-queue metadata for the admin UI (M4)', () => {
+  const M4_POLICY = {
+    defaultDecision: 'require-approval',
+    quarantine: { enabled: false },
+    approval: { timeoutMs: 10_000, grantTtlMs: 60_000 },
+  } as const
+
+  test('the pending file carries agentName, decisionRule and a waitExpiresAt distinct from expiresAt', async () => {
+    const { gate } = createHarness({
+      policy: policyOf(M4_POLICY),
+      agentScope: grantAllScope('research-bot'),
+    })
+
+    const verdictPromise = gate.gateClientMessage(toolCall(1, 'write_file'))
+    const pending = await waitForPendingApproval()
+
+    expect(pending.agentName).toBe('research-bot')
+    expect(pending.decisionRule).toBe('defaultDecision')
+    // waitExpiresAt is the end of the AGENT'S WAIT (timeoutMs); expiresAt
+    // stays the end of the GRANT window (grantTtlMs). They must differ.
+    const requestedMs = Date.parse(pending.requestedAt)
+    expect(pending.waitExpiresAt).toBe(new Date(requestedMs + 10_000).toISOString())
+    expect(pending.expiresAt).toBe(new Date(requestedMs + 60_000).toISOString())
+    expect(pending.waitExpiresAt).not.toBe(pending.expiresAt)
+
+    await queue.resolve(pending.approvalId, { outcome: 'denied', actor: 'operator' })
+    await verdictPromise
+  })
+
+  test('the require-approval-pending journal record names the requesting agent', async () => {
+    const { gate } = createHarness({
+      policy: policyOf(M4_POLICY),
+      agentScope: grantAllScope('research-bot'),
+    })
+
+    const verdictPromise = gate.gateClientMessage(toolCall(1, 'write_file'))
+    const pending = await waitForPendingApproval()
+    await queue.resolve(pending.approvalId, { outcome: 'approved', actor: 'operator' })
+    await verdictPromise
+
+    const decisions = await readDecisions()
+    expect(decisions[0]!.decision).toMatchObject({
+      outcome: 'require-approval-pending',
+      agentName: 'research-bot',
+    })
+  })
+
+  test('without an agentScope the pending file has wait metadata but no agent, and the journal stays agent-free', async () => {
+    const { gate } = createHarness({ policy: policyOf(M4_POLICY) })
+
+    const verdictPromise = gate.gateClientMessage(toolCall(1, 'write_file'))
+    const pending = await waitForPendingApproval()
+
+    expect(pending.waitExpiresAt).toBeDefined()
+    expect(pending.decisionRule).toBe('defaultDecision')
+    const raw = JSON.parse(
+      await readFile(join(approvalsDir, 'pending', `${pending.approvalId}.json`), 'utf8'),
+    )
+    expect(raw).not.toHaveProperty('agentName')
+
+    await queue.resolve(pending.approvalId, { outcome: 'approved', actor: 'operator' })
+    await verdictPromise
+    const decisions = await readDecisions()
+    expect(decisions[0]!.decision?.outcome).toBe('require-approval-pending')
+    expect(decisions[0]!.decision).not.toHaveProperty('agentName')
+  })
+
+  test('an approval resolved after waitExpiresAt but before expiresAt still mints the grant for a retry', async () => {
+    const { gate } = createHarness({
+      policy: policyOf({ ...M4_POLICY, approval: { timeoutMs: 30, grantTtlMs: 60_000 } }),
+      agentScope: grantAllScope('research-bot'),
+    })
+
+    // The wait times out (30ms), so waitExpiresAt has passed by the time the
+    // operator approves — but the grant window (60s) has not.
+    await gate.gateClientMessage(toolCall(3, 'write_file'))
+    const pending = await waitForPendingApproval()
+    await queue.resolve(pending.approvalId, { outcome: 'approved', actor: 'operator' })
+
+    // The resolution is 'approved', NOT downgraded: waitExpiresAt must play
+    // no part in resolve()'s expiry check (that is expiresAt's job).
+    const resolution = await queue.readResolution(pending.approvalId)
+    expect(resolution?.outcome).toBe('approved')
+
+    // And the on-disk grant admits the retry without a second prompt.
+    const retry = await gate.gateClientMessage(toolCall(4, 'write_file'))
+    expect(retry).toEqual({ action: 'forward' })
+    expect((await readDecisions()).at(-1)?.decision).toMatchObject({ outcome: 'allow', rule: 'grant' })
   })
 })
 

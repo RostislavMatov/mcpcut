@@ -8,6 +8,12 @@ import {
   MAX_TOOLS_PER_GRANT,
   TOKEN_HASH_PATTERN,
 } from './constants.js'
+import {
+  MAX_PROMPTS_PER_GRANT,
+  MAX_RESOURCE_PATTERN_CHARS,
+  MAX_RESOURCES_PER_GRANT,
+  RESOURCE_GRANT_PATTERN,
+} from './method-grants.js'
 
 /**
  * zod schema for `agents.json`. Like `policy/schema.ts`, this file is a trust
@@ -37,11 +43,33 @@ const grantServerNameSchema = z
  * from these values, and policy rejects the same names in its rule maps —
  * one uniform rule beats two subtly different ones.
  */
-const toolPatternSchema = z
+function namePatternSchema(what: string) {
+  return z
+    .string()
+    .regex(TOOL_RULE_NAME_PATTERN, `${what} must be an exact name or end with a single "*"`)
+    .refine((pattern) => !RESERVED_OBJECT_KEYS.includes(pattern), {
+      message: `reserved name is not allowed as a ${what}`,
+    })
+}
+
+const toolPatternSchema = namePatternSchema('tool pattern')
+
+/** Prompt names share the tool-name pattern syntax and matcher (M4 Task 6). */
+const promptPatternSchema = namePatternSchema('prompt pattern')
+
+/**
+ * A grantable resource URI pattern: exact URI or single trailing `*`, the
+ * tool-pattern semantics widened to URI characters (`method-grants.ts`).
+ */
+const resourcePatternSchema = z
   .string()
-  .regex(TOOL_RULE_NAME_PATTERN, 'tool pattern must be an exact name or end with a single "*"')
+  .max(MAX_RESOURCE_PATTERN_CHARS)
+  .regex(
+    RESOURCE_GRANT_PATTERN,
+    'resource pattern must be an exact URI or end with a single "*" (no whitespace)',
+  )
   .refine((pattern) => !RESERVED_OBJECT_KEYS.includes(pattern), {
-    message: 'reserved name is not allowed as a tool pattern',
+    message: 'reserved name is not allowed as a resource pattern',
   })
 
 /**
@@ -76,6 +104,17 @@ function withMaxEntries<V extends z.ZodTypeAny>(
 const agentGrantSchema = z.strictObject({
   /** `'*'` — every tool granted; array — exact names / trailing-`*` prefixes. */
   tools: z.union([z.literal('*'), z.array(toolPatternSchema).max(MAX_TOOLS_PER_GRANT)]),
+  /**
+   * M4 Task 6, both fields ADDITIVE and optional: an absent field (every
+   * pre-M4 file) keeps the M3 fail-closed denial of the corresponding
+   * methods byte for byte; only an explicit grant opens them.
+   */
+  resources: z
+    .union([z.literal('*'), z.array(resourcePatternSchema).max(MAX_RESOURCES_PER_GRANT)])
+    .optional(),
+  prompts: z
+    .union([z.literal('*'), z.array(promptPatternSchema).max(MAX_PROMPTS_PER_GRANT)])
+    .optional(),
 })
 
 /** One agent's grant for one server. */

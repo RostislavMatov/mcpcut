@@ -12,6 +12,7 @@ import {
 } from '../protocol/classify.js'
 import { TOOLS_CALL_METHOD, isToolsListRequest, parseToolCall, type ParsedToolCall } from '../protocol/mcp.js'
 import type { McpMessage } from '../transport/message.js'
+import { createMethodGrantRouter, type MethodFrame } from './gate-method-router.js'
 import type { Verdict } from './pipeline.js'
 import type { SynthesizableId } from './synthesize.js'
 import type { ToolCatalog } from './tool-catalog.js'
@@ -38,6 +39,7 @@ import {
   unsafeClientFrameDecision,
   type AnswerGuard,
   type DecisionWriter,
+  type GateMethodGrants,
 } from './gate-helpers.js'
 
 /**
@@ -105,6 +107,13 @@ export interface GateRouterDeps {
    * non-grantable-method denial and grant filtering of untracked catalogs.
    */
   readonly isGrantedToAgent?: (tool: string) => boolean
+  /**
+   * The method-grant dimension (M4 Task 6): what the agent's grant says about
+   * `resources/*`, `prompts/*` and `completion/complete`. Only consulted when
+   * `isGrantedToAgent` is present; absent (or reporting no grants) the router
+   * denies those methods exactly as M3 did, byte for byte.
+   */
+  readonly methodGrants?: GateMethodGrants
 }
 
 export interface GateRouter {
@@ -114,7 +123,7 @@ export interface GateRouter {
 
 export function createGateRouter(deps: GateRouterDeps): GateRouter {
   const { serverName, writeDecision, settleJournal, answerLocally, answerGuard } = deps
-  const { catalog, onError, gateToolCall, guarded, track, isGrantedToAgent } = deps
+  const { catalog, onError, gateToolCall, guarded, track, isGrantedToAgent, methodGrants } = deps
 
   const pendingToolsListIds = createBoundedIdSet(MAX_TRACKED_TOOLS_LIST_IDS, (evicted) => {
     writeDecision(bookkeepingDecisionInfo(serverName, TOOLS_LIST_OVERFLOW_RULE, TOOLS_LIST_TOOL_NAME, evicted))
@@ -153,9 +162,7 @@ export function createGateRouter(deps: GateRouterDeps): GateRouter {
    * address and is dropped after journaling, exactly like an id-less
    * `tools/call` (C2/N1).
    */
-  async function denyNonGrantableMethod(
-    msg: ClassifiedRequest | ClassifiedNotification,
-  ): Promise<Verdict> {
+  async function denyNonGrantableMethod(msg: MethodFrame): Promise<Verdict> {
     const rule = `${AGENT_NON_GRANTABLE_RULE_PREFIX}: ${msg.method}`
     try {
       writeDecision(nonGrantableMethodDecision(serverName, rule, msg.method))
@@ -170,6 +177,24 @@ export function createGateRouter(deps: GateRouterDeps): GateRouter {
     }
     return DROP
   }
+
+  /**
+   * The method-grant dimension of the router (M4 Task 6, `gate-method-router.ts`):
+   * decides `resources/*`/`prompts/*`/`completion/complete` frames against the
+   * agent's grant dictionary and grant-filters tracked list responses. Handed
+   * `denyNonGrantableMethod` as its fallback, so everything the grants do not
+   * cover — including every frame when `methodGrants` is absent — produces
+   * the M3 denial byte for byte.
+   */
+  const methodRouter = createMethodGrantRouter({
+    serverName,
+    writeDecision,
+    settleJournal,
+    answerLocally,
+    onError,
+    denyFallback: denyNonGrantableMethod,
+    ...(methodGrants !== undefined ? { methodGrants } : {}),
+  })
 
   /** Records an in-flight tool-call verdict by request id, so a cancellation can queue behind it (TS-M2). */
   function recordVerdict(id: JsonRpcId, verdict: Verdict | Promise<Verdict>): Verdict | Promise<Verdict> {
@@ -242,12 +267,14 @@ export function createGateRouter(deps: GateRouterDeps): GateRouter {
     // tools/call is: an id-less `resources/read` classifies as a notification
     // and must not take the "notifications forward unconditionally" path.
     // Without an agent identity this is inert and the M2 routing stands.
+    // With one, the method-grant dictionary (M4 Task 6) decides: absent
+    // grants reproduce the M3 denial byte for byte.
     if (
       isGrantedToAgent !== undefined &&
       (msg.kind === 'request' || msg.kind === 'notification') &&
       isNonGrantableMethod(msg.method)
     ) {
-      return track(denyNonGrantableMethod(msg))
+      return track(methodRouter.gateFrame(msg))
     }
     // Fail closed: FORWARD only frames positively identified as safe.
     switch (msg.kind) {
@@ -303,6 +330,8 @@ export function createGateRouter(deps: GateRouterDeps): GateRouter {
 
       const key = idKeyOf(msg.id)
       if (pendingToolsListIds.delete(key)) return catalog.handleResponse(msg)
+      const trackedList = methodRouter.takePendingList(key)
+      if (trackedList !== null) return methodRouter.filterListResponse(msg.raw, trackedList)
       if (answerGuard.isAnswered(key)) {
         // The client reused an id we already answered: forward it as-is, and
         // leave a trace for whoever has to explain the duplicate later.

@@ -4,10 +4,13 @@ import {
   AgentNotFoundError,
   createAgentsStore,
   InvalidAgentNameError,
+  InvalidPromptPatternError,
+  InvalidResourcePatternError,
   InvalidServerNameError,
   InvalidToolPatternError,
   type AgentsStore,
   type AgentsStoreOptions,
+  type MethodGrantsInput,
 } from '../agents/store.js'
 import type { AgentRecord } from '../agents/schema.js'
 import { formatReadableField } from '../journal/format.js'
@@ -42,8 +45,9 @@ const DEFAULT_IO: AgentCliIo = { stdout: process.stdout, stderr: process.stderr 
 const USAGE = `Usage:
   agent create <name>                          Create an agent; prints its token ONCE
   agent list                                   List agents and their grants
-  agent grant <agent> <server> [--tools a,b,prefix*]
-                                               Grant server access (no --tools = all tools)
+  agent grant <agent> <server> [--tools a,b,prefix*] [--resources uri,uriprefix*|*] [--prompts name,prefix*|*]
+                                               Grant server access (no --tools = all tools;
+                                               no --resources/--prompts = those methods stay denied)
   agent ungrant <agent> <server>               Remove the grant for a server
   agent revoke <name>                          Revoke the agent (its token stops working)
 `
@@ -53,6 +57,8 @@ const EXPECTED_ERRORS = [
   AgentExistsError,
   AgentNotFoundError,
   InvalidAgentNameError,
+  InvalidPromptPatternError,
+  InvalidResourcePatternError,
   InvalidServerNameError,
   InvalidToolPatternError,
   StoreCorruptError,
@@ -142,33 +148,56 @@ function formatAgentLine(agent: AgentRecord): string {
   return `${name}  ${created}${revoked}`
 }
 
-/** One indented line per granted server: `<server>: tool, tool` or `* (all tools)`. */
+/**
+ * Indented lines per granted server: `<server>: tool, tool` (or `* (all
+ * tools)`), plus one extra line each for the resources/prompts dimensions
+ * when present (M4 Task 6) — absent fields print nothing, so pre-M4 grants
+ * render exactly as before.
+ */
 function formatGrantLines(agent: AgentRecord): string[] {
   const entries = Object.entries(agent.grants)
   if (entries.length === 0) {
     return ['  (no grants)']
   }
-  return entries.map(([server, grant]) => {
-    const tools =
-      grant.tools === '*'
-        ? '* (all tools)'
-        : grant.tools.map(formatReadableField).join(', ')
-    return `  ${formatReadableField(server)}: ${tools}`
+  return entries.flatMap(([server, grant]) => {
+    const lines = [`  ${formatReadableField(server)}: ${formatPatterns(grant.tools, 'all tools')}`]
+    if (grant.resources !== undefined) {
+      lines.push(`    resources: ${formatPatterns(grant.resources, 'all resources')}`)
+    }
+    if (grant.prompts !== undefined) {
+      lines.push(`    prompts: ${formatPatterns(grant.prompts, 'all prompts')}`)
+    }
+    return lines
   })
+}
+
+/** `'*'` → `* (all …)`; array → sanitized, comma-joined patterns. */
+function formatPatterns(patterns: '*' | readonly string[], everything: string): string {
+  return patterns === '*'
+    ? `* (${everything})`
+    : patterns.map(formatReadableField).join(', ')
 }
 
 async function runGrant(args: string[], io: AgentCliIo, store: AgentsStore): Promise<number> {
   let positionals: string[]
   let toolsValue: string | undefined
+  let resourcesValue: string | undefined
+  let promptsValue: string | undefined
   try {
     const parsed = parseArgs({
       args: [...args],
-      options: { tools: { type: 'string' } },
+      options: {
+        tools: { type: 'string' },
+        resources: { type: 'string' },
+        prompts: { type: 'string' },
+      },
       allowPositionals: true,
       strict: true,
     })
     positionals = parsed.positionals
     toolsValue = parsed.values.tools
+    resourcesValue = parsed.values.resources
+    promptsValue = parsed.values.prompts
   } catch {
     io.stderr.write(USAGE)
     return 1
@@ -185,19 +214,59 @@ async function runGrant(args: string[], io: AgentCliIo, store: AgentsStore): Pro
     io.stderr.write('--tools was given but contains no tool patterns (expected e.g. --tools get_*,list_issues)\n')
     return 1
   }
+  const resources = parseMethodFlag(resourcesValue)
+  if (resources === 'empty') {
+    io.stderr.write('--resources was given but contains no URI patterns (expected e.g. --resources file:///project/*)\n')
+    return 1
+  }
+  const prompts = parseMethodFlag(promptsValue)
+  if (prompts === 'empty') {
+    io.stderr.write('--prompts was given but contains no prompt patterns (expected e.g. --prompts greet*)\n')
+    return 1
+  }
 
-  const agent = await store.grantServer(agentName, serverName, tools)
+  const methods: MethodGrantsInput = {
+    ...(resources !== undefined ? { resources } : {}),
+    ...(prompts !== undefined ? { prompts } : {}),
+  }
+  const agent = await store.grantServer(agentName, serverName, tools, methods)
   const grant = agent.grants[serverName]
   const summary = grant?.tools === '*' ? '* (all tools)' : (grant?.tools ?? []).join(', ')
   io.stdout.write(
     `granted ${formatReadableField(serverName)} to ${formatReadableField(agentName)}: ${formatReadableField(summary)}\n`,
   )
+  if (grant?.resources !== undefined) {
+    io.stdout.write(`  resources: ${formatReadableField(summaryOf(grant.resources, 'all resources'))}\n`)
+  }
+  if (grant?.prompts !== undefined) {
+    io.stdout.write(`  prompts: ${formatReadableField(summaryOf(grant.prompts, 'all prompts'))}\n`)
+  }
   return 0
+}
+
+/** `'*'` → `* (all …)`; array → raw comma-joined patterns (sanitized by the caller). */
+function summaryOf(patterns: '*' | readonly string[], everything: string): string {
+  return patterns === '*' ? `* (${everything})` : patterns.join(', ')
 }
 
 /** No flag → `'*'`; a flag that boils down to zero patterns → `'empty'` (an error). */
 function parseToolsFlag(value: string | undefined): readonly string[] | '*' | 'empty' {
   if (value === undefined) return '*'
+  return splitPatterns(value)
+}
+
+/**
+ * `--resources`/`--prompts`: ABSENT means "leave the field out" (the M3
+ * fail-closed denial stands) — unlike `--tools`, where absence means
+ * everything. Opening a method surface must always be an explicit act.
+ */
+function parseMethodFlag(value: string | undefined): readonly string[] | '*' | 'empty' | undefined {
+  if (value === undefined) return undefined
+  if (value.trim() === '*') return '*'
+  return splitPatterns(value)
+}
+
+function splitPatterns(value: string): readonly string[] | '*' | 'empty' {
   const patterns = value
     .split(',')
     .map((pattern) => pattern.trim())

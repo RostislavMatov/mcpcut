@@ -43,6 +43,31 @@ export interface GateAgentScope {
   isGranted(tool: string): boolean
   /** The subset of `tools` the agent may see, input order preserved. */
   filterVisible(tools: readonly string[]): string[]
+  /**
+   * The non-tool-method grant dimension (M4 Task 6). Optional and, like the
+   * scope itself, structural: `agents/scope.ts`'s `methodGrants` satisfies
+   * it, but the gate never imports the agents module. ABSENT — every M3-era
+   * scope, every existing test double — means the router keeps the M3
+   * fail-closed denial of `resources/*`/`prompts/*`/`completion/complete`
+   * byte for byte.
+   */
+  readonly methodGrants?: GateMethodGrants
+}
+
+/**
+ * Structural mirror of `agents/method-grants.ts`'s `AgentMethodGrants`, for
+ * the same decoupling reason `GateAgentScope` mirrors `AgentScope`: the gate
+ * depends on the interface, never on the agents module.
+ */
+export interface GateMethodGrants {
+  /** True iff the resources grant covers `uri` (exact or trailing-`*` prefix). */
+  isResourceGranted(uri: string): boolean
+  /** True iff the prompts grant covers `name` (same matcher as tools). */
+  isPromptGranted(name: string): boolean
+  /** True iff at least one resource pattern (or `'*'`) is granted. */
+  hasResourcesGrant(): boolean
+  /** True iff at least one prompt pattern (or `'*'`) is granted. */
+  hasPromptsGrant(): boolean
 }
 
 const NEWLINE_BYTE = 0x0a
@@ -117,10 +142,16 @@ export interface CallFacts {
   readonly argsHash: string
 }
 
-/** Optional per-outcome fields that only some decision records carry. */
+/**
+ * Optional per-outcome fields that only some decision records carry.
+ * `agentName` is stamped on `require-approval-pending` records so an
+ * operator UI can answer "who is asking" (M4); it rides the record through
+ * `decisionInfoOf`'s spread.
+ */
 export interface DecisionExtras {
   readonly approvalId?: string
   readonly latencyMs?: number
+  readonly agentName?: string
 }
 
 /** Assembles the `DecisionInfo` for one decided call. */

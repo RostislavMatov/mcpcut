@@ -93,6 +93,189 @@ describe('createApprovalQueue: enqueue', () => {
   )
 })
 
+describe('createApprovalQueue: M4 UI metadata (agentName, waitExpiresAt, decisionRule)', () => {
+  test('persists agentName, decisionRule and waitExpiresAt = requestedAt + waitTimeoutMs', async () => {
+    const startMs = Date.UTC(2026, 0, 1)
+    const queue = createApprovalQueue({ baseDir, clock: () => startMs })
+
+    const { approvalId } = await queue.enqueue(
+      baseRequest({
+        timeoutMs: 300_000,
+        waitTimeoutMs: 60_000,
+        agentName: 'research-bot',
+        decisionRule: 'defaultDecision',
+      }),
+    )
+
+    const parsed = JSON.parse(await readFile(join(baseDir, 'pending', `${approvalId}.json`), 'utf8'))
+    expect(parsed.agentName).toBe('research-bot')
+    expect(parsed.decisionRule).toBe('defaultDecision')
+    // waitExpiresAt is the END OF THE AGENT'S WAIT, not the grant window:
+    // the two must both be present and differ.
+    expect(parsed.waitExpiresAt).toBe(new Date(startMs + 60_000).toISOString())
+    expect(parsed.expiresAt).toBe(new Date(startMs + 300_000).toISOString())
+    expect(parsed.waitExpiresAt).not.toBe(parsed.expiresAt)
+  })
+
+  test('omits the new fields entirely when not provided (write path stays M2/M3-shaped)', async () => {
+    const queue = createApprovalQueue({ baseDir })
+
+    const { approvalId } = await queue.enqueue(baseRequest())
+
+    const parsed = JSON.parse(await readFile(join(baseDir, 'pending', `${approvalId}.json`), 'utf8'))
+    expect(parsed).not.toHaveProperty('agentName')
+    expect(parsed).not.toHaveProperty('waitExpiresAt')
+    expect(parsed).not.toHaveProperty('decisionRule')
+  })
+
+  test('list() reads a legacy pending file without the new fields and surfaces new ones when present', async () => {
+    const queue = createApprovalQueue({ baseDir })
+    await queue.enqueue(
+      baseRequest({ agentName: 'research-bot', waitTimeoutMs: 60_000, decisionRule: 'defaultDecision' }),
+    )
+
+    // A pending file exactly as an M2/M3 writer produced it: none of the new fields.
+    await mkdir(join(baseDir, 'pending'), { recursive: true })
+    const legacy = {
+      approvalId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      serverName: 'github',
+      toolName: 'legacy_tool',
+      toolClass: 'write',
+      argsRedacted: null,
+      argsHash: 'abc',
+      sessionId: 'session-legacy',
+      requestedAt: new Date(Date.UTC(2025, 0, 1)).toISOString(),
+      expiresAt: new Date(Date.UTC(2027, 0, 1)).toISOString(),
+    }
+    await writeFile(join(baseDir, 'pending', `${legacy.approvalId}.json`), JSON.stringify(legacy), 'utf8')
+
+    const listed = await queue.list()
+    expect(listed).toHaveLength(2)
+    const legacyEntry = listed.find((entry) => entry.toolName === 'legacy_tool')
+    expect(legacyEntry).toBeDefined()
+    expect(legacyEntry).not.toHaveProperty('agentName')
+    const fresh = listed.find((entry) => entry.toolName === 'create_issue')
+    expect(fresh?.agentName).toBe('research-bot')
+    expect(fresh?.decisionRule).toBe('defaultDecision')
+    expect(fresh?.waitExpiresAt).toBeDefined()
+  })
+
+  test('a pending file with a non-string agentName is skipped as malformed', async () => {
+    const queue = createApprovalQueue({ baseDir })
+    const { approvalId } = await queue.enqueue(baseRequest())
+    const path = join(baseDir, 'pending', `${approvalId}.json`)
+    const parsed = JSON.parse(await readFile(path, 'utf8'))
+    await writeFile(path, JSON.stringify({ ...parsed, agentName: 42 }), 'utf8')
+
+    await expect(queue.list()).resolves.toEqual([])
+  })
+
+  test('an approval landing after waitExpiresAt but before expiresAt is still recorded approved', async () => {
+    let nowMs = Date.UTC(2026, 0, 1)
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
+    const { approvalId } = await queue.enqueue(
+      baseRequest({ timeoutMs: 300_000, waitTimeoutMs: 1_000 }),
+    )
+
+    nowMs += 60_000 // the agent's wait is long over; the grant window is not
+    const result = await queue.resolve(approvalId, { outcome: 'approved', actor: 'operator' })
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error('expected ok result')
+    // waitExpiresAt must NOT participate in the expiry downgrade: an approval
+    // inside the grant window still mints a grant for the agent's retry.
+    expect(result.record.resolution.outcome).toBe('approved')
+  })
+})
+
+describe('createApprovalQueue: listResolved', () => {
+  async function seedResolved(queue: ReturnType<typeof createApprovalQueue>, count: number): Promise<string[]> {
+    const ids: string[] = []
+    for (let i = 0; i < count; i += 1) {
+      const { approvalId } = await queue.enqueue(baseRequest({ toolName: `tool_${i}` }))
+      await queue.resolve(approvalId, { outcome: 'denied', actor: 'operator' })
+      ids.push(approvalId)
+    }
+    return ids
+  }
+
+  test('returns the limit newest entries by ULID, newest first, with their resolutions', async () => {
+    const queue = createApprovalQueue({ baseDir })
+    const ids = await seedResolved(queue, 15)
+    const expected = [...ids].sort().reverse().slice(0, 10)
+
+    const listed = await queue.listResolved({ limit: 10 })
+
+    expect(listed.map((entry) => entry.approvalId)).toEqual(expected)
+    expect(listed[0]?.resolution.outcome).toBe('denied')
+    expect(listed[0]?.resolvedAt).toBeDefined()
+  })
+
+  test('reads only the limit newest files from disk, never the rest', async () => {
+    let reads = 0
+    const readFileText = (filePath: string): Promise<string> => {
+      reads += 1
+      return readFile(filePath, 'utf8')
+    }
+    const queue = createApprovalQueue({ baseDir, readFileText })
+    await seedResolved(queue, 15)
+
+    reads = 0
+    const listed = await queue.listResolved({ limit: 10 })
+
+    expect(listed).toHaveLength(10)
+    expect(reads).toBe(10)
+  })
+
+  test('returns everything newest-first when fewer entries than limit exist', async () => {
+    const queue = createApprovalQueue({ baseDir })
+    const ids = await seedResolved(queue, 3)
+
+    const listed = await queue.listResolved({ limit: 10 })
+
+    expect(listed.map((entry) => entry.approvalId)).toEqual([...ids].sort().reverse())
+  })
+
+  test('returns an empty array when the resolved directory does not exist yet', async () => {
+    const queue = createApprovalQueue({ baseDir })
+    await expect(queue.listResolved({ limit: 10 })).resolves.toEqual([])
+  })
+
+  test('skips a malformed file among the newest without reading any extra files', async () => {
+    let reads = 0
+    const readFileText = (filePath: string): Promise<string> => {
+      reads += 1
+      return readFile(filePath, 'utf8')
+    }
+    const queue = createApprovalQueue({ baseDir, readFileText })
+    const ids = await seedResolved(queue, 5)
+    const newest = [...ids].sort().reverse()[0] as string
+    await writeFile(join(baseDir, 'resolved', `${newest}.json`), 'not json at all', 'utf8')
+
+    reads = 0
+    const listed = await queue.listResolved({ limit: 3 })
+
+    expect(listed).toHaveLength(2) // the corrupted newest is skipped, not backfilled
+    expect(reads).toBe(3)
+  })
+
+  test('a non-positive or non-integer limit returns [] without touching any file', async () => {
+    let reads = 0
+    const readFileText = (filePath: string): Promise<string> => {
+      reads += 1
+      return readFile(filePath, 'utf8')
+    }
+    const queue = createApprovalQueue({ baseDir, readFileText })
+    await seedResolved(queue, 2)
+
+    reads = 0
+    await expect(queue.listResolved({ limit: 0 })).resolves.toEqual([])
+    await expect(queue.listResolved({ limit: -5 })).resolves.toEqual([])
+    await expect(queue.listResolved({ limit: 2.5 })).resolves.toEqual([])
+    expect(reads).toBe(0)
+  })
+})
+
 describe('createApprovalQueue: list', () => {
   test('returns pending approvals sorted oldest first', async () => {
     let nowMs = Date.UTC(2026, 0, 1)

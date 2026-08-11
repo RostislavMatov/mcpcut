@@ -5,6 +5,7 @@ import { createAgentsStore, type AgentsStore } from '../agents/store.js'
 import type { JournalSinkOptions } from '../journal/sink.js'
 import { INVENTORY_FILE_NAME } from '../policy/inventory.js'
 import { loadPolicy, type LoadPolicyOptions, type PolicyLoadResult } from '../policy/load.js'
+import { resolvePolicySource } from '../policy/source.js'
 import type { Policy } from '../policy/schema.js'
 import { journalingOnlyPolicy } from './connect-policy.js'
 import { createRegistryStore, type RegistryStore } from '../registry/store.js'
@@ -171,17 +172,39 @@ function applyFailClosed(policy: Policy, failClosed: boolean): Policy {
   return { ...policy, journal: { ...policy.journal, failClosed: effective } }
 }
 
+/**
+ * `serve` is an `operator-launched` entry point (ADR-0005): it is started from
+ * an operator's shell or unit file, so its argv, `cwd` and environment are as
+ * trusted as the launch itself and the full four-source order of
+ * `policy/load.ts` applies unchanged. Going through `resolvePolicySource`
+ * rather than calling `loadPolicy` directly is what makes that a decision on
+ * record instead of an omission -- the source rule now has one home, and this
+ * entry point reads it from there.
+ */
 async function resolvePolicy(
   flags: ServeFlags,
   io: ServeCliIo,
   opts: ServeCommandOptions,
   journalDir: string,
 ): Promise<PolicyOutcome> {
-  const result: PolicyLoadResult = await loadPolicy({
-    journalDir,
-    ...opts.loadPolicy,
+  const source = await resolvePolicySource({
+    entryPoint: 'serve',
+    journalDir: opts.loadPolicy?.journalDir ?? journalDir,
+    ...(opts.loadPolicy?.env !== undefined ? { env: opts.loadPolicy.env } : {}),
+    ...(opts.loadPolicy?.cwd !== undefined ? { cwd: opts.loadPolicy.cwd } : {}),
+    ...(opts.loadPolicy?.readFile !== undefined ? { readFile: opts.loadPolicy.readFile } : {}),
     ...(flags.policyPath !== undefined ? { explicitPath: flags.policyPath } : {}),
   })
+
+  if (source.status === 'refused') {
+    // Unreachable for an operator-launched entry point; handled rather than
+    // asserted so a future trust-class change cannot start a server on a
+    // policy the rule module just refused.
+    io.stderr.write(`serve: policy source refused (${source.reason})\n`)
+    return { exitCode: EXIT_STARTUP_FAILURE }
+  }
+
+  const result: PolicyLoadResult = await loadPolicy(source.loadOptions)
 
   if (result.status === 'error') {
     for (const line of result.errors) {

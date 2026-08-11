@@ -29,18 +29,30 @@ const RESOLVED_SUBDIR = 'resolved'
 const TMP_SUFFIX = '.tmp'
 const JSON_FILE_SUFFIX = '.json'
 
-/** Every outcome an operator can record via `resolve()`. */
-export const RESOLVE_OUTCOME_VALUES = ['approved', 'denied'] as const
-export type ResolveOutcome = (typeof RESOLVE_OUTCOME_VALUES)[number]
-
-/**
- * Every outcome that can end up in a resolved file. Adds `expired` to
- * `ResolveOutcome`: `markExpired()` (session teardown) records a resolution
- * an operator never made, so it gets its own outcome rather than being
- * force-fit into `denied`.
- */
-export const RESOLUTION_OUTCOME_VALUES = [...RESOLVE_OUTCOME_VALUES, 'expired'] as const
-export type ResolutionOutcome = (typeof RESOLUTION_OUTCOME_VALUES)[number]
+// The on-disk file shapes and their validators live in `queue-file.ts`
+// (split for the <400-line file rule); re-exported so importers see one module.
+export {
+  RESOLVE_OUTCOME_VALUES,
+  RESOLUTION_OUTCOME_VALUES,
+  isPendingApprovalFile,
+  isResolvedApprovalFile,
+  type ApprovalResolution,
+  type PendingApproval,
+  type PendingApprovalFile,
+  type ResolutionOutcome,
+  type ResolveOutcome,
+  type ResolvedApprovalFile,
+} from './queue-file.js'
+import {
+  isPendingApprovalFile,
+  isResolvedApprovalFile,
+  type ApprovalResolution,
+  type PendingApproval,
+  type PendingApprovalFile,
+  type ResolutionOutcome,
+  type ResolveOutcome,
+  type ResolvedApprovalFile,
+} from './queue-file.js'
 
 /** Approval ids are ULIDs; validated before ever being used to build a path. */
 const APPROVAL_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
@@ -53,29 +65,17 @@ export interface EnqueueRequest {
   readonly args: unknown
   readonly sessionId: string
   readonly timeoutMs: number
+  /** Name of the authenticated agent behind the call; absent on the ad-hoc `wrap` path (M4). */
+  readonly agentName?: string
+  /** The agent's own wait window; persisted as `waitExpiresAt` when present (M4). */
+  readonly waitTimeoutMs?: number
+  /** The policy rule that resolved to require-approval (M4). */
+  readonly decisionRule?: string
 }
 
 export interface EnqueueResult {
   readonly approvalId: string
   readonly argsHash: string
-}
-
-/** Shape persisted to `pending/<approvalId>.json`. */
-export interface PendingApprovalFile {
-  readonly approvalId: string
-  readonly serverName: string
-  readonly toolName: string
-  readonly toolClass: ToolClass
-  readonly argsRedacted: unknown
-  readonly argsHash: string
-  readonly sessionId: string
-  readonly requestedAt: string
-  readonly expiresAt: string
-}
-
-/** `list()` entry: a pending file plus a derived, not-persisted `expired` flag. */
-export interface PendingApproval extends PendingApprovalFile {
-  readonly expired: boolean
 }
 
 export interface ResolveInput {
@@ -84,23 +84,14 @@ export interface ResolveInput {
   readonly reason?: string
 }
 
-/** The resolution half of a resolved file: what `readResolution()` returns. */
-export interface ApprovalResolution {
-  readonly outcome: ResolutionOutcome
-  readonly actor?: string
-  readonly reason?: string
-  readonly resolvedAt: string
-}
-
-/** Shape persisted to `resolved/<approvalId>.json`: the pending fields plus a resolution. */
-export type ResolvedApprovalFile = PendingApprovalFile & {
-  readonly resolution: Omit<ApprovalResolution, 'resolvedAt'>
-  readonly resolvedAt: string
-}
-
 export type ResolveResult =
   | { readonly ok: true; readonly record: ResolvedApprovalFile }
   | { readonly ok: false; readonly reason: 'not-found-or-already-resolved' }
+
+export interface ListResolvedOptions {
+  /** How many of the newest resolved entries to return; only that many files are read. */
+  readonly limit: number
+}
 
 export interface ApprovalQueue {
   enqueue(req: EnqueueRequest): Promise<EnqueueResult>
@@ -110,6 +101,12 @@ export interface ApprovalQueue {
   markExpired(approvalId: string): Promise<ResolveResult>
   /** `null` when the id is unknown or still pending. */
   readResolution(approvalId: string): Promise<ApprovalResolution | null>
+  /**
+   * The `limit` newest resolved approvals, newest first (M4 UI). File names
+   * are ULIDs, so lexicographic order IS chronological order: only the
+   * newest `limit` files are ever read, never the whole directory.
+   */
+  listResolved(opts: ListResolvedOptions): Promise<ResolvedApprovalFile[]>
 }
 
 export interface ApprovalQueueOptions {
@@ -117,6 +114,8 @@ export interface ApprovalQueueOptions {
   readonly baseDir?: string
   /** Injectable clock for deterministic tests. Defaults to `Date.now`. */
   readonly clock?: () => number
+  /** Injectable utf8 file reader, so tests can count reads. Defaults to `fs.readFile`. */
+  readonly readFileText?: (filePath: string) => Promise<string>
 }
 
 function isEnoent(error: unknown): boolean {
@@ -132,41 +131,6 @@ function isValidApprovalId(approvalId: string): boolean {
   return APPROVAL_ID_PATTERN.test(approvalId)
 }
 
-function isToolClass(value: unknown): value is ToolClass {
-  return value === 'read' || value === 'write' || value === 'destructive'
-}
-
-function isPendingApprovalFile(raw: unknown): raw is PendingApprovalFile {
-  if (typeof raw !== 'object' || raw === null) return false
-  const value = raw as Record<string, unknown>
-  return (
-    typeof value.approvalId === 'string' &&
-    typeof value.serverName === 'string' &&
-    typeof value.toolName === 'string' &&
-    isToolClass(value.toolClass) &&
-    typeof value.argsHash === 'string' &&
-    typeof value.sessionId === 'string' &&
-    typeof value.requestedAt === 'string' &&
-    typeof value.expiresAt === 'string'
-  )
-}
-
-function isResolutionOutcome(value: unknown): value is ResolutionOutcome {
-  return (RESOLUTION_OUTCOME_VALUES as readonly unknown[]).includes(value)
-}
-
-function isResolvedApprovalFile(raw: unknown): raw is ResolvedApprovalFile {
-  if (!isPendingApprovalFile(raw)) return false
-  const value = raw as unknown as Record<string, unknown>
-  const resolution = value.resolution
-  return (
-    typeof value.resolvedAt === 'string' &&
-    typeof resolution === 'object' &&
-    resolution !== null &&
-    isResolutionOutcome((resolution as Record<string, unknown>).outcome)
-  )
-}
-
 /**
  * Creates a file-based approvals queue rooted at `opts.baseDir`
  * (default `JOURNAL_DIR/approvals`).
@@ -174,6 +138,7 @@ function isResolvedApprovalFile(raw: unknown): raw is ResolvedApprovalFile {
 export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQueue {
   const baseDir = opts.baseDir ?? join(JOURNAL_DIR, APPROVALS_SUBDIR)
   const clock = opts.clock ?? Date.now
+  const readFileText = opts.readFileText ?? ((filePath: string) => readFile(filePath, 'utf8'))
   const pendingDir = join(baseDir, PENDING_SUBDIR)
   const resolvedDir = join(baseDir, RESOLVED_SUBDIR)
 
@@ -201,7 +166,7 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
   async function readJsonOrUndefined(filePath: string): Promise<unknown> {
     let text: string
     try {
-      text = await readFile(filePath, 'utf8')
+      text = await readFileText(filePath)
     } catch (error: unknown) {
       if (isEnoent(error)) return undefined
       throw error
@@ -228,6 +193,11 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
       sessionId: req.sessionId,
       requestedAt: new Date(nowMs).toISOString(),
       expiresAt: new Date(nowMs + req.timeoutMs).toISOString(),
+      ...(req.agentName !== undefined ? { agentName: req.agentName } : {}),
+      ...(req.waitTimeoutMs !== undefined
+        ? { waitExpiresAt: new Date(nowMs + req.waitTimeoutMs).toISOString() }
+        : {}),
+      ...(req.decisionRule !== undefined ? { decisionRule: req.decisionRule } : {}),
     }
 
     await writeAtomic(pendingPath(approvalId), record)
@@ -363,5 +333,39 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
     }
   }
 
-  return { enqueue, list, resolve, markExpired, readResolution }
+  /** See `ApprovalQueue.listResolved`: bounded read of the newest entries only. */
+  async function listResolved(listOpts: ListResolvedOptions): Promise<ResolvedApprovalFile[]> {
+    if (!Number.isInteger(listOpts.limit) || listOpts.limit <= 0) return []
+
+    let entries: string[]
+    try {
+      entries = await readdir(resolvedDir)
+    } catch (error: unknown) {
+      if (isEnoent(error)) return []
+      throw error
+    }
+
+    // ULID file names: lexicographic descending == newest first. Only the
+    // first `limit` names are ever opened; a malformed file among them is
+    // skipped, not backfilled from older entries (the read stays bounded).
+    const newestNames = entries
+      .filter((name) => name.endsWith(JSON_FILE_SUFFIX))
+      .sort((a, b) => b.localeCompare(a))
+      .slice(0, listOpts.limit)
+
+    const results: ResolvedApprovalFile[] = []
+    for (const name of newestNames) {
+      let raw: unknown
+      try {
+        raw = await readJsonOrUndefined(join(resolvedDir, name))
+      } catch {
+        continue // malformed JSON: skip
+      }
+      if (!isResolvedApprovalFile(raw)) continue // malformed shape: skip
+      results.push(raw)
+    }
+    return results
+  }
+
+  return { enqueue, list, resolve, markExpired, readResolution, listResolved }
 }

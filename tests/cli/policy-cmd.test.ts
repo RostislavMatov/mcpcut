@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { resolveConnectPolicy } from '../../src/cli/connect-policy.js'
 import { runPolicyShow, runPolicyValidate } from '../../src/cli/policy-cmd.js'
 
 let cwd: string
@@ -252,5 +253,207 @@ describe('runPolicyShow', () => {
 
     expect(exitCode).toBe(0)
     expect(io.out()).toContain('github')
+  })
+})
+
+/**
+ * `policy show --entry-point <name>` answers the question the manual smoke of
+ * 2026-08-10 could not: which file does THIS entry point really load. The
+ * answer must be the same one the entry point itself would reach (ADR-0005),
+ * which is why every test here asserts a path, not a description.
+ */
+describe('runPolicyShow --entry-point', () => {
+  /** Project policy, state-directory policy and `$MCP_JOURNAL_POLICY` all present at once. */
+  async function writeAllThreeSources(): Promise<{
+    projectPath: string
+    statePath: string
+    envPath: string
+  }> {
+    await mkdir(join(cwd, '.mcp-journal'), { recursive: true })
+    const projectPath = await writePolicyFile(join(cwd, '.mcp-journal'), {
+      version: 1,
+      servers: { 'project-server': {} },
+    })
+    const statePath = await writePolicyFile(journalDir, {
+      version: 1,
+      servers: { 'state-server': {} },
+    })
+    const envPath = join(cwd, 'env-policy.json')
+    await writeFile(envPath, JSON.stringify({ version: 1, servers: { 'env-server': {} } }), 'utf8')
+    return { projectPath, statePath, envPath }
+  }
+
+  test('connect: prints the state-directory policy, ignoring env and project sources', async () => {
+    const { statePath, envPath } = await writeAllThreeSources()
+    const io = fakeIo()
+
+    const exitCode = await runPolicyShow(['--entry-point', 'connect'], io, {
+      cwd,
+      journalDir,
+      env: { MCP_JOURNAL_POLICY: envPath },
+    })
+
+    expect(exitCode).toBe(0)
+    const out = io.out()
+    expect(out).toContain(statePath)
+    expect(out).toContain('state-server')
+    expect(out).not.toContain('project-server')
+    expect(out).not.toContain('env-server')
+  })
+
+  test('connect: the printed source is the one a real connect session loads', async () => {
+    const { envPath } = await writeAllThreeSources()
+    const showIo = fakeIo()
+    const connectIo = fakeIo()
+
+    await runPolicyShow(['--entry-point', 'connect'], showIo, {
+      cwd,
+      journalDir,
+      env: { MCP_JOURNAL_POLICY: envPath },
+    })
+    // The same resolution, driven through the entry point itself: its stderr
+    // line is the only place a connect session names the file it loaded.
+    const outcome = await resolveConnectPolicy({
+      io: connectIo,
+      journalDir,
+      env: { MCP_JOURNAL_POLICY: envPath },
+      cwd,
+    })
+
+    expect(outcome.status).toBe('resolved')
+    const loadedBy = /policy: loaded from (.+)\n/.exec(connectIo.err())?.[1]
+    expect(loadedBy).toBeDefined()
+    expect(showIo.out()).toContain(`source: ${loadedBy}`)
+  })
+
+  test('connect: names the entry point and its trust class', async () => {
+    await writeAllThreeSources()
+    const io = fakeIo()
+
+    const exitCode = await runPolicyShow(['--entry-point', 'connect'], io, { cwd, journalDir, env: {} })
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain('connect')
+    expect(io.out()).toContain('agent-launched')
+  })
+
+  test('serve: keeps the four-source order, so the project file wins', async () => {
+    const { projectPath } = await writeAllThreeSources()
+    const io = fakeIo()
+
+    const exitCode = await runPolicyShow(['--entry-point', 'serve'], io, { cwd, journalDir, env: {} })
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain(projectPath)
+    expect(io.out()).toContain('project-server')
+    expect(io.out()).toContain('operator-launched')
+  })
+
+  test('serve and connect disagree on the same host, and each says so explicitly', async () => {
+    const { projectPath, statePath } = await writeAllThreeSources()
+    const serveIo = fakeIo()
+    const connectIo = fakeIo()
+
+    await runPolicyShow(['--entry-point', 'serve'], serveIo, { cwd, journalDir, env: {} })
+    await runPolicyShow(['--entry-point', 'connect'], connectIo, { cwd, journalDir, env: {} })
+
+    expect(serveIo.out()).toContain(projectPath)
+    expect(connectIo.out()).toContain(statePath)
+  })
+
+  test('connect: an ignored source that exists gets exactly one note on stderr', async () => {
+    const { envPath } = await writeAllThreeSources()
+    const io = fakeIo()
+
+    await runPolicyShow(['--entry-point', 'connect'], io, {
+      cwd,
+      journalDir,
+      env: { MCP_JOURNAL_POLICY: envPath },
+    })
+
+    const noteLines = io.err().split('\n').filter((line) => line.includes('ignoring'))
+    expect(noteLines).toHaveLength(2)
+    expect(io.err()).toContain('$MCP_JOURNAL_POLICY')
+    expect(io.err()).toContain(join(cwd, '.mcp-journal', 'policy.json'))
+  })
+
+  test('connect: --policy is refused, with the operator location in the message', async () => {
+    const { envPath } = await writeAllThreeSources()
+    const io = fakeIo()
+
+    const exitCode = await runPolicyShow(['--entry-point', 'connect', '--policy', envPath], io, {
+      cwd,
+      journalDir,
+      env: {},
+    })
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('refusing --policy')
+    expect(io.err()).toContain(join(journalDir, 'policy.json'))
+    expect(io.out()).toBe('')
+  })
+
+  test('serve: --policy is honored (operator-launched entry)', async () => {
+    const { envPath } = await writeAllThreeSources()
+    const io = fakeIo()
+
+    const exitCode = await runPolicyShow(['--entry-point', 'serve', '--policy', envPath], io, {
+      cwd,
+      journalDir,
+      env: {},
+    })
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain('env-server')
+  })
+
+  test('connect with no policy anywhere: lists only the state-directory locations', async () => {
+    const io = fakeIo()
+
+    const exitCode = await runPolicyShow(['--entry-point', 'connect'], io, { cwd, journalDir, env: {} })
+
+    expect(exitCode).toBe(1)
+    const err = io.err()
+    expect(err).toContain('no policy file found')
+    expect(err).toContain(join(journalDir, 'policy.json'))
+    expect(err).not.toContain(join(cwd, '.mcp-journal', 'policy.json'))
+  })
+
+  test('an unknown entry point is a usage error, not a silent default', async () => {
+    const io = fakeIo()
+
+    const exitCode = await runPolicyShow(['--entry-point', 'daemon'], io, { cwd, journalDir, env: {} })
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('Usage')
+    expect(io.err()).toContain('connect')
+  })
+
+  test('--json carries the entry point and its trust class', async () => {
+    const { statePath } = await writeAllThreeSources()
+    const io = fakeIo()
+
+    const exitCode = await runPolicyShow(['--entry-point', 'connect', '--json'], io, {
+      cwd,
+      journalDir,
+      env: {},
+    })
+
+    expect(exitCode).toBe(0)
+    const parsed = JSON.parse(io.out())
+    expect(parsed.sourcePath).toBe(statePath)
+    expect(parsed.entryPoint).toBe('connect')
+    expect(parsed.trustClass).toBe('agent-launched')
+  })
+
+  test('without --entry-point the output is unchanged (no entry-point line)', async () => {
+    const { projectPath } = await writeAllThreeSources()
+    const io = fakeIo()
+
+    const exitCode = await runPolicyShow([], io, { cwd, journalDir, env: {} })
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain(projectPath)
+    expect(io.out()).not.toContain('trust class')
   })
 })

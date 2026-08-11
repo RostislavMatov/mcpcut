@@ -3,6 +3,8 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { agentScope } from '../../src/agents/scope.js'
+import type { AgentGrant } from '../../src/agents/schema.js'
 import { createJournalSink, type JournalSink } from '../../src/journal/sink.js'
 import type { JournalRecord } from '../../src/journal/record.js'
 import { createGrantRegistry } from '../../src/policy/approvals/grants.js'
@@ -556,6 +558,291 @@ describe('message-level gate: an untracked tools/list-shaped response', () => {
     )
 
     expect(verdict).toEqual({ action: 'forward' })
+  })
+})
+
+/**
+ * M4 Task 6: a `GateAgentScope` whose method-grant dimension is the REAL one
+ * derived by `agents/scope.ts` from a real grant record — so these tests pin
+ * the integrated matcher semantics, not a test double's.
+ */
+function methodScopeOf(grant: Partial<AgentGrant>): GateAgentScope {
+  const record = {
+    name: 'research-bot',
+    tokenHash: 'f'.repeat(64),
+    createdAt: '2026-08-05T10:00:00.000Z',
+    grants: { [SERVER_NAME]: { tools: [], ...grant } as AgentGrant },
+  }
+  const scope = agentScope(record, SERVER_NAME)
+  return {
+    agentName: 'research-bot',
+    isGranted: scope.isGranted,
+    filterVisible: scope.filterVisible,
+    methodGrants: scope.methodGrants,
+  }
+}
+
+function requestOf(id: number, method: string, params?: unknown): McpMessage {
+  return clientMessage(
+    Buffer.from(JSON.stringify({ jsonrpc: '2.0', id, method, ...(params !== undefined ? { params } : {}) })),
+  )
+}
+
+describe('message-level gate: method grants open the M3-denied methods (M4)', () => {
+  test('resources/read with a matching resources grant forwards and journals class read', async () => {
+    const harness = createMessageHarness({
+      agentScope: methodScopeOf({ resources: ['file:///project/*'] }),
+      sessionId: `${SESSION_ID}-mg-read-allow`,
+    })
+
+    const verdict = await harness.gate.gateClientMessage(
+      requestOf(41, 'resources/read', { uri: 'file:///project/readme.md' }),
+    )
+
+    expect(verdict).toEqual({ action: 'forward' })
+    expect(harness.answered).toEqual([])
+    const decisions = await harness.decisions()
+    expect(decisions).toHaveLength(1)
+    expect(decisions[0]?.decision).toMatchObject({
+      outcome: 'allow',
+      rule: 'agent: method granted: resources/read',
+      toolName: 'resources/read',
+      toolClass: 'read',
+      serverName: SERVER_NAME,
+    })
+  })
+
+  test('resources/read outside the granted URIs is denied with a rule naming the URI', async () => {
+    const harness = createMessageHarness({
+      agentScope: methodScopeOf({ resources: ['file:///project/*'] }),
+      sessionId: `${SESSION_ID}-mg-read-deny`,
+    })
+
+    const verdict = await harness.gate.gateClientMessage(
+      requestOf(42, 'resources/read', { uri: 'file:///etc/passwd' }),
+    )
+
+    expect(verdict).toEqual({ action: 'drop' })
+    const answer = JSON.parse(harness.answered[0]!.bytes.toString('utf8'))
+    expect(answer.id).toBe(42)
+    expect(answer.error.code).toBe(ERROR_CODE_POLICY_DENIED)
+    expect(String(answer.error.data.rule)).toBe('agent: no resources grant for file:///etc/passwd')
+    const decisions = await harness.decisions()
+    expect(decisions[0]?.decision).toMatchObject({ outcome: 'deny', toolClass: 'read' })
+  })
+
+  test('without a resources grant the denial is byte-identical to M3 (same rule, same record shape)', async () => {
+    const harness = createMessageHarness({
+      agentScope: methodScopeOf({ prompts: ['greet*'] }),
+      sessionId: `${SESSION_ID}-mg-read-m3`,
+    })
+
+    const verdict = await harness.gate.gateClientMessage(
+      requestOf(43, 'resources/read', { uri: 'file:///project/readme.md' }),
+    )
+
+    expect(verdict).toEqual({ action: 'drop' })
+    const answer = JSON.parse(harness.answered[0]!.bytes.toString('utf8'))
+    expect(answer.id).toBe(43)
+    expect(answer.error.code).toBe(ERROR_CODE_POLICY_DENIED)
+    expect(String(answer.error.data.rule)).toBe('agent: method not grantable in M3: resources/read')
+    const decisions = await harness.decisions()
+    expect(decisions[0]?.decision).toMatchObject({
+      outcome: 'deny',
+      rule: 'agent: method not grantable in M3: resources/read',
+      toolName: 'resources/read',
+      toolClass: 'destructive',
+    })
+  })
+
+  test('an empty resources array behaves exactly like an absent field (M3 rule)', async () => {
+    const harness = createMessageHarness({
+      agentScope: methodScopeOf({ resources: [] }),
+      sessionId: `${SESSION_ID}-mg-read-empty`,
+    })
+
+    await harness.gate.gateClientMessage(requestOf(44, 'resources/read', { uri: 'file:///x' }))
+
+    const answer = JSON.parse(harness.answered[0]!.bytes.toString('utf8'))
+    expect(String(answer.error.data.rule)).toBe('agent: method not grantable in M3: resources/read')
+  })
+
+  test("a '*' resources grant admits any URI", async () => {
+    const harness = createMessageHarness({
+      agentScope: methodScopeOf({ resources: '*' }),
+      sessionId: `${SESSION_ID}-mg-read-star`,
+    })
+
+    const verdict = await harness.gate.gateClientMessage(
+      requestOf(45, 'resources/read', { uri: 'anything://at/all' }),
+    )
+
+    expect(verdict).toEqual({ action: 'forward' })
+  })
+
+  test('resources/list response is filtered down to the granted URIs', async () => {
+    const harness = createMessageHarness({
+      agentScope: methodScopeOf({ resources: ['file:///project/*'] }),
+      sessionId: `${SESSION_ID}-mg-res-list`,
+    })
+
+    const requestVerdict = await harness.gate.gateClientMessage(requestOf(46, 'resources/list'))
+    expect(requestVerdict).toEqual({ action: 'forward' })
+
+    const verdict = (await harness.gate.gateServerMessage(
+      serverMessage(
+        Buffer.from(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 46,
+            result: {
+              resources: [
+                { uri: 'file:///project/a.txt', name: 'A' },
+                { uri: 'file:///etc/passwd', name: 'P' },
+              ],
+              nextCursor: 'c7',
+            },
+          }),
+        ),
+      ),
+    )) as Extract<MessageVerdict, { action: 'emit' }>
+
+    expect(verdict.action).toBe('emit')
+    const result = JSON.parse(verdict.bytes.toString('utf8')).result
+    expect(result.resources.map((entry: { uri: string }) => entry.uri)).toEqual([
+      'file:///project/a.txt',
+    ])
+    expect(result.nextCursor).toBe('c7')
+  })
+
+  test('a resources/list response that is entirely granted forwards untouched', async () => {
+    const harness = createMessageHarness({
+      agentScope: methodScopeOf({ resources: '*' }),
+      sessionId: `${SESSION_ID}-mg-res-list-all`,
+    })
+
+    await harness.gate.gateClientMessage(requestOf(47, 'resources/list'))
+    const verdict = await harness.gate.gateServerMessage(
+      serverMessage(
+        Buffer.from(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 47,
+            result: { resources: [{ uri: 'file:///anything' }] },
+          }),
+        ),
+      ),
+    )
+
+    expect(verdict).toEqual({ action: 'forward' })
+  })
+
+  test('prompts/list response is filtered down to the granted names', async () => {
+    const harness = createMessageHarness({
+      agentScope: methodScopeOf({ prompts: ['greet*'] }),
+      sessionId: `${SESSION_ID}-mg-prompt-list`,
+    })
+
+    await harness.gate.gateClientMessage(requestOf(48, 'prompts/list'))
+    const verdict = (await harness.gate.gateServerMessage(
+      serverMessage(
+        Buffer.from(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 48,
+            result: { prompts: [{ name: 'greeting' }, { name: 'secret-prompt' }] },
+          }),
+        ),
+      ),
+    )) as Extract<MessageVerdict, { action: 'emit' }>
+
+    expect(verdict.action).toBe('emit')
+    const result = JSON.parse(verdict.bytes.toString('utf8')).result
+    expect(result.prompts.map((entry: { name: string }) => entry.name)).toEqual(['greeting'])
+  })
+
+  test('prompts/get is matched with the shared tool matcher semantics', async () => {
+    const harness = createMessageHarness({
+      agentScope: methodScopeOf({ prompts: ['greet*'] }),
+      sessionId: `${SESSION_ID}-mg-prompt-get`,
+    })
+
+    const allowed = await harness.gate.gateClientMessage(
+      requestOf(49, 'prompts/get', { name: 'greeting' }),
+    )
+    const denied = await harness.gate.gateClientMessage(
+      requestOf(50, 'prompts/get', { name: 'secret-prompt' }),
+    )
+
+    expect(allowed).toEqual({ action: 'forward' })
+    expect(denied).toEqual({ action: 'drop' })
+    const answer = JSON.parse(harness.answered[0]!.bytes.toString('utf8'))
+    expect(String(answer.error.data.rule)).toBe('agent: no prompts grant for secret-prompt')
+  })
+
+  test('completion/complete needs at least one prompts- or resources-grant', async () => {
+    const withPrompts = createMessageHarness({
+      agentScope: methodScopeOf({ prompts: ['greet*'] }),
+      sessionId: `${SESSION_ID}-mg-completion-prompts`,
+    })
+    const withResources = createMessageHarness({
+      agentScope: methodScopeOf({ resources: ['file:///p/*'] }),
+      sessionId: `${SESSION_ID}-mg-completion-resources`,
+    })
+    const withNeither = createMessageHarness({
+      agentScope: methodScopeOf({ tools: '*' }),
+      sessionId: `${SESSION_ID}-mg-completion-neither`,
+    })
+
+    expect(await withPrompts.gate.gateClientMessage(requestOf(51, 'completion/complete', {}))).toEqual(
+      { action: 'forward' },
+    )
+    expect(
+      await withResources.gate.gateClientMessage(requestOf(52, 'completion/complete', {})),
+    ).toEqual({ action: 'forward' })
+    expect(await withNeither.gate.gateClientMessage(requestOf(53, 'completion/complete', {}))).toEqual(
+      { action: 'drop' },
+    )
+    const answer = JSON.parse(withNeither.answered[0]!.bytes.toString('utf8'))
+    expect(String(answer.error.data.rule)).toBe(
+      'agent: method not grantable in M3: completion/complete',
+    )
+  })
+
+  test('resources/subscribe on a granted URI forwards and journals class write', async () => {
+    const harness = createMessageHarness({
+      agentScope: methodScopeOf({ resources: ['file:///project/*'] }),
+      sessionId: `${SESSION_ID}-mg-subscribe`,
+    })
+
+    const verdict = await harness.gate.gateClientMessage(
+      requestOf(54, 'resources/subscribe', { uri: 'file:///project/a.txt' }),
+    )
+
+    expect(verdict).toEqual({ action: 'forward' })
+    const decisions = await harness.decisions()
+    expect(decisions[0]?.decision).toMatchObject({
+      outcome: 'allow',
+      toolName: 'resources/subscribe',
+      toolClass: 'write',
+    })
+  })
+
+  test('a method outside the enumerated vocabulary stays M3-denied even with wildcard grants', async () => {
+    const harness = createMessageHarness({
+      agentScope: methodScopeOf({ resources: '*', prompts: '*' }),
+      sessionId: `${SESSION_ID}-mg-templates`,
+    })
+
+    const verdict = await harness.gate.gateClientMessage(
+      requestOf(55, 'resources/templates/list', {}),
+    )
+
+    expect(verdict).toEqual({ action: 'drop' })
+    const answer = JSON.parse(harness.answered[0]!.bytes.toString('utf8'))
+    expect(String(answer.error.data.rule)).toBe(
+      'agent: method not grantable in M3: resources/templates/list',
+    )
   })
 })
 
