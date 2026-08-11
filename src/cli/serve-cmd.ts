@@ -10,6 +10,7 @@ import type { Policy } from '../policy/schema.js'
 import { journalingOnlyPolicy } from './connect-policy.js'
 import { createRegistryStore, type RegistryStore } from '../registry/store.js'
 import { createHttpFront, type HttpFront } from '../transport/http/server.js'
+import { isRejectedOriginFlagValue } from '../net/origin-host.js'
 import { resolveVaultRefs } from '../vault/resolve.js'
 import { createVaultStore, type VaultStore } from '../vault/store.js'
 import { ulid } from 'ulid'
@@ -20,6 +21,7 @@ import {
   SERVE_USAGE,
   type ServeCliIo,
 } from './serve-constants.js'
+import { describeBindFailure } from './bind-failure.js'
 import { createServeHooks } from './serve-hooks.js'
 import { createServeSessionFactory } from './serve-runtime.js'
 
@@ -143,6 +145,12 @@ function parseServeFlags(argv: readonly string[]): FlagResult {
   if (host.length === 0) {
     return { error: 'Invalid --host: expected a non-empty address.' }
   }
+  const allowedOrigins = Array.isArray(values['allowed-origin'])
+    ? (values['allowed-origin'] as string[])
+    : []
+  if (allowedOrigins.some(isRejectedOriginFlagValue)) {
+    return { error: `Invalid --allowed-origin "null": the opaque origin can never be allowed.` }
+  }
 
   return {
     flags: {
@@ -150,9 +158,7 @@ function parseServeFlags(argv: readonly string[]): FlagResult {
       host,
       policyPath: typeof values['policy'] === 'string' ? values['policy'] : undefined,
       failClosed: values['fail-closed'] === true,
-      allowedOrigins: Array.isArray(values['allowed-origin'])
-        ? (values['allowed-origin'] as string[])
-        : [],
+      allowedOrigins,
       allowedHosts: Array.isArray(values['allowed-host'])
         ? (values['allowed-host'] as string[])
         : [],
@@ -315,7 +321,7 @@ export async function runServe(
   try {
     bound = await front.listen(flags.port, flags.host)
   } catch (error: unknown) {
-    io.stderr.write(describeBindFailure(error, flags))
+    io.stderr.write(describeBindFailure('serve', `${flags.host}:${flags.port}`, error))
     await front.close().catch(() => undefined)
     return EXIT_STARTUP_FAILURE
   }
@@ -382,20 +388,3 @@ async function waitForShutdown(
   }
 }
 
-function describeBindFailure(error: unknown, flags: ServeFlags): string {
-  // Honest narrowing rather than a cast: a thrown value is `unknown`, and an
-  // `errno` code is only trustworthy when it is really there and really a string.
-  const code =
-    typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
-      ? error.code
-      : undefined
-  const target = `${flags.host}:${flags.port}`
-  if (code === 'EADDRINUSE') {
-    return `serve: cannot bind ${target}: address already in use\n`
-  }
-  if (code === 'EACCES') {
-    return `serve: cannot bind ${target}: permission denied (ports below 1024 need privileges)\n`
-  }
-  const message = error instanceof Error ? error.message : String(error)
-  return `serve: cannot bind ${target}: ${message}\n`
-}

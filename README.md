@@ -563,6 +563,13 @@ true.
   beyond localhost prints a loud warning; TLS is not the UI's job — terminate
   it in a reverse proxy in front of the UI and let the UI keep listening on
   loopback, exactly like `serve`.
+- **Behind a reverse proxy**: with `--behind-tls`, every login the proxy
+  forwards arrives from the proxy's own source address, so the UI's
+  per-address `/login` rate limit degrades to one shared bucket for all
+  logins through that proxy. Rate-limit `/login` at the proxy as well.
+- **Revocation SLA**: `admin remove`/`admin rotate`/`admin role` from the CLI
+  close that admin's open SSE streams within one heartbeat (≤ 15 s); their
+  requests are refused immediately.
 - **Auth**: a token exchanges for a session cookie (`HttpOnly`,
   `SameSite=Strict`, `Path=/`, and `Secure` when started with `--behind-tls`).
   Sessions live in the UI process's memory only — nothing about a session is

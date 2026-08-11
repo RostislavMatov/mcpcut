@@ -4,6 +4,7 @@ import { createAdminStore, type AdminStore } from '../admin/store.js'
 import { createAgentsStore, type AgentsStore } from '../agents/store.js'
 import { JOURNAL_DIR } from '../config.js'
 import { formatReadableField } from '../journal/format.js'
+import { isRejectedOriginFlagValue } from '../net/origin-host.js'
 import { INVENTORY_FILE_NAME } from '../policy/inventory.js'
 import { createRegistryStore, type RegistryStore } from '../registry/store.js'
 import { createSessionManager } from '../ui/auth.js'
@@ -11,6 +12,7 @@ import { createUiServer, type UiServer } from '../ui/server.js'
 import { createEventHub, type EventHub } from '../ui/events.js'
 import { createQueueWatcher, type QueueWatcher } from '../ui/watch.js'
 import { createVaultStore, type VaultStore } from '../vault/store.js'
+import { describeBindFailure } from './bind-failure.js'
 import { MAX_TCP_PORT } from './serve-constants.js'
 import {
   BOOTSTRAP_ADMIN_NAME,
@@ -120,6 +122,12 @@ function parseUiFlags(argv: readonly string[]): FlagResult {
   if (host.length === 0) {
     return { error: 'Invalid --host: expected a non-empty address.' }
   }
+  const allowedOrigins = Array.isArray(values['allowed-origin'])
+    ? (values['allowed-origin'] as string[])
+    : []
+  if (allowedOrigins.some(isRejectedOriginFlagValue)) {
+    return { error: `Invalid --allowed-origin "null": the opaque origin can never be allowed.` }
+  }
 
   return {
     flags: {
@@ -127,9 +135,7 @@ function parseUiFlags(argv: readonly string[]): FlagResult {
       host,
       behindTls: values['behind-tls'] === true,
       allowedHosts: Array.isArray(values['allowed-host']) ? (values['allowed-host'] as string[]) : [],
-      allowedOrigins: Array.isArray(values['allowed-origin'])
-        ? (values['allowed-origin'] as string[])
-        : [],
+      allowedOrigins,
     },
   }
 }
@@ -256,7 +262,7 @@ export async function runUi(
     // into this run's stderr sink, before the socket is bound.
     bound = await runtime.server.listen(flags.port, flags.host)
   } catch (error: unknown) {
-    io.stderr.write(describeBindFailure(error, flags))
+    io.stderr.write(describeBindFailure('ui', `${flags.host}:${flags.port}`, error))
     await closeRuntime(runtime).catch(() => undefined)
     return EXIT_STARTUP_FAILURE
   }
@@ -335,23 +341,3 @@ async function waitForShutdown(
   }
 }
 
-/**
- * A refused bind is an operator's problem, not a stack trace: name the target
- * and the reason. Mirrors `serve-cmd.ts` — the two entry points must fail the
- * same way for the same reason.
- */
-function describeBindFailure(error: unknown, flags: UiFlags): string {
-  const code =
-    typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
-      ? error.code
-      : undefined
-  const target = `${flags.host}:${flags.port}`
-  if (code === 'EADDRINUSE') {
-    return `ui: cannot bind ${target}: address already in use\n`
-  }
-  if (code === 'EACCES') {
-    return `ui: cannot bind ${target}: permission denied (ports below 1024 need privileges)\n`
-  }
-  const message = error instanceof Error ? error.message : String(error)
-  return `ui: cannot bind ${target}: ${message}\n`
-}

@@ -348,6 +348,25 @@ describe('createEventHub: session-bound streams (HIGH-2)', () => {
     expect(hub.subscriberCount()).toBe(1)
   })
 
+  test('N subscribers sharing a session trigger one probe per sweep', async () => {
+    const probeCalls: string[] = []
+    const hub = createEventHub({
+      scheduler: new FakeScheduler(),
+      isSessionLive: (identity) => {
+        probeCalls.push(identity.sessionId)
+        return true
+      },
+    })
+    hub.subscribe(new FakeSink(), ALICE)
+    hub.subscribe(new FakeSink(), ALICE)
+    hub.subscribe(new FakeSink(), ALICE)
+
+    expect(await hub.sweepSessions()).toBe(0)
+
+    expect(probeCalls).toEqual([ALICE.sessionId])
+    expect(hub.subscriberCount()).toBe(3)
+  })
+
   test('closeSession and closeForAdmin are no-ops for an unknown key', () => {
     const hub = createEventHub({ scheduler: new FakeScheduler() })
     const sink = new FakeSink()
