@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { realpathSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
+import { runAdminCommand, type AdminCliOptions } from './cli/admin-cmd.js'
 import { runAgentCommand, type AgentCliOptions } from './cli/agent-cmd.js'
 import { runApprovals, type ApprovalsCliOptions } from './cli/approvals-cmd.js'
 import { runConnect, type ConnectDeps } from './cli/connect-cmd.js'
@@ -15,6 +16,7 @@ import {
   runServerShow,
   type ServerCliOptions,
 } from './cli/server-cmd.js'
+import { runUi, type UiCommandOptions } from './cli/ui-cmd.js'
 import { runVault, type VaultCmdDeps } from './cli/vault-cmd.js'
 import { runWrapCommand, type WrapCommandOptions } from './cli/wrap-cmd.js'
 import { USAGE } from './cli/usage.js'
@@ -52,6 +54,8 @@ export interface DispatchOptions {
   readonly agent?: AgentCliOptions
   readonly connect?: ConnectDeps
   readonly serve?: ServeCommandOptions
+  readonly ui?: UiCommandOptions
+  readonly admin?: AdminCliOptions
 }
 
 const DEFAULT_IO: CliIo = { stdout: process.stdout, stderr: process.stderr }
@@ -71,6 +75,8 @@ export async function dispatch(
   if (command === 'wrap') return runWrapCommand(rest, io, opts.wrap)
   if (command === 'connect') return runConnect(rest, io, opts.connect)
   if (command === 'serve') return runServe(rest, io, opts.serve)
+  if (command === 'ui') return runUi(rest, io, opts.ui)
+  if (command === 'admin') return runAdminCommand(rest, io, opts.admin)
   if (command === 'server') return runServerCommand(rest, io, opts.server)
   if (command === 'vault') return runVault(rest, io, opts.vault)
   if (command === 'agent') return runAgentCommand(rest, io, opts.agent)
