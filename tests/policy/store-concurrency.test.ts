@@ -1,8 +1,9 @@
-import { readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
+import { readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdir, mkdtemp, readdir, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+import { FORCE_RECOVERY_STALE_FACTOR, type FileLockOptions } from '../../src/lockfile.js'
 import {
   StoreCorruptError,
   StoreLockError,
@@ -241,5 +242,103 @@ describe('holder token: a stolen lock is detected instead of assumed', () => {
 
     expect(attempts).toBe(3)
     expect((await open().read()).items).toEqual({})
+  })
+})
+
+describe('M4-T2: limited emergency recovery of a broken foreign lock', () => {
+  /**
+   * Backlog M3 (ROADMAP, «битый чужой лок больше не самоисцеляется»): with
+   * three writers (CLI + serve + UI) a lockfile that never answers for itself
+   * must not wedge the store forever — deny/revoke run through `update()`, so
+   * write availability is itself a security property. The escape is limited:
+   * only a lock whose mtime is UNCHANGED between checks and old enough is
+   * removed regardless of content, and the operator is told via an injectable
+   * `warn` line. A changing mtime is treated as a live writer — fail closed.
+   */
+  const lockPath = (): string => `${filePath}.lock`
+
+  /** Store wired to a spy `warn` so the operator-visible line is assertable. */
+  function openRecovering(
+    warnings: string[],
+    lock: Partial<FileLockOptions> = {},
+  ): JsonStore<CounterStore> {
+    return createJsonStore<CounterStore>(filePath, {
+      validate,
+      defaultValue: DEFAULT,
+      lock: { pollMs: 5, warn: (line) => warnings.push(line), ...lock },
+    })
+  }
+
+  test('an unparseable foreign lock with an unchanged mtime past the staleness window is removed, the write lands, and the operator sees exactly one line', async () => {
+    await mkdir(dir, { recursive: true })
+    await writeFile(lockPath(), 'not a lock record at all', 'utf8')
+    // Untouched for 60s: older than any recovery threshold at the default 30s staleMs.
+    const past = new Date(Date.now() - 60_000)
+    await utimes(lockPath(), past, past)
+    const warnings: string[] = []
+
+    const final = await openRecovering(warnings).update((s) => ({
+      ...s,
+      items: { ...s.items, a: 1 },
+    }))
+
+    expect(final.items).toEqual({ a: 1 })
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain(lockPath())
+    const leftover = (await readdir(dir)).filter((name) => name.endsWith('.lock'))
+    expect(leftover).toEqual([])
+  })
+
+  test('a foreign lock whose mtime changes between checks (live writer) is never stolen', async () => {
+    await mkdir(dir, { recursive: true })
+    await writeFile(lockPath(), 'still not a lock record', 'utf8')
+    const warnings: string[] = []
+    // The "writer" moves mtime to a DIFFERENT old timestamp on every tick, so
+    // the age check alone would steal the lock; only the "mtime unchanged
+    // between checks" guard stands between this lock and removal.
+    let tick = 0
+    const rewriter = setInterval(() => {
+      tick += 1
+      const past = new Date(Date.now() - 120_000 - tick * 1_000)
+      utimesSync(lockPath(), past, past)
+    }, 3)
+
+    try {
+      await expect(
+        openRecovering(warnings, { totalWaitMs: 120, pollMs: 15 }).update((s) => s),
+      ).rejects.toBeInstanceOf(StoreLockError)
+    } finally {
+      clearInterval(rewriter)
+    }
+
+    expect(warnings).toEqual([])
+    expect(readFileSync(lockPath(), 'utf8')).toBe('still not a lock record')
+  })
+
+  test('a lock whose record claims to be fresh but whose mtime is ancient and unchanged is forcibly removed after N x staleMs', async () => {
+    await mkdir(dir, { recursive: true })
+    // A lying record: createdAtMs a day in the FUTURE, so content-based
+    // staleness never fires — before the emergency escape, this wedged the
+    // store forever. The file itself has not been touched for 60s.
+    const lying = JSON.stringify({
+      pid: 999_999,
+      createdAtMs: Date.now() + 86_400_000,
+      nonce: 'feedfeedfeedfeedfeedfeedfeedfeed',
+    })
+    await writeFile(lockPath(), lying, 'utf8')
+    const past = new Date(Date.now() - 60_000)
+    await utimes(lockPath(), past, past)
+    const warnings: string[] = []
+    // staleMs chosen so N x staleMs is comfortably below the 60s mtime age.
+    const staleMs = Math.floor(55_000 / FORCE_RECOVERY_STALE_FACTOR)
+
+    const final = await openRecovering(warnings, { staleMs }).update((s) => ({
+      ...s,
+      items: { ...s.items, healed: 1 },
+    }))
+
+    expect(final.items).toEqual({ healed: 1 })
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain(lockPath())
   })
 })
