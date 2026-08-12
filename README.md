@@ -27,7 +27,8 @@ pitch and landing material must not claim more than it does.
 | streamable HTTP front (`serve`) | shipped, both session models | `docs/adr/0002-http-dual-version.md` |
 | tamper-evident journal storage | **not shipped** | roadmap (M5) |
 | exportable audit report | **not shipped** | roadmap (M5) |
-| admin UI / approval queue | **in progress** — core UI, admin accounts/roles and CLI parity built; not yet e2e-verified or security-reviewed | roadmap (M4), `docs/adr/0004-admin-ui-architecture.md` |
+| admin UI / approval queue | shipped | e2e + UI test suites, TS + security reviews, manual browser smoke (`docs/smoke-m4.md`), `docs/adr/0004-admin-ui-architecture.md` |
+| named admin accounts (owner/operator/viewer) | shipped | admin CLI + role-enforcement tests |
 
 Today the journal is a persistent, append-oriented, secret-redacted JSONL file.
 It is **not** tamper-evident and there is **no** audit-report export yet; see
