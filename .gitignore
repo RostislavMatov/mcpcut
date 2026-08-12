@@ -6,3 +6,4 @@ coverage/
 .env
 dashboard.html
 .mcp.json
+.playwright-mcp/
