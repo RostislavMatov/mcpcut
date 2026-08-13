@@ -1,0 +1,1043 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ivory Console — дизайн-концепция админ-панели MCP Control Plane</title>
+<style>
+:root {
+  --bg-page: #FFFFFF;
+  --bg-sunken: #F3F3EC;
+  --bg-sunken-strong: #EDEDE3;
+  --bg-surface: #FFFFFF;
+  --bg-dark-accent: #101010;
+
+  --text-primary: #1B1B18;
+  --text-secondary: #4A4A44;
+  --text-muted: #6E6E66;
+  --text-on-dark: #F5F5F0;
+  --text-on-dark-muted: rgba(245,245,240,0.64);
+
+  --border-default: #E4E4D9;
+  --border-strong: #D2D2C4;
+  --border-on-dark: rgba(245,245,240,0.16);
+
+  --accent: #2A5FD8;
+  --accent-fg: #FFFFFF;
+  --accent-soft: #E7EEFC;
+  --accent-on-dark: #93B4F5;
+
+  --ok-fg: #166534;  --ok-bg: #DCFCE7;
+  --pend-fg: #92400E; --pend-bg: #FEF3C7;
+  --bad-fg: #991B1B;  --bad-bg: #FEE2E2;
+  --quar-fg: #6B21A8; --quar-bg: #F3E8FF;
+  --red-fg: #57534E;  --red-bg: #E7E5DF;
+
+  --chart-grid: rgba(27,27,24,0.08);
+
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --r-sm: 6px; --r-md: 10px; --r-lg: 18px; --r-xl: 24px; --r-pill: 999px;
+  --sh-xs: 0 1px 2px rgba(27,27,24,0.04);
+  --sh-sm: 0 4px 16px rgba(27,27,24,0.08);
+  --ring: 0 0 0 3px rgba(42,95,216,0.35);
+}
+* { box-sizing: border-box; margin: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--bg-page);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.5;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+button { font: inherit; cursor: pointer; }
+:is(a, button, input, summary, [tabindex]):focus-visible { outline: none; box-shadow: var(--ring); border-radius: var(--r-sm); }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.link-btn { border: 0; background: none; padding: 2px 4px; color: var(--accent); font-size: 12px; }
+.link-btn:hover { text-decoration: underline; }
+.link-btn.danger { color: var(--bad-fg); }
+svg.ic { width: 18px; height: 18px; stroke: currentColor; stroke-width: 1.6; fill: none; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.mono { font-family: var(--font-mono); font-size: 12px; }
+.num { font-variant-numeric: tabular-nums; }
+
+/* ---------- Shell ---------- */
+.shell { display: flex; min-height: 100vh; }
+.sidebar {
+  width: 232px; flex: none;
+  display: flex; flex-direction: column;
+  padding: 20px 12px 16px;
+  border-right: 1px solid var(--border-default);
+  background: var(--bg-page);
+  position: sticky; top: 0; height: 100vh;
+}
+.brand { display: flex; align-items: center; gap: 10px; padding: 0 10px 18px; }
+.brand-mark {
+  width: 30px; height: 30px; border-radius: 9px; background: var(--bg-dark-accent);
+  color: var(--text-on-dark); display: grid; place-items: center;
+  font-weight: 700; font-size: 13px; letter-spacing: 0.02em;
+}
+.brand-name { font-weight: 600; font-size: 14px; }
+.brand-name small { display: block; font-weight: 400; font-size: 11px; color: var(--text-muted); }
+.nav-group { margin-top: 14px; }
+.nav-group > .nav-h {
+  font-size: 11px; font-weight: 500; color: var(--text-muted);
+  padding: 0 12px 6px; letter-spacing: 0.04em;
+}
+.nav-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 8px 12px; border: 0; border-radius: var(--r-md);
+  background: transparent; color: var(--text-secondary);
+  font-size: 13px; font-weight: 500; text-align: left;
+}
+.nav-item:hover { background: var(--bg-sunken); }
+.nav-item[aria-current="true"] { background: var(--bg-sunken-strong); color: var(--text-primary); }
+.nav-item .grow { flex: 1; }
+.nav-item[aria-disabled="true"] { color: var(--text-muted); cursor: not-allowed; opacity: 0.7; }
+.count {
+  font-size: 11px; font-weight: 500; padding: 1px 7px; border-radius: var(--r-pill);
+  background: var(--bg-sunken-strong); color: var(--text-secondary);
+}
+.count.pend { background: var(--pend-bg); color: var(--pend-fg); }
+.dot-alert { width: 7px; height: 7px; border-radius: 50%; background: var(--bad-fg); flex: none; }
+.profile {
+  margin-top: auto; border-top: 1px solid var(--border-default);
+  padding: 14px 10px 0; display: flex; align-items: center; gap: 10px;
+}
+.avatar {
+  width: 32px; height: 32px; border-radius: 50%; background: var(--bg-sunken-strong);
+  display: grid; place-items: center; font-size: 12px; font-weight: 600; color: var(--text-secondary);
+}
+.profile .who { flex: 1; min-width: 0; }
+.profile .who b { display: block; font-size: 13px; font-weight: 600; }
+.role-chip {
+  display: inline-block; font-size: 11px; font-weight: 500; padding: 0 7px;
+  border-radius: var(--r-pill); background: var(--accent-soft); color: var(--accent);
+}
+.logout { border: 0; background: none; color: var(--text-muted); padding: 10px; border-radius: var(--r-sm); }
+.logout:hover { background: var(--bg-sunken); color: var(--text-primary); }
+
+.main { flex: 1; min-width: 0; padding: 36px 48px 72px; max-width: 1280px; }
+.screen { display: none; }
+.screen.active { display: block; }
+.page-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 28px; }
+.page-head h1 { font-size: 28px; font-weight: 650; line-height: 1.25; letter-spacing: -0.02em; }
+h1:focus, h1:focus-visible { outline: none; box-shadow: none; }
+.page-head .sub { color: var(--text-muted); font-size: 13px; }
+
+/* ---------- Badges & chips ---------- */
+.badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 22px; padding: 0 10px; border-radius: var(--r-pill);
+  font-size: 12px; font-weight: 500; white-space: nowrap;
+}
+.badge svg.ic { width: 12px; height: 12px; }
+.b-ok   { background: var(--ok-bg);   color: var(--ok-fg); }
+.b-pend { background: var(--pend-bg); color: var(--pend-fg); }
+.b-bad  { background: var(--bad-bg);  color: var(--bad-fg); }
+.b-quar { background: var(--quar-bg); color: var(--quar-fg); }
+.b-red  { background: var(--red-bg);  color: var(--red-fg); }
+.b-neutral { background: var(--bg-sunken-strong); color: var(--text-secondary); }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 12px;
+  border-radius: var(--r-pill); border: 1px solid var(--border-strong);
+  background: var(--bg-surface); font-size: 13px; color: var(--text-secondary);
+}
+.chip.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.chip .x { border: 0; background: none; padding: 0; color: inherit; font-size: 12px; line-height: 1; min-width: 24px; min-height: 24px; display: inline-flex; align-items: center; justify-content: center; margin-right: -8px; }
+
+/* ---------- Cards ---------- */
+.card {
+  background: var(--bg-surface); border: 1px solid var(--border-default);
+  border-radius: var(--r-lg); padding: 20px;
+}
+.grid { display: grid; gap: 12px; }
+
+/* ---------- Hero band (по референсу: одна тонированная полоса) ---------- */
+.hero-band {
+  border-radius: var(--r-xl); background: var(--bg-sunken);
+  padding: 28px 32px; display: grid;
+  grid-template-columns: 1.25fr 0.85fr 1fr; gap: 40px; align-items: end;
+}
+@media (max-width: 1100px) { .hero-band { grid-template-columns: 1fr; } }
+.hero-label { font-size: 13px; font-weight: 500; color: var(--text-secondary); margin-bottom: 14px; }
+.gauge-wrap { text-align: center; padding-bottom: 4px; }
+.gauge-wrap svg { width: 180px; max-width: 100%; }
+.gauge-num { font-size: 34px; font-weight: 700; letter-spacing: -0.02em; }
+.gauge-cap { font-size: 13px; color: var(--text-secondary); margin-top: 2px; }
+.hero-stats { display: flex; flex-direction: column; gap: 20px; padding-bottom: 4px; }
+.hero-stat { display: flex; align-items: center; gap: 16px; color: inherit; }
+a.hero-stat:hover { text-decoration: none; }
+a.hero-stat:hover .hs-arrow { background: var(--text-primary); color: var(--bg-page); }
+.hero-stat .hs-num { font-size: 44px; font-weight: 700; line-height: 1; letter-spacing: -0.02em; min-width: 64px; }
+.hero-stat .hs-body { flex: 1; }
+.hero-stat .hs-l { font-size: 14px; font-weight: 500; }
+.hero-stat .hs-m { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+.hero-stat .hs-m em { font-style: normal; color: var(--pend-fg); font-weight: 500; }
+.hero-stat .hs-m em.red { color: var(--bad-fg); }
+.hs-arrow {
+  width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--border-strong);
+  display: grid; place-items: center; color: var(--text-primary); flex: none;
+  transition: background 0.15s, color 0.15s;
+}
+
+/* ---------- Разряженная строка статистики (без коробок) ---------- */
+.stat-row { display: flex; align-items: stretch; gap: 0; margin: 8px 0 4px; overflow-x: auto; }
+.stat-cell { flex: 1; min-width: 120px; padding: 18px 24px; border-left: 1px solid var(--border-default); }
+.stat-cell:first-child { border-left: 0; padding-left: 4px; }
+.stat-cell .v { display: block; font-size: 30px; font-weight: 700; line-height: 1.15; letter-spacing: -0.02em; }
+.stat-cell .v.amber { color: var(--pend-fg); }
+.stat-cell .v.red { color: var(--bad-fg); }
+.stat-cell .l { display: block; font-size: 13px; color: var(--text-muted); margin-top: 4px; line-height: 1.4; }
+.scan-line { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12px; color: var(--text-secondary); }
+.scan-line b { color: var(--pend-fg); font-weight: 600; }
+.sect-h { font-size: 16px; font-weight: 600; margin: 32px 0 14px; letter-spacing: -0.01em; }
+
+/* ---------- Overview: attention + feed ---------- */
+.attention { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.split { display: grid; grid-template-columns: 1fr 1.1fr; gap: 12px; margin-top: 12px; align-items: start; }
+@media (max-width: 980px) { .split { grid-template-columns: 1fr; } .sidebar { display: none; } }
+.hours { display: flex; align-items: flex-end; gap: 3px; height: 120px; margin-top: 14px; }
+.hbar { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; gap: 1px; height: 100%; }
+.hbar i { display: block; border-radius: 2px 2px 0 0; background: var(--text-primary); }
+.hbar i.gated { background: repeating-linear-gradient(-45deg, var(--bad-fg) 0, var(--bad-fg) 1.5px, transparent 1.5px, transparent 5px); border: 1px solid var(--bad-fg); border-bottom: none; border-radius: 2px 2px 0 0; }
+.axis { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+.feed { display: flex; flex-direction: column; }
+.feed-row {
+  display: flex; align-items: center; gap: 8px; padding: 8px 4px;
+  border-bottom: 1px solid var(--border-default); font-size: 13px; min-width: 0;
+}
+.feed-row:last-child { border-bottom: 0; }
+.feed-row .ts { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); flex: none; }
+.feed-row .who { color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.freshness { display: flex; align-items: center; gap: 10px; margin-top: 12px; font-size: 12px; color: var(--text-muted); }
+.freshness button { border: 0; background: none; color: var(--accent); padding: 6px 8px; min-height: 24px; }
+
+/* ---------- Approvals lanes ---------- */
+.lanes { display: grid; grid-template-columns: 2.4fr 1fr; gap: 16px; align-items: start; }
+@media (max-width: 1100px) { .lanes { grid-template-columns: 1fr; } }
+.lane-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; align-items: start; }
+.lane-head { display: flex; align-items: center; gap: 8px; padding: 0 4px 10px; font-size: 13px; font-weight: 600; }
+.lane-cards { display: flex; flex-direction: column; gap: 12px; }
+.appr {
+  background: var(--bg-surface); border: 1px solid var(--border-default);
+  border-radius: var(--r-lg); padding: 16px; position: relative; overflow: hidden;
+}
+.appr::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--pend-fg); }
+.appr.dark { background: var(--bg-dark-accent); border-color: var(--border-on-dark); color: var(--text-on-dark); }
+.appr.dark::before { background: var(--bad-fg); }
+.appr-id { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-weight: 600; font-size: 14px; }
+.appr-id .arr { color: var(--text-muted); font-weight: 400; }
+.appr.dark .arr { color: var(--text-on-dark-muted); }
+.appr .rule { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+.appr.dark .rule { color: var(--text-on-dark-muted); }
+.appr .args {
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.5;
+  background: var(--bg-sunken); border-radius: var(--r-md);
+  padding: 10px 12px; margin-top: 10px; overflow-x: auto; white-space: pre; color: var(--text-secondary);
+}
+.appr.dark .args { background: rgba(245,245,240,0.08); color: var(--text-on-dark); }
+.clocks { display: flex; align-items: baseline; gap: 14px; margin-top: 12px; }
+.clock-big { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.clock-big small { font-size: 12px; font-weight: 400; color: var(--text-muted); margin-left: 4px; }
+.appr.dark .clock-big small { color: var(--text-on-dark-muted); }
+.clock-sub { font-size: 12px; color: var(--text-muted); }
+.appr.dark .clock-sub { color: var(--text-on-dark-muted); }
+.wait-over { font-size: 12px; color: var(--pend-fg); background: var(--pend-bg); border-radius: var(--r-sm); padding: 4px 8px; margin-top: 12px; display: inline-block; }
+.appr-actions { display: flex; gap: 8px; margin-top: 14px; }
+.btn {
+  flex: 1; height: 34px; border-radius: var(--r-md); font-weight: 500; font-size: 13px;
+  border: 1px solid transparent; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+}
+.btn-approve { background: var(--ok-fg); color: #fff; }
+.btn-approve:hover { background: #14532D; }
+.btn-deny { background: transparent; border-color: var(--bad-fg); color: var(--bad-fg); }
+.btn-deny:hover { background: var(--bad-bg); }
+.appr.dark .btn-deny { border-color: #F87171; color: #F87171; }
+.appr.dark .btn-deny:hover { background: rgba(153,27,27,0.35); }
+.btn-2step { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+.appr.dark .btn-2step { color: var(--text-on-dark-muted); }
+.appr-meta { display: flex; align-items: center; gap: 10px; margin-top: 12px; font-size: 11px; color: var(--text-muted); flex-wrap: wrap; }
+.appr.dark .appr-meta { color: var(--text-on-dark-muted); }
+.appr-meta a { font-family: var(--font-mono); font-size: 11px; }
+.appr.dark .appr-meta a { color: var(--accent-on-dark); }
+.bulk { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 12px; color: var(--text-secondary); }
+.lane-collapsed {
+  border: 1px dashed var(--border-strong); border-radius: var(--r-lg);
+  padding: 14px 16px; color: var(--text-muted); font-size: 13px;
+  background: none; width: 100%; text-align: left; display: flex; gap: 8px; align-items: center;
+}
+.rail h3 { font-size: 13px; font-weight: 600; margin-bottom: 10px; }
+.rail .card { padding: 6px 16px; }
+.res-row { display: flex; align-items: center; gap: 8px; padding: 9px 0; border-bottom: 1px solid var(--border-default); font-size: 13px; }
+.res-row:last-child { border-bottom: 0; }
+.res-row .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.res-row .actor { color: var(--text-muted); font-size: 12px; }
+.bulk-bar {
+  position: sticky; bottom: 16px; margin-top: 16px;
+  background: var(--bg-dark-accent); color: var(--text-on-dark);
+  border-radius: var(--r-lg); padding: 10px 16px; display: flex; align-items: center; gap: 12px;
+  box-shadow: var(--sh-sm); font-size: 13px;
+}
+.bulk-bar button { background: var(--text-on-dark); color: var(--text-primary); border: 0; border-radius: var(--r-md); height: 30px; padding: 0 14px; font-weight: 600; }
+
+/* ---------- Quarantine ---------- */
+.q-card { margin-bottom: 16px; }
+.q-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.q-head .name { font-weight: 600; font-size: 16px; }
+.q-desc { color: var(--text-secondary); font-size: 13px; margin-top: 6px; }
+.diff-group { margin-top: 12px; border: 1px solid var(--border-default); border-radius: var(--r-md); overflow: hidden; }
+.diff-group > summary {
+  display: flex; align-items: center; gap: 8px; padding: 9px 12px;
+  font-size: 13px; font-weight: 500; cursor: pointer; background: var(--bg-sunken); list-style: none;
+}
+.diff-group > summary::-webkit-details-marker { display: none; }
+.diff-group > summary .mark { width: 3px; height: 16px; border-radius: 2px; flex: none; }
+.diff-rows { padding: 4px 0; }
+.diff-row { display: flex; align-items: center; gap: 10px; padding: 6px 14px; font-size: 13px; }
+.diff-row .path { font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); }
+.diff-row .crumb { color: var(--text-primary); font-weight: 500; }
+.diff-row .what { margin-left: auto; font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.surface-list { margin-top: 12px; background: var(--bg-sunken); border-radius: var(--r-md); padding: 12px 14px; }
+.surface-list h4 { font-size: 12px; font-weight: 500; color: var(--text-muted); margin-bottom: 8px; }
+.surface-row { display: flex; gap: 10px; align-items: center; padding: 4px 0; font-size: 13px; }
+.req { font-size: 11px; color: var(--pend-fg); background: var(--pend-bg); padding: 0 6px; border-radius: var(--r-pill); }
+
+/* ---------- Journal ---------- */
+.modes { display: inline-flex; background: var(--bg-sunken); border-radius: var(--r-md); padding: 3px; gap: 2px; }
+.modes button { border: 0; background: none; padding: 5px 14px; border-radius: 8px; font-size: 13px; color: var(--text-secondary); }
+.modes button[aria-checked="true"] { background: var(--bg-surface); color: var(--text-primary); font-weight: 500; box-shadow: var(--sh-xs); }
+.filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 14px 0; }
+.stream-ctl { display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--text-muted); margin-bottom: 10px; }
+.pill-new {
+  border: 0; border-radius: var(--r-pill); background: var(--bg-dark-accent); color: var(--text-on-dark);
+  font-size: 12px; padding: 4px 12px;
+}
+.rec {
+  border: 1px solid var(--border-default); border-radius: var(--r-md);
+  background: var(--bg-surface); padding: 10px 14px; margin-bottom: 8px;
+}
+.rec-head { display: flex; align-items: center; gap: 10px; font-size: 12px; flex-wrap: wrap; }
+.rec-head .ts { font-family: var(--font-mono); color: var(--text-muted); }
+.rec-head .dir { color: var(--text-secondary); }
+.rec-head .method { font-family: var(--font-mono); color: var(--text-primary); }
+.rec pre {
+  font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary);
+  background: var(--bg-sunken); border-radius: var(--r-sm); padding: 8px 10px; margin-top: 8px; overflow-x: auto;
+}
+.tok-red {
+  font-family: var(--font-mono); font-size: 11px; background: var(--red-bg); color: var(--red-fg);
+  border-radius: 4px; padding: 0 5px; font-weight: 600;
+}
+.rec .rule-line { font-size: 12px; color: var(--text-muted); margin-top: 6px; }
+
+/* ---------- Server detail ---------- */
+.entity { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 6px; }
+.monogram {
+  width: 44px; height: 44px; border-radius: 12px; background: #274B34; color: #E9F6EE;
+  display: grid; place-items: center; font-weight: 700; font-size: 15px; flex: none;
+}
+.entity .title { min-width: 0; flex: 1; }
+.entity h1 { font-size: 20px; font-weight: 600; display: inline; margin-right: 10px; }
+.entity .target { font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.entity-meta { text-align: right; font-size: 12px; color: var(--text-muted); flex: none; }
+.entity-chips { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border-default); margin: 16px 0 20px; }
+.tabs button {
+  border: 0; background: none; padding: 8px 16px; font-size: 13px; color: var(--text-secondary);
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.tabs button[aria-current="true"] { color: var(--text-primary); font-weight: 500; border-bottom-color: var(--text-primary); }
+.stat4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.stat-card { background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: var(--r-lg); padding: 18px; }
+.stat-card .icw { width: 38px; height: 38px; border-radius: 50%; background: var(--bg-sunken); display: grid; place-items: center; color: var(--text-secondary); margin-bottom: 12px; }
+.stat-card .v { display: block; font-size: 32px; font-weight: 700; line-height: 1.2; letter-spacing: -0.02em; }
+.stat-card .l { display: block; font-size: 13px; color: var(--text-muted); margin-top: 2px; }
+table.data { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.data th { text-align: left; font-size: 12px; font-weight: 500; color: var(--text-muted); padding: 8px 10px; border-bottom: 1px solid var(--border-default); }
+table.data td { padding: 9px 10px; border-bottom: 1px solid var(--border-default); vertical-align: middle; }
+table.data tr:last-child td { border-bottom: 0; }
+td.mono, th.mono { font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); }
+.histo { margin-top: 4px; }
+.histo-row { display: grid; grid-template-columns: 1fr 130px 1fr; gap: 8px; align-items: center; padding: 5px 0; font-size: 12px; }
+.histo-row .name { text-align: center; font-family: var(--font-mono); color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.histo-cell { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.histo-cell.left { justify-content: flex-end; }
+.histo-cell .n { color: var(--text-muted); font-size: 11px; flex: none; }
+.hbar-l { height: 14px; border-radius: 3px 0 0 3px; background: var(--text-primary); }
+.hbar-r { height: 14px; border-radius: 0 3px 3px 0; background: repeating-linear-gradient(-45deg, var(--bad-fg) 0, var(--bad-fg) 1.5px, transparent 1.5px, transparent 5px); border: 1px solid var(--bad-fg); border-left: none; }
+.histo-legend { display: flex; justify-content: center; gap: 20px; font-size: 12px; color: var(--text-muted); margin-top: 10px; }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.spectrum { display: flex; height: 22px; border-radius: var(--r-pill); overflow: hidden; margin-top: 12px; }
+.spectrum i { display: block; }
+.spec-legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 12px; font-size: 12px; color: var(--text-secondary); }
+.two-col { display: grid; grid-template-columns: 1.3fr 1fr; gap: 12px; align-items: start; }
+@media (max-width: 1100px) { .two-col { grid-template-columns: 1fr; } }
+h3.card-h { font-size: 14px; font-weight: 600; margin-bottom: 10px; }
+.note { font-size: 12px; color: var(--text-muted); margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <!-- ================= SIDEBAR ================= -->
+  <nav class="sidebar" aria-label="Основная навигация">
+    <div class="brand">
+      <span class="brand-mark">CP</span>
+      <span class="brand-name">Control Plane<small>mcp-journal</small></span>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-h">Работа</div>
+      <button class="nav-item" data-screen="overview" aria-current="true">
+        <svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+        <span class="grow">Обзор</span>
+      </button>
+      <button class="nav-item" data-screen="approvals">
+        <svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><path d="M9 12l2 2 4-5"/><circle cx="12" cy="12" r="9"/></svg>
+        <span class="grow">Одобрения</span>
+        <span class="count"><span class="sr-only">всего ожидают: </span>7</span><span class="count pend"><span class="sr-only">ожидание агента истекло: </span>2</span>
+      </button>
+      <button class="nav-item" data-screen="quarantine">
+        <svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/></svg>
+        <span class="grow">Карантин</span>
+        <span class="count">3</span><span class="dot-alert" aria-hidden="true" title="есть widened-изменение"></span><span class="sr-only">есть расширение поверхности (widened)</span>
+      </button>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-h">Наблюдение</div>
+      <button class="nav-item" data-screen="journal">
+        <svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+        <span class="grow">Журнал</span>
+      </button>
+      <button class="nav-item" data-screen="journal">
+        <svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7l8-4 8 4-8 4z"/><path d="M4 12l8 4 8-4"/><path d="M4 17l8 4 8-4"/></svg>
+        <span class="grow">Сессии</span>
+      </button>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-h">Конфигурация</div>
+      <button class="nav-item" data-screen="server">
+        <svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>
+        <span class="grow">Серверы</span>
+      </button>
+      <button class="nav-item" aria-disabled="true" title="Вне этого мокапа">
+        <svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M17 5.5a3.5 3.5 0 010 5"/><path d="M17.5 14.5c2.1.8 3.5 2.9 3.5 5.5"/></svg>
+        <span class="grow">Агенты</span>
+      </button>
+      <button class="nav-item" aria-disabled="true" title="Только owner · вне этого мокапа">
+        <svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg>
+        <span class="grow">Вольт</span>
+      </button>
+      <button class="nav-item" aria-disabled="true" title="Только owner · вне этого мокапа">
+        <svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c0-3.9 3.1-7 7-7s7 3.1 7 7"/></svg>
+        <span class="grow">Администраторы</span>
+      </button>
+    </div>
+
+    <div class="profile">
+      <span class="avatar">КМ</span>
+      <span class="who"><b>k.matova</b><span class="role-chip">operator</span></span>
+      <button class="logout" title="Выйти" aria-label="Выйти">
+        <svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><path d="M15 4h4v16h-4"/><path d="M10 8l-4 4 4 4M6 12h9"/></svg>
+      </button>
+    </div>
+  </nav>
+
+  <!-- ================= MAIN ================= -->
+  <main class="main">
+
+    <!-- ============ SCREEN: OVERVIEW ============ -->
+    <section class="screen active" id="screen-overview">
+      <div class="page-head"><h1>Обзор</h1><span class="sub">нужно ли что-то сделать прямо сейчас — и что происходило</span></div>
+
+      <div class="hero-band">
+        <div>
+          <div class="hero-label">Вызовы за 24 часа</div>
+          <div class="hours" id="hours" role="img" aria-label="Вызовы по часам за 24 часа: всего 428 allow и 54 gated, пик в 14:00 — 44 allow и 5 gated. Сплошная часть бара — allow, штрихованная — gated."></div>
+          <div class="axis"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>
+        </div>
+        <div class="gauge-wrap">
+          <svg id="gauge" viewBox="0 0 200 108" role="img" aria-label="94% вызовов прошло без вмешательства человека в просканированном окне"></svg>
+          <div class="gauge-num num">94%</div>
+          <div class="gauge-cap">прошло без вмешательства<br>человека · окно скана</div>
+        </div>
+        <div class="hero-stats">
+          <a class="hero-stat" href="#">
+            <span class="hs-num num">7</span>
+            <span class="hs-body">
+              <span class="hs-l">ожидают решения</span>
+              <span class="hs-m">из них <em>2</em> — ожидание агента истекло</span>
+            </span>
+            <span class="hs-arrow" aria-hidden="true"><svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><path d="M5 12h13M13 6l6 6-6 6"/></svg></span>
+          </a>
+          <a class="hero-stat" href="#">
+            <span class="hs-num num">3</span>
+            <span class="hs-body">
+              <span class="hs-l">тулза в карантине</span>
+              <span class="hs-m"><em class="red">1</em> — расширенная поверхность (widened)</span>
+            </span>
+            <span class="hs-arrow" aria-hidden="true"><svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><path d="M5 12h13M13 6l6 6-6 6"/></svg></span>
+          </a>
+        </div>
+      </div>
+
+      <h2 class="sect-h">Требует внимания</h2>
+      <div class="attention">
+        <article class="appr dark">
+          <div class="appr-id">deploy-bot <span class="arr">→</span> postgres-mcp · run_migration
+            <span class="badge b-bad"><svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3l9 17H3z"/><path d="M12 10v5M12 18h.01"/></svg>destructive</span>
+          </div>
+          <div class="rule">rule: class-default · destructive → require-approval</div>
+          <div class="clocks">
+            <span class="clock-big num" data-count="12">12s<small>агент ждёт</small></span>
+            <span class="clock-sub num">грант: 288s</span>
+          </div>
+          <div class="appr-actions">
+            <button class="btn btn-approve">Одобрить</button>
+            <button class="btn btn-deny">Отказать</button>
+          </div>
+        </article>
+        <article class="appr">
+          <div class="appr-id">deploy-bot <span class="arr">→</span> github-mcp · merge_pull_request
+            <span class="badge b-pend">write</span>
+          </div>
+          <div class="rule">rule: tool-override · merge_pull_request → require-approval</div>
+          <div class="clocks">
+            <span class="clock-big num" data-count="47">47s<small>агент ждёт</small></span>
+            <span class="clock-sub num">грант: 240s</span>
+          </div>
+          <div class="appr-actions">
+            <button class="btn btn-approve">Одобрить</button>
+            <button class="btn btn-deny">Отказать</button>
+          </div>
+        </article>
+      </div>
+
+      <h2 class="sect-h">За 24 часа · по журналу</h2>
+      <div class="stat-row">
+        <span class="stat-cell"><span class="v num">≥1 482</span><span class="l">вызовов</span></span>
+        <span class="stat-cell"><span class="v num">≥1 391</span><span class="l">одобрено · allow + approved</span></span>
+        <span class="stat-cell"><span class="v num">≥44</span><span class="l">отказано</span></span>
+        <span class="stat-cell"><span class="v num">≥31</span><span class="l">ушло на одобрение</span></span>
+        <span class="stat-cell"><span class="v num">≥9</span><span class="l">истекло по таймауту</span></span>
+        <span class="stat-cell"><span class="v num">≥216</span><span class="l">записей с маркером редакции</span></span>
+        <span class="stat-cell"><span class="v num">128</span><span class="l">сессий · активных за 15 мин: 4</span></span>
+      </div>
+      <p class="scan-line">
+        <svg class="ic" aria-hidden="true" style="width:14px;height:14px" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+        Просканировано <b>42 из 57</b> файлов, остановлено по timeBudget — результат неполный, числа показаны с «≥».
+      </p>
+
+      <h2 class="sect-h">Последние решения</h2>
+      <div class="card">
+          <div class="feed">
+            <div class="feed-row"><span class="ts">17:42:03</span><span class="who">research-agent · filesystem·read_file</span><span class="badge b-neutral">read</span><span class="badge b-ok">allow</span></div>
+            <div class="feed-row"><span class="ts">17:41:57</span><span class="who">deploy-bot · postgres-mcp·run_migration</span><span class="badge b-bad">destructive</span><span class="badge b-pend">pending</span></div>
+            <div class="feed-row"><span class="ts">17:41:31</span><span class="who">deploy-bot · github-mcp·merge_pull_request</span><span class="badge b-pend">write</span><span class="badge b-pend">pending</span></div>
+            <div class="feed-row"><span class="ts">17:40:12</span><span class="who">claude-ci · slack-mcp·send_message</span><span class="badge b-pend">write</span><span class="badge b-ok">approved</span></div>
+            <div class="feed-row"><span class="ts">17:39:44</span><span class="who">research-agent · postgres-mcp·run_query</span><span class="badge b-neutral">read</span><span class="badge b-quar">quarantined</span></div>
+            <div class="feed-row"><span class="ts">17:38:02</span><span class="who">claude-ci · github-mcp·delete_branch</span><span class="badge b-bad">destructive</span><span class="badge b-bad">denied-by-operator</span></div>
+          </div>
+          <div class="freshness">
+            <span>Обновлено <span class="num" id="fresh">4</span> с назад</span>
+            <button type="button">Обновить</button>
+            <span style="margin-left:auto">поллинг · 5 с</span>
+          </div>
+      </div>
+    </section>
+
+    <!-- ============ SCREEN: APPROVALS ============ -->
+    <section class="screen" id="screen-approvals">
+      <div class="page-head"><h1>Одобрения</h1><span class="sub">7 ожидают · лейны по срочности, не по перетаскиванию</span></div>
+
+      <div class="lanes">
+        <div class="lane-cols">
+          <!-- Lane 1 -->
+          <div>
+            <div class="lane-head">Агент ждёт <span class="count">3</span><span style="font-weight:400;color:var(--text-muted)">· одобрение доставит вызов сейчас</span></div>
+            <div class="lane-cards">
+              <article class="appr dark">
+                <div class="appr-id">deploy-bot <span class="arr">→</span> postgres-mcp · run_migration
+                  <span class="badge b-bad"><svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3l9 17H3z"/><path d="M12 10v5M12 18h.01"/></svg>destructive</span>
+                </div>
+                <div class="rule">rule: class-default · destructive → require-approval</div>
+                <div class="args">{
+  "database": "prod_billing",
+  "file": "0043_drop_legacy_invoices.sql",
+  "dry_run": false
+}</div>
+                <div class="clocks">
+                  <span class="clock-big num" data-count="12">12s<small>агент ждёт</small></span>
+                  <span class="clock-sub num">окно гранта: 288s</span>
+                </div>
+                <div class="appr-actions">
+                  <button class="btn btn-approve">Одобрить</button>
+                  <button class="btn btn-deny">Отказать</button>
+                </div>
+                <div class="btn-2step">Одобрение в два шага: «Одобрить → Подтвердить: destructive»</div>
+                <div class="appr-meta">
+                  <span>17:41:57</span>
+                  <span class="mono">args a41f…c9</span>
+                  <a href="#">сессия s_20260812_a7f3</a>
+                </div>
+              </article>
+
+              <article class="appr">
+                <div class="appr-id">deploy-bot <span class="arr">→</span> github-mcp · merge_pull_request
+                  <span class="badge b-pend">write</span>
+                </div>
+                <div class="rule">rule: tool-override · merge_pull_request → require-approval</div>
+                <div class="args">{
+  "owner": "acme", "repo": "billing",
+  "pull_number": 412, "merge_method": "squash"
+}</div>
+                <div class="clocks">
+                  <span class="clock-big num" data-count="47">47s<small>агент ждёт</small></span>
+                  <span class="clock-sub num">окно гранта: 240s</span>
+                </div>
+                <div class="appr-actions">
+                  <button class="btn btn-approve">Одобрить</button>
+                  <button class="btn btn-deny">Отказать</button>
+                </div>
+                <div class="btn-2step">Одобрение в два шага: «Одобрить → Подтвердить: write»</div>
+                <div class="appr-meta">
+                  <span>17:41:31</span>
+                  <span class="mono">args 7b02…e4</span>
+                  <a href="#">сессия s_20260812_a7f3</a>
+                </div>
+              </article>
+
+              <article class="appr">
+                <div class="appr-id">research-agent <span class="arr">→</span> filesystem · read_file
+                  <span class="badge b-neutral">read</span>
+                </div>
+                <div class="rule">rule: path-guard · /etc → require-approval</div>
+                <div class="args">{ "path": "/etc/nginx/nginx.conf" }</div>
+                <div class="clocks">
+                  <span class="clock-big num" data-count="94">94s<small>агент ждёт</small></span>
+                  <span class="clock-sub num">окно гранта: 300s</span>
+                </div>
+                <div class="appr-actions">
+                  <button class="btn btn-approve">Одобрить</button>
+                  <button class="btn btn-deny">Отказать</button>
+                </div>
+                <label class="bulk"><input type="checkbox" checked> в массовое одобрение (только read)</label>
+                <div class="appr-meta">
+                  <span>17:40:48</span>
+                  <span class="mono">args 90ce…1a</span>
+                  <a href="#">сессия s_20260812_c2d8</a>
+                </div>
+              </article>
+            </div>
+          </div>
+
+          <!-- Lane 2 -->
+          <div>
+            <div class="lane-head">Ожидание истекло <span class="count pend">2</span><span style="font-weight:400;color:var(--text-muted)">· только грант на ретрай</span></div>
+            <div class="lane-cards">
+              <article class="appr">
+                <div class="appr-id">claude-ci <span class="arr">→</span> slack-mcp · send_message
+                  <span class="badge b-pend">write</span>
+                </div>
+                <div class="rule">rule: class-default · write → require-approval</div>
+                <div class="args">{
+  "channel": "#release",
+  "text": "v2.4.1 deployed to prod",
+  "token": "<span class="tok-red">[REDACTED]</span>"
+}</div>
+                <span class="wait-over">Ожидание агента истекло — одобрение даст только ретрай</span>
+                <div class="clocks"><span class="clock-sub num">окно гранта: 118s</span></div>
+                <div class="appr-actions">
+                  <button class="btn btn-approve">Одобрить</button>
+                  <button class="btn btn-deny">Отказать</button>
+                </div>
+                <div class="appr-meta">
+                  <span>17:36:20</span>
+                  <span class="badge b-red"><svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg>секреты отредактированы</span>
+                  <a href="#">сессия s_20260812_9b11</a>
+                </div>
+              </article>
+
+              <article class="appr">
+                <div class="appr-id">claude-ci <span class="arr">→</span> github-mcp · create_issue
+                  <span class="badge b-pend">write</span>
+                </div>
+                <div class="rule">rule: class-default · write → require-approval</div>
+                <div class="args">{ "title": "Flaky test: billing e2e", … }</div>
+                <span class="wait-over">Ожидание агента истекло — одобрение даст только ретрай</span>
+                <div class="clocks"><span class="clock-sub num">окно гранта: 64s</span></div>
+                <div class="appr-actions">
+                  <button class="btn btn-approve">Одобрить</button>
+                  <button class="btn btn-deny">Отказать</button>
+                </div>
+                <div class="appr-meta"><span>17:33:05</span><a href="#">сессия s_20260812_9b11</a></div>
+              </article>
+            </div>
+          </div>
+
+          <!-- Lane 3 -->
+          <div>
+            <div class="lane-head">Окно гранта истекло <span class="count">2</span></div>
+            <button class="lane-collapsed" aria-expanded="false">
+              <svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+              Свёрнуто · решение уже почти бессмысленно — развернуть
+            </button>
+          </div>
+        </div>
+
+        <!-- Resolved rail -->
+        <aside class="rail">
+          <h3>Недавно решённые</h3>
+          <div class="card">
+            <div class="res-row"><span class="badge b-ok">approved</span><span class="t">merge_pull_request</span><span class="actor">k.matova · 17:29</span></div>
+            <div class="res-row"><span class="badge b-bad">denied</span><span class="t">delete_branch</span><span class="actor">r.matov · 17:12</span></div>
+            <div class="res-row"><span class="badge b-ok">approved</span><span class="t">send_message</span><span class="actor">k.matova · 16:58</span></div>
+            <div class="res-row"><span class="badge b-red">expired</span><span class="t">read_file</span><span class="actor">— · 16:41</span></div>
+            <div class="res-row"><span class="badge b-ok">approved</span><span class="t">run_query</span><span class="actor">r.matov · 16:22</span></div>
+          </div>
+          <p class="note">Именная атрибуция: кто решил и когда. Ссылка ведёт в журнал.</p>
+        </aside>
+      </div>
+
+      <div class="bulk-bar">
+        <span>Выбрано read-вызовов: <b class="num">1</b></span>
+        <button>Одобрить выбранные</button>
+        <span style="margin-left:auto;color:var(--text-on-dark-muted)">массовое одобрение доступно только для класса read</span>
+      </div>
+    </section>
+
+    <!-- ============ SCREEN: QUARANTINE ============ -->
+    <section class="screen" id="screen-quarantine">
+      <div class="page-head"><h1>Карантин</h1><span class="sub">3 тулза ждут проверки схемы · сортировка: widened первыми</span></div>
+
+      <article class="card q-card">
+        <div class="q-head">
+          <span class="name">postgres-mcp · run_query</span>
+          <span class="badge b-quar">changed</span>
+          <span class="badge b-bad"><svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3l9 17H3z"/><path d="M12 10v5M12 18h.01"/></svg>принимает больше входа, чем раньше</span>
+        </div>
+        <p class="q-desc">Run a read-only SQL query against the connected database. · впервые замечено 17:39, сегодня</p>
+
+        <details class="diff-group" open>
+          <summary><span class="mark" style="background:var(--bad-fg)"></span>Поверхность расширена <span class="count">2</span></summary>
+          <div class="diff-rows">
+            <div class="diff-row"><span class="path">filters › <span class="crumb">mode</span></span><span class="what">добавлено поле</span></div>
+            <div class="diff-row"><span class="path">timeout_ms</span><span class="what">enum расширен: +«0» (без лимита)</span></div>
+          </div>
+        </details>
+        <details class="diff-group">
+          <summary><span class="mark" style="background:var(--accent)"></span>Поверхность сужена <span class="count">1</span></summary>
+          <div class="diff-rows">
+            <div class="diff-row"><span class="path">legacy_cursor</span><span class="what">поле удалено</span></div>
+          </div>
+        </details>
+        <details class="diff-group">
+          <summary><span class="mark" style="background:var(--border-strong)"></span>Без влияния на вход <span class="count">3</span><span style="font-weight:400;color:var(--text-muted)">· формулировки</span></summary>
+          <div class="diff-rows">
+            <div class="diff-row"><span class="path">description</span><span class="what">описание изменено</span></div>
+            <div class="diff-row"><span class="path">filters › mode › description</span><span class="what">описание изменено</span></div>
+            <div class="diff-row"><span class="path">annotations › title</span><span class="what">аннотация изменена</span></div>
+          </div>
+        </details>
+
+        <div class="appr-actions" style="max-width:420px">
+          <button class="btn btn-approve">Одобрить схему</button>
+          <button class="btn btn-deny">Отклонить</button>
+        </div>
+        <div class="btn-2step">surfaceDelta: widened → подтверждение в два шага</div>
+      </article>
+
+      <article class="card q-card">
+        <div class="q-head">
+          <span class="name">slack-mcp · send_message</span>
+          <span class="badge b-quar">new</span>
+        </div>
+        <p class="q-desc">Send a message to a Slack channel. · впервые замечено 16:02, сегодня</p>
+        <div class="surface-list">
+          <h4>Поверхность, которую вы одобряете — inputSchema нового тулза</h4>
+          <div class="surface-row"><span class="mono">channel</span><span class="req">обязательное</span><span style="color:var(--text-muted)">string</span></div>
+          <div class="surface-row"><span class="mono">text</span><span class="req">обязательное</span><span style="color:var(--text-muted)">string</span></div>
+          <div class="surface-row"><span class="mono">thread_ts</span><span style="color:var(--text-muted)">string · опционально</span></div>
+          <div class="surface-row"><span class="mono">unfurl_links</span><span style="color:var(--text-muted)">boolean · опционально</span></div>
+        </div>
+        <div class="appr-actions" style="max-width:420px">
+          <button class="btn btn-approve">Одобрить схему</button>
+          <button class="btn btn-deny">Отклонить</button>
+        </div>
+      </article>
+    </section>
+
+    <!-- ============ SCREEN: JOURNAL ============ -->
+    <section class="screen" id="screen-journal">
+      <div class="page-head"><h1>Журнал</h1><span class="sub">сессия s_20260812_a7f3 · github-mcp · deploy-bot</span></div>
+
+      <div class="modes" role="radiogroup" aria-label="Режим журнала">
+        <button role="radio" aria-checked="false">Сессии</button>
+        <button role="radio" aria-checked="true">Записи</button>
+        <button role="radio" aria-checked="false">Поиск</button>
+      </div>
+
+      <div class="filter-row">
+        <span class="chip on">outcome: deny <button class="x" aria-label="Снять фильтр">✕</button></span>
+        <span class="chip on">tool: merge_pull_request <button class="x" aria-label="Снять фильтр">✕</button></span>
+        <button type="button" class="chip" aria-haspopup="listbox">kind ▾</button>
+        <button type="button" class="chip" aria-haspopup="listbox">direction ▾</button>
+        <button type="button" class="chip" aria-haspopup="listbox">method ▾</button>
+        <button type="button" class="chip">текст…</button>
+        <button type="button" class="link-btn">Сбросить</button>
+        <span style="margin-left:auto;font-size:12px;color:var(--text-muted)">в реализации: состояние фильтров живёт в query-строке — ссылку можно приложить к тикету</span>
+      </div>
+
+      <div class="stream-ctl">
+        <button type="button" class="chip on" style="height:24px" aria-pressed="true">Живой поток</button>
+        <button type="button" class="chip" style="height:24px" aria-pressed="false">Пауза</button>
+        <span>Обновлено 2 с назад</span>
+        <button class="pill-new">3 новых записи ↑</button>
+        <span style="margin-left:auto">Просканировано 1 812 строк · <b style="color:var(--pend-fg)">2</b> нечитаемых</span>
+      </div>
+
+      <article class="rec">
+        <div class="rec-head">
+          <span class="ts">17:41:31.204</span><span class="dir">client → server</span>
+          <span class="badge b-neutral">decision</span>
+          <span class="method">github-mcp · merge_pull_request</span>
+          <span class="badge b-pend">write</span>
+          <span class="badge b-pend">require-approval-pending</span>
+        </div>
+        <div class="rule-line">rule: tool-override · <span class="mono">args 7b02…e4</span> · <a href="#">одобрение apr_88f2 → решил k.matova</a></div>
+      </article>
+
+      <article class="rec">
+        <div class="rec-head">
+          <span class="ts">17:40:12.881</span><span class="dir">client → server</span>
+          <span class="badge b-neutral">request</span>
+          <span class="method">tools/call</span>
+          <span class="badge b-red"><svg class="ic" aria-hidden="true" style="width:12px;height:12px" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg>секреты отредактированы</span>
+        </div>
+        <pre>{
+  "name": "send_message",
+  "arguments": {
+    "channel": "#release",
+    "token": <span class="tok-red">[REDACTED]</span>,
+    "text": "v2.4.1 deployed to prod"
+  }
+}</pre>
+      </article>
+
+      <article class="rec">
+        <div class="rec-head">
+          <span class="ts">17:40:13.109</span><span class="dir">server → client</span>
+          <span class="badge b-neutral">response</span>
+          <span class="method">tools/call</span>
+          <span class="badge b-red">payload усечён</span>
+          <span style="color:var(--text-muted);font-size:11px" class="num">228 ms</span>
+        </div>
+        <pre>{ "content": [{ "type": "text", "text": "ok: message posted …<span class="tok-red">[TRUNCATED]</span>" }] }</pre>
+      </article>
+
+      <article class="rec">
+        <div class="rec-head">
+          <span class="ts">17:38:02.412</span><span class="dir">client → server</span>
+          <span class="badge b-neutral">decision</span>
+          <span class="method">github-mcp · delete_branch</span>
+          <span class="badge b-bad">destructive</span>
+          <span class="badge b-bad">denied-by-operator</span>
+        </div>
+        <div class="rule-line">rule: class-default · <a href="#">одобрение apr_84c1 → решил r.matov</a></div>
+      </article>
+
+      <p class="note">Чип «секреты отредактированы» = поле удалено при записи; оригинал никогда не сохранялся. Пропуск в данных — гарантия продукта, а не потеря.</p>
+    </section>
+
+    <!-- ============ SCREEN: SERVER ============ -->
+    <section class="screen" id="screen-server">
+      <div class="entity">
+        <span class="monogram">GH</span>
+        <div class="title">
+          <h1>github-mcp</h1>
+          <span class="badge b-ok">активен · по журналу</span>
+          <div class="target">npx @modelcontextprotocol/server-github</div>
+          <div class="entity-chips">
+            <span class="badge b-neutral">stdio</span>
+            <span class="badge b-neutral"><svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg>секреты: 1 vault-ссылка</span>
+          </div>
+        </div>
+        <div class="entity-meta">
+          Первая одобренная тулза: 30 июля 2026<br>
+          <button type="button" class="link-btn danger">Удалить</button> <span style="font-size:11px">(owner)</span>
+        </div>
+      </div>
+
+      <nav class="tabs" aria-label="Разделы сервера">
+        <button aria-current="true">Тулзы</button>
+        <button>Агенты</button>
+        <button>Сессии</button>
+        <button>Журнал</button>
+      </nav>
+
+      <div class="stat4">
+        <div class="stat-card"><span class="icw"><svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><path d="M13 3L5 14h6l-1 7 8-11h-6z"/></svg></span><span class="v num">≥612</span><span class="l">вызовов · окно 24 ч</span></div>
+        <div class="stat-card"><span class="icw"><svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></span><span class="v num">≥38</span><span class="l">ушло на одобрение</span></div>
+        <div class="stat-card"><span class="icw"><svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 8l8 8M16 8l-8 8"/></svg></span><span class="v num">≥11</span><span class="l">отказов</span></div>
+        <div class="stat-card"><span class="icw"><svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/></svg></span><span class="v num">1</span><span class="l">в карантине сейчас</span></div>
+      </div>
+
+      <div class="two-col">
+        <div class="card">
+          <h3 class="card-h">Тулзы · allow против gated</h3>
+          <div class="histo">
+            <div class="histo-row" aria-label="get_pull_request: 214 allow, 2 gated">
+              <span class="histo-cell left"><span class="n num">214</span><span class="hbar-l" style="width:86%"></span></span>
+              <span class="name">get_pull_request</span>
+              <span class="histo-cell"><span class="hbar-r" style="width:3%"></span><span class="n num">2</span></span>
+            </div>
+            <div class="histo-row" aria-label="list_issues: 188 allow, 0 gated">
+              <span class="histo-cell left"><span class="n num">188</span><span class="hbar-l" style="width:75%"></span></span>
+              <span class="name">list_issues</span>
+              <span class="histo-cell"><span class="hbar-r" style="width:0"></span><span class="n num">0</span></span>
+            </div>
+            <div class="histo-row" aria-label="create_issue: 96 allow, 17 gated">
+              <span class="histo-cell left"><span class="n num">96</span><span class="hbar-l" style="width:38%"></span></span>
+              <span class="name">create_issue</span>
+              <span class="histo-cell"><span class="hbar-r" style="width:22%"></span><span class="n num">17</span></span>
+            </div>
+            <div class="histo-row" aria-label="merge_pull_request: 31 allow, 26 gated">
+              <span class="histo-cell left"><span class="n num">31</span><span class="hbar-l" style="width:12%"></span></span>
+              <span class="name">merge_pull_request</span>
+              <span class="histo-cell"><span class="hbar-r" style="width:34%"></span><span class="n num">26</span></span>
+            </div>
+            <div class="histo-row" aria-label="delete_branch: 0 allow, 7 gated">
+              <span class="histo-cell left"><span class="n num">0</span><span class="hbar-l" style="width:0"></span></span>
+              <span class="name">delete_branch</span>
+              <span class="histo-cell"><span class="hbar-r" style="width:9%"></span><span class="n num">7</span></span>
+            </div>
+          </div>
+          <div class="histo-legend">
+            <span><span class="sw" style="background:var(--text-primary)"></span>allow — работает сам</span>
+            <span><span class="sw" style="background:repeating-linear-gradient(-45deg,var(--bad-fg) 0,var(--bad-fg) 1.5px,transparent 1.5px,transparent 4px);border:1px solid var(--bad-fg)"></span>gated — дёргает человека</span>
+          </div>
+        </div>
+
+        <div>
+          <div class="card">
+            <h3 class="card-h">Спектр решений · окно 24 ч</h3>
+            <div class="spectrum" role="img" aria-label="Доли решений: allow 87%, approved 5%, pending 3%, denied 2%, timeout 1%, quarantined 2%">
+              <i style="flex:87;background:var(--ok-fg)" title="allow · 533"></i>
+              <i style="flex:5;background:var(--accent)" title="approved · 31"></i>
+              <i style="flex:3;background:var(--pend-fg)" title="require-approval-pending · 18"></i>
+              <i style="flex:2;background:var(--bad-fg)" title="deny + denied-by-operator · 12"></i>
+              <i style="flex:1;background:var(--red-fg)" title="timeout · 6"></i>
+              <i style="flex:2;background:var(--quar-fg)" title="quarantined · 12"></i>
+            </div>
+            <div class="spec-legend">
+              <span><span class="sw" style="background:var(--ok-fg)"></span>allow 533</span>
+              <span><span class="sw" style="background:var(--accent)"></span>approved 31</span>
+              <span><span class="sw" style="background:var(--pend-fg)"></span>pending 18</span>
+              <span><span class="sw" style="background:var(--bad-fg)"></span>denied 12</span>
+              <span><span class="sw" style="background:var(--red-fg)"></span>timeout 6</span>
+              <span><span class="sw" style="background:var(--quar-fg)"></span>quarantined 12</span>
+            </div>
+            <p class="note">Radar из референса отвергнут: семь несопоставимых величин лгут формой. 100%-полоса честнее.</p>
+          </div>
+          <div class="card" style="margin-top:12px">
+            <h3 class="card-h">Реестр тулзов</h3>
+            <table class="data">
+              <thead><tr><th>Тулза</th><th>Класс</th><th>Статус</th><th class="num">Вызовов</th></tr></thead>
+              <tbody>
+                <tr><td class="mono">get_pull_request</td><td><span class="badge b-neutral">read</span></td><td><span class="badge b-ok">approved</span></td><td class="num">216</td></tr>
+                <tr><td class="mono">merge_pull_request</td><td><span class="badge b-pend">write</span></td><td><span class="badge b-ok">approved</span></td><td class="num">57</td></tr>
+                <tr><td class="mono">delete_branch</td><td><span class="badge b-bad">destructive</span></td><td><span class="badge b-ok">approved</span></td><td class="num">7</td></tr>
+                <tr><td class="mono">search_code</td><td><span class="badge b-neutral">read</span></td><td><span class="badge b-quar">quarantined · new</span></td><td class="num">0</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var navButtons = document.querySelectorAll('.nav-item[data-screen]:not([aria-disabled="true"])');
+  var screens = document.querySelectorAll('.screen');
+  navButtons.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      navButtons.forEach(function (b) { b.removeAttribute('aria-current'); });
+      btn.setAttribute('aria-current', 'true');
+      screens.forEach(function (s) { s.classList.remove('active'); });
+      var screen = document.getElementById('screen-' + btn.dataset.screen);
+      screen.classList.add('active');
+      window.scrollTo({ top: 0 });
+      var h1 = screen.querySelector('h1');
+      if (h1) { h1.setAttribute('tabindex', '-1'); h1.focus({ preventScroll: true }); }
+    });
+  });
+
+  // Hourly activity bars: deterministic demo data (allow + gated stack).
+  var hours = document.getElementById('hours');
+  var allow = [4,2,1,1,2,3,8,14,22,30,34,38,36,40,44,41,37,33,26,18,12,9,7,5];
+  var gated = [0,0,0,0,0,1,1,2,3,4,3,5,4,6,5,7,4,3,2,2,1,1,0,0];
+  var max = 51;
+  allow.forEach(function (a, i) {
+    var wrap = document.createElement('div');
+    wrap.className = 'hbar';
+    var g = document.createElement('i');
+    g.className = 'gated';
+    g.style.height = (gated[i] / max * 100) + '%';
+    if (gated[i] === 0) g.style.display = 'none';
+    var s = document.createElement('i');
+    s.style.height = (a / max * 100) + '%';
+    wrap.appendChild(g);
+    wrap.appendChild(s);
+    hours.appendChild(wrap);
+  });
+
+  // Gauge: радиальные тики, доля 94% — тёмные, остальное — светлый трек (как в референсе).
+  var gauge = document.getElementById('gauge');
+  if (gauge) {
+    var TICKS = 36, SHARE = 0.94, cx = 100, cy = 102, r1 = 74, r2 = 98;
+    for (var t = 0; t <= TICKS; t++) {
+      var a = Math.PI - (t / TICKS) * Math.PI;
+      var line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      line.setAttribute('x1', cx + r1 * Math.cos(a));
+      line.setAttribute('y1', cy - r1 * Math.sin(a));
+      line.setAttribute('x2', cx + r2 * Math.cos(a));
+      line.setAttribute('y2', cy - r2 * Math.sin(a));
+      line.setAttribute('stroke', t / TICKS <= SHARE ? 'var(--text-primary)' : 'var(--border-strong)');
+      line.setAttribute('stroke-width', '3');
+      line.setAttribute('stroke-linecap', 'round');
+      gauge.appendChild(line);
+    }
+  }
+
+  // Ticking countdowns (agent wait) + freshness stamp.
+  var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (!reduced) {
+    setInterval(function () {
+      document.querySelectorAll('[data-count]').forEach(function (el) {
+        if (!el.dataset.init) el.dataset.init = el.dataset.count;
+        var v = parseInt(el.dataset.count, 10);
+        v = v > 0 ? v - 1 : parseInt(el.dataset.init, 10); // демо: по нулю перезапускаем
+        el.dataset.count = String(v);
+        el.childNodes[0].nodeValue = v + 's';
+      });
+      var f = document.getElementById('fresh');
+      if (f) {
+        var n = parseInt(f.textContent, 10) + 1;
+        if (n > 5) n = 0;
+        f.textContent = String(n);
+      }
+    }, 1000);
+  }
+})();
+</script>
+</body>
+</html>

@@ -8,7 +8,7 @@
   },
   "main": "./dist/cli.js",
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -21,7 +21,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/node": "^20.14.0",
+    "@types/node": "^24.13.3",
     "@vitest/coverage-v8": "^3.2.7",
     "typescript": "^5.5.0",
     "vitest": "^3.2.7"

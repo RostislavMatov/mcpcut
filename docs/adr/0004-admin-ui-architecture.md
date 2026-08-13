@@ -174,8 +174,18 @@ Server-rendered HTML + SSE закрывает его целиком.
   её открывает. Контрмеры: экранирующий по умолчанию tagged template как единственный путь к
   HTML; строгий CSP `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'
   data:; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`;
-  `X-Content-Type-Options: nosniff`; `Referrer-Policy: no-referrer`; fuzz-тест по всем точкам
+  `X-Content-Type-Options: nosniff`; `Referrer-Policy: same-origin`; fuzz-тест по всем точкам
   интерполяции (включая unicode/zero-width/homoglyph-нагрузки).
+
+  **Правка 2026-08-12 (смок M4, `a094e47`)**: изначально здесь стояло `no-referrer` — и это
+  оказалось неверно. По Fetch-спеке документ под `no-referrer` сериализует заголовок `Origin`
+  своих form-POST как `null`, а наш собственный Origin-скрининг отвергает opaque origin (это
+  CSRF-поверхность) — вход в UI из любого Chromium становился невозможен. Правильное значение —
+  `same-origin`: URL сессии не утекает на чужой origin, свои запросы referrer сохраняют.
+  **Ужесточать обратно до `no-referrer` нельзя**; запрет закреплён комментарием в
+  `src/ui/security-headers.ts` и hardening-тестом. Урок шире одного заголовка: связку
+  referrer-policy → `Origin` не эмулируют ни `node:http`-тесты, ни curl — браузерный смок
+  обязателен для каждой браузерной поверхности.
 - **Clickjacking** («невидимый iframe с кнопкой approve»): `frame-ancestors 'none'`.
 - **Перебор токена**: rate-limit на `/login` + видимая оператору запись; неотличимые отказы.
 - **Кража сессии из бэкапа/копии каталога**: сессии не персистятся вовсе.
