@@ -1,0 +1,1121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MCP Journal — Overview (визуальный прототип)</title>
+<style>
+/* ===========================================================================
+   ВИЗУАЛЬНЫЙ ПРОТОТИП. Всё, что здесь в <style>/<script>, в продакшене
+   переезжает в src/ui/assets/dashboard-css.ts и dashboard-js.ts (CSP проекта
+   запрещает inline). Данные — mock. Бэкенд не подключён.
+   =========================================================================== */
+
+:root {
+  /* Плоскости: три уровня вместо теней */
+  --bg:            #0C0F10;
+  --panel:         #111415;
+  --raised:        #16191B;
+  --sunken:        #0A0D0E;
+
+  /* Границы: настоящий графит, не полупрозрачный белый */
+  --line:          #1E2426;
+  --line-strong:   #283034;
+
+  /* Текст */
+  --text:          #E6EBEB;
+  --muted:         #7C868B;
+  --dim:           #4E585C;
+
+  /* Семантика */
+  --mint:          #4ADE9B;
+  --amber:         #E3B04B;
+  --red:           #FF6B6B;
+  --gray:          #5A6569;
+  --accent:        #37C8C3;
+
+  /* Заливки статусных пузырьков (mint/amber/red/gray над --panel) */
+  --fill-mint:     #13221B;
+  --fill-amber:    #221D12;
+  --fill-red:      #221415;
+  --fill-gray:     #171B1D;
+
+  --radius:        6px;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html { background: var(--bg); }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Цифры везде табличные — иначе колонки «дышат» */
+.num, table td, table th, .metric-value, .kpi-value { font-variant-numeric: tabular-nums; }
+
+/* Микро-подписи */
+.label {
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-family: var(--sans);
+}
+
+a { color: inherit; text-decoration: none; }
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* ---------------------------------------------------------------- top nav */
+
+.topnav {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  height: 52px;
+  padding: 0 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.brand { display: flex; align-items: center; gap: 9px; }
+.brand-name {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.mainnav { display: flex; align-items: center; gap: 2px; }
+.mainnav a {
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  color: var(--muted);
+  font-size: 12.5px;
+  transition: color 140ms ease-out, background-color 140ms ease-out;
+}
+.mainnav a:hover { color: var(--text); background: var(--raised); }
+.mainnav a[aria-current="page"] {
+  color: var(--text);
+  background: var(--raised);
+  box-shadow: inset 0 -1px 0 0 var(--accent);
+}
+
+.search {
+  flex: 1;
+  max-width: 340px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 10px;
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  transition: border-color 140ms ease-out;
+}
+.search:focus-within { border-color: var(--line-strong); }
+.search input {
+  flex: 1;
+  background: none;
+  border: 0;
+  outline: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+}
+.search input::placeholder { color: var(--dim); }
+.search kbd {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 1px 4px;
+}
+
+.nav-right { margin-left: auto; display: flex; align-items: center; gap: 14px; }
+
+.live {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: .1em;
+  color: var(--muted);
+}
+.live .dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--mint);
+  box-shadow: 0 0 0 3px rgba(74,222,155,.12);
+}
+
+.iconbtn {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 30px; height: 30px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 140ms ease-out, background-color 140ms ease-out;
+}
+.iconbtn:hover { color: var(--text); background: var(--raised); }
+.iconbtn .badge-dot {
+  position: absolute; top: 4px; right: 4px;
+  min-width: 13px; height: 13px; padding: 0 3px;
+  border-radius: 7px;
+  background: var(--amber);
+  color: #14100A;
+  font-family: var(--mono);
+  font-size: 9px;
+  line-height: 13px;
+  text-align: center;
+}
+
+.profile { display: flex; align-items: center; gap: 8px; padding-left: 12px; border-left: 1px solid var(--line); }
+.avatar {
+  width: 26px; height: 26px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  font-family: var(--mono); font-size: 10.5px; color: var(--text);
+}
+.profile-meta { display: flex; flex-direction: column; line-height: 1.2; }
+.profile-name { font-size: 12px; }
+.profile-role { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--dim); }
+
+/* ------------------------------------------------------------------ layout */
+
+main { padding: 16px; max-width: 1600px; margin: 0 auto; }
+
+.grid-kpi {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.grid-main {
+  display: grid;
+  grid-template-columns: minmax(0,1fr) 340px;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.grid-analytics {
+  display: grid;
+  grid-template-columns: minmax(0,2fr) minmax(0,1fr);
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.grid-analytics-2 {
+  display: grid;
+  grid-template-columns: minmax(0,1fr) minmax(0,2fr);
+  gap: 12px;
+}
+
+/* ------------------------------------------------------------------ panels */
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  min-width: 0;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.panel-title { font-size: 12.5px; color: var(--text); }
+.panel-head .spacer { flex: 1; }
+.panel-body { padding: 16px; }
+.panel-body.tight { padding: 8px 0 0; }
+
+/* --------------------------------------------------------------- KPI cards */
+
+.kpi { padding: 14px 16px 12px; }
+.kpi-head { display: flex; align-items: baseline; gap: 8px; }
+.kpi-value {
+  font-family: var(--mono);
+  font-size: 26px;
+  letter-spacing: -.01em;
+  margin-top: 6px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.kpi-value .unit { font-size: 13px; color: var(--muted); }
+.kpi-delta {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+}
+.kpi-delta.up   { color: var(--mint);  border-color: rgba(74,222,155,.28);  background: rgba(74,222,155,.07); }
+.kpi-delta.down { color: var(--mint);  border-color: rgba(74,222,155,.28);  background: rgba(74,222,155,.07); }
+.kpi-delta.bad  { color: var(--red);   border-color: rgba(255,107,107,.28); background: rgba(255,107,107,.07); }
+.kpi-delta.flat { color: var(--muted); border-color: var(--line); }
+.kpi-spark { margin-top: 10px; height: 30px; }
+.kpi-foot { margin-top: 8px; font-size: 11px; color: var(--dim); font-family: var(--mono); }
+
+/* ------------------------------------------------------------ range switch */
+
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.seg a {
+  padding: 4px 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: .06em;
+  color: var(--muted);
+  border-right: 1px solid var(--line);
+  transition: color 140ms ease-out, background-color 140ms ease-out;
+}
+.seg a:last-child { border-right: 0; }
+.seg a:hover { color: var(--text); background: var(--raised); }
+.seg a[aria-current="true"] { color: var(--text); background: var(--raised); }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 11.5px;
+  color: var(--muted);
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-family: var(--sans);
+  transition: color 140ms ease-out, border-color 140ms ease-out, background-color 140ms ease-out;
+}
+.btn:hover { color: var(--text); border-color: var(--line-strong); background: var(--raised); }
+.btn-wide { width: 100%; justify-content: center; padding: 8px 12px; font-size: 12.5px; }
+
+/* ------------------------------------------------------------ network graph */
+
+.network { display: block; width: 100%; height: auto; }
+
+.node { cursor: pointer; }
+.node .bubble { transition: stroke 160ms ease-out, filter 160ms ease-out; }
+.node:hover .bubble { stroke-width: 2; }
+.node .tip { opacity: 0; pointer-events: none; transition: opacity 140ms ease-out; }
+.node:hover .tip, .node:focus .tip, .node:focus-visible .tip { opacity: 1; }
+.node .initials { font-family: var(--mono); font-size: 13px; fill: var(--text); }
+.node .nm      { font-family: var(--sans); font-size: 11.5px; fill: var(--text); }
+.node .rq      { font-family: var(--mono); font-size: 11px;   fill: var(--muted); }
+
+.edge { stroke: var(--line-strong); stroke-width: 1; }
+.edge.dim { stroke: var(--line); stroke-dasharray: 3 4; }
+
+.gw-box { fill: var(--raised); stroke: var(--line-strong); }
+.gw-label { font-family: var(--mono); font-size: 11px; fill: var(--text); letter-spacing: .06em; }
+.gw-sub   { font-family: var(--mono); font-size: 9.5px; fill: var(--dim); letter-spacing: .06em; }
+
+.tip-box { fill: var(--raised); stroke: var(--line-strong); }
+.tip-t  { font-family: var(--sans); font-size: 11.5px; fill: var(--text); }
+.tip-k  { font-family: var(--sans); font-size: 10.5px; fill: var(--muted); }
+.tip-v  { font-family: var(--mono); font-size: 10.5px; fill: var(--text); }
+
+.legend { display: flex; gap: 16px; padding: 0 16px 14px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.legend i { width: 8px; height: 8px; border-radius: 50%; border: 1px solid; display: inline-block; }
+
+/* ------------------------------------------------------------ selected panel */
+
+.sel-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.sel-avatar {
+  width: 30px; height: 30px; border-radius: var(--radius);
+  display: grid; place-items: center;
+  background: var(--fill-mint);
+  border: 1px solid var(--mint);
+  font-family: var(--mono); font-size: 11px; color: var(--mint);
+}
+.sel-name { font-size: 13px; }
+.sel-sub  { font-size: 10.5px; color: var(--dim); font-family: var(--mono); }
+
+.metrics { display: grid; grid-template-columns: 1fr 1fr; }
+.metric { padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.metric:nth-child(odd) { border-right: 1px solid var(--line); }
+.metric-value { font-family: var(--mono); font-size: 17px; margin-top: 4px; }
+.metric-value .unit { font-size: 11px; color: var(--muted); }
+
+.events { padding: 12px 16px; }
+.event { display: flex; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 11.5px; }
+.event:last-child { border-bottom: 0; }
+.event time { font-family: var(--mono); font-size: 10.5px; color: var(--dim); flex: none; }
+.event .txt { color: var(--muted); }
+.event.err .txt { color: var(--red); }
+
+/* ------------------------------------------------------------------ badges */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: .07em;
+  padding: 2px 6px;
+  border-radius: 3px;
+  border: 1px solid;
+  white-space: nowrap;
+}
+.badge::before { content: ""; width: 5px; height: 5px; border-radius: 1px; background: currentColor; }
+.badge.ok       { color: var(--mint);  border-color: rgba(74,222,155,.30);  background: rgba(74,222,155,.06); }
+.badge.warn     { color: var(--amber); border-color: rgba(227,176,75,.30);  background: rgba(227,176,75,.06); }
+.badge.err      { color: var(--red);   border-color: rgba(255,107,107,.30); background: rgba(255,107,107,.06); }
+.badge.off      { color: var(--gray);  border-color: var(--line-strong);    background: transparent; }
+.badge.neutral  { color: var(--muted); border-color: var(--line-strong);    background: transparent; }
+.badge::before  { flex: none; }
+
+/* ------------------------------------------------------------------- table */
+
+table { width: 100%; border-collapse: collapse; }
+thead th {
+  text-align: left;
+  font-size: 10px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 500;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--sunken);
+}
+tbody td {
+  padding: 0 16px;
+  height: 32px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--text);
+}
+tbody tr { transition: background-color 140ms ease-out; }
+tbody tr:hover { background: var(--raised); }
+tbody tr:last-child td { border-bottom: 0; }
+td.ts, td.lat, td.cost { font-family: var(--mono); font-size: 11.5px; }
+td.lat, td.cost { text-align: right; }
+td.ts { color: var(--muted); }
+td.cost { color: var(--muted); }
+td.method { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+td.method b { color: var(--text); font-weight: 400; }
+
+/* ---------------------------------------------------------------- heatmap */
+
+.heat-wrap { padding: 16px; }
+.heat-scale { display: flex; align-items: center; gap: 6px; margin-top: 12px; font-size: 10.5px; color: var(--dim); font-family: var(--mono); }
+.heat-scale i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+
+/* ---------------------------------------------------------------- donut */
+
+.donut-wrap { display: flex; align-items: center; gap: 18px; padding: 16px; }
+.donut-legend { flex: 1; display: flex; flex-direction: column; gap: 8px; }
+.dl-row { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--muted); }
+.dl-row i { width: 8px; height: 8px; border-radius: 2px; }
+.dl-row .n { margin-left: auto; font-family: var(--mono); color: var(--text); }
+
+/* ---------------------------------------------------------------- states */
+
+.states { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 12px; }
+.state-body {
+  padding: 22px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 8px;
+  min-height: 148px;
+  justify-content: center;
+}
+.state-title { font-size: 12.5px; }
+.state-text { font-size: 11.5px; color: var(--muted); max-width: 260px; }
+
+.skeleton {
+  background: var(--raised);
+  border-radius: 3px;
+  height: 10px;
+  width: 100%;
+}
+.skeleton.short { width: 55%; }
+.skeleton.mid { width: 78%; }
+
+footer.note {
+  margin-top: 20px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+  color: var(--dim);
+  font-family: var(--mono);
+}
+
+/* -------------------------------------------------------------- responsive */
+
+@media (max-width: 1180px) {
+  .grid-kpi { grid-template-columns: repeat(2, 1fr); }
+  .grid-main, .grid-analytics, .grid-analytics-2 { grid-template-columns: minmax(0,1fr); }
+  .states { grid-template-columns: 1fr; }
+  .mainnav { display: none; }
+}
+@media (max-width: 680px) {
+  .grid-kpi { grid-template-columns: 1fr; }
+  .search { max-width: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+
+/* Скрыто визуально, доступно скринридеру — текстовый дублёр графиков */
+.sr-only {
+  position: absolute; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+</style>
+</head>
+<body>
+
+<header class="topnav">
+  <div class="brand">
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+      <rect x="1.5" y="1.5" width="15" height="15" rx="3" stroke="#37C8C3" stroke-width="1.2"/>
+      <path d="M4.5 11.5l2.6-4.2 2.2 3 1.4-2 2.8 3.2" stroke="#4ADE9B" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <span class="brand-name">MCP Journal</span>
+  </div>
+
+  <nav class="mainnav" aria-label="Основная навигация">
+    <a href="#" aria-current="page">Overview</a>
+    <a href="#">MCP Servers</a>
+    <a href="#">Requests</a>
+    <a href="#">Logs</a>
+    <a href="#">Alerts</a>
+  </nav>
+
+  <form class="search" role="search" action="#">
+    <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+      <circle cx="6" cy="6" r="4.4" stroke="#4E585C" stroke-width="1.2"/>
+      <path d="M9.4 9.4L12.5 12.5" stroke="#4E585C" stroke-width="1.2" stroke-linecap="round"/>
+    </svg>
+    <input type="search" placeholder="Search servers, requests, traces" aria-label="Поиск по серверам, запросам и трассам">
+    <kbd>/</kbd>
+  </form>
+
+  <div class="nav-right">
+    <span class="live"><span class="dot" aria-hidden="true"></span>LIVE</span>
+
+    <button class="iconbtn" aria-label="Уведомления: 3 непрочитанных">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M4 6.5a4 4 0 118 0c0 3 1 4 1 4H3s1-1 1-4z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+        <path d="M6.5 13a1.6 1.6 0 003 0" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+      </svg>
+      <span class="badge-dot">3</span>
+    </button>
+
+    <div class="profile">
+      <span class="avatar" aria-hidden="true">RM</span>
+      <span class="profile-meta">
+        <span class="profile-name">R. Matov</span>
+        <span class="profile-role">owner</span>
+      </span>
+      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+        <path d="M2.5 4l2.5 2.5L7.5 4" stroke="#7C868B" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </div>
+  </div>
+</header>
+
+<main>
+
+  <!-- ============================================================ KPI ROW -->
+  <section class="grid-kpi" aria-label="Ключевые метрики">
+
+    <article class="panel kpi">
+      <div class="kpi-head"><span class="label">Connected MCPs</span></div>
+      <div class="kpi-value"><span>12</span><span class="unit">/ 14</span>
+        <span class="kpi-delta flat">2 offline</span>
+      </div>
+      <svg class="kpi-spark" viewBox="0 0 120 30" preserveAspectRatio="none" aria-hidden="true">
+        <polyline points="0,14 12,14 24,10 36,10 48,14 60,10 72,6 84,10 96,10 108,10 120,10"
+                  fill="none" stroke="#4ADE9B" stroke-width="1.5" stroke-linejoin="round"/>
+      </svg>
+      <div class="kpi-foot">last change 04:12 ago</div>
+    </article>
+
+    <article class="panel kpi">
+      <div class="kpi-head"><span class="label">Requests today</span></div>
+      <div class="kpi-value"><span>48,392</span>
+        <span class="kpi-delta up">+18.4%</span>
+      </div>
+      <svg class="kpi-spark" viewBox="0 0 120 30" preserveAspectRatio="none" aria-hidden="true">
+        <polyline points="0,24 10,23 20,25 30,21 40,17 50,13 60,15 70,9 80,11 90,7 100,8 110,5 120,4"
+                  fill="none" stroke="#4ADE9B" stroke-width="1.5" stroke-linejoin="round"/>
+      </svg>
+      <div class="kpi-foot">vs 40,876 yesterday</div>
+    </article>
+
+    <article class="panel kpi">
+      <div class="kpi-head"><span class="label">Success rate</span></div>
+      <div class="kpi-value"><span>99.42</span><span class="unit">%</span>
+        <span class="kpi-delta bad">−0.21 pp</span>
+      </div>
+      <svg class="kpi-spark" viewBox="0 0 120 30" preserveAspectRatio="none" aria-hidden="true">
+        <polyline points="0,6 10,5 20,7 30,6 40,5 50,8 60,6 70,7 80,9 90,8 100,12 110,10 120,11"
+                  fill="none" stroke="#E3B04B" stroke-width="1.5" stroke-linejoin="round"/>
+      </svg>
+      <div class="kpi-foot">281 failed calls</div>
+    </article>
+
+    <article class="panel kpi">
+      <div class="kpi-head"><span class="label">Avg latency</span></div>
+      <div class="kpi-value"><span>184</span><span class="unit">ms</span>
+        <span class="kpi-delta down">−12 ms</span>
+      </div>
+      <svg class="kpi-spark" viewBox="0 0 120 30" preserveAspectRatio="none" aria-hidden="true">
+        <polyline points="0,9 10,11 20,8 30,12 40,10 50,14 60,11 70,13 80,12 90,16 100,14 110,17 120,16"
+                  fill="none" stroke="#4ADE9B" stroke-width="1.5" stroke-linejoin="round"/>
+      </svg>
+      <div class="kpi-foot">p95 &nbsp;612 ms</div>
+    </article>
+
+  </section>
+
+  <!-- ==================================================== NETWORK + DETAIL -->
+  <section class="grid-main">
+
+    <article class="panel" aria-labelledby="net-title">
+      <div class="panel-head">
+        <h2 class="panel-title" id="net-title">MCP Network</h2>
+        <span class="badge neutral">8 servers</span>
+        <span class="spacer"></span>
+        <nav class="seg" aria-label="Период">
+          <a href="#">1H</a>
+          <a href="#" aria-current="true">24H</a>
+          <a href="#">7D</a>
+          <a href="#">30D</a>
+        </nav>
+        <button class="btn" type="button">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+            <path d="M1 2.5h10M3 6h6M4.5 9.5h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+          </svg>Filter</button>
+        <button class="btn" type="button">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+            <path d="M7 1.5h3.5V5M5 10.5H1.5V7" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>Expand</button>
+      </div>
+
+      <svg class="network" viewBox="0 0 900 440" role="img"
+           aria-label="Граф подключённых MCP-серверов вокруг узла MCP Gateway. Размер узла пропорционален числу запросов за 24 часа.">
+
+        <!-- рёбра рисуются первыми, чтобы уходить под узлы -->
+        <g>
+          <line class="edge" x1="450" y1="220" x2="215" y2="120"/>
+          <line class="edge" x1="450" y1="220" x2="700" y2="130"/>
+          <line class="edge" x1="450" y1="220" x2="250" y2="330"/>
+          <line class="edge" x1="450" y1="220" x2="690" y2="330"/>
+          <line class="edge" x1="450" y1="220" x2="450" y2="60"/>
+          <line class="edge" x1="450" y1="220" x2="450" y2="385"/>
+          <line class="edge" x1="450" y1="220" x2="110" y2="235"/>
+          <line class="edge dim" x1="450" y1="220" x2="800" y2="235"/>
+        </g>
+
+        <!-- центральный узел -->
+        <g>
+          <rect class="gw-box" x="396" y="198" width="108" height="44" rx="6"/>
+          <text class="gw-label" x="450" y="217" text-anchor="middle">MCP GATEWAY</text>
+          <text class="gw-sub" x="450" y="231" text-anchor="middle">48,392 req · 24h</text>
+        </g>
+
+        <!-- ── GitHub MCP (selected) ─────────────────────────────────── -->
+        <g class="node" tabindex="0" role="button"
+           aria-label="GitHub MCP, healthy, 14 284 запроса, success rate 99.8%, средняя задержка 122 мс. Выбран.">
+          <circle cx="215" cy="120" r="49" fill="none" stroke="#37C8C3" stroke-width="1" stroke-dasharray="2 4"/>
+          <circle class="bubble" cx="215" cy="120" r="42" fill="#13221B" stroke="#4ADE9B" stroke-width="1.5"/>
+          <text class="initials" x="215" y="125" text-anchor="middle">GH</text>
+          <text class="nm" x="215" y="180" text-anchor="middle">GitHub MCP</text>
+          <text class="rq" x="215" y="195" text-anchor="middle">14,284</text>
+          <g class="tip" transform="translate(245,170)">
+            <rect class="tip-box" width="196" height="88" rx="5"/>
+            <text class="tip-t" x="12" y="19">GitHub MCP</text>
+            <text class="tip-k" x="12" y="37">Requests</text><text class="tip-v" x="184" y="37" text-anchor="end">14,284</text>
+            <text class="tip-k" x="12" y="53">Success rate</text><text class="tip-v" x="184" y="53" text-anchor="end">99.8%</text>
+            <text class="tip-k" x="12" y="69">Avg latency</text><text class="tip-v" x="184" y="69" text-anchor="end">122 ms</text>
+            <text class="tip-k" x="12" y="83">Last activity</text><text class="tip-v" x="184" y="83" text-anchor="end">2 s ago</text>
+          </g>
+        </g>
+
+        <!-- ── PostgreSQL MCP ────────────────────────────────────────── -->
+        <g class="node" tabindex="0" role="button"
+           aria-label="PostgreSQL MCP, healthy, 11 920 запросов, success rate 99.9%, средняя задержка 84 мс.">
+          <circle class="bubble" cx="700" cy="130" r="39" fill="#13221B" stroke="#4ADE9B" stroke-width="1.5"/>
+          <text class="initials" x="700" y="135" text-anchor="middle">PG</text>
+          <text class="nm" x="700" y="187" text-anchor="middle">PostgreSQL MCP</text>
+          <text class="rq" x="700" y="202" text-anchor="middle">11,920</text>
+          <g class="tip" transform="translate(474,177)">
+            <rect class="tip-box" width="196" height="88" rx="5"/>
+            <text class="tip-t" x="12" y="19">PostgreSQL MCP</text>
+            <text class="tip-k" x="12" y="37">Requests</text><text class="tip-v" x="184" y="37" text-anchor="end">11,920</text>
+            <text class="tip-k" x="12" y="53">Success rate</text><text class="tip-v" x="184" y="53" text-anchor="end">99.9%</text>
+            <text class="tip-k" x="12" y="69">Avg latency</text><text class="tip-v" x="184" y="69" text-anchor="end">84 ms</text>
+            <text class="tip-k" x="12" y="83">Last activity</text><text class="tip-v" x="184" y="83" text-anchor="end">1 s ago</text>
+          </g>
+        </g>
+
+        <!-- ── Slack MCP (degraded) ──────────────────────────────────── -->
+        <g class="node" tabindex="0" role="button"
+           aria-label="Slack MCP, degraded, 7 460 запросов, success rate 97.1%, средняя задержка 412 мс.">
+          <circle class="bubble" cx="250" cy="330" r="32" fill="#221D12" stroke="#E3B04B" stroke-width="1.5"/>
+          <text class="initials" x="250" y="335" text-anchor="middle">SL</text>
+          <text class="nm" x="250" y="380" text-anchor="middle">Slack MCP</text>
+          <text class="rq" x="250" y="395" text-anchor="middle">7,460</text>
+          <g class="tip" transform="translate(96,208)">
+            <rect class="tip-box" width="196" height="88" rx="5"/>
+            <text class="tip-t" x="12" y="19">Slack MCP</text>
+            <text class="tip-k" x="12" y="37">Requests</text><text class="tip-v" x="184" y="37" text-anchor="end">7,460</text>
+            <text class="tip-k" x="12" y="53">Success rate</text><text class="tip-v" x="184" y="53" text-anchor="end">97.1%</text>
+            <text class="tip-k" x="12" y="69">Avg latency</text><text class="tip-v" x="184" y="69" text-anchor="end">412 ms</text>
+            <text class="tip-k" x="12" y="83">Last activity</text><text class="tip-v" x="184" y="83" text-anchor="end">6 s ago</text>
+          </g>
+        </g>
+
+        <!-- ── Notion MCP ────────────────────────────────────────────── -->
+        <g class="node" tabindex="0" role="button"
+           aria-label="Notion MCP, healthy, 5 318 запросов, success rate 99.4%, средняя задержка 196 мс.">
+          <circle class="bubble" cx="690" cy="330" r="28" fill="#13221B" stroke="#4ADE9B" stroke-width="1.5"/>
+          <text class="initials" x="690" y="335" text-anchor="middle">NO</text>
+          <text class="nm" x="690" y="374" text-anchor="middle">Notion MCP</text>
+          <text class="rq" x="690" y="389" text-anchor="middle">5,318</text>
+          <g class="tip" transform="translate(464,206)">
+            <rect class="tip-box" width="196" height="88" rx="5"/>
+            <text class="tip-t" x="12" y="19">Notion MCP</text>
+            <text class="tip-k" x="12" y="37">Requests</text><text class="tip-v" x="184" y="37" text-anchor="end">5,318</text>
+            <text class="tip-k" x="12" y="53">Success rate</text><text class="tip-v" x="184" y="53" text-anchor="end">99.4%</text>
+            <text class="tip-k" x="12" y="69">Avg latency</text><text class="tip-v" x="184" y="69" text-anchor="end">196 ms</text>
+            <text class="tip-k" x="12" y="83">Last activity</text><text class="tip-v" x="184" y="83" text-anchor="end">11 s ago</text>
+          </g>
+        </g>
+
+        <!-- ── Filesystem MCP ────────────────────────────────────────── -->
+        <g class="node" tabindex="0" role="button"
+           aria-label="Filesystem MCP, healthy, 4 102 запроса, success rate 100%, средняя задержка 38 мс.">
+          <circle class="bubble" cx="450" cy="60" r="25" fill="#13221B" stroke="#4ADE9B" stroke-width="1.5"/>
+          <text class="initials" x="450" y="65" text-anchor="middle">FS</text>
+          <text class="nm" x="450" y="101" text-anchor="middle">Filesystem MCP</text>
+          <text class="rq" x="450" y="116" text-anchor="middle">4,102</text>
+          <g class="tip" transform="translate(480,93)">
+            <rect class="tip-box" width="196" height="88" rx="5"/>
+            <text class="tip-t" x="12" y="19">Filesystem MCP</text>
+            <text class="tip-k" x="12" y="37">Requests</text><text class="tip-v" x="184" y="37" text-anchor="end">4,102</text>
+            <text class="tip-k" x="12" y="53">Success rate</text><text class="tip-v" x="184" y="53" text-anchor="end">100%</text>
+            <text class="tip-k" x="12" y="69">Avg latency</text><text class="tip-v" x="184" y="69" text-anchor="end">38 ms</text>
+            <text class="tip-k" x="12" y="83">Last activity</text><text class="tip-v" x="184" y="83" text-anchor="end">4 s ago</text>
+          </g>
+        </g>
+
+        <!-- ── Browser MCP (error) ───────────────────────────────────── -->
+        <g class="node" tabindex="0" role="button"
+           aria-label="Browser MCP, error, 2 884 запроса, success rate 91.2%, средняя задержка 1240 мс.">
+          <circle class="bubble" cx="450" cy="385" r="21" fill="#221415" stroke="#FF6B6B" stroke-width="1.5"/>
+          <text class="initials" x="450" y="390" text-anchor="middle">BR</text>
+          <text class="nm" x="450" y="422" text-anchor="middle">Browser MCP</text>
+          <text class="rq" x="450" y="437" text-anchor="middle">2,884</text>
+          <g class="tip" transform="translate(480,268)">
+            <rect class="tip-box" width="196" height="88" rx="5"/>
+            <text class="tip-t" x="12" y="19">Browser MCP</text>
+            <text class="tip-k" x="12" y="37">Requests</text><text class="tip-v" x="184" y="37" text-anchor="end">2,884</text>
+            <text class="tip-k" x="12" y="53">Success rate</text><text class="tip-v" x="184" y="53" text-anchor="end">91.2%</text>
+            <text class="tip-k" x="12" y="69">Avg latency</text><text class="tip-v" x="184" y="69" text-anchor="end">1,240 ms</text>
+            <text class="tip-k" x="12" y="83">Last activity</text><text class="tip-v" x="184" y="83" text-anchor="end">38 s ago</text>
+          </g>
+        </g>
+
+        <!-- ── Sentry MCP ────────────────────────────────────────────── -->
+        <g class="node" tabindex="0" role="button"
+           aria-label="Sentry MCP, healthy, 1 760 запросов, success rate 99.6%, средняя задержка 154 мс.">
+          <circle class="bubble" cx="110" cy="235" r="18" fill="#13221B" stroke="#4ADE9B" stroke-width="1.5"/>
+          <text class="initials" x="110" y="240" text-anchor="middle">SN</text>
+          <text class="nm" x="110" y="268" text-anchor="middle">Sentry MCP</text>
+          <text class="rq" x="110" y="283" text-anchor="middle">1,760</text>
+          <g class="tip" transform="translate(134,187)">
+            <rect class="tip-box" width="196" height="88" rx="5"/>
+            <text class="tip-t" x="12" y="19">Sentry MCP</text>
+            <text class="tip-k" x="12" y="37">Requests</text><text class="tip-v" x="184" y="37" text-anchor="end">1,760</text>
+            <text class="tip-k" x="12" y="53">Success rate</text><text class="tip-v" x="184" y="53" text-anchor="end">99.6%</text>
+            <text class="tip-k" x="12" y="69">Avg latency</text><text class="tip-v" x="184" y="69" text-anchor="end">154 ms</text>
+            <text class="tip-k" x="12" y="83">Last activity</text><text class="tip-v" x="184" y="83" text-anchor="end">22 s ago</text>
+          </g>
+        </g>
+
+        <!-- ── Linear MCP (offline) ──────────────────────────────────── -->
+        <g class="node" tabindex="0" role="button"
+           aria-label="Linear MCP, offline, 664 запроса за период, последняя активность 41 минуту назад.">
+          <circle class="bubble" cx="800" cy="235" r="14" fill="#171B1D" stroke="#5A6569" stroke-width="1.5" stroke-dasharray="3 3"/>
+          <text class="initials" x="800" y="240" text-anchor="middle" fill="#7C868B">LI</text>
+          <text class="nm" x="800" y="264" text-anchor="middle" fill="#7C868B">Linear MCP</text>
+          <text class="rq" x="800" y="279" text-anchor="middle">664</text>
+          <g class="tip" transform="translate(580,187)">
+            <rect class="tip-box" width="196" height="88" rx="5"/>
+            <text class="tip-t" x="12" y="19">Linear MCP</text>
+            <text class="tip-k" x="12" y="37">Requests</text><text class="tip-v" x="184" y="37" text-anchor="end">664</text>
+            <text class="tip-k" x="12" y="53">Success rate</text><text class="tip-v" x="184" y="53" text-anchor="end">—</text>
+            <text class="tip-k" x="12" y="69">Avg latency</text><text class="tip-v" x="184" y="69" text-anchor="end">—</text>
+            <text class="tip-k" x="12" y="83">Last activity</text><text class="tip-v" x="184" y="83" text-anchor="end">41 min ago</text>
+          </g>
+        </g>
+      </svg>
+
+      <div class="legend" aria-hidden="true">
+        <span><i style="border-color:#4ADE9B;background:#13221B"></i>healthy · 5</span>
+        <span><i style="border-color:#E3B04B;background:#221D12"></i>degraded · 1</span>
+        <span><i style="border-color:#FF6B6B;background:#221415"></i>error · 1</span>
+        <span><i style="border-color:#5A6569;background:#171B1D"></i>offline · 1</span>
+      </div>
+    </article>
+
+    <!-- ── правая панель ──────────────────────────────────────────────── -->
+    <article class="panel" aria-labelledby="sel-title">
+      <div class="sel-head">
+        <span class="sel-avatar" aria-hidden="true">GH</span>
+        <span>
+          <span class="sel-name" id="sel-title">GitHub MCP</span><br>
+          <span class="sel-sub">github-mcp · stdio</span>
+        </span>
+        <span style="margin-left:auto"><span class="badge ok">HEALTHY</span></span>
+      </div>
+
+      <div style="padding:10px 16px;border-bottom:1px solid var(--line);font-size:11.5px;color:var(--muted)">
+        <span class="label" style="display:block;margin-bottom:3px">Last event</span>
+        tools/call · <span style="color:var(--text)">create_issue</span> approved by R. Matov · 2 s ago
+      </div>
+
+      <div class="metrics">
+        <div class="metric">
+          <span class="label">Requests</span>
+          <div class="metric-value">14,284</div>
+        </div>
+        <div class="metric">
+          <span class="label">Success rate</span>
+          <div class="metric-value" style="color:var(--mint)">99.8<span class="unit">%</span></div>
+        </div>
+        <div class="metric">
+          <span class="label">Avg latency</span>
+          <div class="metric-value">122<span class="unit"> ms</span></div>
+        </div>
+        <div class="metric">
+          <span class="label">Error rate</span>
+          <div class="metric-value">0.2<span class="unit">%</span></div>
+        </div>
+      </div>
+
+      <div style="padding:14px 16px;border-bottom:1px solid var(--line)">
+        <span class="label">Load · 24h</span>
+        <svg viewBox="0 0 300 64" preserveAspectRatio="none" style="width:100%;height:64px;margin-top:8px" aria-hidden="true">
+          <line x1="0" y1="16" x2="300" y2="16" stroke="#1E2426" stroke-width="1"/>
+          <line x1="0" y1="36" x2="300" y2="36" stroke="#1E2426" stroke-width="1"/>
+          <polygon points="0,56 25,52 50,48 75,38 100,30 125,34 150,22 175,26 200,16 225,20 250,14 275,22 300,18 300,64 0,64"
+                   fill="rgba(74,222,155,.10)"/>
+          <polyline points="0,56 25,52 50,48 75,38 100,30 125,34 150,22 175,26 200,16 225,20 250,14 275,22 300,18"
+                    fill="none" stroke="#4ADE9B" stroke-width="1.5" stroke-linejoin="round"/>
+        </svg>
+      </div>
+
+      <div class="events">
+        <span class="label" style="display:block;margin-bottom:4px">Recent messages</span>
+        <div class="event err">
+          <time>14:28:11</time>
+          <span class="txt">rate limit 403 · retry in 60 s</span>
+        </div>
+        <div class="event">
+          <time>14:19:02</time>
+          <span class="txt">approval required · delete_branch</span>
+        </div>
+        <div class="event">
+          <time>13:57:44</time>
+          <span class="txt">tool inventory changed · 2 new tools quarantined</span>
+        </div>
+      </div>
+
+      <div style="padding:0 16px 16px">
+        <button class="btn btn-wide" type="button">Open server details</button>
+      </div>
+    </article>
+  </section>
+
+  <!-- ======================================================== ANALYTICS 1 -->
+  <section class="grid-analytics">
+
+    <article class="panel" aria-labelledby="thr-title">
+      <div class="panel-head">
+        <h2 class="panel-title" id="thr-title">Request Throughput</h2>
+        <span class="label">last 24h</span>
+        <span class="spacer"></span>
+        <span class="badge ok">peak 2,740/h</span>
+      </div>
+      <div style="padding:16px">
+        <svg viewBox="0 0 720 170" style="width:100%;height:190px" role="img"
+             aria-label="График запросов за 24 часа: минимум 350 в час около 04:00, пик 2740 в час около 15:00.">
+          <!-- сетка -->
+          <g stroke="#1E2426" stroke-width="1" shape-rendering="crispEdges">
+            <line x1="0" y1="30.5"  x2="720" y2="30.5"/>
+            <line x1="0" y1="70.5"  x2="720" y2="70.5"/>
+            <line x1="0" y1="110.5" x2="720" y2="110.5"/>
+            <line x1="0" y1="150.5" x2="720" y2="150.5"/>
+          </g>
+          <polygon fill="rgba(74,222,155,.09)"
+            points="0,114 30,123 60,129 90,133 120,135 150,132 180,120 210,98 240,75 270,56 300,46 330,40 360,50 390,42 420,35 450,30 480,37 510,49 540,63 570,78 600,88 630,98 660,106 690,112 720,118 720,150 0,150"/>
+          <polyline fill="none" stroke="#4ADE9B" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"
+            points="0,114 30,123 60,129 90,133 120,135 150,132 180,120 210,98 240,75 270,56 300,46 330,40 360,50 390,42 420,35 450,30 480,37 510,49 540,63 570,78 600,88 630,98 660,106 690,112 720,118"/>
+          <!-- пик -->
+          <circle cx="450" cy="30" r="2.5" fill="#0C0F10" stroke="#4ADE9B" stroke-width="1.5"/>
+          <!-- подписи оси -->
+          <g fill="#4E585C" font-family="ui-monospace, Menlo, monospace" font-size="10">
+            <text x="0" y="166">00:00</text>
+            <text x="175" y="166">06:00</text>
+            <text x="350" y="166">12:00</text>
+            <text x="525" y="166">18:00</text>
+            <text x="690" y="166" text-anchor="end">23:00</text>
+          </g>
+          <g fill="#4E585C" font-family="ui-monospace, Menlo, monospace" font-size="10" text-anchor="end">
+            <text x="716" y="27">2.8k</text>
+            <text x="716" y="107">0.9k</text>
+          </g>
+        </svg>
+      </div>
+    </article>
+
+    <article class="panel" aria-labelledby="dist-title">
+      <div class="panel-head">
+        <h2 class="panel-title" id="dist-title">Status Distribution</h2>
+        <span class="spacer"></span>
+        <span class="label">14 servers</span>
+      </div>
+      <div class="donut-wrap">
+        <svg width="130" height="130" viewBox="0 0 130 130" role="img"
+             aria-label="Распределение статусов: 9 healthy, 2 degraded, 1 error, 2 offline из 14 серверов.">
+          <circle cx="65" cy="65" r="52" fill="none" stroke="#16191B" stroke-width="14"/>
+          <!-- C = 2πr ≈ 326.7 -->
+          <g transform="rotate(-90 65 65)" fill="none" stroke-width="14">
+            <circle cx="65" cy="65" r="52" stroke="#4ADE9B" stroke-dasharray="208 118.7" stroke-dashoffset="0"/>
+            <circle cx="65" cy="65" r="52" stroke="#E3B04B" stroke-dasharray="44.6 282.1" stroke-dashoffset="-210"/>
+            <circle cx="65" cy="65" r="52" stroke="#FF6B6B" stroke-dasharray="21.3 305.4" stroke-dashoffset="-256.6"/>
+            <circle cx="65" cy="65" r="52" stroke="#5A6569" stroke-dasharray="44.6 282.1" stroke-dashoffset="-279.9"/>
+          </g>
+          <text x="65" y="62" text-anchor="middle" font-family="ui-monospace, Menlo, monospace" font-size="21" fill="#E6EBEB">64</text>
+          <text x="65" y="78" text-anchor="middle" font-family="system-ui, sans-serif" font-size="9.5" fill="#7C868B" letter-spacing="1">% HEALTHY</text>
+        </svg>
+        <div class="donut-legend">
+          <div class="dl-row"><i style="background:#4ADE9B"></i>Healthy<span class="n">9</span></div>
+          <div class="dl-row"><i style="background:#E3B04B"></i>Degraded<span class="n">2</span></div>
+          <div class="dl-row"><i style="background:#FF6B6B"></i>Error<span class="n">1</span></div>
+          <div class="dl-row"><i style="background:#5A6569"></i>Offline<span class="n">2</span></div>
+        </div>
+      </div>
+    </article>
+  </section>
+
+  <!-- ======================================================== ANALYTICS 2 -->
+  <section class="grid-analytics-2">
+
+    <article class="panel" aria-labelledby="heat-title">
+      <div class="panel-head">
+        <h2 class="panel-title" id="heat-title">Requests Heatmap</h2>
+        <span class="spacer"></span>
+        <span class="label">20 weeks</span>
+      </div>
+      <div class="heat-wrap">
+        <svg id="heatmap" viewBox="0 0 312 110" style="width:100%;height:auto" role="img"
+             aria-label="Календарная heatmap активности за 20 недель: плотность запросов растёт к последним неделям."></svg>
+        <div class="heat-scale">
+          <span>less</span>
+          <i style="background:#141819"></i>
+          <i style="background:#163025"></i>
+          <i style="background:#1B4A38"></i>
+          <i style="background:#2A7355"></i>
+          <i style="background:#3FB47C"></i>
+          <span>more</span>
+        </div>
+      </div>
+    </article>
+
+    <article class="panel" aria-labelledby="req-title">
+      <div class="panel-head">
+        <h2 class="panel-title" id="req-title">Recent Requests</h2>
+        <span class="spacer"></span>
+        <button class="btn" type="button">View all</button>
+      </div>
+      <div class="panel-body tight" style="padding:0">
+        <table>
+          <caption class="sr-only">Последние запросы через контрольную плоскость</caption>
+          <thead>
+            <tr>
+              <th scope="col">Timestamp</th>
+              <th scope="col">MCP</th>
+              <th scope="col">Method</th>
+              <th scope="col">Status</th>
+              <th scope="col" style="text-align:right">Latency</th>
+              <th scope="col" style="text-align:right">Tokens / Cost</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="ts">14:32:07.412</td><td>GitHub MCP</td>
+              <td class="method">tools/call · <b>create_issue</b></td>
+              <td><span class="badge ok">OK</span></td>
+              <td class="lat">118 ms</td><td class="cost">1,204 · $0.004</td>
+            </tr>
+            <tr>
+              <td class="ts">14:32:05.980</td><td>PostgreSQL MCP</td>
+              <td class="method">tools/call · <b>query</b></td>
+              <td><span class="badge ok">OK</span></td>
+              <td class="lat">76 ms</td><td class="cost">892 · $0.003</td>
+            </tr>
+            <tr>
+              <td class="ts">14:32:03.117</td><td>Slack MCP</td>
+              <td class="method">tools/call · <b>post_message</b></td>
+              <td><span class="badge warn">AWAIT</span></td>
+              <td class="lat">412 ms</td><td class="cost">640 · $0.002</td>
+            </tr>
+            <tr>
+              <td class="ts">14:31:58.744</td><td>Browser MCP</td>
+              <td class="method">tools/call · <b>navigate</b></td>
+              <td><span class="badge err">ERROR</span></td>
+              <td class="lat">1,240 ms</td><td class="cost">—</td>
+            </tr>
+            <tr>
+              <td class="ts">14:31:54.203</td><td>Filesystem MCP</td>
+              <td class="method">resources/<b>read</b></td>
+              <td><span class="badge ok">OK</span></td>
+              <td class="lat">38 ms</td><td class="cost">210 · $0.001</td>
+            </tr>
+            <tr>
+              <td class="ts">14:31:49.066</td><td>Notion MCP</td>
+              <td class="method">tools/<b>list</b></td>
+              <td><span class="badge ok">OK</span></td>
+              <td class="lat">196 ms</td><td class="cost">1,530 · $0.005</td>
+            </tr>
+            <tr>
+              <td class="ts">14:31:44.812</td><td>Sentry MCP</td>
+              <td class="method">tools/call · <b>list_issues</b></td>
+              <td><span class="badge off">DENIED</span></td>
+              <td class="lat">154 ms</td><td class="cost">—</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </article>
+  </section>
+
+  <!-- =========================================================== STATES -->
+  <section class="states" aria-label="Состояния экрана">
+    <article class="panel">
+      <div class="panel-head"><h2 class="panel-title">Empty state</h2></div>
+      <div class="state-body">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <rect x="3" y="3" width="18" height="18" rx="4" stroke="#283034" stroke-width="1.3"/>
+          <path d="M8 12h8" stroke="#4E585C" stroke-width="1.3" stroke-linecap="round"/>
+        </svg>
+        <span class="state-title">No MCP servers registered</span>
+        <span class="state-text">Добавьте первый сервер, чтобы начать собирать журнал вызовов.</span>
+        <button class="btn" type="button">Add MCP server</button>
+      </div>
+    </article>
+
+    <article class="panel">
+      <div class="panel-head"><h2 class="panel-title">Offline / degraded feed</h2></div>
+      <div class="state-body">
+        <span class="badge warn">POLLING · 5s</span>
+        <span class="state-title">Live feed reconnecting</span>
+        <span class="state-text">SSE-поток оборвался; данные обновляются опросом. Показанные цифры могут отставать.</span>
+        <div style="display:flex;flex-direction:column;gap:6px;width:70%">
+          <span class="skeleton"></span><span class="skeleton mid"></span><span class="skeleton short"></span>
+        </div>
+      </div>
+    </article>
+
+    <article class="panel">
+      <div class="panel-head"><h2 class="panel-title">Error state</h2></div>
+      <div class="state-body">
+        <span class="badge err">READ FAILED</span>
+        <span class="state-title">Journal unreadable</span>
+        <span class="state-text">Не удалось прочитать журнал за выбранный период. Остальные панели показывают последние известные значения.</span>
+        <button class="btn" type="button">Retry</button>
+      </div>
+    </article>
+  </section>
+
+  <footer class="note">
+    Визуальный прототип · mock-данные · бэкенд не подключён · docs/design/dashboard-prototype.html
+  </footer>
+</main>
+
+<script>
+/* Прототип-онли: в проде эти ячейки генерирует сервер (inline SVG из чистой
+   функции), клиентского JS для heatmap не будет. Детерминированный LCG —
+   картинка одинакова при каждом открытии. */
+(function () {
+  var svg = document.getElementById('heatmap');
+  if (!svg) return;
+  var COLORS = ['#141819', '#163025', '#1B4A38', '#2A7355', '#3FB47C'];
+  var COLS = 20, ROWS = 7, CELL = 11, GAP = 3, OFFSET_X = 26, OFFSET_Y = 12;
+  var seed = 20260813;
+  function rnd() { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; }
+
+  var parts = [];
+  var days = ['Mon', '', 'Wed', '', 'Fri', '', ''];
+  for (var r = 0; r < ROWS; r++) {
+    if (days[r]) {
+      parts.push('<text x="0" y="' + (OFFSET_Y + r * (CELL + GAP) + 9) +
+        '" font-family="ui-monospace, Menlo, monospace" font-size="9" fill="#4E585C">' + days[r] + '</text>');
+    }
+    for (var c = 0; c < COLS; c++) {
+      /* тренд: активность растёт к правому краю, выходные тусклее */
+      var trend = c / COLS;
+      var weekend = (r >= 5) ? 0.45 : 1;
+      var v = rnd() * 0.55 + trend * 0.6;
+      var level = Math.max(0, Math.min(4, Math.round(v * weekend * 4)));
+      parts.push('<rect x="' + (OFFSET_X + c * (CELL + GAP)) + '" y="' + (OFFSET_Y + r * (CELL + GAP)) +
+        '" width="' + CELL + '" height="' + CELL + '" rx="2" fill="' + COLORS[level] + '"/>');
+    }
+  }
+  var months = [['Apr', 0], ['May', 4], ['Jun', 9], ['Jul', 14], ['Aug', 18]];
+  for (var m = 0; m < months.length; m++) {
+    parts.push('<text x="' + (OFFSET_X + months[m][1] * (CELL + GAP)) +
+      '" y="7" font-family="ui-monospace, Menlo, monospace" font-size="9" fill="#4E585C">' + months[m][0] + '</text>');
+  }
+  svg.innerHTML = parts.join('');
+})();
+</script>
+
+</body>
+</html>
