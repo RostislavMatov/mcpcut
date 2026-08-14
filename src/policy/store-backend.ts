@@ -116,6 +116,15 @@ export function selectDocument(
   return { doc: row.doc, rev }
 }
 
+/**
+ * Records that `name` was imported from legacy files. Written in the SAME
+ * transaction as the rows it covers, and `OR IGNORE` so a racing importer that
+ * lost is a no-op rather than an error.
+ */
+export function insertMigrationMarker(db: StateDatabase, name: string): void {
+  db.prepare(INSERT_MARKER).run(name)
+}
+
 /** True when `name` was imported from a legacy file at some point in this database's life. */
 export function markerPresent(db: StateDatabase, name: string): boolean {
   return db.prepare(SELECT_MARKER).get(name) !== undefined
@@ -157,7 +166,7 @@ export function insertDocumentFirstWrite(
   return handle.transaction((db) => {
     if (selectDocument(db, name, filePath) !== null) return false
     db.prepare(INSERT_DOCUMENT).run(name, text)
-    if (isLegacyImport) db.prepare(INSERT_MARKER).run(name)
+    if (isLegacyImport) insertMigrationMarker(db, name)
     return true
   })
 }

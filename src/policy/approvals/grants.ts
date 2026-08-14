@@ -1,11 +1,14 @@
-import { readdir, readFile, rm, stat } from 'node:fs/promises'
-import { basename, join } from 'node:path'
 import {
   DEFAULT_GRANT_TTL_MS,
   GRANT_CLOCK_SKEW_MS,
-  MAX_RESOLVED_FILES_SCANNED,
   RESOLVED_FILE_RETENTION_MS,
 } from '../constants.js'
+import {
+  deleteResolvedOlderThan,
+  openApprovalsDb,
+  selectResolvedDocsForGrant,
+  type ApprovalsDb,
+} from './queue-db.js'
 
 /**
  * Two-tier grant design.
@@ -19,12 +22,12 @@ import {
  *    resolves `'approved'`. The gate records the grant here and the retry
  *    (same proxy session, moments later) is a synchronous map lookup -- no
  *    disk I/O.
- * 2. **Late-approval fallback -- `checkRecentApproval` (disk-backed).** An
+ * 2. **Late-approval fallback -- `checkRecentApproval` (storage-backed).** An
  *    operator can approve a request *after* its wait already timed out (the
  *    gate stopped polling and already answered the client with a timeout
  *    error). The gate has no in-memory record of that late approval, but the
- *    resolved-file queue does: `queue.resolve()` already wrote it to
- *    `resolved/<id>.json`. When the agent retries the same call, the gate
+ *    approvals queue does: `queue.resolve()` already recorded it as a resolved
+ *    row in `state.db`. When the agent retries the same call, the gate
  *    checks `checkRecentApproval` before enqueueing a brand new approval, so
  *    one manual approval is enough even if the agent's first attempt already
  *    gave up.
@@ -36,11 +39,19 @@ import {
  * *slower* retry, arriving after the in-process wait gave up).
  */
 
-const RESOLVED_SUBDIR = 'resolved'
-const JSON_FILE_SUFFIX = '.json'
-
-/** Max old resolved files this call will `stat`/`rm` for retention. Bounds cleanup cost per call so it amortizes over many calls instead of a single stat storm. */
+/**
+ * Max rows this call will delete for retention. Bounds cleanup cost per call so
+ * it amortizes over many calls instead of one long delete on the hot path.
+ */
 const RETENTION_CLEANUP_BATCH = 200
+
+/**
+ * Max resolved records considered for one grant decision. The query is already
+ * narrowed to a single (server, tool, args) triple by index and ordered newest
+ * first, and only a resolution inside the TTL window can grant, so anything
+ * past the newest few is necessarily too old to matter.
+ */
+const MAX_GRANT_CANDIDATES = 50
 
 export interface GrantKey {
   readonly serverName: string
@@ -87,7 +98,7 @@ export function createGrantRegistry(opts: GrantRegistryOptions = {}): GrantRegis
   return { grant, isGranted }
 }
 
-/** Minimal shape `checkRecentApproval` needs from a resolved file; validated field-by-field so garbage disk content is skipped, never thrown. */
+/** Minimal shape `checkRecentApproval` needs from a resolved record; validated field-by-field so garbage stored content is skipped, never thrown. */
 interface ResolvedFileForGrantCheck {
   readonly approvalId: string
   readonly serverName: string
@@ -120,65 +131,55 @@ export interface CheckRecentApprovalInput extends GrantKey {
 }
 
 /**
- * Disk-backed fallback for a late approval (see module doc comment). Bounds
- * cost on the approval hot path: resolved files are ULID-named (lexicographic
- * order tracks creation time), so this reads at most
- * `MAX_RESOLVED_FILES_SCANNED` files, newest first (descending filename sort)
- * WITHOUT statting every entry — the previous `stat`-every-file approach cost
- * hundreds of ms on a large, never-pruned directory. Returns `true` on the
- * first file that matches `(serverName, toolName, argsHash)`, has `outcome ===
- * 'approved'`, whose `approvalId` equals its own filename, and whose
+ * Storage-backed fallback for a late approval (see module doc comment). One
+ * indexed lookup on `(serverName, toolName, argsHash)` over the resolved rows
+ * of the queue (M4.5 wave 3; before that, a directory scan of up to two
+ * thousand files that cost hundreds of ms on a never-pruned directory).
+ * Returns `true` for the first record with `outcome === 'approved'` whose
  * `resolvedAt` is within `ttlMs` of now and not in the future (skew-guarded).
- * Malformed files are skipped, never thrown. Opportunistically prunes a
- * bounded batch of files older than `RESOLVED_FILE_RETENTION_MS`.
+ *
+ * NEVER throws and NEVER blocks the decision on storage health: this sits on
+ * the gate's hot path, where a failure to read must fall back to asking a human
+ * (`false`), never to granting. Malformed records are skipped the same way.
+ * Opportunistically prunes a bounded batch of records settled longer ago than
+ * `RESOLVED_FILE_RETENTION_MS`.
  */
 export async function checkRecentApproval(
   baseDir: string,
   input: CheckRecentApprovalInput,
 ): Promise<boolean> {
   const clock = input.clock ?? Date.now
-  const resolvedDir = join(baseDir, RESOLVED_SUBDIR)
   const nowMs = clock()
 
-  let fileNames: string[]
+  let db: ApprovalsDb
+  let docs: readonly string[]
   try {
-    fileNames = (await readdir(resolvedDir)).filter((name) => name.endsWith(JSON_FILE_SUFFIX))
+    db = await openApprovalsDb(baseDir)
+    docs = selectResolvedDocsForGrant(db.handle.db, input, MAX_GRANT_CANDIDATES)
   } catch {
-    return false // no resolved/ directory yet: nothing to grant
+    return false // unopenable or unreadable storage: no grant, ask a human
   }
 
-  const newestFirst = fileNames.sort((a, b) => (a < b ? 1 : a > b ? -1 : 0))
-  const scanList = newestFirst.slice(0, MAX_RESOLVED_FILES_SCANNED)
-
-  let matched = false
-  for (const name of scanList) {
-    if (await matchesGrant(resolvedDir, name, input, nowMs)) {
-      matched = true
-      break
-    }
-  }
-
-  await pruneOldResolvedFiles(resolvedDir, newestFirst.slice(MAX_RESOLVED_FILES_SCANNED), nowMs)
+  const matched = docs.some((doc) => matchesGrant(doc, input, nowMs))
+  pruneOldResolvedRows(db, nowMs)
   return matched
 }
 
-async function matchesGrant(
-  dir: string,
-  fileName: string,
-  input: CheckRecentApprovalInput,
-  nowMs: number,
-): Promise<boolean> {
+/**
+ * Decides one record. Every criterion is re-checked against the stored
+ * document even though the query already filtered on the indexed copies: the
+ * `doc` column is the source of truth, and a row whose flat columns disagree
+ * with it must not be able to mint a grant its own record does not support.
+ */
+function matchesGrant(doc: string, input: CheckRecentApprovalInput, nowMs: number): boolean {
   let raw: unknown
   try {
-    raw = JSON.parse(await readFile(join(dir, fileName), 'utf8'))
+    raw = JSON.parse(doc)
   } catch {
-    return false // unreadable or invalid JSON: skip
+    return false // invalid JSON: skip
   }
   if (!isResolvedFileForGrantCheck(raw)) return false
 
-  // Bind the record to its own filename: a resolved file whose approvalId does
-  // not equal its basename was moved/forged and must not mint a grant.
-  if (raw.approvalId !== basename(fileName, JSON_FILE_SUFFIX)) return false
   if (raw.resolution.outcome !== 'approved') return false
   if (raw.serverName !== input.serverName) return false
   if (raw.toolName !== input.toolName) return false
@@ -194,24 +195,21 @@ async function matchesGrant(
 
 /**
  * Best-effort retention: deletes up to `RETENTION_CLEANUP_BATCH` of the oldest
- * resolved files whose mtime is older than `RESOLVED_FILE_RETENTION_MS`, so the
- * directory cannot grow without bound across a long-lived session. Bounded per
- * call and never throws (a failed unlink is ignored — another call retries).
+ * records settled longer than `RESOLVED_FILE_RETENTION_MS` ago (well past any
+ * grant TTL), so resolved history cannot grow without bound across a long-lived
+ * session. ONE transaction attempt, bounded by the statement busy timeout
+ * (~50 ms) — never the multi-second busy-retry loop the queue's own writes
+ * use: this runs on the gate's hot path, and a contended writer is somebody
+ * else's approval landing, so this call simply skips the cleanup and a later
+ * call retries it. Never throws.
  */
-async function pruneOldResolvedFiles(
-  dir: string,
-  oldestFirst: readonly string[],
-  nowMs: number,
-): Promise<void> {
-  const batch = oldestFirst.slice(-RETENTION_CLEANUP_BATCH)
-  for (const name of batch) {
-    try {
-      const stats = await stat(join(dir, name))
-      if (nowMs - stats.mtimeMs > RESOLVED_FILE_RETENTION_MS) {
-        await rm(join(dir, name), { force: true })
-      }
-    } catch {
-      // Vanished or unreadable: not fatal, skip.
-    }
+function pruneOldResolvedRows(db: ApprovalsDb, nowMs: number): void {
+  const cutoffIso = new Date(nowMs - RESOLVED_FILE_RETENTION_MS).toISOString()
+  try {
+    db.handle.transaction((database) =>
+      deleteResolvedOlderThan(database, cutoffIso, RETENTION_CLEANUP_BATCH),
+    )
+  } catch {
+    // Locked, or gone: retention is opportunistic and never fails a decision.
   }
 }

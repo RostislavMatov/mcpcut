@@ -126,22 +126,15 @@ export const MAX_STORED_DESCRIPTOR_CHARS = 8192
 
 /**
  * Clock-skew tolerance (ms) for `checkRecentApproval` (grants.ts): a resolved
- * file whose `resolvedAt` is more than this far in the FUTURE is rejected, so
- * a forged/backdated file cannot mint a grant.
+ * record whose `resolvedAt` is more than this far in the FUTURE is rejected, so
+ * a forged/backdated record cannot mint a grant.
  */
 export const GRANT_CLOCK_SKEW_MS = 5_000
 
 /**
- * Max resolved files `checkRecentApproval` will `readdir`/`stat` on the
- * approval hot path. Bounds the cost of a huge, never-pruned `resolved/`
- * directory: only the first this-many directory entries are considered.
- */
-export const MAX_RESOLVED_FILES_SCANNED = 2000
-
-/**
- * Resolved-file retention: `checkRecentApproval` opportunistically deletes
- * resolved files older than this (well past any grant TTL), so the directory
- * cannot grow without bound across a long-lived proxy session.
+ * Resolved-record retention: `checkRecentApproval` opportunistically deletes
+ * resolved approvals settled longer ago than this (well past any grant TTL), so
+ * the queue cannot grow without bound across a long-lived proxy session.
  */
 export const RESOLVED_FILE_RETENTION_MS = 24 * 60 * 60_000
 

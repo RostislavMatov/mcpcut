@@ -1,36 +1,49 @@
-import { chmod, mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { ulid } from 'ulid'
-import { JOURNAL_DIR, JOURNAL_DIR_MODE, JOURNAL_FILE_MODE } from '../../config.js'
-import { mapWithConcurrency } from '../../journal/concurrency.js'
+import { JOURNAL_DIR } from '../../config.js'
 import { redact } from '../../redact/redact.js'
 import { canonicalJson, sha256Hex } from '../hash.js'
 import type { ToolClass } from '../schema.js'
+import {
+  bumpChangeSeq,
+  insertPendingRow,
+  openApprovalsDb,
+  resolvePendingRow,
+  runWriteTransaction,
+  selectChangesSince,
+  selectLatestChangeSeq,
+  selectNewestResolvedDocs,
+  selectPendingDoc,
+  selectPendingDocs,
+  selectResolvedDoc,
+} from './queue-db.js'
 
 /**
- * File-based approvals queue: one JSON file per pending/resolved approval
- * request, under `<baseDir>/pending/<approvalId>.json` and
- * `<baseDir>/resolved/<approvalId>.json`. A single directory tree (rather
- * than one shared store file, see `policy/store.ts`) is deliberate: an
- * operator-facing CLI (`approvals list|approve|deny`, Task 18) reads and
- * writes these files directly, and `resolve()`'s correctness depends on
- * `rename()` being the sole serialization point between concurrent
- * resolvers (see `resolve()` doc comment) -- both are simplest with one file
- * per request.
+ * The approvals queue: one row per request in the `approvals` table of
+ * `state.db` (wave 3 of M4.5; the shapes it stores are unchanged, see
+ * `queue-file.ts`). Each record is kept whole as JSON text in the `doc`
+ * column and re-validated on the way out, so a hand-written or foreign row is
+ * skipped rather than trusted, exactly as an unparseable file was.
  *
- * Call arguments are stored **only redacted**: this queue file is
- * operator-facing (an approver reads it to decide, and the CLI prints it),
- * so it follows the same "redact before it can be seen" rule as the
- * journal itself.
+ * `resolve()`'s correctness rests on the conditional `UPDATE … WHERE
+ * status = 'pending'` inside `BEGIN IMMEDIATE` (see `queue-db.ts`): it is the
+ * single serialization point that the file-based queue got from `rename()`,
+ * so of two concurrent resolvers exactly one wins and the other reports
+ * `not-found-or-already-resolved`.
+ *
+ * `baseDir` is by contract the `approvals/` SUBDIRECTORY of a journal
+ * directory: the database lives beside it, in its parent
+ * (`<journalDir>/state.db`), shared with the document stores.
+ *
+ * Call arguments are stored **only redacted**: these records are
+ * operator-facing (an approver reads one to decide, and the CLI prints it),
+ * so they follow the same "redact before it can be seen" rule as the journal
+ * itself. Redaction and hashing happen before the write transaction opens.
  */
 
 const APPROVALS_SUBDIR = 'approvals'
-const PENDING_SUBDIR = 'pending'
-const RESOLVED_SUBDIR = 'resolved'
-const TMP_SUFFIX = '.tmp'
-const JSON_FILE_SUFFIX = '.json'
 
-// The on-disk file shapes and their validators live in `queue-file.ts`
+// The persisted record shapes and their validators live in `queue-file.ts`
 // (split for the <400-line file rule); re-exported so importers see one module.
 export {
   RESOLVE_OUTCOME_VALUES,
@@ -55,11 +68,8 @@ import {
   type ResolvedApprovalFile,
 } from './queue-file.js'
 
-/** Approval ids are ULIDs; validated before ever being used to build a path. */
+/** Approval ids are ULIDs; validated before ever reaching a query parameter. */
 const APPROVAL_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
-
-/** How many queue files are read at once by `list()`/`listResolved()` (EMFILE bound). */
-const QUEUE_READ_CONCURRENCY = 8
 
 /**
  * "Expired" is `now >= expiresAt` — the expiry INSTANT is already expired —
@@ -77,7 +87,7 @@ export interface EnqueueRequest {
   readonly serverName: string
   readonly toolName: string
   readonly toolClass: ToolClass
-  /** Raw (unredacted) call arguments. Redacted before ever touching disk. */
+  /** Raw (unredacted) call arguments. Redacted before ever touching storage. */
   readonly args: unknown
   readonly sessionId: string
   readonly timeoutMs: number
@@ -105,8 +115,22 @@ export type ResolveResult =
   | { readonly ok: false; readonly reason: 'not-found-or-already-resolved' }
 
 export interface ListResolvedOptions {
-  /** How many of the newest resolved entries to return; only that many files are read. */
+  /** How many of the newest resolved entries to return; only that many rows are read. */
   readonly limit: number
+}
+
+/**
+ * What changed in the queue since a given sequence. `latestSeq` is the
+ * watermark to pass to the NEXT call; a change can be reported twice (a write
+ * that commits mid-read lands above the watermark), never skipped, so the
+ * caller deduplicates by id — see `ui/watch.ts`.
+ */
+export interface ApprovalChanges {
+  readonly latestSeq: number
+  /** Requests still pending as of this read, with `expired` derived as in `list()`. */
+  readonly newPending: readonly PendingApproval[]
+  /** Ids of requests that have been resolved (by an operator, or as expired). */
+  readonly resolvedIds: readonly string[]
 }
 
 export interface ApprovalQueue {
@@ -118,29 +142,29 @@ export interface ApprovalQueue {
   /** `null` when the id is unknown or still pending. */
   readResolution(approvalId: string): Promise<ApprovalResolution | null>
   /**
-   * The `limit` newest resolved approvals, newest first (M4 UI). File names
-   * are ULIDs, so lexicographic order IS chronological order: only the
-   * newest `limit` files are ever read, never the whole directory.
+   * The `limit` newest resolved approvals, newest first (M4 UI). Ids are
+   * ULIDs, so lexicographic order IS chronological order: the query is
+   * bounded to `limit` rows, never the whole table.
    */
   listResolved(opts: ListResolvedOptions): Promise<ResolvedApprovalFile[]>
+  /**
+   * The queue's delta feed, for a watcher that would otherwise re-read the
+   * whole pending set every tick. `null` asks for a BASELINE: the current
+   * watermark and no changes at all, so attaching to a live queue never
+   * replays its backlog.
+   */
+  changesSince(sinceSeq: number | null): Promise<ApprovalChanges>
 }
 
 export interface ApprovalQueueOptions {
-  /** Root directory for `pending/` and `resolved/`. Defaults to `JOURNAL_DIR/approvals`. */
+  /**
+   * The queue directory, whose PARENT holds `state.db`. Defaults to
+   * `JOURNAL_DIR/approvals`; a caller passing its own must keep it nested
+   * (`join(someDir, 'approvals')`), never a bare directory.
+   */
   readonly baseDir?: string
   /** Injectable clock for deterministic tests. Defaults to `Date.now`. */
   readonly clock?: () => number
-  /** Injectable utf8 file reader, so tests can count reads. Defaults to `fs.readFile`. */
-  readonly readFileText?: (filePath: string) => Promise<string>
-}
-
-function isEnoent(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    (error as { code?: unknown }).code === 'ENOENT'
-  )
 }
 
 /**
@@ -152,58 +176,30 @@ export function isValidApprovalId(approvalId: string): boolean {
   return APPROVAL_ID_PATTERN.test(approvalId)
 }
 
-/**
- * Creates a file-based approvals queue rooted at `opts.baseDir`
- * (default `JOURNAL_DIR/approvals`).
- */
+/** Parses one stored record, returning `null` for anything the validators reject. */
+function parseDoc<T>(text: string, isShape: (raw: unknown) => raw is T): T | null {
+  let raw: unknown
+  try {
+    raw = JSON.parse(text)
+  } catch {
+    return null // malformed JSON: skip, never throw on garbage content
+  }
+  return isShape(raw) ? raw : null // malformed shape: skip
+}
+
+/** Creates an approvals queue rooted at `opts.baseDir` (default `JOURNAL_DIR/approvals`). */
 export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQueue {
   const baseDir = opts.baseDir ?? join(JOURNAL_DIR, APPROVALS_SUBDIR)
   const clock = opts.clock ?? Date.now
-  const readFileText = opts.readFileText ?? ((filePath: string) => readFile(filePath, 'utf8'))
-  const pendingDir = join(baseDir, PENDING_SUBDIR)
-  const resolvedDir = join(baseDir, RESOLVED_SUBDIR)
-
-  function pendingPath(approvalId: string): string {
-    return join(pendingDir, `${approvalId}${JSON_FILE_SUFFIX}`)
-  }
-
-  function resolvedPath(approvalId: string): string {
-    return join(resolvedDir, `${approvalId}${JSON_FILE_SUFFIX}`)
-  }
-
-  async function ensureDir(dir: string): Promise<void> {
-    await mkdir(dir, { recursive: true, mode: JOURNAL_DIR_MODE })
-    await chmod(dir, JOURNAL_DIR_MODE)
-  }
-
-  /** Atomic, corruption-safe write: same tmp+rename+0600 discipline as `policy/store.ts`. */
-  async function writeAtomic(filePath: string, value: unknown): Promise<void> {
-    const tmpPath = `${filePath}${TMP_SUFFIX}`
-    await writeFile(tmpPath, JSON.stringify(value), { encoding: 'utf8', mode: JOURNAL_FILE_MODE })
-    await rename(tmpPath, filePath)
-  }
-
-  /** Reads and JSON-parses a file; `undefined` on ENOENT, throws on any other failure. */
-  async function readJsonOrUndefined(filePath: string): Promise<unknown> {
-    let text: string
-    try {
-      text = await readFileText(filePath)
-    } catch (error: unknown) {
-      if (isEnoent(error)) return undefined
-      throw error
-    }
-    return JSON.parse(text)
-  }
 
   async function enqueue(req: EnqueueRequest): Promise<EnqueueResult> {
-    await ensureDir(pendingDir)
-    await ensureDir(resolvedDir)
-
     const approvalId = ulid()
     const argsForHashing = req.args ?? null
     const argsHash = sha256Hex(canonicalJson(argsForHashing))
     const nowMs = clock()
 
+    // Built (and redacted) outside the transaction: the writer lock is held
+    // for the insert alone.
     const record: PendingApprovalFile = {
       approvalId,
       serverName: req.serverName,
@@ -220,49 +216,41 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
         : {}),
       ...(req.decisionRule !== undefined ? { decisionRule: req.decisionRule } : {}),
     }
+    const doc = JSON.stringify(record)
 
-    await writeAtomic(pendingPath(approvalId), record)
+    const db = await openApprovalsDb(baseDir)
+    await runWriteTransaction(db, (database) => {
+      insertPendingRow(database, {
+        approvalId,
+        doc,
+        serverName: record.serverName,
+        toolName: record.toolName,
+        argsHash: record.argsHash,
+        requestedAt: record.requestedAt,
+        expiresAt: record.expiresAt,
+        changeSeq: bumpChangeSeq(database),
+      })
+    })
     return { approvalId, argsHash }
   }
 
   async function list(): Promise<PendingApproval[]> {
-    let entries: string[]
-    try {
-      entries = await readdir(pendingDir)
-    } catch (error: unknown) {
-      if (isEnoent(error)) return []
-      throw error
-    }
-
-    const jsonEntries = entries.filter((name) => name.endsWith(JSON_FILE_SUFFIX))
+    const db = await openApprovalsDb(baseDir)
     const nowMs = clock()
-    const reads = await mapWithConcurrency(jsonEntries, QUEUE_READ_CONCURRENCY, async (name) => {
-      let raw: unknown
-      try {
-        raw = await readJsonOrUndefined(join(pendingDir, name))
-      } catch {
-        return null // malformed JSON: skip
-      }
-      if (!isPendingApprovalFile(raw)) return null // malformed shape: skip
-      return { ...raw, expired: isExpiredAt(raw.expiresAt, nowMs) }
-    })
-
-    return reads
-      .filter((entry): entry is PendingApproval => entry !== null)
-      .sort((a, b) => a.requestedAt.localeCompare(b.requestedAt))
+    // Ordered by the query (oldest request first); `expired` is derived here
+    // rather than stored, so it can never go stale in storage.
+    return selectPendingDocs(db.handle.db)
+      .map((text) => parseDoc(text, isPendingApprovalFile))
+      .filter((record): record is PendingApprovalFile => record !== null)
+      .map((record) => ({ ...record, expired: isExpiredAt(record.expiresAt, nowMs) }))
   }
 
   /**
-   * Moves `pending/<approvalId>.json` to `resolved/<approvalId>.json` via
-   * `rename()`, then overwrites the resolved file with the resolution
-   * attached. `rename()` is the serialization point: the OS guarantees at
-   * most one caller can successfully rename a given source path, so of two
-   * concurrent resolvers racing the same id, exactly one observes success
-   * here and "owns" the resolved file; the other sees ENOENT (the source is
-   * already gone) and reports `not-found-or-already-resolved`. The pending
-   * content is read *before* the rename purely to avoid a second read after
-   * we already own the file; `rename()` never touches file content, so
-   * reading first is safe even under the race.
+   * Resolves a pending request in one transaction: the pending record is read
+   * and the conditional `UPDATE … WHERE status = 'pending'` written under the
+   * same `BEGIN IMMEDIATE`, so two concurrent resolvers of one id cannot both
+   * observe it as pending. The loser — and any caller of an unknown, already
+   * resolved, or malformed id — gets `not-found-or-already-resolved`.
    */
   async function moveToResolved(
     approvalId: string,
@@ -271,36 +259,38 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
     if (!isValidApprovalId(approvalId)) {
       return { ok: false, reason: 'not-found-or-already-resolved' }
     }
+    const db = await openApprovalsDb(baseDir)
 
-    let raw: unknown
-    try {
-      raw = await readJsonOrUndefined(pendingPath(approvalId))
-    } catch {
-      raw = undefined // malformed pending file: treat as not-found
-    }
-    if (!isPendingApprovalFile(raw)) {
-      return { ok: false, reason: 'not-found-or-already-resolved' }
-    }
-    const pending = raw
+    return runWriteTransaction(db, (database): ResolveResult => {
+      // The clock is read INSIDE the transaction, once the writer lock is
+      // held: `resolvedAt` (and the expiry downgrade built from the same
+      // moment) then describe when the resolution actually lands, so a
+      // resolve that waited out a contended lock can never persist an
+      // `approved` whose request expired during the wait.
+      const resolvedAt = new Date(clock()).toISOString()
+      const text = selectPendingDoc(database, approvalId)
+      const pending = text === null ? null : parseDoc(text, isPendingApprovalFile)
+      // A malformed pending record is as unresolvable as a missing one: it
+      // must never be listed, approved, or downgraded.
+      if (pending === null) return { ok: false, reason: 'not-found-or-already-resolved' }
 
-    await ensureDir(resolvedDir)
-    try {
-      await rename(pendingPath(approvalId), resolvedPath(approvalId))
-    } catch (error: unknown) {
-      if (isEnoent(error)) {
-        return { ok: false, reason: 'not-found-or-already-resolved' }
+      const record: ResolvedApprovalFile = {
+        ...pending,
+        resolution: buildResolution(pending),
+        resolvedAt,
       }
-      throw error
-    }
-
-    // We own resolvedPath(approvalId) now: no other caller can have won this rename.
-    const record: ResolvedApprovalFile = {
-      ...pending,
-      resolution: buildResolution(pending),
-      resolvedAt: new Date(clock()).toISOString(),
-    }
-    await writeAtomic(resolvedPath(approvalId), record)
-    return { ok: true, record }
+      const won = resolvePendingRow(database, {
+        approvalId,
+        doc: JSON.stringify(record),
+        outcome: record.resolution.outcome,
+        resolvedAt,
+        changeSeq: bumpChangeSeq(database),
+      })
+      // Unreachable while the row is read and written under one write lock;
+      // kept as the defence in depth that owns the "one winner" invariant.
+      if (!won) return { ok: false, reason: 'not-found-or-already-resolved' }
+      return { ok: true, record }
+    })
   }
 
   /**
@@ -309,13 +299,14 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
    * late `approved` would let `checkRecentApproval` mint a grant for a
    * finished session. Such a stale approval is DOWNGRADED to `expired` (the
    * operator's `actor`/`reason` are preserved for the audit trail) so no
-   * `approved` resolution is ever written past expiry. A `denied` on a stale
+   * `approved` resolution is ever persisted past expiry. A `denied` on a stale
    * request is harmless and is recorded as-is.
    */
   function resolve(approvalId: string, resolution: ResolveInput): Promise<ResolveResult> {
-    const nowMs = clock()
+    // `buildResolution` runs inside the write transaction, so this clock read
+    // happens under the held lock, in the same instant as `resolvedAt`.
     return moveToResolved(approvalId, (pending) => {
-      const expired = isExpiredAt(pending.expiresAt, nowMs)
+      const expired = isExpiredAt(pending.expiresAt, clock())
       const outcome: ResolutionOutcome =
         expired && resolution.outcome === 'approved' ? 'expired' : resolution.outcome
       return {
@@ -333,20 +324,17 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
   async function readResolution(approvalId: string): Promise<ApprovalResolution | null> {
     if (!isValidApprovalId(approvalId)) return null
 
-    let raw: unknown
-    try {
-      raw = await readJsonOrUndefined(resolvedPath(approvalId))
-    } catch {
-      return null // malformed JSON: never throw on garbage disk content
-    }
-    if (raw === undefined) return null // still pending or unknown id
-    if (!isResolvedApprovalFile(raw)) return null // malformed shape
+    const db = await openApprovalsDb(baseDir)
+    const text = selectResolvedDoc(db.handle.db, approvalId)
+    if (text === null) return null // still pending or unknown id
+    const record = parseDoc(text, isResolvedApprovalFile)
+    if (record === null) return null // malformed shape or content
 
     return {
-      outcome: raw.resolution.outcome,
-      ...(raw.resolution.actor !== undefined ? { actor: raw.resolution.actor } : {}),
-      ...(raw.resolution.reason !== undefined ? { reason: raw.resolution.reason } : {}),
-      resolvedAt: raw.resolvedAt,
+      outcome: record.resolution.outcome,
+      ...(record.resolution.actor !== undefined ? { actor: record.resolution.actor } : {}),
+      ...(record.resolution.reason !== undefined ? { reason: record.resolution.reason } : {}),
+      resolvedAt: record.resolvedAt,
     }
   }
 
@@ -354,33 +342,37 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
   async function listResolved(listOpts: ListResolvedOptions): Promise<ResolvedApprovalFile[]> {
     if (!Number.isInteger(listOpts.limit) || listOpts.limit <= 0) return []
 
-    let entries: string[]
-    try {
-      entries = await readdir(resolvedDir)
-    } catch (error: unknown) {
-      if (isEnoent(error)) return []
-      throw error
-    }
-
-    // ULID file names: lexicographic descending == newest first. Only the
-    // first `limit` names are ever opened; a malformed file among them is
-    // skipped, not backfilled from older entries (the read stays bounded).
-    const newestNames = entries
-      .filter((name) => name.endsWith(JSON_FILE_SUFFIX))
-      .sort((a, b) => b.localeCompare(a))
-      .slice(0, listOpts.limit)
-
-    const reads = await mapWithConcurrency(newestNames, QUEUE_READ_CONCURRENCY, async (name) => {
-      let raw: unknown
-      try {
-        raw = await readJsonOrUndefined(join(resolvedDir, name))
-      } catch {
-        return null // malformed JSON: skip
-      }
-      return isResolvedApprovalFile(raw) ? raw : null // malformed shape: skip
-    })
-    return reads.filter((entry): entry is ResolvedApprovalFile => entry !== null)
+    const db = await openApprovalsDb(baseDir)
+    // A malformed record among the newest is skipped, not backfilled from
+    // older ones: the read stays bounded by `limit`.
+    return selectNewestResolvedDocs(db.handle.db, listOpts.limit)
+      .map((text) => parseDoc(text, isResolvedApprovalFile))
+      .filter((record): record is ResolvedApprovalFile => record !== null)
   }
 
-  return { enqueue, list, resolve, markExpired, readResolution, listResolved }
+  /** See `ApprovalQueue.changesSince`. */
+  async function changesSince(sinceSeq: number | null): Promise<ApprovalChanges> {
+    const db = await openApprovalsDb(baseDir)
+    const database = db.handle.db
+    // Watermark first, rows second: see `selectChangesSince` — this order can
+    // only ever re-deliver a change, never lose one.
+    const latestSeq = selectLatestChangeSeq(database)
+    if (sinceSeq === null) return { latestSeq, newPending: [], resolvedIds: [] }
+
+    const nowMs = clock()
+    const newPending: PendingApproval[] = []
+    const resolvedIds: string[] = []
+    for (const row of selectChangesSince(database, sinceSeq)) {
+      if (row.status === 'resolved') {
+        resolvedIds.push(row.approvalId)
+        continue
+      }
+      const record = parseDoc(row.doc, isPendingApprovalFile)
+      if (record === null) continue // malformed content: skip, as `list()` does
+      newPending.push({ ...record, expired: isExpiredAt(record.expiresAt, nowMs) })
+    }
+    return { latestSeq, newPending, resolvedIds }
+  }
+
+  return { enqueue, list, resolve, markExpired, readResolution, listResolved, changesSince }
 }

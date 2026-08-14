@@ -12,14 +12,17 @@ import {
 } from '../../src/ui/events.js'
 import { createQueueWatcher, type WatchDeps } from '../../src/ui/watch.js'
 
+let journalDir: string
+/** The queue's contract: its directory is nested in the journal dir, whose parent holds state.db. */
 let baseDir: string
 
 beforeEach(async () => {
-  baseDir = await mkdtemp(join(tmpdir(), 'mcp-journal-ui-watch-test-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-ui-watch-test-'))
+  baseDir = join(journalDir, 'approvals')
 })
 
 afterEach(async () => {
-  await rm(baseDir, { recursive: true, force: true })
+  await rm(journalDir, { recursive: true, force: true })
 })
 
 function enqueueRequest(overrides: Record<string, unknown> = {}) {
@@ -115,6 +118,19 @@ describe('createQueueWatcher: approval deltas', () => {
     expect(resolved[0]?.data.approvalId).toBe(approvalId)
   })
 
+  test('an entry enqueued and resolved between two polls emits no event at all', async () => {
+    const { queue, sink, watcher } = makeWatcher()
+
+    await watcher.poll() // seed baseline (empty)
+    const { approvalId } = await queue.enqueue(enqueueRequest())
+    await queue.resolve(approvalId, { outcome: 'approved', actor: 'ui' })
+    await watcher.poll()
+
+    // Never announced as pending, so its resolution is not announced either:
+    // the client is told about changes to what it could have seen, nothing else.
+    expect(sink.events.filter((e) => e.event.startsWith('approval'))).toHaveLength(0)
+  })
+
   test('a poll with both a new and a removed entry emits one event of each', async () => {
     const { queue, sink, watcher } = makeWatcher()
     const first = await queue.enqueue(enqueueRequest({ sessionId: 's1' }))
@@ -157,11 +173,10 @@ describe('createQueueWatcher: quarantine deltas', () => {
 describe('createQueueWatcher: resilience', () => {
   test('a directory read error is logged and the poll neither throws nor emits', async () => {
     const lines: string[] = []
-    const failingQueue = {
-      list: async () => {
-        throw new Error('EIO: simulated directory read failure')
-      },
+    const fail = async (): Promise<never> => {
+      throw new Error('EIO: simulated directory read failure')
     }
+    const failingQueue = { list: fail, changesSince: fail }
     const sink = collector()
     const watcher = createQueueWatcher({
       queue: failingQueue,

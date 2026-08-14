@@ -4,6 +4,10 @@ import { createAgentsStore } from '../agents/store.js'
 import { ADMINS_FILE_NAME } from '../admin/constants.js'
 import { createAdminStore } from '../admin/store.js'
 import { JOURNAL_DIR } from '../config.js'
+import {
+  migrateApprovalsQueue,
+  type ApprovalsMigrationResult,
+} from '../policy/approvals/queue-import.js'
 import { migrateLegacyStateFile } from '../policy/store-migrate.js'
 import { StoreCorruptError, StoreLockError } from '../policy/store.js'
 import { INVENTORY_FILE_NAME, openInventoryStore } from '../policy/inventory-store.js'
@@ -39,9 +43,11 @@ export interface MigrateCommandOptions {
 /**
  * Every state file this command knows how to migrate, in report order, each
  * with the domain-store read that triggers (and domain-validates) its lazy
- * import. Kept to exactly the four M4.5-wave-2 stores (ADR-0006): the
- * approvals queue and the journal itself are later waves and have no legacy
- * `*.json` to import.
+ * import. Kept to exactly the four M4.5-wave-2 stores (ADR-0006); the
+ * approvals queue is reported separately below — it is not a `*.json` file
+ * but a directory pair (`pending/`, `resolved/`) with its own status set
+ * (M4.5 wave 3) — and the journal itself is a later wave with no legacy
+ * state to import.
  */
 const STATE_FILES: ReadonlyArray<{
   readonly fileName: string
@@ -79,6 +85,21 @@ const STATUS_LABELS = {
   native: 'created in state.db (no legacy import)',
   'no-file': 'no file',
 } as const
+
+/** The report line's left-hand name for the approvals queue; not a `*.json` basename
+ * like the four `STATE_FILES` entries, but a directory pair under `journalDir`. */
+const APPROVALS_QUEUE_LABEL = 'approvals/'
+
+function approvalsStatusLabel(result: ApprovalsMigrationResult): string {
+  switch (result.status) {
+    case 'imported':
+      return `imported (${result.pendingCount} pending, ${result.resolvedCount} resolved)`
+    case 'already-migrated':
+      return 'already migrated'
+    case 'no-file':
+      return 'no file'
+  }
+}
 
 /** Errors this command converts into an exit-1 message instead of a crash. */
 const EXPECTED_ERRORS = [StoreCorruptError, StoreLockError] as const
@@ -119,6 +140,14 @@ export async function runMigrateCommand(
       io.stdout.write(`state: ${fileName} -> ${STATUS_LABELS[status]}\n`)
       if (status === 'imported') importedCount += 1
     }
+
+    // Not a `STATE_FILES` entry: the queue is a directory pair, not a single `*.json`
+    // file, and its own status set has no `native` case (see the docstring above).
+    // Reported after the four stores, so a halt on one of THEM (the `catch` below)
+    // never reaches this line — matching the existing halt-at-first-failure contract.
+    const approvalsResult = await migrateApprovalsQueue(journalDir)
+    io.stdout.write(`state: ${APPROVALS_QUEUE_LABEL} -> ${approvalsStatusLabel(approvalsResult)}\n`)
+    if (approvalsResult.status === 'imported') importedCount += 1
   } catch (error: unknown) {
     if (isExpectedError(error)) {
       io.stderr.write(`${error.message}\n`)
