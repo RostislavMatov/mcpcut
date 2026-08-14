@@ -1,10 +1,11 @@
 import { readFileSync } from 'node:fs'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { createJournalSink, type JournalSink } from '../../src/journal/sink.js'
 import type { JournalRecord } from '../../src/journal/record.js'
+import { openApprovalsDb } from '../../src/policy/approvals/queue-db.js'
 import { createApprovalQueue, type ApprovalQueue, type PendingApproval } from '../../src/policy/approvals/queue.js'
 import { createApprovalWaiter } from '../../src/policy/approvals/waiter.js'
 import { createGrantRegistry } from '../../src/policy/approvals/grants.js'
@@ -735,7 +736,7 @@ describe('createPolicyGate: approval-queue metadata for the admin UI (M4)', () =
     })
   })
 
-  test('without an agentScope the pending file has wait metadata but no agent, and the journal stays agent-free', async () => {
+  test('without an agentScope the pending record has wait metadata but no agent, and the journal stays agent-free', async () => {
     const { gate } = createHarness({ policy: policyOf(M4_POLICY) })
 
     const verdictPromise = gate.gateClientMessage(toolCall(1, 'write_file'))
@@ -743,10 +744,12 @@ describe('createPolicyGate: approval-queue metadata for the admin UI (M4)', () =
 
     expect(pending.waitExpiresAt).toBeDefined()
     expect(pending.decisionRule).toBe('defaultDecision')
-    const raw = JSON.parse(
-      await readFile(join(approvalsDir, 'pending', `${pending.approvalId}.json`), 'utf8'),
-    )
-    expect(raw).not.toHaveProperty('agentName')
+    // The absent field must be absent in STORAGE too, not just in the listing.
+    const db = await openApprovalsDb(approvalsDir)
+    const row = db.handle.db
+      .prepare('SELECT doc FROM approvals WHERE approval_id = ?')
+      .get(pending.approvalId) as { doc: string }
+    expect(JSON.parse(row.doc)).not.toHaveProperty('agentName')
 
     await queue.resolve(pending.approvalId, { outcome: 'approved', actor: 'operator' })
     await verdictPromise

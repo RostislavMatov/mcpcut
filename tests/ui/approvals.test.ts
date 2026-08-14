@@ -27,7 +27,7 @@ let now: number
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'mcp-ui-approvals-'))
   now = T0
-  queue = createApprovalQueue({ baseDir: dir, clock: () => now })
+  queue = createApprovalQueue({ baseDir: join(dir, 'approvals'), clock: () => now })
 })
 
 afterEach(() => {

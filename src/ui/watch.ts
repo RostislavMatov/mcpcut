@@ -4,20 +4,21 @@ import { UI_QUEUE_POLL_INTERVAL_MS } from './constants.js'
 import type { IntervalHandle, Scheduler, UiEvent } from './events.js'
 
 /**
- * Single-process watcher for the admin UI (M4 Task 11). It polls the file
- * approvals queue and a caller-supplied quarantine signature every
- * `UI_QUEUE_POLL_INTERVAL_MS`, diffs each against the previous snapshot, and
- * pushes deltas through `publish` (wired to the SSE hub by `ui/server.ts`).
+ * Single-process watcher for the admin UI (M4 Task 11). It polls the approvals
+ * queue and a caller-supplied quarantine signature every
+ * `UI_QUEUE_POLL_INTERVAL_MS` and pushes deltas through `publish` (wired to the
+ * SSE hub by `ui/server.ts`).
  *
  * Polling, not `fs.watch`: the plan (§3) and M2 both reject `fs.watch` as
  * inconsistent across platforms and network FS. The queue itself is read
- * through the existing `ApprovalQueue.list()` — this module never opens the
- * pending directory directly (no duplicate disk-reading logic).
+ * through `ApprovalQueue.changesSince()` — an indexed "what changed since this
+ * sequence" read (M4.5 wave 3), not a re-read of the whole pending set every
+ * tick — so this module never touches the queue's storage directly.
  *
- * Snapshot seeding: the FIRST poll only records the baseline and emits
- * nothing, so entries that already exist when the UI starts are not replayed
- * as "new" (a freshly attached browser fetches current state over the JSON
- * API; SSE carries only changes from here on). Every subsequent poll diffs.
+ * Seeding: the FIRST poll only takes a baseline (the current sequence plus the
+ * ids already pending) and emits nothing, so entries that already exist when
+ * the UI starts are not replayed as "new" (a freshly attached browser fetches
+ * current state over the JSON API; SSE carries only changes from here on).
  *
  * Failure isolation: approvals and quarantine are polled in independent
  * try/catch blocks. A read error on either side is logged and swallowed — it
@@ -31,8 +32,8 @@ export interface WatchStderr {
 }
 
 export interface WatchDeps {
-  /** Read through the existing queue; only `list()` is used. */
-  readonly queue: Pick<ApprovalQueue, 'list'>
+  /** Read through the existing queue: a baseline `list()` plus its delta feed. */
+  readonly queue: Pick<ApprovalQueue, 'list' | 'changesSince'>
   /**
    * An opaque fingerprint of current quarantine state. `ui/server.ts` derives
    * it from the inventory store; the watcher only compares it for equality, so
@@ -81,7 +82,9 @@ export function createQueueWatcher(deps: WatchDeps): QueueWatcher {
   const pollIntervalMs = deps.pollIntervalMs ?? UI_QUEUE_POLL_INTERVAL_MS
   const stderr: WatchStderr = deps.stderr ?? process.stderr
 
-  let pendingSnapshot: Map<string, PendingApproval> | null = null
+  /** Ids this watcher has announced as pending; `null` until the seed poll runs. */
+  let announced: Set<string> | null = null
+  let watermark = 0
   let quarantineSnapshot: string | null = null
   let handle: IntervalHandle | null = null
 
@@ -89,32 +92,55 @@ export function createQueueWatcher(deps: WatchDeps): QueueWatcher {
     stderr.write(`[ui/watch] ${message}\n`)
   }
 
+  /**
+   * Seeds from a BASELINE (`changesSince(null)`) plus one `list()`: the
+   * baseline fixes the watermark without replaying anything, and the listing
+   * gives the set of ids that are already pending — so a later resolve of one
+   * of them is still recognized as a retraction of something the client may
+   * have fetched over the JSON API.
+   */
+  async function seedApprovals(): Promise<void> {
+    const baseline = await deps.queue.changesSince(null)
+    const current = await deps.queue.list()
+    watermark = baseline.latestSeq
+    announced = new Set(current.map((entry) => entry.approvalId))
+  }
+
   async function pollApprovals(): Promise<void> {
-    let current: readonly PendingApproval[]
     try {
-      current = await deps.queue.list()
+      if (announced === null) {
+        await seedApprovals()
+        return
+      }
+
+      const changes = await deps.queue.changesSince(watermark)
+      watermark = changes.latestSeq
+      publishApprovalDeltas(announced, changes.newPending, changes.resolvedIds)
     } catch (error: unknown) {
       log(`approvals poll failed: ${describeError(error)}`)
-      return
     }
+  }
 
-    const currentMap = new Map(current.map((entry) => [entry.approvalId, entry]))
-    if (pendingSnapshot === null) {
-      pendingSnapshot = currentMap // seed, no replay
-      return
+  /**
+   * The announced set is what makes a re-delivered change harmless (the feed
+   * is at-least-once) AND keeps the old snapshot-diff behaviour: a request
+   * that was enqueued and resolved between two polls was never announced, so
+   * its resolution is not announced either.
+   */
+  function publishApprovalDeltas(
+    seen: Set<string>,
+    newPending: readonly PendingApproval[],
+    resolvedIds: readonly string[],
+  ): void {
+    for (const entry of newPending) {
+      if (seen.has(entry.approvalId)) continue
+      seen.add(entry.approvalId)
+      deps.publish({ event: 'approval-pending', data: pendingEventData(entry) })
     }
-
-    for (const [id, entry] of currentMap) {
-      if (!pendingSnapshot.has(id)) {
-        deps.publish({ event: 'approval-pending', data: pendingEventData(entry) })
-      }
+    for (const id of resolvedIds) {
+      if (!seen.delete(id)) continue
+      deps.publish({ event: 'approval-resolved', data: { approvalId: id } })
     }
-    for (const id of pendingSnapshot.keys()) {
-      if (!currentMap.has(id)) {
-        deps.publish({ event: 'approval-resolved', data: { approvalId: id } })
-      }
-    }
-    pendingSnapshot = currentMap
   }
 
   async function pollQuarantine(): Promise<void> {

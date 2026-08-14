@@ -6,14 +6,16 @@ import { DEFAULT_GRANT_TTL_MS } from '../../src/policy/constants.js'
 import { createApprovalQueue, type EnqueueRequest } from '../../src/policy/approvals/queue.js'
 import { runApprovals } from '../../src/cli/approvals-cmd.js'
 
+let tempDir: string
 let baseDir: string
 
 beforeEach(async () => {
-  baseDir = await mkdtemp(join(tmpdir(), 'mcp-journal-approvals-cmd-test-'))
+  tempDir = await mkdtemp(join(tmpdir(), 'mcp-journal-approvals-cmd-test-'))
+  baseDir = join(tempDir, 'approvals')
 })
 
 afterEach(async () => {
-  await rm(baseDir, { recursive: true, force: true })
+  await rm(tempDir, { recursive: true, force: true })
 })
 
 /** Captures stdout/stderr writes for assertions instead of touching the real streams. */

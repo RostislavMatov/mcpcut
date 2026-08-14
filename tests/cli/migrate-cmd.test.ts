@@ -1,10 +1,11 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { runMigrateCommand } from '../../src/cli/migrate-cmd.js'
 import { createAgentsStore } from '../../src/agents/store.js'
 import { createRegistryStore } from '../../src/registry/store.js'
+import { createApprovalQueue } from '../../src/policy/approvals/queue.js'
 import { StoreCorruptError } from '../../src/policy/store.js'
 
 /**
@@ -115,14 +116,15 @@ describe('migrate: run twice', () => {
 })
 
 describe('migrate: an empty directory', () => {
-  test('reports "no file" for all four stores, exit 0', async () => {
+  test('reports "no file" for all four stores plus approvals, exit 0', async () => {
     const io = fakeIo()
 
     const exitCode = await run([], io)
 
     expect(exitCode).toBe(0)
     const noFileLines = io.out().split('\n').filter((line) => line.includes('no file'))
-    expect(noFileLines).toHaveLength(4)
+    expect(noFileLines).toHaveLength(5)
+    expect(io.out()).toContain('approvals/ -> no file')
     expect(io.out()).toContain('Migrated 0 store(s) into state.db.')
   })
 })
@@ -142,10 +144,101 @@ describe('migrate: a corrupt legacy file', () => {
     // but the run must not claim completion once it has failed partway through.
     expect(io.out()).toContain('imported')
     expect(io.out()).not.toContain('Migrated')
+    // The corrupt store halts the run before the approvals step is ever reached.
+    expect(io.out()).not.toContain('approvals/')
 
     await expect(createRegistryStore(journalDir).listServers()).rejects.toBeInstanceOf(
       StoreCorruptError,
     )
+  })
+})
+
+describe('migrate: approvals queue', () => {
+  const PENDING_ID = '01AAAAAAAAAAAAAAAAAAAAAAAA'
+  const RESOLVED_ID = '01BBBBBBBBBBBBBBBBBBBBBBBB'
+
+  function legacyPendingDoc(approvalId: string): string {
+    return JSON.stringify({
+      approvalId,
+      serverName: 'github',
+      toolName: 'create_issue',
+      toolClass: 'write',
+      argsRedacted: { title: 'hello' },
+      argsHash: 'hash-1',
+      sessionId: 'session-1',
+      requestedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    })
+  }
+
+  function legacyResolvedDoc(approvalId: string): string {
+    return JSON.stringify({
+      approvalId,
+      serverName: 'github',
+      toolName: 'create_issue',
+      toolClass: 'write',
+      argsRedacted: { title: 'hello' },
+      argsHash: 'hash-1',
+      sessionId: 'session-1',
+      requestedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      resolution: { outcome: 'approved', actor: 'alice' },
+      resolvedAt: new Date().toISOString(),
+    })
+  }
+
+  async function writeLegacyApprovals(): Promise<void> {
+    const approvalsDir = join(journalDir, 'approvals')
+    await mkdir(join(approvalsDir, 'pending'), { recursive: true })
+    await mkdir(join(approvalsDir, 'resolved'), { recursive: true })
+    await writeFile(
+      join(approvalsDir, 'pending', `${PENDING_ID}.json`),
+      legacyPendingDoc(PENDING_ID),
+      'utf8',
+    )
+    await writeFile(
+      join(approvalsDir, 'resolved', `${RESOLVED_ID}.json`),
+      legacyResolvedDoc(RESOLVED_ID),
+      'utf8',
+    )
+  }
+
+  test('imports legacy pending/resolved files and reports counts; the queue is readable afterward', async () => {
+    await writeLegacyApprovals()
+    const io = fakeIo()
+
+    const exitCode = await run([], io)
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain('state: approvals/ -> imported (1 pending, 1 resolved)')
+    // Only the approvals queue had legacy data in this test; the four document
+    // stores all report "no file" and do not add to the imported count.
+    expect(io.out()).toContain('Migrated 1 store(s) into state.db.')
+
+    const queue = createApprovalQueue({ baseDir: join(journalDir, 'approvals') })
+    await expect(queue.list()).resolves.toHaveLength(1)
+    await expect(queue.readResolution(RESOLVED_ID)).resolves.not.toBeNull()
+  })
+
+  test('a second run reports "already migrated" for approvals and imports nothing again', async () => {
+    await writeLegacyApprovals()
+    await run([])
+
+    const io = fakeIo()
+    const exitCode = await run([], io)
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain('state: approvals/ -> already migrated')
+    expect(io.out()).toContain('Migrated 0 store(s) into state.db.')
+  })
+
+  test('no approvals directories on disk: reports "no file"', async () => {
+    const io = fakeIo()
+
+    const exitCode = await run([], io)
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain('state: approvals/ -> no file')
   })
 })
 

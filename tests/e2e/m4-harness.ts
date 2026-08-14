@@ -1,6 +1,6 @@
-import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createApprovalQueue } from '../../src/policy/approvals/queue.js'
 import { requestLine, waitUntil, waitUntilAsync } from '../proxy/harness.js'
 import type { UiClient } from '../ui/harness.js'
 import {
@@ -136,8 +136,14 @@ export function createM4Context(journalDir: string): M4Context {
   }
 
   async function readResolved(approvalId: string): Promise<Record<string, unknown>> {
-    const raw = await readFile(join(journalDir, 'approvals', 'resolved', `${approvalId}.json`), 'utf8')
-    return JSON.parse(raw) as Record<string, unknown>
+    // Read through the queue module (M4.5 wave 3 moved the medium into
+    // state.db): still a read of what was actually persisted, same as the
+    // resolved-file read this replaced.
+    const queue = createApprovalQueue({ baseDir: join(journalDir, 'approvals') })
+    const resolved = await queue.listResolved({ limit: 100 })
+    const record = resolved.find((entry) => entry.approvalId === approvalId)
+    if (record === undefined) throw new Error(`no resolved approval ${approvalId} in state.db`)
+    return record as unknown as Record<string, unknown>
   }
 
   return { plane, journalDir, onboard, addServer, openSession, runResourceRead, readResolved }
