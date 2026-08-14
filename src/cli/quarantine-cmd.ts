@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { parseArgs } from 'node:util'
 import { JOURNAL_DIR } from '../config.js'
@@ -10,8 +9,13 @@ import {
   rejectTool,
   type QuarantinedEntry,
 } from '../policy/inventory.js'
-import { openInventoryStore, type QuarantinedToolRecord } from '../policy/inventory-store.js'
+import {
+  openInventoryStore,
+  type InventoryStoreData,
+  type QuarantinedToolRecord,
+} from '../policy/inventory-store.js'
 import { diffToolSchemas, type SchemaChange } from '../policy/schema-diff.js'
+import { StoreCorruptError, StoreLockError } from '../policy/store.js'
 import type { ToolDescriptor } from '../protocol/mcp.js'
 
 /**
@@ -328,24 +332,15 @@ function toJsonEntry(entry: QuarantinedEntry, descriptions: ReadonlyMap<string, 
 // -- pending description lookup ------------------------------------------
 //
 // `listAllQuarantined` (policy/inventory.ts) intentionally returns a flat
-// `QuarantinedEntry` with no descriptor, so this CLI reads the store file's
-// raw JSON itself to recover the pending (currently quarantined)
-// description for the "changed" hint above. This is best-effort display
-// only: any read/parse failure here silently yields no descriptions rather
-// than failing the whole `list` command, since `listAllQuarantined` already
-// performed the authoritative, validated read moments earlier.
-
-interface RawQuarantinedRecord {
-  readonly descriptor?: { readonly description?: unknown }
-}
-
-interface RawServerInventory {
-  readonly quarantined?: Readonly<Record<string, RawQuarantinedRecord>>
-}
-
-interface RawInventoryFile {
-  readonly servers?: Readonly<Record<string, RawServerInventory>>
-}
+// `QuarantinedEntry` with no descriptor, so this CLI opens the inventory
+// store a second time to recover the pending (currently quarantined)
+// description for the "changed" hint above. It goes through the store seam
+// rather than reading a file directly: since M4.5 the state lives in
+// `state.db`, and a raw read of the legacy `*.json` path would silently
+// return nothing. This is best-effort display only: a corrupt or contended
+// store costs the hint, not the whole `list` command, since
+// `listAllQuarantined` already performed the authoritative, validated read
+// moments earlier.
 
 /** Composite-key separator for `descriptions`. Collision would require a server or tool name literally containing "::", which is not a valid MCP tool identifier shape in practice; a false match only affects this best-effort display hint, never approve/reject. */
 const DESCRIPTION_KEY_SEPARATOR = '::'
@@ -360,17 +355,22 @@ function resolveStorePath(storePath: string | undefined): string {
 
 async function readPendingDescriptions(storePath: string): Promise<Map<string, string>> {
   const descriptions = new Map<string, string>()
-  let parsed: RawInventoryFile
+
+  let data: InventoryStoreData
   try {
-    parsed = JSON.parse(await readFile(storePath, 'utf8')) as RawInventoryFile
-  } catch {
-    return descriptions
+    data = await openInventoryStore(storePath).read()
+  } catch (error: unknown) {
+    // Same graceful degradation as `policy/inventory.ts`: an unreadable store
+    // is already reported by the authoritative read, so drop the hint instead
+    // of failing `list`. Anything else is unexpected and stays loud.
+    if (error instanceof StoreCorruptError || error instanceof StoreLockError) return descriptions
+    throw error
   }
 
-  for (const [serverName, serverEntry] of Object.entries(parsed.servers ?? {})) {
-    for (const [toolName, record] of Object.entries(serverEntry.quarantined ?? {})) {
-      const description = record.descriptor?.description
-      if (typeof description === 'string') {
+  for (const [serverName, serverEntry] of Object.entries(data.servers)) {
+    for (const [toolName, record] of Object.entries(serverEntry.quarantined)) {
+      const { description } = record.descriptor
+      if (description !== undefined) {
         descriptions.set(descriptionKey(serverName, toolName), description)
       }
     }

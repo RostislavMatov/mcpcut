@@ -69,11 +69,6 @@ function tokensIn(text: string): string[] {
   return text.match(TOKEN_PATTERN) ?? []
 }
 
-/** True when the store file carries hashes and nothing token-shaped. */
-function hasHashOnly(stored: string): boolean {
-  return stored.includes('"tokenHash"') && tokensIn(stored).length === 0
-}
-
 // ---------------------------------------------------------------------------
 // admin add
 // ---------------------------------------------------------------------------
@@ -87,11 +82,11 @@ describe('admin add', () => {
     expect(tokens).toHaveLength(1)
     const token = tokens[0] as string
 
-    // The one guarantee that matters: only the hash lands on disk.
-    const stored = await adminsFileText()
-    expect(stored).not.toContain(token)
-    expect(stored).toContain('"tokenHash"')
-    expect(tokensIn(stored)).toEqual([])
+    // The one guarantee that matters: only the hash lands in the store.
+    const store = createAdminStore({ journalDir })
+    const admin = await store.getActiveAdmin('alice')
+    expect(admin?.tokenHash).toMatch(/^[0-9a-f]{64}$/)
+    expect(admin?.tokenHash).not.toContain(token)
     // Nor does the token leak to the diagnostics channel.
     expect(tokensIn(io.errText())).toEqual([])
   })
@@ -109,7 +104,7 @@ describe('admin add', () => {
     const admin = await store.getActiveAdmin('alice')
     expect(admin?.role).toBe('operator')
     expect(admin?.createdAt).toBe(CLOCK_ISO)
-    expect(hasHashOnly(await adminsFileText())).toBe(true)
+    expect(admin?.tokenHash).toMatch(/^[0-9a-f]{64}$/)
   })
 
   test('a duplicate name is refused with exit 1 and no second token', async () => {
@@ -174,7 +169,8 @@ describe('admin list', () => {
   test('shows name, role and dates but never a token hash', async () => {
     await runAdmin(['add', 'alice', '--role', 'owner'])
     await runAdmin(['add', 'bob', '--role', 'viewer'])
-    const hash = JSON.parse(await adminsFileText()).admins.alice.tokenHash as string
+    const store = createAdminStore({ journalDir })
+    const hash = (await store.getActiveAdmin('alice'))?.tokenHash as string
 
     const { code, io } = await runAdmin(['list'])
 
@@ -270,7 +266,8 @@ describe('admin rotate', () => {
   test('prints a fresh token once and replaces the stored hash', async () => {
     const first = await runAdmin(['add', 'alice', '--role', 'owner'])
     const firstToken = tokensIn(first.io.outText())[0] as string
-    const firstHash = JSON.parse(await adminsFileText()).admins.alice.tokenHash as string
+    const store = createAdminStore({ journalDir })
+    const firstHash = (await store.getActiveAdmin('alice'))?.tokenHash as string
 
     const { code, io } = await runAdmin(['rotate', 'alice'])
 
@@ -279,11 +276,11 @@ describe('admin rotate', () => {
     expect(tokens).toHaveLength(1)
     expect(tokens[0]).not.toBe(firstToken)
 
-    const stored = await adminsFileText()
-    expect(stored).not.toContain(tokens[0] as string)
-    expect(stored).not.toContain(firstToken)
-    expect(JSON.parse(stored).admins.alice.tokenHash).not.toBe(firstHash)
-    expect(JSON.parse(stored).admins.alice.rotatedAt).toBe(CLOCK_ISO)
+    const admin = await store.getActiveAdmin('alice')
+    expect(admin?.tokenHash).not.toContain(tokens[0] as string)
+    expect(admin?.tokenHash).not.toContain(firstToken)
+    expect(admin?.tokenHash).not.toBe(firstHash)
+    expect(admin?.rotatedAt).toBe(CLOCK_ISO)
   })
 
   test('warns against redirecting stdout, on the same stream as the fresh token', async () => {

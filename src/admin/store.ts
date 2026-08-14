@@ -176,8 +176,6 @@ export interface AdminStoreOptions {
   readonly journalDir?: string
   /** Clock override for deterministic timestamps in tests. */
   readonly clock?: () => Date
-  /** Receives the lock's forced-removal warning line (see `src/lockfile.ts`). */
-  readonly warn?: (line: string) => void
 }
 
 function validateAdminsFile(raw: unknown): AdminsFile {
@@ -221,7 +219,6 @@ export function createAdminStore(opts: AdminStoreOptions = {}): AdminStore {
   const store: JsonStore<AdminsFile> = createJsonStore(join(journalDir, ADMINS_FILE_NAME), {
     validate: validateAdminsFile,
     defaultValue: EMPTY_FILE,
-    ...(opts.warn !== undefined ? { lock: { warn: opts.warn } } : {}),
   })
 
   async function createAdmin(name: string, role: AdminRole): Promise<CreatedAdmin> {

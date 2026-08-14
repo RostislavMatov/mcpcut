@@ -158,13 +158,15 @@ interface UiRuntime {
 
 function buildRuntime(flags: UiFlags, io: UiCliIo, opts: UiCommandOptions): UiRuntime {
   const journalDir = opts.journalDir ?? JOURNAL_DIR
-  // The store lock's forced-removal warning belongs on THIS run's stderr.
+  // Only the vault still holds a cross-process file lock (its forced-removal
+  // warning belongs on THIS run's stderr); the state stores moved to SQLite
+  // in M4.5 wave 2 and have nothing to warn about.
   const warn = (line: string): void => {
     io.stderr.write(`${line}\n`)
   }
-  const adminStore = opts.stores?.adminStore ?? createAdminStore({ journalDir, warn })
-  const agents = opts.stores?.agents ?? createAgentsStore({ journalDir, warn })
-  const registry = opts.stores?.registry ?? createRegistryStore(journalDir, { warn })
+  const adminStore = opts.stores?.adminStore ?? createAdminStore({ journalDir })
+  const agents = opts.stores?.agents ?? createAgentsStore({ journalDir })
+  const registry = opts.stores?.registry ?? createRegistryStore(journalDir)
   const vault = opts.stores?.vault ?? createVaultStore({ journalDir, warn })
 
   // Sessions are built here, ahead of the hub and the server, because BOTH need

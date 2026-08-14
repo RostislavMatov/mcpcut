@@ -1,7 +1,8 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { collectPersistedBytes } from '../support/persisted-bytes.js'
 import { readJournalRecords, requestLine, waitUntil, waitUntilAsync } from '../proxy/harness.js'
 import { startUiHarness, type UiTestHarness } from '../ui/harness.js'
 import {
@@ -67,6 +68,19 @@ afterEach(async () => {
   ui = null
   await rm(tempDir, { recursive: true, force: true })
 })
+
+/**
+ * Every byte the plane persisted under `tempDir`, rendered as UTF-8 and as
+ * latin1. Since M4.5 the admins document lives in `state.db` -- and, until a
+ * checkpoint, its newest pages live only in the `state.db-wal` sidecar -- so a
+ * secret scan aimed at `admins.json` would silently stop covering it.
+ * Sweeping the whole directory covers every store, the journal and the
+ * approval queue at once, and the two renderings keep a marker from hiding
+ * inside a byte run that is not valid UTF-8.
+ */
+async function persistedBytes(): Promise<readonly string[]> {
+  return (await collectPersistedBytes(tempDir)).renderings
+}
 
 /** Boots the composed UI over this test's plane directory. */
 async function startUi(): Promise<UiTestHarness> {
@@ -442,15 +456,21 @@ describe('e2e: scenario 9 — no vault value and no admin token escapes into the
       expect([name, harness.stderr().includes(adminToken)]).toEqual([name, false])
     }
 
-    const journal = await readFile(join(tempDir, 'm4-marker.jsonl'), 'utf8')
-    const admins = await readFile(join(tempDir, 'admins.json'), 'utf8')
-    const queue = await readFile(join(tempDir, 'approvals', 'resolved', `${seen.approvalId}.json`), 'utf8')
-    for (const blob of [journal, admins, queue, harness.stderr()]) {
+    // Everything the plane wrote to disk — journal, resolved approval and the
+    // admins document alike. Each of the three is asserted PRESENT in the
+    // sweep first (by session id, approval id and the `tokenHash` field), so
+    // the negatives below cannot pass by scanning bytes that hold none of them.
+    const persisted = await persistedBytes()
+    expect(persisted.some((blob) => blob.includes('m4-marker'))).toBe(true)
+    expect(persisted.some((blob) => blob.includes(seen.approvalId))).toBe(true)
+    expect(persisted.some((blob) => blob.includes('tokenHash'))).toBe(true)
+    for (const blob of [...persisted, harness.stderr()]) {
       expect(blob).not.toContain(VAULT_MARKER)
     }
     for (const adminToken of Object.values(harness.tokens)) {
-      expect(admins).not.toContain(adminToken)
-      expect(journal).not.toContain(adminToken)
+      for (const blob of persisted) {
+        expect(blob).not.toContain(adminToken)
+      }
     }
   })
 })

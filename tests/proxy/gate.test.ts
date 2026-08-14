@@ -48,7 +48,10 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await sink.close()
-  await rm(tempDir, { recursive: true, force: true })
+  // The inventory store's SQLite connection may still checkpoint its -wal/-shm
+  // side files while the recursive removal walks the directory, surfacing as
+  // ENOTEMPTY; retrying absorbs that teardown race.
+  await rm(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
 })
 
 function sleep(ms: number): Promise<void> {

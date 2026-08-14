@@ -19,8 +19,8 @@ import type { GateAgentScope } from '../proxy/gate-helpers.js'
  * the mutable current scope — the gate captures it once at construction and
  * every later call delegates to whatever the last successful poll derived.
  *
- * A poll that fails to read the store (transient fs error, lockfile
- * contention with a concurrent CLI update) is reported and retried on the
+ * A poll that fails to read the store (transient fs error, a SQLite busy
+ * timeout racing a concurrent CLI update) is reported and retried on the
  * next tick, keeping the last known-good scope: authorization never widens
  * on an error, and a transient hiccup must not kill a healthy session. The
  * revocation window is therefore bounded by the interval only while the

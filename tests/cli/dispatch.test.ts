@@ -253,3 +253,15 @@ describe('dispatch: M3 commands route to their modules', () => {
     expect(exitCode).not.toBe(0)
   })
 })
+
+describe('dispatch: migrate', () => {
+  test('routes to migrate-cmd with an isolated journalDir', async () => {
+    const io = fakeIo()
+
+    const exitCode = await dispatch(['migrate'], io, { migrate: { journalDir: tempDir } })
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain('no file')
+    expect(io.out()).toContain('Migrated 0 store(s) into state.db.')
+  })
+})

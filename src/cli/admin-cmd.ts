@@ -36,7 +36,7 @@ import {
  * of the CLI applies.
  */
 
-/** Test seams: journal dir, clock and lock-warning sink, forwarded to the store. */
+/** Test seams: journal dir and clock, forwarded to the store. */
 export type AdminCliOptions = AdminStoreOptions
 
 export type { AdminCliIo } from './ui-constants.js'

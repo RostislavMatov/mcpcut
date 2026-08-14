@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
@@ -9,7 +9,11 @@ import {
   listAllQuarantined,
   rejectTool,
 } from '../../src/policy/inventory.js'
-import { validateInventoryStore } from '../../src/policy/inventory-store.js'
+import {
+  openInventoryStore,
+  validateInventoryStore,
+  type InventoryStoreData,
+} from '../../src/policy/inventory-store.js'
 import type { ToolDescriptor } from '../../src/protocol/mcp.js'
 
 let tempDir: string
@@ -38,26 +42,14 @@ function makeClock(startMs: number): { now: () => number; advance: (ms: number) 
   }
 }
 
-interface StoredQuarantinedRecord {
-  readonly schemaHash: string
-  readonly firstSeenAt: string
-  readonly state: 'new' | 'changed'
-  readonly descriptor: { readonly name: string; readonly description?: string }
-}
-
-interface StoredInventoryFile {
-  readonly version: 1
-  readonly servers: Record<
-    string,
-    {
-      readonly approved: Record<string, unknown>
-      readonly quarantined: Record<string, StoredQuarantinedRecord>
-    }
-  >
-}
-
-async function readStoreFile(path: string): Promise<StoredInventoryFile> {
-  return JSON.parse(await readFile(path, 'utf8')) as StoredInventoryFile
+/**
+ * What the inventory actually persisted, read back through the public store
+ * seam. Since M4.5 the documents live in `state.db`, not in a JSON file, so
+ * these mechanism-level assertions go through `openInventoryStore` -- the same
+ * door production code uses -- instead of parsing a path off disk.
+ */
+async function readStoreFile(path: string): Promise<InventoryStoreData> {
+  return openInventoryStore(path).read()
 }
 
 describe('observeToolsList: first observation', () => {
