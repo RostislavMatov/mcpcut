@@ -3,10 +3,12 @@ import { open, readFile, rm, stat } from 'node:fs/promises'
 import { setTimeout as sleep } from 'node:timers/promises'
 
 /**
- * Cross-process advisory lock over an `O_EXCL` lockfile, shared by the policy
- * store and the vault. Both need the same primitive for the same reason: a
- * second process (a CLI command racing a live `serve` session) would otherwise
- * do a lost-update read-modify-write. `open(..., 'wx')` fails with EEXIST when
+ * Cross-process advisory lock over an `O_EXCL` lockfile, used by the vault
+ * (previously shared with the policy store, which moved off file-based
+ * locking onto SQLite transactions in the M4.5 storage migration, wave 2).
+ * The primitive exists for one reason: a second process (a CLI command
+ * racing a live `serve` session) would otherwise do a lost-update
+ * read-modify-write. `open(..., 'wx')` fails with EEXIST when
  * the file exists, giving a cheap, cross-platform mutex; a lockfile older than
  * `staleMs` is presumed orphaned by a crashed holder and stolen, so a crash
  * can never wedge a store permanently.

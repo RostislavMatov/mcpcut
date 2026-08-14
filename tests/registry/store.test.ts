@@ -2,7 +2,6 @@ import { mkdtemp, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
-import { REGISTRY_FILE_NAME } from '../../src/registry/constants.js'
 import type { ServerRecord } from '../../src/registry/schema.js'
 import {
   createRegistryStore,
@@ -51,12 +50,12 @@ describe('createRegistryStore', () => {
     expect(await store.getServer('github')).toEqual(GITHUB)
   })
 
-  test('registry file is created with owner-only permissions (0600)', async () => {
+  test('state db is created with owner-only permissions (0600)', async () => {
     const store = createRegistryStore(journalDir)
 
     await store.addServer(GITHUB)
 
-    const stats = await stat(join(journalDir, REGISTRY_FILE_NAME))
+    const stats = await stat(join(journalDir, 'state.db'))
     expect(stats.mode & 0o777).toBe(0o600)
   })
 

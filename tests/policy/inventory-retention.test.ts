@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
@@ -8,6 +8,7 @@ import {
   MAX_STORED_SCHEMA_CHARS,
 } from '../../src/policy/constants.js'
 import { createInventory } from '../../src/policy/inventory.js'
+import { openInventoryStore, type InventoryStoreData } from '../../src/policy/inventory-store.js'
 import type { ToolDescriptor } from '../../src/protocol/mcp.js'
 
 /**
@@ -34,41 +35,16 @@ function tool(overrides: Partial<ToolDescriptor> = {}): ToolDescriptor {
   return { name: 'read_file', description: 'Reads a file from disk', ...overrides }
 }
 
-interface StoredDescriptorShape {
-  readonly name: string
-  readonly description?: string
-  readonly inputSchema?: unknown
-}
-
-interface StoredQuarantinedRecord {
-  readonly schemaHash: string
-  readonly firstSeenAt: string
-  readonly state: 'new' | 'changed'
-  readonly descriptor: StoredDescriptorShape
-  readonly schemaTruncated?: boolean
-  readonly surfaceDelta?: 'widened' | 'narrowed' | 'changed' | 'neutral'
-}
-
-interface StoredApprovedRecord {
-  readonly schemaHash: string
-  readonly approvedAt: string
-  readonly descriptor?: StoredDescriptorShape
-  readonly schemaTruncated?: boolean
-}
-
-interface StoredInventoryFile {
-  readonly version: 1
-  readonly servers: Record<
-    string,
-    {
-      readonly approved: Record<string, StoredApprovedRecord>
-      readonly quarantined: Record<string, StoredQuarantinedRecord>
-    }
-  >
-}
-
-async function readStoreFile(path: string): Promise<StoredInventoryFile> {
-  return JSON.parse(await readFile(path, 'utf8')) as StoredInventoryFile
+/**
+ * What the inventory actually persisted, read back through the public store
+ * seam. Since M4.5 the documents live in `state.db`, not in a JSON file, so
+ * these retention assertions go through `openInventoryStore` -- the same door
+ * production code uses -- instead of parsing a path off disk. The size bounds
+ * below are still measured on `JSON.stringify` of that document, which is the
+ * text the store persists verbatim.
+ */
+async function readStoreFile(path: string): Promise<InventoryStoreData> {
+  return openInventoryStore(path).read()
 }
 
 describe('stored inputSchema (M4: kept for the structural diff, reversing M10 drop)', () => {

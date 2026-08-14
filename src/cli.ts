@@ -6,6 +6,7 @@ import { runAgentCommand, type AgentCliOptions } from './cli/agent-cmd.js'
 import { runApprovals, type ApprovalsCliOptions } from './cli/approvals-cmd.js'
 import { runConnect, type ConnectDeps } from './cli/connect-cmd.js'
 import { runJournalCommandGroup } from './cli/journal-cmds.js'
+import { runMigrateCommand, type MigrateCommandOptions } from './cli/migrate-cmd.js'
 import { runPolicyShow, runPolicyValidate, type PolicyCliOptions } from './cli/policy-cmd.js'
 import { runQuarantine, type RunQuarantineOptions } from './cli/quarantine-cmd.js'
 import { runServe, type ServeCommandOptions } from './cli/serve-cmd.js'
@@ -56,6 +57,7 @@ export interface DispatchOptions {
   readonly serve?: ServeCommandOptions
   readonly ui?: UiCommandOptions
   readonly admin?: AdminCliOptions
+  readonly migrate?: MigrateCommandOptions
 }
 
 const DEFAULT_IO: CliIo = { stdout: process.stdout, stderr: process.stderr }
@@ -80,6 +82,7 @@ export async function dispatch(
   if (command === 'server') return runServerCommand(rest, io, opts.server)
   if (command === 'vault') return runVault(rest, io, opts.vault)
   if (command === 'agent') return runAgentCommand(rest, io, opts.agent)
+  if (command === 'migrate') return runMigrateCommand(rest, io, opts.migrate)
   if (command === 'sessions' || command === 'show') {
     return runJournalCommandGroup(command, rest, io, opts.journalDir, USAGE)
   }

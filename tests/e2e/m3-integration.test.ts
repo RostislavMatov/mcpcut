@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { collectPersistedBytes } from '../support/persisted-bytes.js'
 import { startHttpFixture, stopAllHttpFixtures } from '../cli/connect-harness.js'
 import { readJournal } from '../cli/serve-harness.js'
 import {
@@ -70,6 +71,19 @@ beforeEach(async () => {
 afterEach(async () => {
   await rm(tempDir, { recursive: true, force: true })
 })
+
+/**
+ * Every byte the plane persisted under `tempDir`, rendered as UTF-8 and as
+ * latin1. Since M4.5 the registry, agents and admins documents live in
+ * `state.db` -- and, until a checkpoint, their newest pages live only in the
+ * `state.db-wal` sidecar -- so a secret scan aimed at named `*.json` paths
+ * would silently stop covering them. Sweeping the whole directory covers
+ * every store the plane has, present and future, and the two renderings keep
+ * a marker from hiding inside a byte run that is not valid UTF-8.
+ */
+async function persistedBytes(): Promise<readonly string[]> {
+  return (await collectPersistedBytes(tempDir)).renderings
+}
 
 afterAll(() => {
   stopAllHttpFixtures()
@@ -177,15 +191,22 @@ describe('e2e: gate metric — server keys exist only inside the vault', () => {
     // Present, and unreadable: the vault holds the secret as ciphertext only.
     expect(vaultFile.length).toBeGreaterThan(0)
     expect(vaultFile).not.toContain(SECRET_MARKER)
-    expect(await read('registry.json')).toContain(`vault:${SECRET_NAME}`)
-    expect(await read('registry.json')).not.toContain(SECRET_MARKER)
-    expect(await read('agents.json')).not.toContain(SECRET_MARKER)
     // The child's env dump did reach the journal — with the value redacted,
     // which is the only reason the marker is absent from it.
     const journal = await read(`${sessionId}.jsonl`)
     expect(journal).toContain('FIXTURE_TOKEN')
     expect(journal).toContain('[REDACTED]')
-    expect(journal).not.toContain(SECRET_MARKER)
+
+    // Now every byte on disk, stores included. The registry's vault REFERENCE
+    // and the agents document's `tokenHash` are asserted PRESENT first, so
+    // this sweep can never pass by looking at bytes that do not hold the
+    // stores at all.
+    const persisted = await persistedBytes()
+    expect(persisted.some((rendering) => rendering.includes(`vault:${SECRET_NAME}`))).toBe(true)
+    expect(persisted.some((rendering) => rendering.includes('tokenHash'))).toBe(true)
+    for (const rendering of persisted) {
+      expect(rendering).not.toContain(SECRET_MARKER)
+    }
     // Every command this plane ran, stdout and stderr both.
     expect(plane.allOut()).not.toContain(SECRET_MARKER)
     expect(plane.allErr()).not.toContain(SECRET_MARKER)
@@ -194,11 +215,16 @@ describe('e2e: gate metric — server keys exist only inside the vault', () => {
   test('an agent token is not recoverable from the store that authenticates it', async () => {
     const token = await onboardPolicyServer()
 
-    const stored = await readFile(join(tempDir, 'agents.json'), 'utf8')
+    const persisted = await persistedBytes()
 
     expect(token.length).toBeGreaterThan(0)
-    expect(stored).not.toContain(token)
-    expect(stored).toContain('tokenHash')
+    // The hash IS on disk — it is what authenticates — which proves the sweep
+    // is reading the agents document and not empty bytes...
+    expect(persisted.some((rendering) => rendering.includes('tokenHash'))).toBe(true)
+    // ...and the plaintext token survives in none of it, in either rendering.
+    for (const rendering of persisted) {
+      expect(rendering).not.toContain(token)
+    }
     // `agent list` renders the store, so it cannot leak what the store lacks.
     const listed = await plane.run(['agent', 'list'])
     expect(listed.out).not.toContain(token)

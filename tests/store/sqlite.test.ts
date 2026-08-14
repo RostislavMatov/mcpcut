@@ -74,6 +74,20 @@ describe('openSqlite: opening and permissions', () => {
     expect(walStat.mode & 0o777).toBe(0o600)
   })
 
+  test('the -shm side file inherits the 0600 mode of the database file', async () => {
+    const handle = await open(dbPath, { synchronous: 'normal' })
+    handle.db.exec('CREATE TABLE items (id INTEGER PRIMARY KEY)')
+    handle.transaction((db) => {
+      db.prepare('INSERT INTO items (id) VALUES (1)').run()
+    })
+
+    // -shm is only created on demand by WAL mode; skip if this SQLite build
+    // didn't materialize it rather than asserting on a file that may not exist.
+    const shmStat = await stat(`${dbPath}-shm`).catch(() => null)
+    if (shmStat === null) return
+    expect(shmStat.mode & 0o777).toBe(0o600)
+  })
+
   test('exposes the path it was opened with', async () => {
     const handle = await open(dbPath, { synchronous: 'normal' })
     expect(handle.filePath).toBe(dbPath)

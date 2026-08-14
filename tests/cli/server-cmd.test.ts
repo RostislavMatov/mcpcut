@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
@@ -9,6 +9,7 @@ import {
   runServerShow,
 } from '../../src/cli/server-cmd.js'
 import { REGISTRY_FILE_NAME } from '../../src/registry/constants.js'
+import { createRegistryStore } from '../../src/registry/store.js'
 
 let journalDir: string
 
@@ -55,8 +56,8 @@ describe('server add', () => {
 
     expect(exitCode).toBe(0)
     expect(io.out()).toContain('github')
-    const file = JSON.parse(await readFile(join(journalDir, REGISTRY_FILE_NAME), 'utf8'))
-    expect(file.servers.github).toEqual({
+    const store = createRegistryStore(journalDir)
+    expect(await store.getServer('github')).toEqual({
       name: 'github',
       transport: 'stdio',
       command: 'npx',
@@ -75,8 +76,8 @@ describe('server add', () => {
     )
 
     expect(exitCode).toBe(0)
-    const file = JSON.parse(await readFile(join(journalDir, REGISTRY_FILE_NAME), 'utf8'))
-    expect(file.servers['remote-api']).toEqual({
+    const store = createRegistryStore(journalDir)
+    expect(await store.getServer('remote-api')).toEqual({
       name: 'remote-api',
       transport: 'http',
       url: 'https://example.com/mcp',
@@ -338,7 +339,6 @@ describe('server remove', () => {
   })
 
   test('corrupt registry.json surfaces a loud error instead of pretending success', async () => {
-    const { writeFile } = await import('node:fs/promises')
     await writeFile(join(journalDir, REGISTRY_FILE_NAME), '{ not json', 'utf8')
     const io = fakeIo()
 

@@ -40,5 +40,6 @@ export const USAGE = `Usage:
                                          Approve a pending request
   mcp-journal approvals deny <id> [--reason TEXT]
                                          Deny a pending request
+  mcp-journal migrate                    Import legacy *.json state into state.db
   mcp-journal --help                    Show this message
 `

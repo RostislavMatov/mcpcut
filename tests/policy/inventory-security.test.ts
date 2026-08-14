@@ -1,10 +1,10 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { MAX_QUARANTINED_TOOLS_PER_SERVER, MAX_STORED_DESCRIPTOR_CHARS } from '../../src/policy/constants.js'
 import { createInventory, listAllQuarantined } from '../../src/policy/inventory.js'
-import type { ToolDescriptor } from '../../src/protocol/mcp.js'
+import { openInventoryStore, type InventoryStoreData } from '../../src/policy/inventory-store.js'
 
 let tempDir: string
 let storePath: string
@@ -25,11 +25,16 @@ function deepObject(depth: number): unknown {
   return node
 }
 
-async function readStore(path: string): Promise<{
-  version: number
-  servers: Record<string, { quarantined: Record<string, { descriptor: ToolDescriptor }> }>
-}> {
-  return JSON.parse(await readFile(path, 'utf8'))
+/**
+ * What the inventory actually persisted, read back through the public store
+ * seam. Since M4.5 the documents live in `state.db`, not in a JSON file, so
+ * these mechanism-level assertions go through `openInventoryStore` -- the same
+ * door production code uses -- instead of parsing a path off disk. The
+ * corrupt-store tests below still SEED a legacy `*.json`, which the store
+ * imports lazily: that path is unchanged and stays as it is.
+ */
+async function readStore(path: string): Promise<InventoryStoreData> {
+  return openInventoryStore(path).read()
 }
 
 describe('C3: one poisoned descriptor never disables quarantine for the batch', () => {

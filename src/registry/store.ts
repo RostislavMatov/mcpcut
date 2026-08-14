@@ -3,9 +3,9 @@ import { registryFilePath } from './constants.js'
 import { parseRegistry, parseServerRecord, type RegistryFile, type ServerRecord } from './schema.js'
 
 /**
- * Registry store: `<journalDir>/registry.json`, built on the atomic,
- * lockfile-guarded `createJsonStore` (0600 file / 0700 dir, tmp+rename,
- * cross-process lock — all inherited). A corrupt file surfaces as the store's
+ * Registry store: the `registry.json` document in `<journalDir>/state.db`,
+ * built on the transactional `createJsonStore` (0600 file / 0700 dir,
+ * SQLite CAS — all inherited). A corrupt document surfaces as the store's
  * `StoreCorruptError`, never as an empty registry: silently "losing" every
  * registered server would make the control plane spawn nothing while looking
  * healthy.
@@ -63,23 +63,10 @@ function ownRecord(servers: RegistryFile['servers'], name: string): ServerRecord
   return Object.hasOwn(servers, name) ? servers[name] : undefined
 }
 
-export interface RegistryStoreOptions {
-  /**
-   * Receives the lock's forced-removal warning line (see `src/lockfile.ts`).
-   * Threaded from callers that own a diagnostics sink (CLI `io.stderr`);
-   * defaults to `process.stderr` inside the lock module.
-   */
-  readonly warn?: (line: string) => void
-}
-
-export function createRegistryStore(
-  journalDir?: string,
-  opts: RegistryStoreOptions = {},
-): RegistryStore {
+export function createRegistryStore(journalDir?: string): RegistryStore {
   const store: JsonStore<RegistryFile> = createJsonStore(registryFilePath(journalDir), {
     validate: validateRegistry,
     defaultValue: EMPTY_REGISTRY,
-    ...(opts.warn !== undefined ? { lock: { warn: opts.warn } } : {}),
   })
 
   async function addServer(record: ServerRecord): Promise<ServerRecord> {

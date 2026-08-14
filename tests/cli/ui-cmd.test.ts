@@ -1,13 +1,15 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { request as httpRequest, type IncomingMessage } from 'node:http'
 import { createServer as createNetServer, type AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
+import { collectPersistedBytes } from '../support/persisted-bytes.js'
 import { ADMINS_FILE_NAME } from '../../src/admin/constants.js'
 import { createAdminStore } from '../../src/admin/store.js'
 import { runUi, type UiHandle } from '../../src/cli/ui-cmd.js'
 import { BOOTSTRAP_ADMIN_NAME, UI_USAGE } from '../../src/cli/ui-constants.js'
+import { openInventoryStore } from '../../src/policy/inventory-store.js'
 import { DEFAULT_UI_HOST, DEFAULT_UI_PORT } from '../../src/ui/constants.js'
 
 /**
@@ -464,9 +466,30 @@ describe('runUi: first start with no admins.json', () => {
     const page = await httpCall(fixture.base, '/', { headers: { cookie } })
     expect(page.status).toBe(200)
 
-    const stored = await readFile(join(fixture.journalDir, ADMINS_FILE_NAME), 'utf8')
-    expect(stored).not.toContain(token)
-    expect(tokensIn(stored)).toEqual([])
+    // Admin state now lives in state.db (and its -wal side file, while
+    // uncheckpointed) rather than a directly-readable admins.json. Sweep
+    // every persisted byte of the plane directory under two decodings so a
+    // token hiding anywhere in a page -- including a partial/binary one --
+    // still trips the check.
+    const { fileNames, renderings } = await collectPersistedBytes(fixture.journalDir)
+
+    // Sentinel-first: prove the sweep actually reached the state database,
+    // and that what it read really is the bootstrap admin's persisted record
+    // -- otherwise the absence assertions below could pass vacuously against
+    // bytes that never held the store at all.
+    expect(fileNames).toContain('state.db')
+    const bootstrapAdmin = await createAdminStore({
+      journalDir: fixture.journalDir,
+    }).getActiveAdmin(BOOTSTRAP_ADMIN_NAME)
+    expect(bootstrapAdmin).toBeDefined()
+    expect(
+      renderings.some((rendering) => rendering.includes(bootstrapAdmin?.tokenHash as string)),
+    ).toBe(true)
+
+    for (const rendering of renderings) {
+      expect(rendering).not.toContain(token)
+      expect(tokensIn(rendering)).toEqual([])
+    }
   })
 
   test('no bootstrap admin is created when one already exists', async () => {
@@ -548,7 +571,7 @@ describe('runUi: composed handlers', () => {
 describe('runUi: composed stores and watcher', () => {
   test('a quarantine approval mutates the real inventory, is attributed on stderr and reaches SSE', async () => {
     const journalDir = await makeJournalDir()
-    const { writeFile, readFile: read } = await import('node:fs/promises')
+    const { writeFile } = await import('node:fs/promises')
     const inventoryPath = join(journalDir, 'tool-inventory.json')
     await writeFile(inventoryPath, inventoryWithQuarantinedTool('srv', 'dangerous_tool'), 'utf8')
 
@@ -574,10 +597,10 @@ describe('runUi: composed stores and watcher', () => {
 
     expect(response.status).toBe(200)
     expect(JSON.parse(response.body)).toMatchObject({ status: 'ok', toolName: 'dangerous_tool' })
-    // The mutation reached the real store file, not a handler-local copy.
-    const stored = JSON.parse(await read(inventoryPath, 'utf8'))
-    expect(stored.servers.srv.quarantined).toEqual({})
-    expect(Object.keys(stored.servers.srv.approved)).toEqual(['dangerous_tool'])
+    // The mutation reached the real store, not a handler-local copy.
+    const stored = await openInventoryStore(inventoryPath).read()
+    expect(stored.servers['srv']?.quarantined).toEqual({})
+    expect(Object.keys(stored.servers['srv']?.approved ?? {})).toEqual(['dangerous_tool'])
     // Attribution names the acting admin and the target, on stderr only.
     expect(fixture.io.errText()).toContain(`${BOOTSTRAP_ADMIN_NAME} quarantine.approve srv/dangerous_tool`)
     expect(fixture.io.outText()).toBe('')

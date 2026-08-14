@@ -243,14 +243,14 @@ function buildFront(
   policy: Policy,
   journalDir: string,
 ): HttpFront {
-  // The lock's forced-removal warning belongs on THIS run's stderr, not on
-  // whatever `process.stderr` happens to be (M4 review fix: the injectable
-  // `warn` was never threaded by any production caller).
+  // Only the vault still holds a cross-process file lock (its forced-removal
+  // warning belongs on THIS run's stderr); the state stores moved to SQLite
+  // in M4.5 wave 2 and have nothing to warn about.
   const warn = (line: string): void => {
     io.stderr.write(`${line}\n`)
   }
-  const agents = opts.stores?.agents ?? createAgentsStore({ journalDir, warn })
-  const registry = opts.stores?.registry ?? createRegistryStore(journalDir, { warn })
+  const agents = opts.stores?.agents ?? createAgentsStore({ journalDir })
+  const registry = opts.stores?.registry ?? createRegistryStore(journalDir)
   const vault = opts.stores?.vault ?? createVaultStore({ journalDir, warn })
   const hooks = createServeHooks()
 

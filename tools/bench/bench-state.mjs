@@ -2,7 +2,7 @@
 // Reproducible state-store benchmark behind ADR-0006 (Evidence table).
 // Compares, over the REAL modules from dist/:
 //
-//   1. current JSON store (`createJsonStore`: lockfile + full-file rewrite)
+//   1. the store seam (`createJsonStore`: SQLite-backed since M4.5 wave 2)
 //   2. SQLite WAL (`openSqlite`: BEGIN IMMEDIATE transaction per update)
 //
 // measuring update throughput (optionally across N competing processes —
@@ -61,7 +61,7 @@ function report(label, count, elapsedMs, unit) {
   console.log(`${label.padEnd(46)} ${String(perSec).padStart(9)} ${unit}  (${count} ops, ${Math.round(elapsedMs)} ms)`)
 }
 
-// -- JSON store (current) ----------------------------------------------
+// -- store seam (createJsonStore, SQLite-backed) -----------------------
 
 async function jsonUpdateLoop(filePath, iterations) {
   const store = createJsonStore(filePath, { validate: (raw) => raw, defaultValue: {} })
@@ -88,13 +88,13 @@ async function benchJsonStore(dir) {
   } else {
     await runWorkers('json-update', filePath)
   }
-  report(`JSON store update, ${AGENTS} agents, ${PROCS} proc(s)`, UPDATES, performance.now() - start, 'upd/s')
+  report(`store seam update, ${AGENTS} agents, ${PROCS} proc(s)`, UPDATES, performance.now() - start, 'upd/s')
 
   const readStart = performance.now()
   for (let i = 0; i < READS; i += 1) {
     await store.read()
   }
-  report(`JSON store read (full file + validate)`, READS, performance.now() - readStart, ' rd/s')
+  report(`store seam read (document + validate)`, READS, performance.now() - readStart, ' rd/s')
 }
 
 // -- SQLite (ADR-0006) --------------------------------------------------

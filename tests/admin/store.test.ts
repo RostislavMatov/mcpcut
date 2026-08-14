@@ -49,9 +49,9 @@ describe('createAdmin', () => {
     expect(token.startsWith('mcpa_')).toBe(true)
   })
 
-  test('persists to <journalDir>/admins.json with 0600 permissions', async () => {
+  test('persists to <journalDir>/state.db with 0600 permissions', async () => {
     await store.createAdmin('alice', 'owner')
-    const fileStat = await stat(join(journalDir, ADMINS_FILE_NAME))
+    const fileStat = await stat(join(journalDir, 'state.db'))
     expect(fileStat.mode & 0o777).toBe(0o600)
   })
 

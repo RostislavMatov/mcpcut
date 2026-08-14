@@ -1,8 +1,7 @@
-import { mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
-import { AGENTS_FILE_NAME } from '../../src/agents/constants.js'
 import {
   AgentExistsError,
   AgentNotFoundError,
@@ -43,10 +42,10 @@ describe('createAgent', () => {
     expect(agent.tokenHash).not.toContain(token)
   })
 
-  test('persists to <journalDir>/agents.json with 0600 permissions', async () => {
+  test('persists to <journalDir>/state.db with 0600 permissions', async () => {
     await store.createAgent('research-bot')
 
-    const filePath = join(journalDir, AGENTS_FILE_NAME)
+    const filePath = join(journalDir, 'state.db')
     const fileStat = await stat(filePath)
 
     expect(fileStat.mode & 0o777).toBe(0o600)
@@ -227,41 +226,15 @@ describe('findAgentByToken', () => {
   })
 })
 
-// Read file content once at the end to double-check persistence shape.
+// Reread through a second store instance to double-check persistence shape,
+// since state now lives in state.db rather than a directly-readable JSON file.
 describe('persistence shape', () => {
-  test('the file on disk carries version 1 and the record under its name', async () => {
+  test('a second store instance on the same journalDir sees the persisted record', async () => {
     await store.createAgent('research-bot')
 
-    const raw = JSON.parse(await readFile(join(journalDir, AGENTS_FILE_NAME), 'utf8')) as {
-      version: number
-      agents: Record<string, { name: string }>
-    }
+    const rereadStore = createAgentsStore({ journalDir, clock: () => FIXED_NOW })
+    const agent = await rereadStore.getAgent('research-bot')
 
-    expect(raw.version).toBe(1)
-    expect(raw.agents['research-bot']?.name).toBe('research-bot')
-  })
-})
-
-// M4 review fix M3: the lock's forced-removal warning must be routable to the
-// caller's own sink (CLI io.stderr), not silently written to process.stderr.
-describe('lock warn threading', () => {
-  test('a forced removal of an abandoned foreign lock reaches the injected warn sink', async () => {
-    const lockPath = join(journalDir, `${AGENTS_FILE_NAME}.lock`)
-    await writeFile(lockPath, 'not a lock record at all', 'utf8')
-    // Untouched for 60s: older than the default 30s staleness window.
-    const past = new Date(Date.now() - 60_000)
-    await utimes(lockPath, past, past)
-    const warnings: string[] = []
-    const warnedStore = createAgentsStore({
-      journalDir,
-      clock: () => FIXED_NOW,
-      warn: (line) => warnings.push(line),
-    })
-
-    const { agent } = await warnedStore.createAgent('research-bot')
-
-    expect(agent.name).toBe('research-bot')
-    expect(warnings).toHaveLength(1)
-    expect(warnings[0]).toContain(lockPath)
+    expect(agent?.name).toBe('research-bot')
   })
 })

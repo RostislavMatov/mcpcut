@@ -1,4 +1,4 @@
-import { chmod, mkdir } from 'node:fs/promises'
+import { chmod, mkdir, open } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { JOURNAL_DIR_MODE, JOURNAL_FILE_MODE } from '../config.js'
@@ -84,6 +84,27 @@ function describeCause(cause: unknown): string {
  */
 const SQLITE_BUSY_ERRCODE = 5
 
+/** How deep the `cause` chain is walked; guards against cyclic causes. */
+const BUSY_CAUSE_CHAIN_LIMIT = 5
+
+/**
+ * True for a contended-writer failure, whether already wrapped by this
+ * adapter (`SqliteBusyError`, or a busy PRAGMA inside `SqliteOpenError`) or
+ * raw from a single statement executed outside `transaction()`. The `cause`
+ * chain is walked so a wrapped busy is never misread as corruption — the
+ * operator runbooks for "contended" and "corrupt" are opposites.
+ * Exported so stores never inspect `node:sqlite` error codes themselves.
+ */
+export function isSqliteBusy(error: unknown): boolean {
+  let current: unknown = error
+  for (let depth = 0; depth < BUSY_CAUSE_CHAIN_LIMIT; depth += 1) {
+    if (current instanceof SqliteBusyError || isBusyError(current)) return true
+    if (typeof current !== 'object' || current === null || !('cause' in current)) return false
+    current = (current as { cause?: unknown }).cause
+  }
+  return false
+}
+
 function isBusyError(error: unknown): boolean {
   return (
     typeof error === 'object' &&
@@ -115,6 +136,14 @@ export async function openSqlite(
     // mkdir's mode is masked by the process umask and ignored for a directory
     // that already exists — chmod unconditionally, like the JSON stores do.
     await chmod(dir, JOURNAL_DIR_MODE)
+
+    // Pre-create the file at the right mode before DatabaseSync touches it:
+    // the constructor creates the file at the default mode (644 under a
+    // permissive umask) and the chmod below only tightens it afterwards,
+    // leaving a TOCTOU window where the file briefly exists world-readable.
+    // Creating it here first means it never exists at the wrong mode.
+    const fh = await open(filePath, 'a', JOURNAL_FILE_MODE)
+    await fh.close()
 
     // The constructor and PRAGMAs are synchronous by design of node:sqlite;
     // only the fs setup above has an async form.

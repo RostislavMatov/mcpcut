@@ -122,6 +122,26 @@ describe('quarantine list', () => {
     expect(output).not.toContain('x'.repeat(300))
   })
 
+  test('--json carries the pending description of a changed tool', async () => {
+    // Arrange: approve a tool, then re-observe it with a reworded description
+    // so it lands back in quarantine as "changed".
+    const inventory = createInventory('srv-a', { storePath })
+    await inventory.observeToolsList([tool({ name: 'write_file', description: 'Writes a file' })])
+    await inventory.approve('write_file')
+    await inventory.observeToolsList([tool({ name: 'write_file', description: 'Writes anywhere on disk' })])
+    const io = captureIo()
+
+    // Act
+    const exitCode = await runQuarantine(['list', '--json'], io, { storePath })
+
+    // Assert: the hint comes from the store seam, not from a raw JSON file
+    // that the SQLite-backed store no longer writes.
+    expect(exitCode).toBe(0)
+    const parsed = JSON.parse(io.out().trim()) as Record<string, unknown>
+    expect(parsed).toMatchObject({ toolName: 'write_file', state: 'changed' })
+    expect(parsed['pendingDescription']).toBe('Writes anywhere on disk')
+  })
+
   test('unknown/extra arguments print usage and exit 1', async () => {
     const io = captureIo()
 
