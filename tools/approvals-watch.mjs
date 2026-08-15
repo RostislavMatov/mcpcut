@@ -1,13 +1,21 @@
 #!/usr/bin/env node
-// Watches ~/.mcp-journal/approvals/pending and fires a macOS notification for
-// every new approval request, with the approve command in the message body.
+// Watches the approvals queue and fires a macOS notification for every new
+// approval request, with the approve command in the message body.
 // Run in a terminal (node tools/approvals-watch.mjs) or as a LaunchAgent.
+//
+// M4.5 wave 3 moved the queue into state.db, so the primary source is the
+// queue module itself (dist build). The legacy pending/ directory is STILL
+// scanned in parallel for the transition window: a long-lived pre-wave-3
+// session keeps writing files until it ends, and those must not go silent.
+// Drop the file side together with wave 5 (removal of the file write paths).
 import { execFile } from 'node:child_process'
 import { readFile, readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { createApprovalQueue } from '<path-to-mcpcut>/dist/policy/approvals/queue.js'
 
 const PENDING_DIR = join(homedir(), '.mcp-journal', 'approvals', 'pending')
+const queue = createApprovalQueue() // default baseDir: ~/.mcp-journal/approvals
 const POLL_INTERVAL_MS = 2000
 const NODE_BIN = '/opt/homebrew/bin/node'
 const CLI_JS = '<path-to-mcpcut>/dist/cli.js'
@@ -63,26 +71,44 @@ function askAndResolve(id, server, tool, toolClass) {
   })
 }
 
-async function scan() {
+/** Union of both queue mediums: id -> {serverName, toolName, toolClass} | null. */
+async function collectPending() {
+  const entries = new Map()
+
+  try {
+    for (const pending of await queue.list()) {
+      if (!pending.expired) entries.set(pending.approvalId, pending)
+    }
+  } catch (error) {
+    log(`state.db poll failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+
   let names = []
   try {
     names = (await readdir(PENDING_DIR)).filter((n) => n.endsWith('.json'))
   } catch {
-    return // queue dir not created yet -- nothing pending
+    return entries // legacy dir not created yet -- state.db side already collected
   }
-
   for (const name of names) {
     const id = name.replace('.json', '')
+    if (entries.has(id)) continue
+    try {
+      entries.set(id, JSON.parse(await readFile(join(PENDING_DIR, name), 'utf8')))
+    } catch {
+      entries.set(id, null) // file mid-write or already resolved; announce by id alone
+    }
+  }
+  return entries
+}
+
+async function scan() {
+  const pending = await collectPending()
+
+  for (const [id, entry] of pending) {
     if (seen.has(id)) continue
     seen.add(id)
     if (!firstScanDone) continue // do not re-announce a backlog on restart
 
-    let entry = null
-    try {
-      entry = JSON.parse(await readFile(join(PENDING_DIR, name), 'utf8'))
-    } catch {
-      // file may be mid-write or already resolved; announce by id alone
-    }
     const server = entry?.serverName ?? '?'
     const tool = entry?.toolName ?? '?'
     const toolClass = entry?.toolClass ?? '?'
@@ -96,9 +122,8 @@ async function scan() {
   }
 
   // Forget resolved entries so the set does not grow forever.
-  const live = new Set(names.map((n) => n.replace('.json', '')))
   for (const id of seen) {
-    if (!live.has(id)) seen.delete(id)
+    if (!pending.has(id)) seen.delete(id)
   }
 }
 
