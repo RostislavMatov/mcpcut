@@ -1,5 +1,8 @@
 import { LIST_SESSIONS_CONCURRENCY, JOURNAL_DIR } from '../config.js'
 import { mapWithConcurrency } from './concurrency.js'
+import { dbHasSession, dbSessionSummaries } from './db-read.js'
+import { dbSessionSummaryFor } from './db-read-session.js'
+import { isShadowedByDb, openJournalDbIfPresent } from './read-routing.js'
 import {
   isBlankLine,
   journalPath,
@@ -94,16 +97,29 @@ export function createSessionIndexCache(
     return summary
   }
 
+  /**
+   * Both carriers, merged. The database's summaries are one indexed
+   * aggregate, so they are NOT cached: the cache exists to avoid re-reading
+   * files, and keeping a copy of a query this cheap would buy nothing but a
+   * staleness bug. Its `size`/`mtimeMs` are the aggregate's stand-ins (total
+   * `doc` bytes, last activity in epoch ms), which is what makes the two
+   * carriers' entries the same shape.
+   */
   async function listSessions(dir: string = JOURNAL_DIR): Promise<readonly SessionSummaryEntry[]> {
+    const handle = await openJournalDbIfPresent(dir)
+    const fromDb = handle === null ? [] : dbSessionSummaries(handle)
+    const isShadowed = isShadowedByDb(handle)
     const sessionIds = (await resolved.listFiles(dir))
       .map(sessionIdOf)
       .filter((sessionId): sessionId is string => sessionId !== null)
+      .filter((sessionId) => !isShadowed(sessionId))
     const summaries = await mapWithConcurrency(sessionIds, LIST_SESSIONS_CONCURRENCY, (sessionId) =>
       summaryFor(dir, sessionId),
     )
-    return summaries
-      .filter((entry): entry is SessionSummaryEntry => entry !== null)
-      .sort((a, b) => b.lastTs.localeCompare(a.lastTs))
+    const fromFiles = summaries.filter((entry): entry is SessionSummaryEntry => entry !== null)
+    // Stable sort: on the (per-run-ULID-impossible) tie of two equal `lastTs`
+    // the database's entry stays ahead of the file's.
+    return [...fromDb, ...fromFiles].sort((a, b) => b.lastTs.localeCompare(a.lastTs))
   }
 
   async function getSession(
@@ -111,6 +127,12 @@ export function createSessionIndexCache(
     dir: string = JOURNAL_DIR,
   ): Promise<SessionSummaryEntry | null> {
     assertValidSessionId(sessionId)
+    const handle = await openJournalDbIfPresent(dir)
+    if (handle !== null && dbHasSession(handle, sessionId)) {
+      // One `GROUP BY` over this session, not over the whole database: an
+      // operator opening one session must not pay for every other one.
+      return dbSessionSummaryFor(handle, sessionId)
+    }
     return summaryFor(dir, sessionId)
   }
 

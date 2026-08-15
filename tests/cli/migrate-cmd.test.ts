@@ -116,15 +116,19 @@ describe('migrate: run twice', () => {
 })
 
 describe('migrate: an empty directory', () => {
-  test('reports "no file" for all four stores plus approvals, exit 0', async () => {
+  test('reports "no file"/"no files" for all four stores plus approvals plus the journal, exit 0', async () => {
     const io = fakeIo()
 
     const exitCode = await run([], io)
 
     expect(exitCode).toBe(0)
+    // 6, not 5: the four state files + approvals report "no file", and the
+    // journal's own "no files" line also matches the substring (it is "no
+    // file" with a trailing "s"), so it is counted here too.
     const noFileLines = io.out().split('\n').filter((line) => line.includes('no file'))
-    expect(noFileLines).toHaveLength(5)
+    expect(noFileLines).toHaveLength(6)
     expect(io.out()).toContain('approvals/ -> no file')
+    expect(io.out()).toContain('journal: *.jsonl -> no files')
     expect(io.out()).toContain('Migrated 0 store(s) into state.db.')
   })
 })
@@ -239,6 +243,60 @@ describe('migrate: approvals queue', () => {
 
     expect(exitCode).toBe(0)
     expect(io.out()).toContain('state: approvals/ -> no file')
+  })
+})
+
+describe('migrate: journal legacy files', () => {
+  function legacyJournalLine(sessionId: string, id: string): string {
+    return JSON.stringify({
+      id,
+      ts: new Date().toISOString(),
+      sessionId,
+      direction: 'client→server',
+      kind: 'notification',
+      payload: { hello: 'world' },
+    })
+  }
+
+  async function writeLegacyJournalFile(sessionId: string, recordCount: number): Promise<void> {
+    const lines = Array.from({ length: recordCount }, (_, index) =>
+      legacyJournalLine(sessionId, `01AAAAAAAAAAAAAAAAAAAAAA${index}`),
+    )
+    await writeFile(join(journalDir, `${sessionId}.jsonl`), `${lines.join('\n')}\n`, 'utf8')
+  }
+
+  test('a fresh directory reports "no files"', async () => {
+    const io = fakeIo()
+
+    const exitCode = await run([], io)
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain('journal: *.jsonl -> no files')
+  })
+
+  test('a directory with a legacy journal file reports imported counts and bumps the summary', async () => {
+    await writeLegacyJournalFile('session-legacy-1', 3)
+    const io = fakeIo()
+
+    const exitCode = await run([], io)
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain('journal: *.jsonl -> imported (3 records from 1 sessions)')
+    // Only the journal had legacy data in this run; the four document stores
+    // and the approvals queue all report no-file/no-files and add nothing.
+    expect(io.out()).toContain('Migrated 1 store(s) into state.db.')
+  })
+
+  test('a second run reports "already migrated" and imports nothing again', async () => {
+    await writeLegacyJournalFile('session-legacy-1', 3)
+    await run([])
+
+    const io = fakeIo()
+    const exitCode = await run([], io)
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain('journal: *.jsonl -> already migrated')
+    expect(io.out()).toContain('Migrated 0 store(s) into state.db.')
   })
 })
 

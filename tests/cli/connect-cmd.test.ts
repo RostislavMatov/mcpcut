@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { createAgentsStore } from '../../src/agents/store.js'
 import { runConnect, type ConnectDeps } from '../../src/cli/connect-cmd.js'
 import { formatVaultFailure } from '../../src/cli/connect-upstream.js'
+import { journalDbPathFor } from '../../src/journal/db.js'
 import type { JournalRecord } from '../../src/journal/record.js'
 import { EXIT_CODE_JOURNAL_FAILURE } from '../../src/proxy/wrap.js'
 import { readJournalRecords, requestLine, waitUntil } from '../proxy/harness.js'
@@ -103,8 +104,9 @@ const ALLOW_ALL_POLICY = {
   defaultDecision: 'allow',
 } as const
 
+/** `journal.db`'s path: existence is the "did this run ever journal anything" mechanism check. */
 function journalPath(): string {
-  return join(tempDir, `${SESSION_ID}.jsonl`)
+  return journalDbPathFor(tempDir)
 }
 
 /** Registers the multi-tool stdio fixture under `SERVER`. */
@@ -550,7 +552,7 @@ describe('connect: stdio upstream', () => {
       io,
       depsOf({
         env: { MCP_AGENT_TOKEN: token, PATH: process.env['PATH'] ?? '' },
-        journalAppendFileImpl: () => Promise.reject(new Error('disk is full')),
+        journalCommitBatchImpl: () => Promise.reject(new Error('disk is full')),
       }),
     )
     // The first journaled message is what trips the sink.

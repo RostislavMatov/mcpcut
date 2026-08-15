@@ -1,15 +1,24 @@
-import { appendFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { createJournalSink } from '../../src/journal/sink.js'
+import type { CommitBatchImpl } from '../../src/journal/batch-writer.js'
+import {
+  insertRecordRows,
+  journalDbPathFor,
+  openJournalDbShared,
+  type JournalRecordRow,
+} from '../../src/journal/db.js'
 import type { JournalRecord } from '../../src/journal/record.js'
 
 /**
- * Fail-closed hook coverage for the journal sink: single retry on a write
- * failure, drop accounting, the onWriteError hook, and flush(). These tests
- * own tests/journal/sink-failclosed.test.ts exclusively; sink.test.ts and
- * sink-hardening.test.ts must keep passing unedited.
+ * Fail-closed hook coverage for the journal sink: single retry on a failed
+ * commit, drop accounting, the onWriteError hook, and flush(). Faults are
+ * injected through `commitBatchImpl` — the batch-carrier's replacement for
+ * the JSONL-era `appendFileImpl` seam. These tests own
+ * tests/journal/sink-failclosed.test.ts exclusively; sink.test.ts and
+ * sink-hardening.test.ts must keep passing with the same expectations.
  */
 
 const RETRY_DELAY_MS = 1
@@ -28,6 +37,21 @@ function makeRecord(overrides: Partial<JournalRecord> = {}): JournalRecord {
   }
 }
 
+/** The commit the sink would have done on its own, for impls that fail only once. */
+async function commitForReal(dir: string, rows: readonly JournalRecordRow[]): Promise<void> {
+  const handle = await openJournalDbShared(journalDbPathFor(dir))
+  handle.transaction((db) => insertRecordRows(db, rows))
+}
+
+/** The records a session left in `journal.db`, in commit order. */
+async function readRecords(dir: string): Promise<JournalRecord[]> {
+  const handle = await openJournalDbShared(journalDbPathFor(dir))
+  const rows = handle.db
+    .prepare('SELECT doc FROM journal_records ORDER BY seq')
+    .all() as { doc: string }[]
+  return rows.map((row) => JSON.parse(row.doc) as JournalRecord)
+}
+
 beforeEach(async () => {
   tempDir = await mkdtemp(join(tmpdir(), 'mcp-journal-sink-failclosed-'))
 })
@@ -40,20 +64,20 @@ afterEach(async () => {
 describe('fail-closed retry behavior', () => {
   test('retries once after a transient failure and the record survives', async () => {
     let calls = 0
-    const appendFileImpl: typeof appendFile = (async (...args: Parameters<typeof appendFile>) => {
+    const commitBatchImpl: CommitBatchImpl = async (rows) => {
       calls += 1
       if (calls === 1) {
         throw new Error('transient EAGAIN')
       }
-      return appendFile(...args)
-    }) as typeof appendFile
+      return commitForReal(tempDir, rows)
+    }
     const onWriteError = vi.fn()
 
     const sink = createJournalSink('session-1', {
       dir: tempDir,
       retryDelayMs: RETRY_DELAY_MS,
       onWriteError,
-      appendFileImpl,
+      commitBatchImpl,
     })
 
     sink.write(makeRecord({ payload: { seq: 0 } }))
@@ -62,21 +86,20 @@ describe('fail-closed retry behavior', () => {
     expect(calls).toBe(2)
     expect(onWriteError).not.toHaveBeenCalled()
     expect(sink.droppedRecordCount()).toBe(0)
-    const content = await readFile(join(tempDir, 'session-1.jsonl'), 'utf8')
-    expect(content.trimEnd().split('\n')).toHaveLength(1)
+    expect(await readRecords(tempDir)).toHaveLength(1)
   })
 
   test('permanent failure calls onWriteError exactly once per record with a growing dropped count', async () => {
-    const appendFileImpl: typeof appendFile = (async () => {
+    const commitBatchImpl: CommitBatchImpl = async () => {
       throw new Error('permanent ENOSPC')
-    }) as typeof appendFile
+    }
     const onWriteError = vi.fn()
 
     const sink = createJournalSink('session-1', {
       dir: tempDir,
       retryDelayMs: RETRY_DELAY_MS,
       onWriteError,
-      appendFileImpl,
+      commitBatchImpl,
     })
 
     sink.write(makeRecord({ payload: { seq: 0 } }))
@@ -91,14 +114,14 @@ describe('fail-closed retry behavior', () => {
 
   test('onWriteError throwing is swallowed and does not break subsequent writes', async () => {
     let calls = 0
-    const appendFileImpl: typeof appendFile = (async (...args: Parameters<typeof appendFile>) => {
+    const commitBatchImpl: CommitBatchImpl = async (rows) => {
       calls += 1
       if (calls <= 2) {
-        // first record: both the initial attempt and the retry fail
+        // first batch: both the initial attempt and the retry fail
         throw new Error('permanent failure')
       }
-      return appendFile(...args)
-    }) as typeof appendFile
+      return commitForReal(tempDir, rows)
+    }
     const onWriteError = vi.fn(() => {
       throw new Error('callback blew up')
     })
@@ -107,19 +130,21 @@ describe('fail-closed retry behavior', () => {
       dir: tempDir,
       retryDelayMs: RETRY_DELAY_MS,
       onWriteError,
-      appendFileImpl,
+      commitBatchImpl,
     })
 
+    // Flushed apart so the two records travel in separate batches: a batch is
+    // dropped whole, so "the next record still lands" needs a next batch.
     sink.write(makeRecord({ payload: { seq: 0 } }))
+    await sink.flush()
     sink.write(makeRecord({ payload: { seq: 1 } }))
     await expect(sink.close()).resolves.toBeUndefined()
 
     expect(onWriteError).toHaveBeenCalledTimes(1)
     expect(sink.droppedRecordCount()).toBe(1)
-    const content = await readFile(join(tempDir, 'session-1.jsonl'), 'utf8')
-    const lines = content.trimEnd().split('\n')
-    expect(lines).toHaveLength(1)
-    expect(JSON.parse(lines[0] ?? '')).toMatchObject({ payload: { seq: 1 } })
+    const records = await readRecords(tempDir)
+    expect(records).toHaveLength(1)
+    expect(records[0]).toMatchObject({ payload: { seq: 1 } })
   })
 })
 
@@ -134,14 +159,14 @@ describe('droppedRecordCount()', () => {
   })
 
   test('accumulates across multiple permanently failed records', async () => {
-    const appendFileImpl: typeof appendFile = (async () => {
+    const commitBatchImpl: CommitBatchImpl = async () => {
       throw new Error('permanent failure')
-    }) as typeof appendFile
+    }
 
     const sink = createJournalSink('session-1', {
       dir: tempDir,
       retryDelayMs: RETRY_DELAY_MS,
-      appendFileImpl,
+      commitBatchImpl,
     })
 
     expect(sink.droppedRecordCount()).toBe(0)
@@ -163,14 +188,12 @@ describe('flush()', () => {
     sink.write(makeRecord({ payload: { seq: 0 } }))
     await sink.flush()
 
-    let content = await readFile(join(tempDir, 'session-1.jsonl'), 'utf8')
-    expect(content.trimEnd().split('\n')).toHaveLength(1)
+    expect(await readRecords(tempDir)).toHaveLength(1)
 
     sink.write(makeRecord({ payload: { seq: 1 } }))
     await sink.close()
 
-    content = await readFile(join(tempDir, 'session-1.jsonl'), 'utf8')
-    expect(content.trimEnd().split('\n')).toHaveLength(2)
+    expect(await readRecords(tempDir)).toHaveLength(2)
   })
 
   test('does not close the sink', async () => {
@@ -181,8 +204,7 @@ describe('flush()', () => {
     sink.write(makeRecord())
     await sink.close()
 
-    const content = await readFile(join(tempDir, 'session-1.jsonl'), 'utf8')
-    expect(content.trimEnd().split('\n')).toHaveLength(2)
+    expect(await readRecords(tempDir)).toHaveLength(2)
   })
 })
 

@@ -1,24 +1,18 @@
-import { appendFile, chmod, mkdir } from 'node:fs/promises'
-import { join } from 'node:path'
-import { JOURNAL_DIR, JOURNAL_DIR_MODE, JOURNAL_FILE_MODE } from '../config.js'
+import { JOURNAL_DIR } from '../config.js'
+import { getBatchWriter, type CommitBatchImpl } from './batch-writer.js'
+import { journalDbPathFor, type JournalRecordRow } from './db.js'
 import type { JournalRecord } from './record.js'
 import { assertValidSessionId } from './session-id.js'
 
 const NEWLINE = '\n'
-const JSONL_EXTENSION = '.jsonl'
 
-/** Default delay before the single retry after a failed append. */
+/** Default delay before the single retry after a failed commit. */
 export const SINK_RETRY_DELAY_MS = 100
 
-/** Narrow shape of node:fs/promises' appendFile, for test fault injection. */
-type AppendFileImpl = (
-  path: string,
-  data: string,
-  options: { readonly encoding: 'utf8'; readonly mode: number },
-) => Promise<void>
+export type { CommitBatchImpl }
 
 export interface JournalSinkOptions {
-  /** Directory holding per-session JSONL files. Defaults to JOURNAL_DIR. */
+  /** Journal directory holding `journal.db`. Defaults to JOURNAL_DIR. */
   readonly dir?: string
   /**
    * Called after a record's retry also fails, once per dropped record.
@@ -27,98 +21,97 @@ export interface JournalSinkOptions {
    * subsequent writes.
    */
   readonly onWriteError?: (error: unknown, droppedCount: number) => void
-  /** Delay before the single retry after a failed append. Defaults to SINK_RETRY_DELAY_MS. */
+  /**
+   * Delay before the single retry of the batch a record travelled in.
+   * Defaults to SINK_RETRY_DELAY_MS.
+   */
   readonly retryDelayMs?: number
   /**
-   * @internal test-only seam to inject a faulty fs.appendFile for fault
+   * @internal test-only seam to inject a faulty batch commit for fault
    * injection. Not for production use.
    */
-  readonly appendFileImpl?: AppendFileImpl
+  readonly commitBatchImpl?: CommitBatchImpl
 }
 
 export interface JournalSink {
   /**
-   * Fire-and-forget append of one record as a JSONL line. Writes are
-   * serialized internally so concurrent calls never interleave. A failed
-   * append is retried once after `retryDelayMs`; if the retry also fails the
-   * record is dropped (counted in droppedRecordCount()), logged to stderr,
-   * and reported via `onWriteError` if provided. This never throws or rejects.
+   * Fire-and-forget append of one record. Records are buffered and committed
+   * in batches by the per-process writer, so concurrent calls never
+   * interleave and land in call order. A failed commit is retried once after
+   * `retryDelayMs`; if the retry also fails every record in the batch is
+   * dropped (counted in droppedRecordCount()), logged to stderr, and
+   * reported via `onWriteError` if provided. This never throws or rejects.
    * After close() this is a no-op that warns once.
    */
   readonly write: (record: JournalRecord) => void
   /**
-   * Resolves once every write queued so far has settled (success or dropped),
-   * without closing the sink. Safe to call repeatedly, and safe to write
-   * more records after it resolves.
+   * Resolves once every write queued so far has settled (committed or
+   * dropped) — the durability confirmation point the fail-closed gate awaits.
+   * Safe to call repeatedly, and safe to write more records after it
+   * resolves.
    */
   readonly flush: () => Promise<void>
   /**
-   * Resolves once every write queued so far has settled (success or logged
+   * Resolves once every write queued so far has settled (committed or logged
    * failure) and marks the sink closed. Idempotent.
    */
   readonly close: () => Promise<void>
-  /** Total number of records dropped after their retry also failed. */
+  /** Total number of records dropped after their batch's retry also failed. */
   readonly droppedRecordCount: () => number
 }
 
 /**
- * Creates an append-only JSONL sink for one proxy session's journal file.
- * Throws if `sessionId` is not a safe file name.
+ * Creates an append-only sink for one proxy session's journal records
+ * (M4.5 wave 4, ADR-0006). Throws if `sessionId` is not a safe name.
  *
- * The journal holds redacted-but-sensitive traffic, so the directory is
- * created 0700 and files 0600, and the directory is created exactly once per
- * sink rather than on every append.
+ * The sink itself is a thin per-session facade: it extracts the row a record
+ * becomes and hands it to the journal directory's shared batch writer, which
+ * owns buffering, transactions and retry. Durability, file modes and the
+ * directory belong to `journal.db`'s adapter now, not to this module.
+ *
+ * `sessionId` is still validated here even though it travels as a bound SQL
+ * parameter: it also names the session across the CLI and UI surfaces, and
+ * defence in depth is cheaper than reasoning about every consumer.
  */
 export function createJournalSink(sessionId: string, opts: JournalSinkOptions = {}): JournalSink {
   assertValidSessionId(sessionId)
-  const dir = opts.dir ?? JOURNAL_DIR
-  const filePath = join(dir, `${sessionId}${JSONL_EXTENSION}`)
-  const retryDelayMs = opts.retryDelayMs ?? SINK_RETRY_DELAY_MS
-  const doAppend: AppendFileImpl = opts.appendFileImpl ?? appendFile
+  const journalDir = opts.dir ?? JOURNAL_DIR
+  const dbPath = journalDbPathFor(journalDir)
   const onWriteError = opts.onWriteError
 
-  let queue: Promise<void> = Promise.resolve()
-  let dirReady: Promise<unknown> | undefined
+  /**
+   * Production sinks configure nothing and therefore share one writer per
+   * database — that sharing is the point of batching across a `serve`
+   * daemon's many sessions. A caller that configures anything gets its own
+   * instance instead, per the writer's cache rule.
+   */
+  const writerOptions = configuredWriterOptions(opts)
+  const writer =
+    writerOptions === undefined ? getBatchWriter(dbPath) : getBatchWriter(dbPath, writerOptions)
+
+  /** Settlements this sink still owes flush(); a settled record removes itself. */
+  const outstanding = new Set<Promise<void>>()
   let isClosed = false
   let hasWarnedAfterClose = false
   let droppedCount = 0
 
-  /**
-   * Memoized so concurrent and subsequent writes share one mkdir. The chmod
-   * covers directories that already existed: mkdir's `mode` only applies on
-   * creation, so without it a pre-existing journal dir would keep whatever
-   * permissions it was created with.
-   */
-  function ensureDir(): Promise<unknown> {
-    dirReady ??= mkdir(dir, { recursive: true, mode: JOURNAL_DIR_MODE }).then(() =>
-      chmod(dir, JOURNAL_DIR_MODE),
-    )
-    return dirReady
-  }
-
-  async function appendRecord(record: JournalRecord): Promise<void> {
-    await ensureDir()
-    await doAppend(filePath, JSON.stringify(record) + NEWLINE, {
-      encoding: 'utf8',
-      mode: JOURNAL_FILE_MODE,
-    })
-  }
-
-  async function appendWithRetry(record: JournalRecord): Promise<void> {
-    try {
-      await appendRecord(record)
+  function write(record: JournalRecord): void {
+    if (isClosed) {
+      warnWriteAfterClose()
       return
-    } catch {
-      // fall through to the single retry below
     }
 
-    await delay(retryDelayMs)
-
-    try {
-      await appendRecord(record)
-    } catch (error: unknown) {
-      handleFinalFailure(error)
-    }
+    const settled = new Promise<void>((resolve) => {
+      writer.enqueue(rowOf(sessionId, record), (result) => {
+        try {
+          if (!result.ok) handleFinalFailure(result.error)
+        } finally {
+          resolve()
+        }
+      })
+    })
+    outstanding.add(settled)
+    void settled.then(() => outstanding.delete(settled))
   }
 
   function handleFinalFailure(error: unknown): void {
@@ -134,14 +127,6 @@ export function createJournalSink(sessionId: string, opts: JournalSinkOptions = 
     }
   }
 
-  function write(record: JournalRecord): void {
-    if (isClosed) {
-      warnWriteAfterClose()
-      return
-    }
-    queue = queue.then(() => appendWithRetry(record))
-  }
-
   function warnWriteAfterClose(): void {
     if (hasWarnedAfterClose) {
       return
@@ -153,12 +138,15 @@ export function createJournalSink(sessionId: string, opts: JournalSinkOptions = 
   }
 
   async function flush(): Promise<void> {
-    await queue
+    // Snapshot first: only records enqueued BEFORE the call are promised.
+    const pending = [...outstanding]
+    await writer.flushNow()
+    await Promise.all(pending)
   }
 
   async function close(): Promise<void> {
     isClosed = true
-    await queue
+    await flush()
   }
 
   return {
@@ -169,11 +157,36 @@ export function createJournalSink(sessionId: string, opts: JournalSinkOptions = 
   }
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms)
-    timer.unref?.()
-  })
+/**
+ * The writer options a sink passes on, or undefined when it configures
+ * nothing — the difference between getting the shared writer and a dedicated
+ * one, so it is computed rather than defaulted.
+ */
+function configuredWriterOptions(
+  opts: JournalSinkOptions,
+): { readonly retryDelayMs?: number; readonly commitBatchImpl?: CommitBatchImpl } | undefined {
+  if (opts.retryDelayMs === undefined && opts.commitBatchImpl === undefined) return undefined
+  return {
+    ...(opts.retryDelayMs !== undefined ? { retryDelayMs: opts.retryDelayMs } : {}),
+    ...(opts.commitBatchImpl !== undefined ? { commitBatchImpl: opts.commitBatchImpl } : {}),
+  }
+}
+
+/**
+ * The record's row: `doc` carries the whole record unchanged (the source of
+ * truth on the way out), the other columns are denormalized copies that only
+ * keep indexed scans narrow.
+ */
+function rowOf(sessionId: string, record: JournalRecord): JournalRecordRow {
+  return {
+    sessionId,
+    recordId: record.id,
+    ts: record.ts,
+    direction: record.direction,
+    kind: record.kind,
+    method: record.method ?? null,
+    doc: JSON.stringify(record),
+  }
 }
 
 function logWriteError(sessionId: string, error: unknown): void {

@@ -113,10 +113,10 @@ export interface RunWrapOptions {
    */
   readonly failClosed?: boolean
   /**
-   * @internal test-only seam for injecting a failing journal append, so
+   * @internal test-only seam for injecting a failing journal batch commit, so
    * fail-closed behavior can be exercised without an unwritable disk.
    */
-  readonly journalAppendFileImpl?: JournalSinkOptions['appendFileImpl']
+  readonly journalCommitBatchImpl?: JournalSinkOptions['commitBatchImpl']
 }
 
 /**
@@ -259,8 +259,8 @@ function sinkOptionsOf(
 ): JournalSinkOptions {
   return {
     ...(opts.dir !== undefined ? { dir: opts.dir } : {}),
-    ...(opts.journalAppendFileImpl !== undefined
-      ? { appendFileImpl: opts.journalAppendFileImpl }
+    ...(opts.journalCommitBatchImpl !== undefined
+      ? { commitBatchImpl: opts.journalCommitBatchImpl }
       : {}),
     ...(isFailClosed ? { onWriteError: journalFailure.report } : {}),
   }

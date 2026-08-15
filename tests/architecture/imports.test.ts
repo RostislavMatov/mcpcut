@@ -337,3 +337,69 @@ describe('the admin UI is an operator surface, not a traffic or secret surface',
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// The storage boundary (M4.5, ADR-0006). `src/store/sqlite.ts` is the single
+// point of contact with `node:sqlite`: opening, PRAGMAs, transactions and the
+// busy classification all live there, so a change of driver or of that
+// module's API surface is one file's problem. Until now that was a comment in
+// the module and a habit; here it is a rule.
+// ---------------------------------------------------------------------------
+
+/** The one module allowed to import `node:sqlite`. Everything else goes through it. */
+const SQLITE_ADAPTER = 'src/store/sqlite.ts'
+
+/**
+ * Matches the driver specifier only as an IMPORT specifier, never as prose:
+ * `src/store/sqlite.ts` and several journal modules name `node:sqlite` in
+ * their doc comments, and a raw substring search over the source would call
+ * every one of them an offender.
+ */
+function isSqliteDriverSpecifier(specifier: string): boolean {
+  return specifier === 'node:sqlite' || specifier.startsWith('node:sqlite/')
+}
+
+/** Every `.ts` under `src` except the adapter — the whole set the rule covers. */
+function nonAdapterFiles(): string[] {
+  return collectTransportFiles(PROJECT_ROOT, ['src'], new Set([SQLITE_ADAPTER]))
+}
+
+describe('node:sqlite is reached through the store adapter alone', () => {
+  test('nothing outside the store adapter imports the node:sqlite driver', () => {
+    // One case rather than one per file, mirroring the src-wide UI rule above:
+    // the offender list is the failure message, and enumerating every module
+    // in `src` would drown the suite in cases.
+    const offenders = nonAdapterFiles().filter((relativePath) =>
+      importSpecifiersOf(readFileSync(join(PROJECT_ROOT, relativePath), 'utf8')).some(
+        isSqliteDriverSpecifier,
+      ),
+    )
+
+    expect(offenders).toEqual([])
+  })
+
+  test('the adapter itself does import the driver, so the rule is not vacuous', () => {
+    const source = readFileSync(join(PROJECT_ROOT, SQLITE_ADAPTER), 'utf8')
+
+    expect(importSpecifiersOf(source).filter(isSqliteDriverSpecifier)).toEqual(['node:sqlite'])
+  })
+
+  test('the covered set is the whole of src minus the adapter', () => {
+    const covered = nonAdapterFiles()
+
+    expect(covered).not.toContain(SQLITE_ADAPTER)
+    // Sampled from the modules that talk to the database THROUGH the adapter:
+    // if any of them ever imported the driver directly, this rule is what
+    // would catch it.
+    for (const expected of ['src/journal/db.ts', 'src/journal/batch-writer.ts']) {
+      expect(covered).toContain(expected)
+    }
+  })
+
+  test('the matcher reads import specifiers, not doc comments that mention the driver', () => {
+    expect(isSqliteDriverSpecifier('node:sqlite')).toBe(true)
+    expect(isSqliteDriverSpecifier('../store/sqlite.js')).toBe(false)
+    expect(importSpecifiersOf("import { DatabaseSync } from 'node:sqlite'")).toEqual(['node:sqlite'])
+    expect(importSpecifiersOf('/** never imports node:sqlite directly */')).toEqual([])
+  })
+})

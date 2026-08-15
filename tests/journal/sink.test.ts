@@ -1,8 +1,9 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { createJournalSink } from '../../src/journal/sink.js'
+import { journalDbPathFor, openJournalDbShared } from '../../src/journal/db.js'
 import type { JournalRecord } from '../../src/journal/record.js'
 
 let tempDir: string
@@ -19,6 +20,15 @@ function makeRecord(overrides: Partial<JournalRecord> = {}): JournalRecord {
   }
 }
 
+/** The records a session left in `journal.db`, in commit order. */
+async function readRecords(dir: string): Promise<JournalRecord[]> {
+  const handle = await openJournalDbShared(journalDbPathFor(dir))
+  const rows = handle.db
+    .prepare('SELECT doc FROM journal_records ORDER BY seq')
+    .all() as { doc: string }[]
+  return rows.map((row) => JSON.parse(row.doc) as JournalRecord)
+}
+
 beforeEach(async () => {
   tempDir = await mkdtemp(join(tmpdir(), 'mcp-journal-sink-test-'))
 })
@@ -28,16 +38,38 @@ afterEach(async () => {
 })
 
 describe('createJournalSink', () => {
-  test('writes a single record as one JSONL line', async () => {
+  test('writes a single record as one row whose doc round-trips', async () => {
     const sink = createJournalSink('session-1', { dir: tempDir })
 
     sink.write(makeRecord({ payload: { n: 1 } }))
     await sink.close()
 
-    const content = await readFile(join(tempDir, 'session-1.jsonl'), 'utf8')
-    const lines = content.trimEnd().split('\n')
-    expect(lines).toHaveLength(1)
-    expect(JSON.parse(lines[0] ?? '')).toMatchObject({ payload: { n: 1 } })
+    const handle = await openJournalDbShared(journalDbPathFor(tempDir))
+    const rows = handle.db
+      .prepare(
+        'SELECT session_id AS sessionId, record_id AS recordId, ts, direction, kind, method, doc ' +
+          'FROM journal_records ORDER BY seq',
+      )
+      .all() as {
+      sessionId: string
+      recordId: string
+      ts: string
+      direction: string
+      kind: string
+      method: string | null
+      doc: string
+    }[]
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      sessionId: 'session-1',
+      recordId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      ts: new Date(0).toISOString(),
+      direction: 'client→server',
+      kind: 'notification',
+      method: null,
+    })
+    expect(JSON.parse(rows[0]?.doc ?? '')).toMatchObject({ payload: { n: 1 } })
   })
 
   test('creates the journal directory recursively on first write', async () => {
@@ -47,11 +79,10 @@ describe('createJournalSink', () => {
     sink.write(makeRecord())
     await sink.close()
 
-    const content = await readFile(join(nestedDir, 'session-1.jsonl'), 'utf8')
-    expect(content.length).toBeGreaterThan(0)
+    expect(await readRecords(nestedDir)).toHaveLength(1)
   })
 
-  test('many concurrent writes end up as valid one-per-line JSONL, in call order, without interleaving', async () => {
+  test('many concurrent writes end up as one row each, in call order, without interleaving', async () => {
     const sink = createJournalSink('session-1', { dir: tempDir })
     const total = 50
 
@@ -60,11 +91,8 @@ describe('createJournalSink', () => {
     }
     await sink.close()
 
-    const content = await readFile(join(tempDir, 'session-1.jsonl'), 'utf8')
-    const lines = content.trimEnd().split('\n')
-    expect(lines).toHaveLength(total)
-
-    const parsed = lines.map((line) => JSON.parse(line) as JournalRecord)
+    const parsed = await readRecords(tempDir)
+    expect(parsed).toHaveLength(total)
     parsed.forEach((record, index) => {
       expect((record.payload as { seq: number }).seq).toBe(index)
     })
@@ -78,13 +106,12 @@ describe('createJournalSink', () => {
     sink.write(makeRecord({ payload: { seq: 2 } }))
     await sink.close()
 
-    const content = await readFile(join(tempDir, 'session-1.jsonl'), 'utf8')
-    expect(content.trimEnd().split('\n')).toHaveLength(3)
+    expect(await readRecords(tempDir)).toHaveLength(3)
   })
 
   test('a write error (unwritable directory) is caught, logged to stderr, and never thrown or rejected', async () => {
-    // Force mkdir(recursive) to fail deterministically: a *file* already
-    // exists at a path segment the sink needs to create as a directory.
+    // Force the database open to fail deterministically: a *file* already
+    // exists at a path segment the store needs to create as a directory.
     const blockerFile = join(tempDir, 'blocked')
     await writeFile(blockerFile, 'i am a file, not a directory')
     const brokenDir = join(blockerFile, 'subdir')
@@ -126,7 +153,6 @@ describe('createJournalSink', () => {
     sink.write(makeRecord())
     await sink.close()
 
-    const content = await readFile(join(tempDir, 'session-1.jsonl'), 'utf8')
-    expect(content.length).toBeGreaterThan(0)
+    expect(await readRecords(tempDir)).toHaveLength(1)
   })
 })

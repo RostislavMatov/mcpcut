@@ -66,7 +66,7 @@ export interface StartConnectSessionArgs {
   /** One complete, newline-terminated diagnostic line. Always stderr-bound. */
   readonly onDiagnostic: (line: string) => void
   /** @internal test-only seam for exercising fail-closed without an unwritable disk. */
-  readonly journalAppendFileImpl?: JournalSinkOptions['appendFileImpl']
+  readonly journalCommitBatchImpl?: JournalSinkOptions['commitBatchImpl']
 }
 
 export interface ConnectSessionHandle {
@@ -148,8 +148,8 @@ export function startConnectSession(args: StartConnectSessionArgs): ConnectSessi
   const sink = createJournalSink(args.sessionId, {
     dir: journalDir,
     ...(isFailClosed ? { onWriteError: failure.report } : {}),
-    ...(args.journalAppendFileImpl !== undefined
-      ? { appendFileImpl: args.journalAppendFileImpl }
+    ...(args.journalCommitBatchImpl !== undefined
+      ? { commitBatchImpl: args.journalCommitBatchImpl }
       : {}),
   })
   const recordBuilder = createRecordBuilder(

@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { PassThrough, Writable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
@@ -6,6 +5,7 @@ import { ulid } from 'ulid'
 import type { JournalRecord } from '../../src/journal/record.js'
 import type { Policy } from '../../src/policy/schema.js'
 import { runWrap, type RunWrapOptions } from '../../src/proxy/wrap.js'
+import { readJournalRecords } from '../support/journal-rows.js'
 
 /**
  * Shared test harness for the proxy lifecycle tests: fixture paths, polling,
@@ -46,14 +46,7 @@ export async function waitUntil(predicate: () => boolean): Promise<void> {
   }
 }
 
-/** Reads and parses every JSONL record written for a session. */
-export async function readJournalRecords(dir: string, sessionId: string): Promise<JournalRecord[]> {
-  const content = await readFile(join(dir, `${sessionId}.jsonl`), 'utf8')
-  return content
-    .split('\n')
-    .filter((line) => line.trim().length > 0)
-    .map((line) => JSON.parse(line) as JournalRecord)
-}
+export { readJournalRecords }
 
 export interface ClientHarness {
   readonly clientOutbox: PassThrough
@@ -172,7 +165,7 @@ export interface StartProxySessionArgs {
   readonly approvalsBaseDir?: string
   readonly inventoryStorePath?: string
   readonly failClosed?: boolean
-  readonly journalAppendFileImpl?: RunWrapOptions['journalAppendFileImpl']
+  readonly journalCommitBatchImpl?: RunWrapOptions['journalCommitBatchImpl']
 }
 
 /** Grace periods short enough for tests, long enough not to be flaky under load. */
@@ -202,8 +195,8 @@ export function startProxySession(args: StartProxySessionArgs): StartedSession {
     ...(args.approvalsBaseDir !== undefined ? { approvalsBaseDir: args.approvalsBaseDir } : {}),
     ...(args.inventoryStorePath !== undefined ? { inventoryStorePath: args.inventoryStorePath } : {}),
     ...(args.failClosed !== undefined ? { failClosed: args.failClosed } : {}),
-    ...(args.journalAppendFileImpl !== undefined
-      ? { journalAppendFileImpl: args.journalAppendFileImpl }
+    ...(args.journalCommitBatchImpl !== undefined
+      ? { journalCommitBatchImpl: args.journalCommitBatchImpl }
       : {}),
   })
   return { sessionId, harness, runPromise }

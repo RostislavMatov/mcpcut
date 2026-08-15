@@ -90,11 +90,11 @@ export interface ServeCommandOptions {
   readonly onListening?: (handle: ServeHandle) => void
   readonly killEscalationMs?: number
   /**
-   * @internal test-only seam for injecting a failing journal append (the
-   * same seam `RunWrapOptions` exposes), so fail-closed behaviour can be
+   * @internal test-only seam for injecting a failing journal batch commit
+   * (the same seam `RunWrapOptions` exposes), so fail-closed behaviour can be
    * exercised without an unwritable disk.
    */
-  readonly journalAppendFileImpl?: JournalSinkOptions['appendFileImpl']
+  readonly journalCommitBatchImpl?: JournalSinkOptions['commitBatchImpl']
 }
 
 const DEFAULT_IO: ServeCliIo = { stdout: process.stdout, stderr: process.stderr }
@@ -275,8 +275,8 @@ function buildFront(
       ? { revocationPollIntervalMs: opts.revocationPollIntervalMs }
       : {}),
     failClosed: policy.journal.failClosed,
-    ...(opts.journalAppendFileImpl !== undefined
-      ? { journalAppendFileImpl: opts.journalAppendFileImpl }
+    ...(opts.journalCommitBatchImpl !== undefined
+      ? { journalCommitBatchImpl: opts.journalCommitBatchImpl }
       : {}),
   })
 

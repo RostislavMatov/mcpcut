@@ -192,10 +192,12 @@ describe('e2e: gate metric — server keys exist only inside the vault', () => {
     expect(vaultFile.length).toBeGreaterThan(0)
     expect(vaultFile).not.toContain(SECRET_MARKER)
     // The child's env dump did reach the journal — with the value redacted,
-    // which is the only reason the marker is absent from it.
-    const journal = await read(`${sessionId}.jsonl`)
-    expect(journal).toContain('FIXTURE_TOKEN')
-    expect(journal).toContain('[REDACTED]')
+    // which is the only reason the marker is absent from it. Swept across
+    // every persisted rendering: a committed record may still live only in
+    // journal.db's -wal sidecar until a checkpoint runs.
+    const journalBytes = await persistedBytes()
+    expect(journalBytes.some((rendering) => rendering.includes('FIXTURE_TOKEN'))).toBe(true)
+    expect(journalBytes.some((rendering) => rendering.includes('[REDACTED]'))).toBe(true)
 
     // Now every byte on disk, stores included. The registry's vault REFERENCE
     // and the agents document's `tokenHash` are asserted PRESENT first, so

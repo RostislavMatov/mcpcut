@@ -514,7 +514,7 @@ describe('runServe: live-session behaviour', () => {
       grant: '*',
       argv: ['--fail-closed'],
       serveOptions: {
-        journalAppendFileImpl: () => Promise.reject(new Error('disk full')),
+        journalCommitBatchImpl: () => Promise.reject(new Error('disk full')),
       },
     })
     await addStdioServer(fixture, POLICY_SERVER)
