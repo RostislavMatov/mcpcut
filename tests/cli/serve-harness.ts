@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -8,6 +8,7 @@ import { runServe, type ServeCommandOptions, type ServeHandle } from '../../src/
 import type { JournalRecord } from '../../src/journal/record.js'
 import { createRegistryStore, type RegistryStore } from '../../src/registry/store.js'
 import { createVaultStore, type VaultStore } from '../../src/vault/store.js'
+import { readJournalRecords } from '../support/journal-rows.js'
 
 /**
  * Shared plumbing for the `serve` tests (M3 Task 13): a real `runServe` on an
@@ -209,17 +210,9 @@ export async function startServe(opts: StartServeOptions = {}): Promise<ServeFix
   }
 }
 
-/** Every journal record written into `journalDir`, in file-name order. */
+/** Every journal record written into `journalDir`, across all sessions, in commit order. */
 export async function readJournal(journalDir: string): Promise<JournalRecord[]> {
-  const entries = await readdir(journalDir)
-  const records: JournalRecord[] = []
-  for (const entry of entries.filter((name) => name.endsWith('.jsonl')).sort()) {
-    const text = await readFile(join(journalDir, entry), 'utf8')
-    for (const line of text.split('\n').filter((candidate) => candidate.trim().length > 0)) {
-      records.push(JSON.parse(line) as JournalRecord)
-    }
-  }
-  return records
+  return readJournalRecords(journalDir)
 }
 
 /** Spawns one of the HTTP MCP fixtures and returns its `/mcp` endpoint URL. */

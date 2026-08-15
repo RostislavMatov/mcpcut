@@ -1,10 +1,10 @@
-import { existsSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { agentScope } from '../../src/agents/scope.js'
 import type { AgentGrant } from '../../src/agents/schema.js'
+import { journalDbPathFor } from '../../src/journal/db.js'
 import { createJournalSink, type JournalSink } from '../../src/journal/sink.js'
 import type { JournalRecord } from '../../src/journal/record.js'
 import { createGrantRegistry } from '../../src/policy/approvals/grants.js'
@@ -27,7 +27,7 @@ import type { Verdict } from '../../src/proxy/pipeline.js'
 import type { Frame } from '../../src/protocol/split.js'
 import { clientMessage, serverMessage, type McpMessage, type MessageVerdict } from '../../src/transport/message.js'
 import { frameToMessage, messageToChunk } from '../../src/transport/stdio-adapter.js'
-import { readJournalRecords } from './harness.js'
+import { readJournalRecords } from '../support/journal-rows.js'
 
 /**
  * M3 gate tests: the message-level core (`createMessagePolicyGate`), its
@@ -154,11 +154,11 @@ function createMessageHarness(opts: HarnessOptions = {}): MessageHarness {
   return {
     gate,
     answered,
-    journalPath: join(tempDir, `${sessionId}.jsonl`),
+    journalPath: journalDbPathFor(tempDir),
     decisions: async () => {
       await sink.flush()
-      // A session that journaled nothing never creates its file at all.
-      if (!existsSync(join(tempDir, `${sessionId}.jsonl`))) return []
+      // A session that journaled nothing never creates journal.db at all;
+      // readJournalRecords already returns [] in that case.
       const records = await readJournalRecords(tempDir, sessionId)
       return records.filter((record) => record.kind === 'decision')
     },

@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -26,6 +25,7 @@ import {
 import type { Verdict } from '../../src/proxy/pipeline.js'
 import type { Frame } from '../../src/protocol/split.js'
 import type { OrderedWriter } from '../../src/proxy/writer.js'
+import { readJournalRecords } from '../support/journal-rows.js'
 
 const SERVER_NAME = 'testsrv'
 const SESSION_ID = 'session-gate-1'
@@ -191,24 +191,15 @@ function createHarness(opts: HarnessOptions = {}): GateHarness {
   return { gate, written, clientWriter: writer }
 }
 
-/** All decision records currently on disk for this session. */
-function readDecisionsSync(): JournalRecord[] {
-  let text: string
-  try {
-    text = readFileSync(join(tempDir, `${SESSION_ID}.jsonl`), 'utf8')
-  } catch {
-    return []
-  }
-  return text
-    .split('\n')
-    .filter((line) => line.length > 0)
-    .map((line) => JSON.parse(line) as JournalRecord)
-    .filter((record) => record.kind === 'decision')
+/** All decision records currently on disk for this session, with no explicit flush. */
+async function readDecisionsRaw(): Promise<JournalRecord[]> {
+  const records = await readJournalRecords(tempDir, SESSION_ID)
+  return records.filter((record) => record.kind === 'decision')
 }
 
 async function readDecisions(): Promise<JournalRecord[]> {
   await sink.flush()
-  return readDecisionsSync()
+  return readDecisionsRaw()
 }
 
 function parseWritten(bytes: Buffer): Record<string, any> {
@@ -923,9 +914,9 @@ describe('createPolicyGate: fail-closed journaling', () => {
     const verdict = await gate.gateClientMessage(toolCall(1, 'read_file'))
 
     expect(verdict).toEqual({ action: 'forward' })
-    // Read synchronously, with no flush: if the gate had not awaited the
-    // sink, the record would still be queued in memory here.
-    expect(readDecisionsSync()).toHaveLength(1)
+    // Read with no explicit flush: if the gate had not awaited the sink, the
+    // record would still be queued in memory here.
+    expect(await readDecisionsRaw()).toHaveLength(1)
   })
 
   test('a denied call is only answered after its decision record is on disk', async () => {
@@ -936,7 +927,7 @@ describe('createPolicyGate: fail-closed journaling', () => {
     await gate.gateClientMessage(toolCall(1, 'write_file'))
 
     expect(written).toHaveLength(1)
-    expect(readDecisionsSync()).toHaveLength(1)
+    expect(await readDecisionsRaw()).toHaveLength(1)
   })
 })
 

@@ -103,7 +103,7 @@ export interface ConnectDeps {
   readonly agentsStore?: Pick<AgentsStore, 'findAgentByToken' | 'getAgent'>
   readonly registryStore?: Pick<RegistryStore, 'getServer' | 'listServers'>
   /** @internal test-only seam for exercising fail-closed without an unwritable disk. */
-  readonly journalAppendFileImpl?: StartConnectSessionArgs['journalAppendFileImpl']
+  readonly journalCommitBatchImpl?: StartConnectSessionArgs['journalCommitBatchImpl']
 }
 
 const DEFAULT_IO: ConnectCliIo = { stderr: process.stderr }
@@ -284,8 +284,8 @@ function sessionOptionsOf(deps: ConnectDeps): Partial<StartConnectSessionArgs> {
     ...(deps.revocationPollIntervalMs !== undefined
       ? { revocationPollIntervalMs: deps.revocationPollIntervalMs }
       : {}),
-    ...(deps.journalAppendFileImpl !== undefined
-      ? { journalAppendFileImpl: deps.journalAppendFileImpl }
+    ...(deps.journalCommitBatchImpl !== undefined
+      ? { journalCommitBatchImpl: deps.journalCommitBatchImpl }
       : {}),
   }
 }

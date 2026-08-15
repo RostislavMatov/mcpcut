@@ -541,8 +541,8 @@ describe('runWrap fail-closed journaling', () => {
       policy: policyOf({ defaultDecision: 'allow' }),
       serverName: SERVER_NAME,
       failClosed: true,
-      // A journal append that can never succeed, however often it is retried.
-      journalAppendFileImpl: () =>
+      // A journal batch commit that can never succeed, however often it is retried.
+      journalCommitBatchImpl: () =>
         Promise.reject(
           Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' }),
         ),

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { ulid } from 'ulid'
 import { createShutdownController, isPipeGoneError, runWrap } from '../../src/proxy/wrap.js'
 import type { ServerHandle } from '../../src/proxy/spawn.js'
+import { journalDbPathFor } from '../../src/journal/db.js'
 import type { JournalRecord } from '../../src/journal/record.js'
 import {
   BURST_SERVER_PATH,
@@ -199,11 +200,11 @@ describe('runWrap lifecycle', () => {
     harness.clientOutbox.write(requestLine(1, 'tools/list'))
     await runPromise
 
-    // Every line parses: the sink was closed after the last queued write.
+    // Every row committed: the sink was closed after the last queued write.
     const records = await readJournalRecords(journalDir, sessionId)
     expect(records.some((record) => record.direction === 'client→server')).toBe(true)
     expect(records.some((record) => record.direction === 'server-stderr')).toBe(true)
-    const journalFile = await stat(join(journalDir, `${sessionId}.jsonl`))
+    const journalFile = await stat(journalDbPathFor(journalDir))
     expect(journalFile.size).toBeGreaterThan(0)
   })
 

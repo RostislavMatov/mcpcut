@@ -1,9 +1,10 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { ulid } from 'ulid'
 import { runWrap } from '../../src/proxy/wrap.js'
+import { collectPersistedBytes } from '../support/persisted-bytes.js'
 import {
   FAKE_SERVER_PATH,
   createClientHarness,
@@ -78,9 +79,15 @@ describe('runWrap', () => {
     harness.clientOutbox.end()
     await runPromise
 
-    const rawJournalContent = await readFile(join(journalDir, `${sessionId}.jsonl`), 'utf8')
-    expect(rawJournalContent).not.toContain('sekret123')
-    expect(rawJournalContent).toContain('[REDACTED]')
+    // Sweep every byte the sink persisted: journal.db and its -wal sidecar,
+    // since a committed record may still live only in the WAL until a
+    // checkpoint runs.
+    const { fileNames, renderings } = await collectPersistedBytes(journalDir)
+    expect(fileNames).toContain('journal.db') // positive sentinel: the sweep reached the store
+    for (const rendering of renderings) {
+      expect(rendering).not.toContain('sekret123')
+      expect(rendering).toContain('[REDACTED]')
+    }
 
     const records = await readJournalRecords(journalDir, sessionId)
     const requestRecord = records.find(

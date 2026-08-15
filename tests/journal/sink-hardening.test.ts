@@ -1,16 +1,17 @@
-import { mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { createJournalSink } from '../../src/journal/sink.js'
+import { journalDbPathFor, openJournalDbShared } from '../../src/journal/db.js'
 import { JOURNAL_DIR_MODE, JOURNAL_FILE_MODE } from '../../src/config.js'
 import type { JournalRecord } from '../../src/journal/record.js'
 
 /**
  * Hardening regressions for the journal sink: restrictive permissions on
- * the journal directory and files, safe behavior after close, and session
- * id validation. Journal files hold redacted-but-sensitive traffic, so they
- * must never be group- or world-readable.
+ * the journal directory and its database, safe behavior after close, and
+ * session id validation. The journal holds redacted-but-sensitive traffic,
+ * so it must never be group- or world-readable.
  */
 
 const PERMISSION_MASK = 0o777
@@ -29,6 +30,15 @@ function makeRecord(): JournalRecord {
   }
 }
 
+/** The records a session left in `journal.db`, in commit order. */
+async function readRecords(dir: string): Promise<JournalRecord[]> {
+  const handle = await openJournalDbShared(journalDbPathFor(dir))
+  const rows = handle.db
+    .prepare('SELECT doc FROM journal_records ORDER BY seq')
+    .all() as { doc: string }[]
+  return rows.map((row) => JSON.parse(row.doc) as JournalRecord)
+}
+
 beforeEach(async () => {
   tempDir = await mkdtemp(join(tmpdir(), 'mcp-journal-sink-hardening-'))
 })
@@ -39,16 +49,19 @@ afterEach(async () => {
 })
 
 describe('journal file permissions', () => {
-  test.skipIf(isWindows)('creates the journal file with owner-only permissions (0600)', async () => {
-    const dir = join(tempDir, 'journal')
-    const sink = createJournalSink('session-1', { dir })
+  test.skipIf(isWindows)(
+    'creates the journal database with owner-only permissions (0600)',
+    async () => {
+      const dir = join(tempDir, 'journal')
+      const sink = createJournalSink('session-1', { dir })
 
-    sink.write(makeRecord())
-    await sink.close()
+      sink.write(makeRecord())
+      await sink.close()
 
-    const fileStat = await stat(join(dir, 'session-1.jsonl'))
-    expect(fileStat.mode & PERMISSION_MASK).toBe(JOURNAL_FILE_MODE)
-  })
+      const fileStat = await stat(journalDbPathFor(dir))
+      expect(fileStat.mode & PERMISSION_MASK).toBe(JOURNAL_FILE_MODE)
+    },
+  )
 
   test.skipIf(isWindows)(
     'creates the journal directory with owner-only permissions (0700)',
@@ -81,7 +94,7 @@ describe('journal file permissions', () => {
 })
 
 describe('write after close', () => {
-  test('a write after close is a no-op that does not reach the file', async () => {
+  test('a write after close is a no-op that does not reach the journal', async () => {
     vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
     const sink = createJournalSink('session-1', { dir: tempDir })
 
@@ -90,8 +103,7 @@ describe('write after close', () => {
     sink.write(makeRecord())
     await sink.close()
 
-    const content = await readFile(join(tempDir, 'session-1.jsonl'), 'utf8')
-    expect(content.trimEnd().split('\n')).toHaveLength(1)
+    expect(await readRecords(tempDir)).toHaveLength(1)
   })
 
   test('warns exactly once no matter how many writes arrive after close', async () => {

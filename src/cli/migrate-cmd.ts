@@ -4,6 +4,7 @@ import { createAgentsStore } from '../agents/store.js'
 import { ADMINS_FILE_NAME } from '../admin/constants.js'
 import { createAdminStore } from '../admin/store.js'
 import { JOURNAL_DIR } from '../config.js'
+import { migrateJournalFiles, type JournalMigrationResult } from '../journal/import.js'
 import {
   migrateApprovalsQueue,
   type ApprovalsMigrationResult,
@@ -46,8 +47,10 @@ export interface MigrateCommandOptions {
  * import. Kept to exactly the four M4.5-wave-2 stores (ADR-0006); the
  * approvals queue is reported separately below — it is not a `*.json` file
  * but a directory pair (`pending/`, `resolved/`) with its own status set
- * (M4.5 wave 3) — and the journal itself is a later wave with no legacy
- * state to import.
+ * (M4.5 wave 3) — and the journal's own legacy `*.jsonl` files are reported
+ * after it, via their own EXPLICIT (not lazy) importer: a journal file can
+ * run to gigabytes, so unlike the stores above it is never imported as the
+ * side effect of a read (M4.5 wave 4, `src/journal/import.ts`).
  */
 const STATE_FILES: ReadonlyArray<{
   readonly fileName: string
@@ -101,6 +104,20 @@ function approvalsStatusLabel(result: ApprovalsMigrationResult): string {
   }
 }
 
+/** The report line's left-hand name for the journal's legacy files — a glob, not a single basename. */
+const JOURNAL_FILES_LABEL = '*.jsonl'
+
+function journalStatusLabel(result: JournalMigrationResult): string {
+  switch (result.status) {
+    case 'imported':
+      return `imported (${result.recordCount} records from ${result.sessionCount} sessions)`
+    case 'already-migrated':
+      return 'already migrated'
+    case 'no-files':
+      return 'no files'
+  }
+}
+
 /** Errors this command converts into an exit-1 message instead of a crash. */
 const EXPECTED_ERRORS = [StoreCorruptError, StoreLockError] as const
 
@@ -148,6 +165,13 @@ export async function runMigrateCommand(
     const approvalsResult = await migrateApprovalsQueue(journalDir)
     io.stdout.write(`state: ${APPROVALS_QUEUE_LABEL} -> ${approvalsStatusLabel(approvalsResult)}\n`)
     if (approvalsResult.status === 'imported') importedCount += 1
+
+    // Reported after approvals, inside the same try: a halt on an earlier
+    // store (the `catch` below) never reaches this line either. The journal
+    // counts as ONE store in the closing summary, whatever its session count.
+    const journalResult = await migrateJournalFiles(journalDir)
+    io.stdout.write(`journal: ${JOURNAL_FILES_LABEL} -> ${journalStatusLabel(journalResult)}\n`)
+    if (journalResult.status === 'imported') importedCount += 1
   } catch (error: unknown) {
     if (isExpectedError(error)) {
       io.stderr.write(`${error.message}\n`)

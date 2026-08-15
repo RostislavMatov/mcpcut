@@ -1,5 +1,13 @@
 import { join } from 'node:path'
 import { JOURNAL_DIR } from '../config.js'
+import { dbHasSession, dbSearchAllSessions, dbSearchSession } from './db-read.js'
+import {
+  armOptions,
+  isShadowedByDb,
+  mergeCrossSessionResults,
+  NO_SPEND,
+  openJournalDbIfPresent,
+} from './read-routing.js'
 import {
   isBlankLine,
   journalPath,
@@ -15,6 +23,17 @@ import {
   textNeedleOf,
   type JournalFilters,
 } from './search-filters.js'
+import {
+  CROSS_SESSION_DEFAULT_LIMIT,
+  CROSS_SESSION_MAX_BYTES,
+  CROSS_SESSION_MAX_FILES,
+  CROSS_SESSION_TIME_BUDGET_MS,
+  DEADLINE_CHECK_LINE_INTERVAL,
+  DEFAULT_PAGE_LIMIT,
+  MAX_SCANNED_LINES_PER_SESSION,
+  normalizeLimit,
+  normalizeOffset,
+} from './search-limits.js'
 import { assertValidSessionId } from './session-id.js'
 
 /**
@@ -33,33 +52,17 @@ import { assertValidSessionId } from './session-id.js'
  *   partial output is worse than a refusal in an audit product.
  */
 
-/** Page size used when the caller does not ask for one. */
-export const DEFAULT_PAGE_LIMIT = 100
-
-/** Largest page any caller can ask for; larger requests are clamped. */
-export const MAX_PAGE_LIMIT = 1000
-
-/** Lines one session search may walk before the page is marked truncated. */
-export const MAX_SCANNED_LINES_PER_SESSION = 200_000
-
-/** Default hit ceiling for a cross-session search. */
-export const CROSS_SESSION_DEFAULT_LIMIT = 200
-
-/** Files a cross-session search may open before it stops. */
-export const CROSS_SESSION_MAX_FILES = 50
-
-/** Bytes a cross-session search may read before it stops. */
-export const CROSS_SESSION_MAX_BYTES = 64 * 1024 * 1024
-
-/** Wall-clock budget for one cross-session search. */
-export const CROSS_SESSION_TIME_BUDGET_MS = 3000
-
-/**
- * Lines between two clock reads inside one file. Checking the deadline on
- * every line would cost a clock call per record; checking only at file
- * boundaries would let one huge file overrun the budget without noticing.
- */
-export const DEADLINE_CHECK_LINE_INTERVAL = 500
+/** Re-exported so a caller keeps getting the ceilings from the read layer's front door (impl: `search-limits.ts`). */
+export {
+  CROSS_SESSION_DEFAULT_LIMIT,
+  CROSS_SESSION_MAX_BYTES,
+  CROSS_SESSION_MAX_FILES,
+  CROSS_SESSION_TIME_BUDGET_MS,
+  DEADLINE_CHECK_LINE_INTERVAL,
+  DEFAULT_PAGE_LIMIT,
+  MAX_PAGE_LIMIT,
+  MAX_SCANNED_LINES_PER_SESSION,
+} from './search-limits.js'
 
 /** Re-exported so a caller gets the whole read layer from one module. */
 export { defaultJournalReadDeps, type JournalFileStat, type JournalReadDeps } from './line-source.js'
@@ -117,6 +120,11 @@ export interface CrossSessionSearchResult {
  * full and one further match has been seen (that match is the `hasMore`
  * answer and is not kept). A missing file or directory yields an empty page;
  * an unsafe session id throws before any path is built.
+ *
+ * A session `journal.db` holds is answered from there (`db-read.ts`), with
+ * identical paging semantics; everything else is the file arm below. `deps`
+ * belongs to the file arm alone — it is the filesystem seam, and there is no
+ * filesystem under the SQL one.
  */
 export async function searchSession(
   sessionId: string,
@@ -124,11 +132,17 @@ export async function searchSession(
   deps: Partial<JournalReadDeps> = {},
 ): Promise<SessionPage> {
   assertValidSessionId(sessionId)
+  const dir = options.dir ?? JOURNAL_DIR
+  const handle = await openJournalDbIfPresent(dir)
+  if (handle !== null && dbHasSession(handle, sessionId)) {
+    return dbSearchSession(handle, sessionId, options)
+  }
+
   const { readLines } = resolveJournalReadDeps(deps)
   const offset = normalizeOffset(options.offset)
   const limit = normalizeLimit(options.limit, DEFAULT_PAGE_LIMIT)
   const maxScannedLines = options.maxScannedLines ?? MAX_SCANNED_LINES_PER_SESSION
-  const filePath = journalPath(options.dir ?? JOURNAL_DIR, sessionId)
+  const filePath = journalPath(dir, sessionId)
 
   const records: JournalRecord[] = []
   const textNeedle = textNeedleOf(options)
@@ -174,6 +188,13 @@ export async function searchSession(
  * the directory's files it managed to look at, so a caller can say "scanned N
  * of M files, stopped by <reason>" instead of presenting a partial answer as
  * the whole one.
+ *
+ * Where a `journal.db` exists, its sessions are walked first (newest first),
+ * then the legacy files it does not already speak for — one walk over two
+ * carriers, under ONE set of ceilings: each arm's budget is the caller's
+ * minus what the previous arm spent (`read-routing.armOptions`), so the two
+ * together never open more sessions, read more bytes or take longer than a
+ * single-carrier search would have.
  */
 export async function searchAllSessions(
   options: CrossSessionSearchOptions = {},
@@ -181,18 +202,61 @@ export async function searchAllSessions(
 ): Promise<CrossSessionSearchResult> {
   const resolved = resolveJournalReadDeps(deps)
   const dir = options.dir ?? JOURNAL_DIR
-  const hitLimit = normalizeLimit(options.limit, CROSS_SESSION_DEFAULT_LIMIT)
-  const ceilings: WalkCeilings = {
-    hitLimit,
+  const handle = await openJournalDbIfPresent(dir)
+  if (handle === null) {
+    return searchFileArm(options, dir, resolved, NOTHING_SHADOWED)
+  }
+
+  const ceilings = crossSessionCeilings(options, resolved.now())
+  const fromDb = dbSearchAllSessions(
+    handle,
+    armOptions(options, ceilings, NO_SPEND, resolved.now()),
+    resolved.now,
+  )
+  if (fromDb.stoppedBy !== null) {
+    // The database already spent a ceiling the caller was told about. Opening
+    // a legacy file now would exceed it, and reporting "stopped by bytes"
+    // after reading past the byte budget is worse than stopping.
+    return fromDb
+  }
+  const rest = armOptions(options, ceilings, fromDb, resolved.now())
+  const fromFiles = await searchFileArm(rest, dir, resolved, isShadowedByDb(handle))
+  return mergeCrossSessionResults(fromDb, fromFiles, ceilings.hitLimit)
+}
+
+/** No database, so no session is spoken for by one. */
+const NOTHING_SHADOWED = (): boolean => false
+
+/** The caller's ceilings with the defaults filled in, resolved once per arm. */
+function crossSessionCeilings(options: CrossSessionSearchOptions, nowMs: number): WalkCeilings {
+  return {
+    hitLimit: normalizeLimit(options.limit, CROSS_SESSION_DEFAULT_LIMIT),
     maxFiles: options.maxFiles ?? CROSS_SESSION_MAX_FILES,
     maxBytes: options.maxBytes ?? CROSS_SESSION_MAX_BYTES,
-    deadlineAt: resolved.now() + (options.timeBudgetMs ?? CROSS_SESSION_TIME_BUDGET_MS),
+    deadlineAt: nowMs + (options.timeBudgetMs ?? CROSS_SESSION_TIME_BUDGET_MS),
   }
-  const files = await listSessionFilesNewestFirst(dir, resolved)
+}
+
+/**
+ * The file arm of a cross-session search: the walk as it always was, minus
+ * the sessions the database is the carrier for. `filesTotal` counts what this
+ * arm could have opened, so a merged result's total is "sessions in the
+ * database" plus "legacy files not shadowed by one" — every session exactly
+ * once.
+ */
+async function searchFileArm(
+  options: CrossSessionSearchOptions,
+  dir: string,
+  resolved: JournalReadDeps,
+  isShadowed: (sessionId: string) => boolean,
+): Promise<CrossSessionSearchResult> {
+  const ceilings = crossSessionCeilings(options, resolved.now())
+  const found = await listSessionFilesNewestFirst(dir, resolved)
+  const files = found.filter((file) => !isShadowed(file.sessionId))
   const walk = await walkSessionFiles(files, dir, options, resolved, ceilings)
 
   return {
-    hits: walk.hits.slice(0, hitLimit),
+    hits: walk.hits.slice(0, ceilings.hitLimit),
     truncated: walk.stoppedBy !== null,
     stoppedBy: walk.stoppedBy,
     filesScanned: walk.filesScanned,
@@ -327,18 +391,4 @@ async function scanFileForHits(
   }
 
   return { hits, bytesRead, skippedLineCount, stoppedBy }
-}
-
-function normalizeOffset(offset: number | undefined): number {
-  if (offset === undefined || !Number.isFinite(offset)) {
-    return 0
-  }
-  return Math.max(0, Math.floor(offset))
-}
-
-function normalizeLimit(limit: number | undefined, fallback: number): number {
-  if (limit === undefined || !Number.isFinite(limit)) {
-    return fallback
-  }
-  return Math.min(MAX_PAGE_LIMIT, Math.max(1, Math.floor(limit)))
 }

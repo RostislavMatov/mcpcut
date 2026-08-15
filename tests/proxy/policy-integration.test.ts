@@ -465,7 +465,7 @@ describe('runWrap: policy-driven fail-closed journaling', () => {
       // `failClosed` sourced from the policy document itself: no `--fail-closed` flag.
       policy: policyOf({ defaultDecision: 'allow', journal: { failClosed: true } }),
       serverName: SERVER_NAME,
-      journalAppendFileImpl: () =>
+      journalCommitBatchImpl: () =>
         Promise.reject(Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' })),
     })
     harness.clientOutbox.write(requestLine(1, 'initialize'))

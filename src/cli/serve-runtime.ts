@@ -77,7 +77,7 @@ export interface ServeRuntimeDeps {
   /** When true, a journal write failure ends the session it belongs to. */
   readonly failClosed: boolean
   /** @internal test-only seam mirroring `wrap`'s, for fail-closed tests. */
-  readonly journalAppendFileImpl?: JournalSinkOptions['appendFileImpl']
+  readonly journalCommitBatchImpl?: JournalSinkOptions['commitBatchImpl']
 }
 
 /** One session's journal wiring, bound to a freshly minted session id. */
@@ -100,8 +100,8 @@ export function createServeSessionFactory(deps: ServeRuntimeDeps): OpenSession {
     const sessionId = deps.newSessionId()
     const sink = createJournalSink(sessionId, {
       dir: deps.journalDir,
-      ...(deps.journalAppendFileImpl !== undefined
-        ? { appendFileImpl: deps.journalAppendFileImpl }
+      ...(deps.journalCommitBatchImpl !== undefined
+        ? { commitBatchImpl: deps.journalCommitBatchImpl }
         : {}),
       ...(deps.failClosed
         ? {

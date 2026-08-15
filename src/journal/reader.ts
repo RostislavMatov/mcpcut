@@ -4,6 +4,9 @@ import { createInterface } from 'node:readline'
 import { join } from 'node:path'
 import { LIST_SESSIONS_CONCURRENCY, JOURNAL_DIR } from '../config.js'
 import { mapWithConcurrency } from './concurrency.js'
+import { dbHasSession, dbSessionSummaries, type DbSessionSummary } from './db-read.js'
+import { dbReadSessionRecords } from './db-read-session.js'
+import { isShadowedByDb, openJournalDbIfPresent } from './read-routing.js'
 import type { JournalDirection, JournalRecord } from './record.js'
 import { assertValidSessionId } from './session-id.js'
 
@@ -53,14 +56,37 @@ export interface SessionReadResult {
  * not valid journal records — malformed JSON *or* well-formed JSON of the
  * wrong shape — are skipped, not fatal, and files with no readable record are
  * omitted. A missing directory yields an empty list rather than throwing.
+ *
+ * Both carriers are listed: `journal.db`'s sessions (one indexed aggregate)
+ * and the legacy `*.jsonl` files it does not already speak for. A database
+ * session with no rows left — an import marker alone — is omitted for the
+ * same reason a file with no readable record is: there is nothing to show.
  */
 export async function listSessions(dir: string = JOURNAL_DIR): Promise<SessionSummary[]> {
-  const files = await listJsonlFiles(dir)
+  const handle = await openJournalDbIfPresent(dir)
+  const fromDb = handle === null ? [] : dbSessionSummaries(handle).map(toSessionSummary)
+  const isShadowed = isShadowedByDb(handle)
+  const files = (await listJsonlFiles(dir)).filter(
+    (file) => !isShadowed(sessionIdOfFileName(file)),
+  )
   const summaries = await mapWithConcurrency(files, LIST_SESSIONS_CONCURRENCY, (file) =>
     summarizeSessionFile(dir, file),
   )
   const nonEmpty = summaries.filter((summary): summary is SessionSummary => summary !== null)
-  return [...nonEmpty].sort((a, b) => b.lastTs.localeCompare(a.lastTs))
+  // A stable sort, so on the (per-run-ULID-impossible) tie of two equal
+  // `lastTs` the database's entry stays ahead of the file's.
+  return [...fromDb, ...nonEmpty].sort((a, b) => b.lastTs.localeCompare(a.lastTs))
+}
+
+/** The database's summary in the shape this module's callers already print. */
+function toSessionSummary(summary: DbSessionSummary): SessionSummary {
+  return {
+    sessionId: summary.sessionId,
+    firstTs: summary.firstTs,
+    lastTs: summary.lastTs,
+    messageCount: summary.count,
+    skippedLineCount: summary.skippedLineCount,
+  }
 }
 
 /** True when `value` is one of the journal's recognized traffic directions. */
@@ -86,13 +112,25 @@ export async function readSession(
   return [...records]
 }
 
-/** Same as `readSession`, but also reports how many lines were skipped. */
+/**
+ * Same as `readSession`, but also reports how many lines were skipped.
+ *
+ * A session `journal.db` is the carrier for is read from there, whole and
+ * uncapped — this is the one-shot print, so a page limit would be silent
+ * truncation. The file arm below, including its own frozen shape check, is
+ * untouched and still answers for everything else.
+ */
 export async function readSessionWithStats(
   sessionId: string,
   options: ReadSessionOptions = {},
 ): Promise<SessionReadResult> {
   assertValidSessionId(sessionId)
   const dir = options.dir ?? JOURNAL_DIR
+  const handle = await openJournalDbIfPresent(dir)
+  if (handle !== null && dbHasSession(handle, sessionId)) {
+    return dbReadSessionRecords(handle, sessionId, options)
+  }
+
   const { records, skippedLineCount } = await readRecordsFromFile(
     join(dir, `${sessionId}${JSONL_EXTENSION}`),
   )
@@ -114,8 +152,13 @@ async function listJsonlFiles(dir: string): Promise<string[]> {
   }
 }
 
+/** The session a journal file name stands for (the name minus its extension). */
+function sessionIdOfFileName(fileName: string): string {
+  return fileName.slice(0, -JSONL_EXTENSION.length)
+}
+
 async function summarizeSessionFile(dir: string, fileName: string): Promise<SessionSummary | null> {
-  const sessionId = fileName.slice(0, -JSONL_EXTENSION.length)
+  const sessionId = sessionIdOfFileName(fileName)
   const { records, skippedLineCount } = await readRecordsFromFile(join(dir, fileName))
   const firstRecord = records[0]
   const lastRecord = records[records.length - 1]

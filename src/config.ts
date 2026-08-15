@@ -11,6 +11,22 @@ export const JOURNAL_DIR_MODE = 0o700
 export const JOURNAL_FILE_MODE = 0o600
 
 /**
+ * Batch bounds for the journal's write path (ADR-0006): thousands of records
+ * per second become a few commits per second per process, which is what makes
+ * a FULL-fsync journal affordable. 256 keeps one transaction's memory and
+ * lock hold small.
+ */
+export const JOURNAL_BATCH_MAX_RECORDS = 256
+
+/**
+ * Upper bound on how long a buffered record waits for company before its
+ * batch commits. Small enough that a lone record's added latency is
+ * negligible against the call it belongs to, large enough that a busy
+ * session still fills batches.
+ */
+export const JOURNAL_BATCH_MAX_DELAY_MS = 10
+
+/**
  * Session ids become file names, so they are validated against this pattern
  * before any path is built from them (path-traversal guard). Deliberately
  * wider than the ULID alphabet: callers may inject their own session ids.
