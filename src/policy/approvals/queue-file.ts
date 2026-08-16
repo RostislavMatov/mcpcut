@@ -116,6 +116,31 @@ export function isPendingApprovalFile(raw: unknown): raw is PendingApprovalFile 
   )
 }
 
+/**
+ * "Expired" is `now >= expiresAt` — the expiry INSTANT is already expired — on
+ * EVERY path that judges a record (the list, the resolve and the sweep), so an
+ * operator can never see a request as live that `resolve()` would downgrade (or
+ * vice versa), and the sweep can never expire a request the other two consider
+ * live. An unparseable timestamp cannot reach here (`isPendingApprovalFile`
+ * rejects it, review H2) but is treated as already expired anyway: fail closed
+ * twice.
+ */
+export function isExpiredAt(expiresAt: string, nowMs: number): boolean {
+  const expiresAtMs = Date.parse(expiresAt)
+  return Number.isNaN(expiresAtMs) || nowMs >= expiresAtMs
+}
+
+/** Parses one stored record, returning `null` for anything the validators reject. */
+export function parseDoc<T>(text: string, isShape: (raw: unknown) => raw is T): T | null {
+  let raw: unknown
+  try {
+    raw = JSON.parse(text)
+  } catch {
+    return null // malformed JSON: skip, never throw on garbage content
+  }
+  return isShape(raw) ? raw : null // malformed shape: skip
+}
+
 function isResolutionOutcome(value: unknown): value is ResolutionOutcome {
   return (RESOLUTION_OUTCOME_VALUES as readonly unknown[]).includes(value)
 }

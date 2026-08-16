@@ -54,6 +54,35 @@ function renderNavLink([href, key, label]: readonly [string, string, string], ac
     : html`<a href="${safeUrl(href)}">${label}</a>`
 }
 
+/** A hidden CSRF field for a real `<form>` POST (server enforces the check). */
+function csrfField(csrfToken: string): Html {
+  return html`<input type="hidden" name="csrf_token" value="${csrfToken}" />`
+}
+
+/**
+ * The sign-out control, rendered only when a session exists.
+ *
+ * It is a real POST form, not a link, for two reasons that are the same reason:
+ * `GET /logout` is not a route at all, and every state change is screened on
+ * `Origin` plus a double-submit CSRF token — neither of which a link carries.
+ *
+ * Why it lives in the shell: before this, `POST /logout` worked but nothing
+ * rendered a way to reach it, so a session ended only by idle timeout, absolute
+ * TTL or `admin rotate` (manual browser smoke, post-M4.5 hardening). On a shared
+ * workstation that is precisely when signing out is needed. Putting it here puts
+ * it on every authenticated page and on no pre-auth one: `/login` renders with
+ * no `currentAdmin`, where the control could only produce a 403 anyway.
+ */
+function renderSignOut(options: LayoutOptions): Html {
+  if (options.currentAdmin === undefined) return html``
+  return html`
+    <form method="post" action="/logout" class="sign-out">
+      ${csrfField(options.csrfToken)}
+      <button type="submit" class="secondary">Sign out</button>
+    </form>
+  `
+}
+
 function renderNav(options: LayoutOptions): Html {
   const links = NAV_ITEMS.map((item) => renderNavLink(item, options.activeNav))
   const whoami = options.currentAdmin
@@ -65,6 +94,7 @@ function renderNav(options: LayoutOptions): Html {
       ${links}
       <span class="spacer"></span>
       ${whoami}
+      ${renderSignOut(options)}
     </header>
   `
 }

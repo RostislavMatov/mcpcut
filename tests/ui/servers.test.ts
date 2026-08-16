@@ -54,6 +54,15 @@ function makeHarness(): Harness {
 
 const OWNER = { adminName: 'alice', role: 'owner' as const, csrfToken: 'csrf-token-xyz' }
 
+/** A value the registry schema recognises as a secret literal (a GitHub PAT). */
+const SECRET_LITERAL = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789'
+
+/** The verbatim contents of a named `<textarea>` in a rendered document. */
+function textareaValue(body: string, name: string): string | undefined {
+  const match = new RegExp(`<textarea name="${name}"[^>]*>([\\s\\S]*?)</textarea>`).exec(body)
+  return match?.[1]
+}
+
 function getCtx(overrides: Partial<UiRequestContext> = {}): UiRequestContext {
   return {
     method: 'GET',
@@ -143,7 +152,7 @@ describe('serversAdd', () => {
           name: 'gh',
           transport: 'stdio',
           command: 'node',
-          env: 'GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789',
+          env: `GITHUB_TOKEN=${SECRET_LITERAL}`,
         }),
       ),
     )
@@ -151,9 +160,83 @@ describe('serversAdd', () => {
     const body = String(res.body)
     expect(body).toContain('looks like a secret literal')
     expect(body).toContain('mcp-journal vault set')
+    // The rejected value must not survive anywhere in the response, not even
+    // as a "helpfully" re-filled form field.
+    expect(body).not.toContain(SECRET_LITERAL)
     // Nothing was persisted.
     expect(await h.registry.listServers()).toHaveLength(0)
     expect(h.audit).toHaveLength(0)
+  })
+
+  test('restores every submitted field on a validation error except the secret-bearing one', async () => {
+    h = makeHarness()
+    const res = asResponse(
+      await h.handlers.serversAdd(
+        formPost({
+          csrf_token: OWNER.csrfToken,
+          name: 'secret-probe',
+          transport: 'stdio',
+          command: 'node',
+          args: 'server.js,--flag',
+          env: `LOG_LEVEL=debug\nX=${SECRET_LITERAL}`,
+        }),
+      ),
+    )
+
+    expect(res.status).toBe(400)
+    const body = String(res.body)
+    // Everything the operator typed comes back, so one field is corrected
+    // instead of all eight being retyped.
+    expect(body).toContain('<input name="name" value="secret-probe"')
+    expect(body).toContain('<input name="command" value="node"')
+    expect(body).toContain('<input name="args" value="server.js,--flag"')
+    // ...except the one line the validator called a secret: it is dropped
+    // whole, key included, and the secret is absent from the WHOLE body.
+    expect(textareaValue(body, 'env')).toBe('LOG_LEVEL=debug')
+    expect(body).not.toContain(SECRET_LITERAL)
+  })
+
+  test('keeps the chosen transport selected when the submission is rejected', async () => {
+    h = makeHarness()
+    const res = asResponse(
+      await h.handlers.serversAdd(
+        formPost({
+          csrf_token: OWNER.csrfToken,
+          name: 'gh',
+          transport: 'http',
+          url: 'https://api.github.com',
+          protocol: 'auto',
+          headers: `Authorization=${SECRET_LITERAL}`,
+        }),
+      ),
+    )
+
+    expect(res.status).toBe(400)
+    const body = String(res.body)
+    expect(body).toContain('<option value="http" selected>')
+    expect(body).toContain('<input name="url" value="https://api.github.com"')
+    expect(body).toContain('<input name="protocol" value="auto"')
+    expect(textareaValue(body, 'headers')).toBe('')
+    expect(body).not.toContain(SECRET_LITERAL)
+  })
+
+  test('restores the form when the registry itself refuses the (valid) record', async () => {
+    h = makeHarness()
+    await h.registry.addServer({ name: 'dup', transport: 'stdio', command: 'node' })
+    const res = asResponse(
+      await h.handlers.serversAdd(
+        formPost({
+          csrf_token: OWNER.csrfToken,
+          name: 'dup',
+          transport: 'stdio',
+          command: 'node',
+          confirm: 'true',
+        }),
+      ),
+    )
+
+    expect(res.status).toBe(400)
+    expect(String(res.body)).toContain('<input name="name" value="dup"')
   })
 
   test('a valid submission without confirmation shows an interstitial and persists nothing', async () => {
@@ -199,6 +282,51 @@ describe('serversAdd', () => {
     const body = String(res.body)
     expect(body).not.toContain('<script>alert(1)</script>')
     expect(body).toContain('&lt;script&gt;')
+  })
+
+  test('the interstitial renders one argument per line, so a space inside one is unambiguous', async () => {
+    h = makeHarness()
+    const res = asResponse(
+      await h.handlers.serversAdd(
+        formPost({
+          csrf_token: OWNER.csrfToken,
+          name: 'local',
+          transport: 'stdio',
+          command: 'node',
+          args: 'server.js,--flag with a space',
+        }),
+      ),
+    )
+
+    // This screen exists so a human can confirm the exact command line that
+    // will be spawned; joining the vector with spaces makes one argument
+    // holding a space indistinguishable from two arguments.
+    expect(res.status).toBe(200)
+    const body = String(res.body)
+    expect(body).toContain('<li><code>server.js</code></li>')
+    expect(body).toContain('<li><code>--flag with a space</code></li>')
+    expect(body).not.toContain('server.js --flag with a space')
+  })
+
+  test('the interstitial escapes hostile arguments while listing them', async () => {
+    h = makeHarness()
+    const res = asResponse(
+      await h.handlers.serversAdd(
+        formPost({
+          csrf_token: OWNER.csrfToken,
+          name: 'evil',
+          transport: 'stdio',
+          command: 'node',
+          args: '<script>alert(1)</script>,"><img src=x onerror=alert(2)>',
+        }),
+      ),
+    )
+
+    const body = String(res.body)
+    expect(body).not.toContain('<script>alert(1)</script>')
+    expect(body).not.toContain('<img src=x')
+    expect(body).toContain('&lt;script&gt;alert(1)&lt;/script&gt;')
+    expect(body).toContain('&quot;&gt;&lt;img src=x onerror=alert(2)&gt;')
   })
 
   test('a rejected submission is rejected before the interstitial, not after it', async () => {

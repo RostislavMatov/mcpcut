@@ -482,7 +482,7 @@ describe('runPolicyShow --entry-point', () => {
     expect(parsed.trustClass).toBe('agent-launched')
   })
 
-  test('without --entry-point the output is unchanged (no entry-point line)', async () => {
+  test('without --entry-point the resolved source is still the operator-launched one', async () => {
     const { projectPath } = await writeAllThreeSources()
     const io = fakeIo()
 
@@ -490,6 +490,95 @@ describe('runPolicyShow --entry-point', () => {
 
     expect(exitCode).toBe(0)
     expect(io.out()).toContain(projectPath)
-    expect(io.out()).not.toContain('trust class')
+  })
+
+  test('--entry-point output does not carry the bare-command hint', async () => {
+    await writeAllThreeSources()
+    const io = fakeIo()
+
+    await runPolicyShow(['--entry-point', 'serve'], io, { cwd, journalDir, env: {} })
+
+    expect(io.out()).toContain('entry point: serve (operator-launched)')
+    expect(io.out()).not.toContain('none given')
+    expect(io.out()).not.toContain('other views')
+  })
+})
+
+/**
+ * The bare `policy show` (smoke finding #8, `docs/smoke-ui-hardening.md`):
+ * it prints the OPERATOR-LAUNCHED resolution, while an agent launched by
+ * `connect` in the same directory is judged by a different file (ADR-0005).
+ * An unlabelled `source:` line let an operator read the wrong policy without
+ * ever learning that a second answer exists, so the bare command has to name
+ * the view it is showing and point at the flag that shows the others.
+ */
+describe('runPolicyShow without --entry-point', () => {
+  test('names the operator-launched view it represents', async () => {
+    await mkdir(join(cwd, '.mcp-journal'), { recursive: true })
+    await writePolicyFile(join(cwd, '.mcp-journal'), VALID_POLICY)
+    const io = fakeIo()
+
+    const exitCode = await runPolicyShow([], io, { cwd, journalDir, env: {} })
+
+    expect(exitCode).toBe(0)
+    const [firstLine] = io.out().split('\n')
+    expect(firstLine).toContain('operator-launched')
+    expect(firstLine).toContain('wrap, serve, ui')
+  })
+
+  test('points at --entry-point so the other views are reachable', async () => {
+    await mkdir(join(cwd, '.mcp-journal'), { recursive: true })
+    await writePolicyFile(join(cwd, '.mcp-journal'), VALID_POLICY)
+    const io = fakeIo()
+
+    await runPolicyShow([], io, { cwd, journalDir, env: {} })
+
+    expect(io.out()).toContain('--entry-point connect|wrap|serve|ui')
+  })
+
+  test('keeps the existing readable fields, source line included', async () => {
+    await mkdir(join(cwd, '.mcp-journal'), { recursive: true })
+    const projectPath = await writePolicyFile(join(cwd, '.mcp-journal'), VALID_POLICY)
+    const io = fakeIo()
+
+    await runPolicyShow([], io, { cwd, journalDir, env: {} })
+
+    const out = io.out()
+    expect(out).toContain(`source: ${projectPath}`)
+    expect(out).toContain('defaultDecision: require-approval')
+    expect(out).toContain('servers:')
+    expect(out).toContain('github')
+  })
+
+  /**
+   * A machine consumer needs the label MORE than a human does: it cannot see
+   * the hint line, and `sourcePath` alone is indistinguishable from the
+   * `connect` answer. `entryPoint` stays absent -- it means "an entry point
+   * was named" -- so existing consumers keying on it are unaffected.
+   */
+  test('--json labels the same view without touching existing fields', async () => {
+    await mkdir(join(cwd, '.mcp-journal'), { recursive: true })
+    const projectPath = await writePolicyFile(join(cwd, '.mcp-journal'), VALID_POLICY)
+    const io = fakeIo()
+
+    const exitCode = await runPolicyShow(['--json'], io, { cwd, journalDir, env: {} })
+
+    expect(exitCode).toBe(0)
+    const parsed = JSON.parse(io.out())
+    expect(parsed.trustClass).toBe('operator-launched')
+    expect(parsed.entryPoint).toBeUndefined()
+    expect(parsed.sourcePath).toBe(projectPath)
+    expect(parsed.policy.defaultDecision).toBe('require-approval')
+  })
+
+  test('--json stays a single parseable line (no hint text leaking into stdout)', async () => {
+    await mkdir(join(cwd, '.mcp-journal'), { recursive: true })
+    await writePolicyFile(join(cwd, '.mcp-journal'), VALID_POLICY)
+    const io = fakeIo()
+
+    await runPolicyShow(['--json'], io, { cwd, journalDir, env: {} })
+
+    expect(io.out().trimEnd().split('\n')).toHaveLength(1)
+    expect(io.out()).not.toContain('--entry-point connect|wrap|serve|ui')
   })
 })

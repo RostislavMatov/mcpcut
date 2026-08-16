@@ -71,17 +71,23 @@ describe('runApprovals: list', () => {
     expect(out).not.toContain(SECRET_MARKER)
   })
 
-  test('flags an entry whose expiresAt is in the past as expired, using the injected clock', async () => {
+  test('an entry whose expiresAt has passed is swept out of the queue, not listed as pending work', async () => {
     let nowMs = Date.UTC(2026, 0, 1)
     const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
-    await queue.enqueue(baseRequest({ timeoutMs: 1000 }))
+    const { approvalId } = await queue.enqueue(baseRequest({ timeoutMs: 1000 }))
     nowMs += 5000
     const io = fakeIo()
 
     const exitCode = await runApprovals(['list'], io, { baseDir, clock: () => nowMs })
 
+    // `list()` sweeps at the injected clock (`policy/approvals/queue-sweep.ts`),
+    // so a request nobody answered settles as `expired` instead of lingering as
+    // a dead `expires_in=expired` line for the rest of the session's life.
     expect(exitCode).toBe(0)
-    expect(io.out()).toContain('expired')
+    expect(io.out()).toContain('no pending approvals')
+    expect(io.out()).not.toContain(approvalId)
+    // Settled, not silently dropped: the outcome is the one session teardown writes.
+    await expect(queue.readResolution(approvalId)).resolves.toMatchObject({ outcome: 'expired' })
   })
 
   test('an unexpired entry shows remaining time, not "expired"', async () => {
