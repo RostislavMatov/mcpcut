@@ -86,7 +86,7 @@ describe('migrate: a directory with legacy files', () => {
     expect(io.out()).toContain('agents.json')
     expect(io.out()).toContain('registry.json')
     expect(io.out()).toContain('no file')
-    expect(io.out()).toContain('Migrated 2 store(s) into state.db.')
+    expect(io.out()).toContain('Migrated 2 store(s).')
 
     const agents = await createAgentsStore({ journalDir }).listAgents()
     expect(agents.map((agent) => agent.name)).toEqual(['research-bot'])
@@ -108,7 +108,7 @@ describe('migrate: run twice', () => {
     expect(exitCode).toBe(0)
     const alreadyLines = io.out().split('\n').filter((line) => line.includes('already migrated'))
     expect(alreadyLines).toHaveLength(2)
-    expect(io.out()).toContain('Migrated 0 store(s) into state.db.')
+    expect(io.out()).toContain('Migrated 0 store(s).')
 
     const agents = await createAgentsStore({ journalDir }).listAgents()
     expect(agents.map((agent) => agent.name)).toEqual(['research-bot'])
@@ -129,7 +129,7 @@ describe('migrate: an empty directory', () => {
     expect(noFileLines).toHaveLength(6)
     expect(io.out()).toContain('approvals/ -> no file')
     expect(io.out()).toContain('journal: *.jsonl -> no files')
-    expect(io.out()).toContain('Migrated 0 store(s) into state.db.')
+    expect(io.out()).toContain('Migrated 0 store(s).')
   })
 })
 
@@ -217,7 +217,7 @@ describe('migrate: approvals queue', () => {
     expect(io.out()).toContain('state: approvals/ -> imported (1 pending, 1 resolved)')
     // Only the approvals queue had legacy data in this test; the four document
     // stores all report "no file" and do not add to the imported count.
-    expect(io.out()).toContain('Migrated 1 store(s) into state.db.')
+    expect(io.out()).toContain('Migrated 1 store(s).')
 
     const queue = createApprovalQueue({ baseDir: join(journalDir, 'approvals') })
     await expect(queue.list()).resolves.toHaveLength(1)
@@ -233,7 +233,7 @@ describe('migrate: approvals queue', () => {
 
     expect(exitCode).toBe(0)
     expect(io.out()).toContain('state: approvals/ -> already migrated')
-    expect(io.out()).toContain('Migrated 0 store(s) into state.db.')
+    expect(io.out()).toContain('Migrated 0 store(s).')
   })
 
   test('no approvals directories on disk: reports "no file"', async () => {
@@ -284,7 +284,7 @@ describe('migrate: journal legacy files', () => {
     expect(io.out()).toContain('journal: *.jsonl -> imported (3 records from 1 sessions)')
     // Only the journal had legacy data in this run; the four document stores
     // and the approvals queue all report no-file/no-files and add nothing.
-    expect(io.out()).toContain('Migrated 1 store(s) into state.db.')
+    expect(io.out()).toContain('Migrated 1 store(s).')
   })
 
   test('a second run reports "already migrated" and imports nothing again', async () => {
@@ -296,7 +296,7 @@ describe('migrate: journal legacy files', () => {
 
     expect(exitCode).toBe(0)
     expect(io.out()).toContain('journal: *.jsonl -> already migrated')
-    expect(io.out()).toContain('Migrated 0 store(s) into state.db.')
+    expect(io.out()).toContain('Migrated 0 store(s).')
   })
 })
 

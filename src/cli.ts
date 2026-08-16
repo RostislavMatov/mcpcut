@@ -4,7 +4,9 @@ import { pathToFileURL } from 'node:url'
 import { runAdminCommand, type AdminCliOptions } from './cli/admin-cmd.js'
 import { runAgentCommand, type AgentCliOptions } from './cli/agent-cmd.js'
 import { runApprovals, type ApprovalsCliOptions } from './cli/approvals-cmd.js'
+import { runBackupCommand, type BackupCommandOptions } from './cli/backup-cmd.js'
 import { runConnect, type ConnectDeps } from './cli/connect-cmd.js'
+import { runExportCommand, type ExportCommandOptions } from './cli/export-cmd.js'
 import { runJournalCommandGroup } from './cli/journal-cmds.js'
 import { runMigrateCommand, type MigrateCommandOptions } from './cli/migrate-cmd.js'
 import { runPolicyShow, runPolicyValidate, type PolicyCliOptions } from './cli/policy-cmd.js'
@@ -58,6 +60,8 @@ export interface DispatchOptions {
   readonly ui?: UiCommandOptions
   readonly admin?: AdminCliOptions
   readonly migrate?: MigrateCommandOptions
+  readonly export?: ExportCommandOptions
+  readonly backup?: BackupCommandOptions
 }
 
 const DEFAULT_IO: CliIo = { stdout: process.stdout, stderr: process.stderr }
@@ -83,6 +87,8 @@ export async function dispatch(
   if (command === 'vault') return runVault(rest, io, opts.vault)
   if (command === 'agent') return runAgentCommand(rest, io, opts.agent)
   if (command === 'migrate') return runMigrateCommand(rest, io, opts.migrate)
+  if (command === 'export') return runExportCommand(rest, io, opts.export)
+  if (command === 'backup') return runBackupCommand(rest, io, opts.backup)
   if (command === 'sessions' || command === 'show') {
     return runJournalCommandGroup(command, rest, io, opts.journalDir, USAGE)
   }

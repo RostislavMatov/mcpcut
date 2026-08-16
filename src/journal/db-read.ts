@@ -376,16 +376,27 @@ function scanSessionForHits(
   return { hits, bytesRead, skippedLineCount, stoppedBy }
 }
 
+/** One session's identity and freshness token — `index-cache.ts`'s cache key. */
+export interface DbSessionLastSeq {
+  readonly sessionId: string
+  readonly lastSeq: number
+}
+
+/** Every session's freshness token (`MAX(seq)`), newest write first — see `SELECT_SESSION_LAST_SEQ`. */
+export function dbSessionLastSeqs(handle: SqliteHandle): readonly DbSessionLastSeq[] {
+  return handle.db
+    .prepare(SELECT_SESSION_LAST_SEQ)
+    .all()
+    .map((row) => ({ sessionId: textOf(row['sessionId']), lastSeq: numberOf(row['lastSeq']) }))
+}
+
 /**
  * Session ids by last write, newest first — the order a walk visits them in,
  * mirroring the file arm's newest-mtime-first order. SQL does the ordering
  * because the index can; see `SELECT_SESSION_LAST_SEQ` for why that matters.
  */
 function sessionIdsNewestFirst(handle: SqliteHandle): readonly string[] {
-  return handle.db
-    .prepare(SELECT_SESSION_LAST_SEQ)
-    .all()
-    .map((row) => textOf(row['sessionId']))
+  return dbSessionLastSeqs(handle).map((entry) => entry.sessionId)
 }
 
 /**
@@ -394,6 +405,24 @@ function sessionIdsNewestFirst(handle: SqliteHandle): readonly string[] {
  */
 export function* iterateSessionDocs(handle: SqliteHandle, sessionId: string): Generator<string> {
   for (const row of handle.db.prepare(SELECT_SESSION_DOCS).iterate(sessionId)) {
+    yield textOf(row['doc'])
+  }
+}
+
+/** Every `doc` in the database, in `seq` order — global write order across all sessions. */
+const SELECT_ALL_DOCS = 'SELECT doc FROM journal_records ORDER BY seq'
+
+/**
+ * Every record's `doc` text across the whole journal, in `seq` order — the
+ * global write order M5's hash chain will attest. Exported for
+ * `export-cmd.ts`'s whole-journal `mcp-journal export`; not session-scoped,
+ * so it lives here rather than in `db-read-session.ts` (see that module's
+ * doc comment). Placed here rather than a new module to keep the streaming
+ * primitives beside `iterateSessionDocs`, which it otherwise duplicates
+ * almost verbatim.
+ */
+export function* iterateAllDocs(handle: SqliteHandle): Generator<string> {
+  for (const row of handle.db.prepare(SELECT_ALL_DOCS).iterate()) {
     yield textOf(row['doc'])
   }
 }

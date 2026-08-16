@@ -1,9 +1,13 @@
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+import { APPROVALS_IMPORT_BATCH_ROWS } from '../../../src/config.js'
 import { checkRecentApproval } from '../../../src/policy/approvals/grants.js'
-import { importLegacyApprovals } from '../../../src/policy/approvals/queue-import.js'
+import {
+  APPROVALS_QUEUE_MARKER,
+  importLegacyApprovals,
+} from '../../../src/policy/approvals/queue-import.js'
 import { createApprovalQueue } from '../../../src/policy/approvals/queue.js'
 import {
   approvalsDbPath,
@@ -317,6 +321,70 @@ describe('importLegacyApprovals: the file queue an M4 build left behind', () => 
     expect(resolved.ok).toBe(true)
     expect(granted).toBe(true)
     await expect(queue.list()).resolves.toHaveLength(1) // the other legacy pending
+  })
+
+  /** Zero-padded so ascending file/approvalId order is also ascending string order. */
+  function legacyId(index: number): string {
+    return `LEG${String(index).padStart(6, '0')}`
+  }
+
+  async function seedManyPending(count: number): Promise<void> {
+    await Promise.all(
+      Array.from({ length: count }, (_, index) => {
+        const id = legacyId(index)
+        return writeLegacyFile('pending', `${id}.json`, legacyDoc(id))
+      }),
+    )
+  }
+
+  function markerRow(db: ApprovalsDb): unknown {
+    return db.handle.db
+      .prepare('SELECT 1 FROM migrated_documents WHERE name = ?')
+      .get(APPROVALS_QUEUE_MARKER)
+  }
+
+  test('a backlog larger than one batch imports across multiple chunked transactions', async () => {
+    // Open first (no legacy files yet) so the automatic first-touch import
+    // sees nothing and never runs a transaction the spy would have to discount.
+    const db = await openApprovalsDb(baseDir)
+    const total = APPROVALS_IMPORT_BATCH_ROWS * 2 + 88 // -> chunks of 256, 256, 88
+    await seedManyPending(total)
+    const transactionSpy = vi.spyOn(db.handle, 'transaction')
+
+    const imported = await importLegacyApprovals(db)
+
+    expect(imported).toBe(total)
+    expect(transactionSpy).toHaveBeenCalledTimes(3)
+    expect(rows(db)).toHaveLength(total)
+    expect(markerRow(db)).toBeDefined()
+  })
+
+  test('a marker planted between chunks (simulated concurrent import) stops the run without double-insert', async () => {
+    const db = await openApprovalsDb(baseDir)
+    const total = APPROVALS_IMPORT_BATCH_ROWS + 44 // -> two chunks: 256, then 44
+    await seedManyPending(total)
+    // Captured before spying: the real implementation, called directly so the
+    // spy's own call counter is not re-entered.
+    const originalTransaction = db.handle.transaction
+    let chunkCalls = 0
+    vi.spyOn(db.handle, 'transaction').mockImplementation((fn) => {
+      chunkCalls += 1
+      const result = originalTransaction(fn)
+      if (chunkCalls === 1) {
+        // Another process finishes the same import right after our first
+        // chunk commits — the exact race `insertLegacyChunk` re-checks for.
+        db.handle.db
+          .prepare('INSERT OR IGNORE INTO migrated_documents (name) VALUES (?)')
+          .run(APPROVALS_QUEUE_MARKER)
+      }
+      return result
+    })
+
+    const imported = await importLegacyApprovals(db)
+
+    expect(imported).toBe(APPROVALS_IMPORT_BATCH_ROWS) // only the first chunk landed
+    expect(chunkCalls).toBe(2) // second chunk ran, saw the marker, and stopped
+    expect(rows(db)).toHaveLength(APPROVALS_IMPORT_BATCH_ROWS) // no double insert
   })
 })
 

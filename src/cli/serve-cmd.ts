@@ -9,6 +9,7 @@ import { resolvePolicySource } from '../policy/source.js'
 import type { Policy } from '../policy/schema.js'
 import { journalingOnlyPolicy } from './connect-policy.js'
 import { createRegistryStore, type RegistryStore } from '../registry/store.js'
+import { preflightDatabases } from '../store/preflight.js'
 import { createHttpFront, type HttpFront } from '../transport/http/server.js'
 import { isRejectedOriginFlagValue } from '../net/origin-host.js'
 import { resolveVaultRefs } from '../vault/resolve.js'
@@ -309,6 +310,13 @@ export async function runServe(
   }
   const flags = parsed.flags
   const journalDir = opts.journalDir ?? JOURNAL_DIR
+
+  // Before the policy and the stores touch disk: a front that kept serving on
+  // a damaged database would authorize agents out of state it cannot vouch
+  // for, and journal into a file nobody can later prove anything about.
+  if (!(await preflightDatabases(journalDir, io.stderr))) {
+    return EXIT_STARTUP_FAILURE
+  }
 
   const policyOutcome = await resolvePolicy(flags, io, opts, journalDir)
   if ('exitCode' in policyOutcome) {

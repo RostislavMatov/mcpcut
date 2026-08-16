@@ -7,6 +7,7 @@ import { formatReadableField } from '../journal/format.js'
 import { isRejectedOriginFlagValue } from '../net/origin-host.js'
 import { INVENTORY_FILE_NAME } from '../policy/inventory.js'
 import { createRegistryStore, type RegistryStore } from '../registry/store.js'
+import { preflightDatabases } from '../store/preflight.js'
 import { createSessionManager } from '../ui/auth.js'
 import { createUiServer, type UiServer } from '../ui/server.js'
 import { createEventHub, type EventHub } from '../ui/events.js'
@@ -256,6 +257,13 @@ export async function runUi(
     return EXIT_STARTUP_FAILURE
   }
   const flags = parsed.flags
+
+  // Before the stores are built: an admin console served off a damaged
+  // database would show — and act on — state it cannot vouch for.
+  if (!(await preflightDatabases(opts.journalDir ?? JOURNAL_DIR, io.stderr))) {
+    return EXIT_STARTUP_FAILURE
+  }
+
   const runtime = buildRuntime(flags, io, opts)
 
   let bound: { port: number }

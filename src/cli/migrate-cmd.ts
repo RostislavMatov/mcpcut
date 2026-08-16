@@ -180,6 +180,6 @@ export async function runMigrateCommand(
     throw error
   }
 
-  io.stdout.write(`Migrated ${importedCount} store(s) into state.db.\n`)
+  io.stdout.write(`Migrated ${importedCount} store(s).\n`)
   return 0
 }

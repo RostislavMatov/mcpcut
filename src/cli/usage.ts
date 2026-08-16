@@ -41,5 +41,7 @@ export const USAGE = `Usage:
   mcp-journal approvals deny <id> [--reason TEXT]
                                          Deny a pending request
   mcp-journal migrate                    Import legacy *.json state into state.db
+  mcp-journal export [--session <id>]   Export journal records as JSONL to stdout
+  mcp-journal backup <destDir>          Back up state.db and journal.db into <destDir>
   mcp-journal --help                    Show this message
 `

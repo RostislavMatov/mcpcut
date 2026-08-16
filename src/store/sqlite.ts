@@ -1,6 +1,6 @@
 import { chmod, mkdir, open } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
+import { DatabaseSync, backup } from 'node:sqlite'
 import { JOURNAL_DIR_MODE, JOURNAL_FILE_MODE } from '../config.js'
 
 /**
@@ -72,6 +72,21 @@ export class SqliteOpenError extends Error {
   }
 }
 
+/**
+ * Raised when the online backup could not be written — including the case
+ * that matters most to an operator: the destination file already exists, so
+ * an earlier snapshot would have been overwritten (see `backupSqlite`).
+ */
+export class SqliteBackupError extends Error {
+  constructor(filePath: string, destPath: string, cause: unknown) {
+    super(
+      `Could not back up database "${filePath}" to "${destPath}": ${describeCause(cause)}`,
+      { cause },
+    )
+    this.name = 'SqliteBackupError'
+  }
+}
+
 function describeCause(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause)
 }
@@ -84,8 +99,17 @@ function describeCause(cause: unknown): string {
  */
 const SQLITE_BUSY_ERRCODE = 5
 
+/**
+ * Primary result codes that mean the FILE is damaged, not the operation:
+ * SQLITE_CORRUPT (a malformed disk image) and SQLITE_NOTADB (the header is
+ * not a database's at all — what a crash or a full disk leaves behind).
+ * Same `errcode` caveat as `SQLITE_BUSY_ERRCODE` above.
+ */
+const SQLITE_CORRUPT_ERRCODE = 11
+const SQLITE_NOTADB_ERRCODE = 26
+
 /** How deep the `cause` chain is walked; guards against cyclic causes. */
-const BUSY_CAUSE_CHAIN_LIMIT = 5
+const CAUSE_CHAIN_LIMIT = 5
 
 /**
  * True for a contended-writer failure, whether already wrapped by this
@@ -96,9 +120,32 @@ const BUSY_CAUSE_CHAIN_LIMIT = 5
  * Exported so stores never inspect `node:sqlite` error codes themselves.
  */
 export function isSqliteBusy(error: unknown): boolean {
+  return matchesCauseChain(
+    error,
+    (candidate) => candidate instanceof SqliteBusyError || isBusyError(candidate),
+  )
+}
+
+/**
+ * True for the opposite runbook: the file itself is damaged. Classified by
+ * result code rather than message text, and walked over the `cause` chain so
+ * a corruption wrapped in `SqliteOpenError` still reads as corruption —
+ * `openSqlite` wraps every open-time failure alike, and a permission or busy
+ * failure must NOT be reported to the operator as damage. Exported for the
+ * same reason as `isSqliteBusy`: callers never inspect `node:sqlite` codes.
+ */
+export function isSqliteCorruption(error: unknown): boolean {
+  return matchesCauseChain(
+    error,
+    (candidate) =>
+      hasErrcode(candidate, SQLITE_CORRUPT_ERRCODE) || hasErrcode(candidate, SQLITE_NOTADB_ERRCODE),
+  )
+}
+
+function matchesCauseChain(error: unknown, matches: (candidate: unknown) => boolean): boolean {
   let current: unknown = error
-  for (let depth = 0; depth < BUSY_CAUSE_CHAIN_LIMIT; depth += 1) {
-    if (current instanceof SqliteBusyError || isBusyError(current)) return true
+  for (let depth = 0; depth < CAUSE_CHAIN_LIMIT; depth += 1) {
+    if (matches(current)) return true
     if (typeof current !== 'object' || current === null || !('cause' in current)) return false
     current = (current as { cause?: unknown }).cause
   }
@@ -106,11 +153,15 @@ export function isSqliteBusy(error: unknown): boolean {
 }
 
 function isBusyError(error: unknown): boolean {
+  return hasErrcode(error, SQLITE_BUSY_ERRCODE)
+}
+
+function hasErrcode(error: unknown, errcode: number): boolean {
   return (
     typeof error === 'object' &&
     error !== null &&
     'errcode' in error &&
-    (error as { errcode?: unknown }).errcode === SQLITE_BUSY_ERRCODE
+    (error as { errcode?: unknown }).errcode === errcode
   )
 }
 
@@ -171,6 +222,56 @@ export async function openSqlite(
     filePath,
     transaction: (fn) => runTransaction(db, filePath, fn),
     close: makeIdempotentClose(db),
+  }
+}
+
+/**
+ * Copies the database behind `handle` to `destPath` with SQLite's online
+ * backup and resolves with the number of pages transferred. The source stays
+ * usable throughout; writes made through THIS handle land in the copy right
+ * away, while writes from ANY OTHER connection restart the copy from the
+ * beginning — batched commits are seconds apart, so a restart costs a retry,
+ * not correctness, and the resulting file is always a consistent snapshot.
+ *
+ * The destination must not exist: an online backup that silently overwrote a
+ * previous snapshot would destroy the operator's only fallback. Any failure,
+ * including that refusal, rejects with `SqliteBackupError`.
+ */
+export async function backupSqlite(handle: SqliteHandle, destPath: string): Promise<number> {
+  try {
+    // Pre-create at 0600 for the same two reasons as openSqlite: no TOCTOU
+    // window where the copy exists world-readable, and SQLite gives the
+    // destination's -wal the destination file's own permissions. 'wx' makes
+    // an existing destination an EEXIST failure instead of an overwrite.
+    const fh = await open(destPath, 'wx', JOURNAL_FILE_MODE)
+    await fh.close()
+
+    return await backup(handle.db, destPath)
+  } catch (error: unknown) {
+    throw new SqliteBackupError(handle.filePath, destPath, error)
+  }
+}
+
+/**
+ * Runs `PRAGMA integrity_check` and returns the problems it reported, empty
+ * for a healthy database (SQLite answers a single `ok` row). Cost is O(size
+ * of the database), so this belongs at the startup of long-lived entry
+ * points, not on every command invocation.
+ *
+ * Damage bad enough to break the b-tree walk makes the check itself fail
+ * (SQLITE_CORRUPT) instead of listing rows; that failure IS the finding, so
+ * it is reported as a problem rather than thrown — a caller checking
+ * integrity fail-closed must not have to handle corruption twice. A busy
+ * database is not a corrupt one and still surfaces as an error.
+ */
+export function integrityProblemsOf(handle: SqliteHandle): readonly string[] {
+  try {
+    const rows = handle.db.prepare('PRAGMA integrity_check').all()
+    const messages = rows.map((row) => String(Object.values(row)[0]))
+    return messages.length === 1 && messages[0] === 'ok' ? [] : messages
+  } catch (error: unknown) {
+    if (isSqliteBusy(error)) throw error
+    return [describeCause(error)]
   }
 }
 

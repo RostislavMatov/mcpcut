@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
 import { collectPersistedBytes } from '../support/persisted-bytes.js'
+import { writeCorruptDatabase } from '../support/corrupt-db.js'
 import { ADMINS_FILE_NAME } from '../../src/admin/constants.js'
 import { createAdminStore } from '../../src/admin/store.js'
 import { runUi, type UiHandle } from '../../src/cli/ui-cmd.js'
@@ -397,6 +398,27 @@ describe('runUi: flag parsing and startup', () => {
     expect(listened).toBe(false)
     expect(io.errText()).toContain('--allowed-origin')
     expect(io.errText().toLowerCase()).toContain('null')
+  })
+
+  test('a damaged state.db refuses the run before anything is bound', async () => {
+    const journalDir = await makeJournalDir()
+    await writeCorruptDatabase(join(journalDir, 'state.db'))
+
+    const io = captureIo()
+    let listened = false
+    const code = await runUi(['--port', '0'], io, {
+      journalDir,
+      signals: [],
+      onListening: () => {
+        listened = true
+      },
+    })
+
+    expect(code).toBe(1)
+    expect(listened).toBe(false)
+    expect(io.errText()).toContain('state.db failed PRAGMA integrity_check')
+    expect(io.errText()).toContain('Refusing to start.')
+    expect(io.outText()).toBe('')
   })
 
   test('a port already in use fails with a clear message, not a stack trace', async () => {

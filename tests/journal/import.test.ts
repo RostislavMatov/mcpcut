@@ -1,8 +1,8 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, test } from 'vitest'
-import { migrateJournalFiles } from '../../src/journal/import.js'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+import { listUnimportedLegacySessions, migrateJournalFiles } from '../../src/journal/import.js'
 import {
   insertRecordRows,
   journalDbPathFor,
@@ -10,14 +10,15 @@ import {
   type JournalRecordRow,
 } from '../../src/journal/db.js'
 import { readSession } from '../../src/journal/reader.js'
+import { JOURNAL_BATCH_MAX_RECORDS } from '../../src/config.js'
 
 /**
  * `migrateJournalFiles` (M4.5 wave 4, Task 7): bulk import of legacy
  * `*.jsonl` files into `journal.db`. Test structure mirrors
  * `tests/journal/db.test.ts` (mkdtemp + afterEach rm, direct SQL assertions
  * against the handle) plus behavioral assertions through the public reader,
- * which is what actually proves the routing decision (`read-routing.ts`)
- * serves an imported session from the database.
+ * which is what actually proves the reader (`reader.ts`, DB-only since wave
+ * 5) serves an imported session from the database.
  */
 
 let journalDir: string
@@ -27,6 +28,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  vi.restoreAllMocks()
   await rm(journalDir, { recursive: true, force: true })
 })
 
@@ -84,8 +86,8 @@ describe('migrateJournalFiles: importing legacy files', () => {
     await expect(markerPresent('session-a')).resolves.toBe(true)
     await expect(markerPresent('session-b')).resolves.toBe(true)
 
-    // Reading through the public reader (not raw SQL) proves the read-routing
-    // decision actually serves these sessions from journal.db now.
+    // Reading through the public reader (not raw SQL) proves the reader
+    // actually serves these sessions from journal.db now.
     const sessionA = await readSession('session-a', { dir: journalDir })
     const sessionB = await readSession('session-b', { dir: journalDir })
     expect(sessionA).toHaveLength(3)
@@ -179,6 +181,118 @@ describe('migrateJournalFiles: mixed marker state', () => {
     expect(result).toEqual({ status: 'imported', recordCount: 4, sessionCount: 1 })
     await expect(rowCountFor('session-old')).resolves.toBe(2)
     await expect(rowCountFor('session-new')).resolves.toBe(4)
+  })
+})
+
+describe('migrateJournalFiles: a concurrent migrate run', () => {
+  /** The record ids `sessionId` currently holds, in `seq` order — the byte-identity probe. */
+  async function recordIdsOf(sessionId: string): Promise<readonly string[]> {
+    const handle = await openJournalDbShared(journalDbPathFor(journalDir))
+    const rows = handle.db
+      .prepare('SELECT record_id FROM journal_records WHERE session_id = ? ORDER BY seq')
+      .all(sessionId) as ReadonlyArray<{ record_id: string }>
+    return rows.map((row) => row.record_id)
+  }
+
+  function staleRow(sessionId: string, index: number): JournalRecordRow {
+    return {
+      sessionId,
+      recordId: `winner-${index}`,
+      ts: new Date(index * 1000).toISOString(),
+      direction: 'client→server',
+      kind: 'notification',
+      method: null,
+      doc: `{"winner":${index}}`,
+    }
+  }
+
+  test("a marker planted before the only batch leaves the winner's committed rows byte-identical", async () => {
+    await writeLegacyFile('session-a', 3)
+    const handle = await openJournalDbShared(journalDbPathFor(journalDir))
+    // What the run that won the race already committed. Its rows must survive
+    // the loser's first-batch DELETE untouched.
+    handle.transaction((db) => insertRecordRows(db, [staleRow('session-a', 0), staleRow('session-a', 1)]))
+    const before = await recordIdsOf('session-a')
+
+    const originalTransaction = handle.transaction
+    let batchCalls = 0
+    vi.spyOn(handle, 'transaction').mockImplementation((fn) => {
+      batchCalls += 1
+      if (batchCalls === 1) {
+        // The winner finishes between our outside marker check and this
+        // batch taking the writer lock — the exact race the re-check closes.
+        handle.db.prepare('INSERT OR IGNORE INTO imported_sessions (session_id) VALUES (?)').run('session-a')
+      }
+      return originalTransaction(fn)
+    })
+
+    const result = await migrateJournalFiles(journalDir)
+
+    expect(result).toEqual({ status: 'already-migrated' })
+    expect(await recordIdsOf('session-a')).toEqual(before)
+  })
+
+  test('a marker planted between batches stops the file without importing the second batch', async () => {
+    const total = JOURNAL_BATCH_MAX_RECORDS + 44 // -> two batches: 256, then 44
+    await writeLegacyFile('session-big', total)
+    const handle = await openJournalDbShared(journalDbPathFor(journalDir))
+
+    const originalTransaction = handle.transaction
+    let batchCalls = 0
+    vi.spyOn(handle, 'transaction').mockImplementation((fn) => {
+      batchCalls += 1
+      const result = originalTransaction(fn)
+      if (batchCalls === 1) {
+        handle.db
+          .prepare('INSERT OR IGNORE INTO imported_sessions (session_id) VALUES (?)')
+          .run('session-big')
+      }
+      return result
+    })
+
+    const result = await migrateJournalFiles(journalDir)
+
+    expect(batchCalls).toBe(2) // the second batch ran, saw the marker, and stopped
+    expect(result).toEqual({ status: 'already-migrated' })
+    await expect(rowCountFor('session-big')).resolves.toBe(JOURNAL_BATCH_MAX_RECORDS)
+  })
+})
+
+describe('listUnimportedLegacySessions', () => {
+  test('an empty directory reports none', async () => {
+    await expect(listUnimportedLegacySessions(journalDir)).resolves.toEqual([])
+  })
+
+  test('a directory with no database counts every legacy file', async () => {
+    await writeLegacyFile('session-a', 1)
+    await writeLegacyFile('session-b', 1)
+
+    const unimported = await listUnimportedLegacySessions(journalDir)
+
+    expect(unimported.sort()).toEqual(['session-a', 'session-b'])
+  })
+
+  test('a migrated session is excluded once its rows land in journal.db', async () => {
+    await writeLegacyFile('session-a', 1)
+    await writeLegacyFile('session-b', 1)
+    await migrateJournalFiles(journalDir)
+
+    await expect(listUnimportedLegacySessions(journalDir)).resolves.toEqual([])
+  })
+
+  test('a mix of imported and un-imported files reports only the un-imported ones', async () => {
+    await writeLegacyFile('session-old', 1)
+    await migrateJournalFiles(journalDir)
+    await writeLegacyFile('session-new', 1)
+
+    await expect(listUnimportedLegacySessions(journalDir)).resolves.toEqual(['session-new'])
+  })
+
+  test('a session imported with zero readable records (marker only) is still excluded', async () => {
+    await writeFile(join(journalDir, 'session-garbage.jsonl'), 'not json\n', 'utf8')
+    await migrateJournalFiles(journalDir)
+
+    await expect(listUnimportedLegacySessions(journalDir)).resolves.toEqual([])
   })
 })
 

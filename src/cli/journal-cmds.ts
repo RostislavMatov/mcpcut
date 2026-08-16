@@ -1,4 +1,6 @@
 import { parseArgs } from 'node:util'
+import { JOURNAL_DIR } from '../config.js'
+import { listUnimportedLegacySessions } from '../journal/import.js'
 import {
   isValidJournalDirection,
   isValidJournalKind,
@@ -14,6 +16,12 @@ import { formatRecordsJson, formatRecordsReadable, formatSessionsTable } from '.
  * argv dispatcher (cli.ts) when M3 grew the command set past its size budget.
  * Same behavior, same tests (tests/cli/dispatch.test.ts drives them through
  * dispatch()).
+ *
+ * M4.5 wave 5 (task 6) adds the un-imported-legacy-file hint: `sessions`
+ * nudges toward `mcp-journal migrate` whenever any exist; `show` only does so
+ * when the session it was asked for is itself one of them (targeted, not
+ * noisy). The probe is best-effort — an unreadable directory degrades to no
+ * hint rather than failing the command, which already has its own answer.
  */
 
 /** Minimal writable-stream shape these commands need. */
@@ -44,7 +52,27 @@ export async function runSessionsCommand(
 ): Promise<number> {
   const sessions = await listSessions(journalDir)
   io.stdout.write(sessions.length === 0 ? 'No sessions found.\n' : formatSessionsTable(sessions))
+  const unimported = await unimportedLegacySessions(journalDir)
+  if (unimported.length > 0) {
+    io.stderr.write(
+      `${unimported.length} legacy *.jsonl session file(s) are not imported; ` +
+        'run `mcp-journal migrate` to see them.\n',
+    )
+  }
   return 0
+}
+
+/**
+ * Best-effort: a directory that cannot be probed (permission error, a path
+ * component that is not a directory, …) degrades to "nothing to hint about"
+ * rather than failing a command whose real output already succeeded.
+ */
+async function unimportedLegacySessions(journalDir: string | undefined): Promise<readonly string[]> {
+  try {
+    return await listUnimportedLegacySessions(journalDir ?? JOURNAL_DIR)
+  } catch {
+    return []
+  }
 }
 
 /**
@@ -100,6 +128,12 @@ export async function runShowCommand(
   io.stdout.write(values.json === true ? formatRecordsJson(records) : formatRecordsReadable(records))
   if (skippedLineCount > 0) {
     io.stderr.write(`Skipped ${skippedLineCount} unreadable journal line(s).\n`)
+  }
+  const unimported = await unimportedLegacySessions(journalDir)
+  if (unimported.includes(sessionId)) {
+    io.stderr.write(
+      `${sessionId} has an un-imported legacy *.jsonl file; run \`mcp-journal migrate\` to see it.\n`,
+    )
   }
   return 0
 }

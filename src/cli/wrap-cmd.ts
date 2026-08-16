@@ -1,8 +1,10 @@
 import { parseArgs } from 'node:util'
+import { JOURNAL_DIR } from '../config.js'
 import { loadPolicy, type LoadPolicyOptions, type PolicyLoadResult } from '../policy/load.js'
 import { resolvePolicySource } from '../policy/source.js'
 import type { Policy } from '../policy/schema.js'
 import { runWrap, type RunWrapOptions } from '../proxy/wrap.js'
+import { preflightDatabases } from '../store/preflight.js'
 
 /**
  * `wrap [options] -- <cmd> [args...]`: parses the options that come *before*
@@ -69,6 +71,12 @@ export async function runWrapCommand(
   const flags = parseWrapFlags(wrapArgs.slice(0, dashIndex))
   if (flags === undefined) {
     io.stderr.write(`Unknown option(s) in wrap command.\n\n${WRAP_USAGE}`)
+    return 1
+  }
+
+  // Before the policy is read and long before anything is spawned: a session
+  // whose journal cannot be trusted must never start (M4.5 wave 5).
+  if (!(await preflightDatabases(opts.runWrap?.dir ?? JOURNAL_DIR, io.stderr))) {
     return 1
   }
 

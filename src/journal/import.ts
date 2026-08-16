@@ -1,10 +1,12 @@
 import {
   insertRecordRows,
   journalDbPathFor,
+  openJournalDbIfPresent,
   openJournalDbShared,
   type JournalDatabase,
   type JournalRecordRow,
 } from './db.js'
+import { dbHasSession } from './db-read.js'
 import {
   defaultJournalReadDeps,
   journalPath,
@@ -22,9 +24,13 @@ import type { SqliteHandle } from '../store/sqlite.js'
  * never by a read: wave 3 chose LAZY import for the approvals queue because a
  * legacy file there is at most a few kilobytes, but a journal file can run to
  * gigabytes, and an unbounded import as the side effect of a UI page load or
- * a `journal show` is the wrong trade. Un-migrated sessions stay fully
- * readable through the merged read (`read-routing.ts`) in the meantime, so
- * running this command is a convenience, never a precondition.
+ * a `journal show` is the wrong trade. Since wave 5 cut the merged
+ * DB+file read arm, an un-migrated session is invisible to every reader
+ * (`sessions`, `show`, `export`, search — `journal.db` only) until this
+ * runs; the CLI surfaces a stderr hint (`listUnimportedLegacySessions`,
+ * below) when un-imported files exist, but running this command is a nudge,
+ * not an enforced precondition — nothing stops the proxy itself from
+ * writing brand-new sessions straight to `journal.db` in the meantime.
  *
  * Idempotence is by wipe-and-reload, not by per-row `INSERT OR IGNORE`
  * (unlike the approvals queue): a file's FIRST batch opens with
@@ -35,7 +41,9 @@ import type { SqliteHandle } from '../store/sqlite.js'
  * whatever partial rows it left behind, and reloads it whole — simpler to
  * reason about than deduplicating by `record_id` across a partial and a full
  * pass. A file that fits in one batch gets the DELETE, the inserts and the
- * marker in a single transaction.
+ * marker in a single transaction. Two `migrate` runs racing on the same
+ * directory are safe because every batch re-reads the marker inside its own
+ * transaction before deleting anything (`commitBatch`).
  *
  * Row identity: the file's own session id (its basename) becomes the row's
  * `session_id` column, never the `sessionId` field inside the parsed
@@ -76,8 +84,9 @@ function deleteSessionRows(db: JournalDatabase, sessionId: string): void {
  *
  * A missing `journalDir` and a directory with no `*.jsonl` files both answer
  * `no-files` without ever opening `journal.db` — a read-only probe must never
- * create the database (see `read-routing.ts`), and this is the one path that
- * legitimately does create it, but only once there is something to import.
+ * create the database (see `openJournalDbIfPresent` in `db.ts`), and this is
+ * the one path that legitimately does create it, but only once there is
+ * something to import.
  */
 export async function migrateJournalFiles(journalDir: string): Promise<JournalMigrationResult> {
   const files = [...(await listSessionFilesNewestFirst(journalDir, defaultJournalReadDeps))].reverse()
@@ -100,7 +109,11 @@ export async function migrateJournalFiles(journalDir: string): Promise<JournalMi
       if (markerPresent(handle.db, file.sessionId)) {
         continue // already migrated in an earlier run: not counted, not re-read
       }
-      recordCount += await importOneFile(handle, journalDir, file.sessionId)
+      const imported = await importOneFile(handle, journalDir, file.sessionId)
+      if (imported === null) {
+        continue // a concurrent run owns this session (see `commitBatch`): reported as a skip
+      }
+      recordCount += imported
       sessionCount += 1
     }
     if (sessionCount === 0) {
@@ -113,19 +126,41 @@ export async function migrateJournalFiles(journalDir: string): Promise<JournalMi
 }
 
 /**
+ * Legacy `*.jsonl` session files not yet reflected in `journal.db` — the
+ * CLI hint's probe (`journal-cmds.ts`, wave 5 task 6). A directory with no
+ * database counts every legacy file, since nothing has been imported yet; an
+ * existing database excludes any session `dbHasSession` already claims (rows
+ * or its import marker alone — the same routing question `reader.ts` asks).
+ * A directory with no legacy files short-circuits before ever opening the
+ * database, matching the read-side rule that a probe must not create it.
+ */
+export async function listUnimportedLegacySessions(journalDir: string): Promise<readonly string[]> {
+  const files = await listSessionFilesNewestFirst(journalDir, defaultJournalReadDeps)
+  if (files.length === 0) {
+    return []
+  }
+  const handle = await openJournalDbIfPresent(journalDir)
+  if (handle === null) {
+    return files.map((file) => file.sessionId)
+  }
+  return files.filter((file) => !dbHasSession(handle, file.sessionId)).map((file) => file.sessionId)
+}
+
+/**
  * Streams one file's lines through `parseJournalLine`, committing every
  * `JOURNAL_BATCH_MAX_RECORDS` valid rows in its own transaction, and returns
- * the number imported. A one-line lookahead after a full buffer decides
- * whether the batch just filled is also the file's last: without it, a file
- * whose record count is an exact multiple of the batch size would always
- * split its final batch from its marker into two transactions instead of
- * (correctly, for the exact-one-batch case) one.
+ * the number imported — or `null` when a batch found the session already
+ * marked, i.e. a concurrent run owns it (see `commitBatch`). A one-line
+ * lookahead after a full buffer decides whether the batch just filled is also
+ * the file's last: without it, a file whose record count is an exact multiple
+ * of the batch size would always split its final batch from its marker into
+ * two transactions instead of (correctly, for the exact-one-batch case) one.
  */
 async function importOneFile(
   handle: SqliteHandle,
   journalDir: string,
   sessionId: string,
-): Promise<number> {
+): Promise<number | null> {
   const filePath = journalPath(journalDir, sessionId)
   const lines = defaultJournalReadDeps.readLines(filePath)[Symbol.asyncIterator]()
 
@@ -143,8 +178,8 @@ async function importOneFile(
     appendIfValid(buffer, sessionId, next)
 
     if (next.done === true) {
-      recordCount += commitBatch(handle, sessionId, buffer, isFirstBatch, true)
-      return recordCount
+      const committed = commitBatch(handle, sessionId, buffer, isFirstBatch, true)
+      return committed === null ? null : recordCount + committed
     }
     if (buffer.length < JOURNAL_BATCH_MAX_RECORDS) {
       continue
@@ -152,7 +187,11 @@ async function importOneFile(
 
     const lookahead = await lines.next()
     const isFinalBatch = lookahead.done === true
-    recordCount += commitBatch(handle, sessionId, buffer, isFirstBatch, isFinalBatch)
+    const committed = commitBatch(handle, sessionId, buffer, isFirstBatch, isFinalBatch)
+    if (committed === null) {
+      return null
+    }
+    recordCount += committed
     buffer = []
     isFirstBatch = false
     if (isFinalBatch) {
@@ -181,6 +220,16 @@ function appendIfValid(
  * One file's batch: the DELETE (first batch only) and the marker (final
  * batch only) ride along with the inserts in the same transaction, so a
  * process killed mid-file never leaves the marker without its rows.
+ *
+ * The marker is re-checked as the FIRST statement of EVERY batch's
+ * transaction, mirroring `insertLegacyChunk` (`policy/approvals/queue-import.ts`),
+ * and answers `null` when it is already there. Without it, two concurrent
+ * `migrate` runs can both pass the check in `migrateJournalFiles` — which is
+ * outside any transaction — and the loser's first-batch DELETE would then
+ * wipe rows the winner has already committed: silent loss of journal records,
+ * the one thing an append-oriented journal must never do. The DELETE stays
+ * the idempotency mechanism for a genuinely un-imported session; the
+ * re-check is what makes it safe to run.
  */
 function commitBatch(
   handle: SqliteHandle,
@@ -188,8 +237,11 @@ function commitBatch(
   rows: readonly JournalRecordRow[],
   isFirstBatch: boolean,
   isFinalBatch: boolean,
-): number {
-  handle.transaction((db) => {
+): number | null {
+  return handle.transaction((db) => {
+    if (markerPresent(db, sessionId)) {
+      return null
+    }
     if (isFirstBatch) {
       deleteSessionRows(db, sessionId)
     }
@@ -199,9 +251,8 @@ function commitBatch(
     if (isFinalBatch) {
       writeMarker(db, sessionId)
     }
-    return undefined
+    return rows.length
   })
-  return rows.length
 }
 
 /**

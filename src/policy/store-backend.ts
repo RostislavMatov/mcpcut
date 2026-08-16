@@ -14,7 +14,7 @@ import { isSqliteBusy, openSqlite, type SqliteHandle } from '../store/sqlite.js'
 export type StateDatabase = Parameters<Parameters<SqliteHandle['transaction']>[0]>[0]
 
 /** One database per journal directory; the document's basename is its row key. */
-const STATE_DB_FILE_NAME = 'state.db'
+export const STATE_DB_FILE_NAME = 'state.db'
 
 /**
  * Deliberately small: `node:sqlite` waits for a contended writer lock
