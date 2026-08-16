@@ -1,3 +1,4 @@
+import { APPROVALS_LIST_MAX_ROWS } from '../../config.js'
 import {
   isValidApprovalId,
   type ApprovalQueue,
@@ -52,18 +53,41 @@ function jsonResult(status: number, payload: unknown): UiResult {
 interface ApprovalsView {
   readonly cards: ApprovalCardView[]
   readonly totalPending: number
+  readonly truncated: boolean
 }
 
 /**
  * Builds the display cards from the live queue at the handler's clock. The read
  * is bounded (an undrained queue would otherwise make every poll a full scan),
  * so the total is fetched alongside it and the page says what it is not showing.
+ *
+ * `truncated` is deliberately NOT `totalPending > pending.length`. `list()` and
+ * `countPending()` are separate transactions, so a request committing between
+ * them can make that comparison true on a queue nowhere near truncated — the
+ * identical mistake shipped in the CLI (`approvals-cmd.ts` `runList`, fixed in
+ * commit f05c6d2). `list()` also drops rows that fail to parse before this
+ * function ever sees them, so `pending.length` can sit BELOW the bound even on
+ * a read that fetched everything there was to fetch — comparing it to
+ * `totalPending` alone would then flag a fully-read, merely-partly-unparseable
+ * queue as truncated. Gating on `pending.length` reaching the bound (the ONLY
+ * way `list()` can legitimately be a bound-hit read, since this handler never
+ * requests a custom `limit`) rules out both false positives; it does leave one
+ * gap this module cannot close: a read that both hits the bound AND drops
+ * malformed rows within it reports a `pending.length` that never reaches the
+ * bound, so it reads as untruncated even though rows exist beyond it. Closing
+ * that fully needs the queue to report its raw (pre-filter) fetch count, which
+ * is out of scope here (see the review report).
  */
 async function loadCards(deps: ApprovalsHandlerDeps): Promise<ApprovalsView> {
   const nowMs = (deps.clock ?? Date.now)()
   const pending = await deps.queue.list()
   const totalPending = await deps.queue.countPending()
-  return { cards: pending.map((entry) => toApprovalCard(entry, nowMs)), totalPending }
+  const truncated = pending.length >= APPROVALS_LIST_MAX_ROWS && totalPending > pending.length
+  return {
+    cards: pending.map((entry) => toApprovalCard(entry, nowMs)),
+    totalPending,
+    truncated,
+  }
 }
 
 function currentAdminOf(session: UiSession | undefined): { name: string; role: string } | undefined {
@@ -77,6 +101,7 @@ async function renderPage(deps: ApprovalsHandlerDeps, ctx: UiRequestContext): Pr
   const html = renderApprovalsPage({
     cards: view.cards,
     totalPending: view.totalPending,
+    truncated: view.truncated,
     csrfToken,
     ...(currentAdmin !== undefined ? { currentAdmin } : {}),
   })
@@ -85,9 +110,16 @@ async function renderPage(deps: ApprovalsHandlerDeps, ctx: UiRequestContext): Pr
 
 async function renderApi(deps: ApprovalsHandlerDeps): Promise<UiResult> {
   const view = await loadCards(deps)
-  // `totalPending` travels beside the bounded array so a JSON consumer sees the
-  // truncation too, instead of inferring "that is all of them" from the length.
-  return jsonResult(HTTP_STATUS_OK, { approvals: view.cards, totalPending: view.totalPending })
+  // `totalPending`/`truncated` travel beside the bounded array so a JSON
+  // consumer sees the truncation too, instead of inferring "that is all of
+  // them" from the length — or worse, inferring truncation itself from
+  // `totalPending > approvals.length`, which is exactly the unsound
+  // comparison this module no longer makes (see `loadCards`).
+  return jsonResult(HTTP_STATUS_OK, {
+    approvals: view.cards,
+    totalPending: view.totalPending,
+    truncated: view.truncated,
+  })
 }
 
 /**

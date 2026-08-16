@@ -2,6 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { APPROVALS_LIST_MAX_ROWS } from '../../src/config.js'
 import { createApprovalQueue } from '../../src/policy/approvals/queue.js'
 import {
   createEventHub,
@@ -145,6 +146,94 @@ describe('createQueueWatcher: approval deltas', () => {
     expect(
       sink.events.find((e) => e.event === 'approval-pending')?.data.approvalId,
     ).toBe(second.approvalId)
+  })
+})
+
+describe('createQueueWatcher: queues deeper than one bounded read', () => {
+  /**
+   * One more request than a single bounded read can return, so the LAST id is
+   * provably outside the first page. 501 enqueues cost ~80ms against the real
+   * queue (measured), so this is generated for real rather than faked: the
+   * defect is exactly about the queue's own row bound, and a fake queue with a
+   * smaller bound would be testing the fake's arithmetic.
+   */
+  const DEEP_QUEUE_SIZE = APPROVALS_LIST_MAX_ROWS + 1
+
+  async function fillDeepQueue(queue: ReturnType<typeof createApprovalQueue>): Promise<string[]> {
+    const ids: string[] = []
+    for (let i = 0; i < DEEP_QUEUE_SIZE; i += 1) {
+      const { approvalId } = await queue.enqueue(enqueueRequest({ sessionId: `s${i}` }))
+      ids.push(approvalId)
+    }
+    return ids
+  }
+
+  /**
+   * The id a bounded listing cannot show, ASKED OF THE LISTING rather than
+   * assumed: `list()` orders by `(requestedAt, approvalId)`, and 501 enqueues
+   * share so few milliseconds that the tie-break is the random half of a ULID —
+   * so "the one enqueued last" is not reliably the one left out.
+   */
+  async function idBeyondFirstPage(
+    queue: ReturnType<typeof createApprovalQueue>,
+    ids: readonly string[],
+  ): Promise<string> {
+    const listed = await queue.list()
+    expect(listed).toHaveLength(APPROVALS_LIST_MAX_ROWS)
+    const shown = new Set(listed.map((entry) => entry.approvalId))
+    const hidden = ids.find((id) => !shown.has(id))
+    expect(hidden).toBeDefined()
+    return hidden as string
+  }
+
+  test('resolving a request beyond the first page still yields approval-resolved', async () => {
+    const { queue, sink, watcher } = makeWatcher()
+    const ids = await fillDeepQueue(queue)
+    const beyondFirstPage = await idBeyondFirstPage(queue, ids)
+
+    await watcher.poll() // seed
+    await queue.resolve(beyondFirstPage, { outcome: 'approved', actor: 'ui' })
+    await watcher.poll()
+
+    const resolved = sink.events.filter((e) => e.event === 'approval-resolved')
+    expect(resolved.map((e) => e.data.approvalId)).toEqual([beyondFirstPage])
+  })
+
+  test('attaching to a queue deeper than one page replays no pending events', async () => {
+    const { queue, sink, watcher } = makeWatcher()
+    await fillDeepQueue(queue)
+
+    await watcher.poll() // seed walks every page and must announce nothing
+    await watcher.poll()
+
+    expect(sink.events.filter((e) => e.event.startsWith('approval'))).toHaveLength(0)
+  })
+
+  test('a resolve beyond the first page is announced once, not once per poll', async () => {
+    const { queue, sink, watcher } = makeWatcher()
+    const ids = await fillDeepQueue(queue)
+    const beyondFirstPage = await idBeyondFirstPage(queue, ids)
+
+    await watcher.poll() // seed
+    await queue.resolve(beyondFirstPage, { outcome: 'denied' })
+    await watcher.poll()
+    await watcher.poll()
+    await watcher.poll()
+
+    expect(sink.events.filter((e) => e.event === 'approval-resolved')).toHaveLength(1)
+  })
+
+  test('an enqueue past the first page is announced as pending exactly once', async () => {
+    const { queue, sink, watcher } = makeWatcher()
+    await fillDeepQueue(queue)
+
+    await watcher.poll() // seed
+    const { approvalId } = await queue.enqueue(enqueueRequest({ sessionId: 'late' }))
+    await watcher.poll()
+    await watcher.poll()
+
+    const pending = sink.events.filter((e) => e.event === 'approval-pending')
+    expect(pending.map((e) => e.data.approvalId)).toEqual([approvalId])
   })
 })
 
