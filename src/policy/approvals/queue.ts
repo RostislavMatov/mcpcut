@@ -404,9 +404,12 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
     // One row over the bound, so "is there more" is answered by the same read
     // rather than by a second query against a moving table.
     const limit = boundedLimit(changeOpts.limit)
-    const rows = selectChangesSince(database, sinceSeq, limit + 1)
-    const truncated = rows.length > limit
-    const delivered = truncated ? rows.slice(0, limit) : rows
+    const page = selectChangesSince(database, sinceSeq, limit + 1)
+    // Truncation is decided by what SQL returned, not by what survived parsing:
+    // a malformed row dropped on the way would otherwise make a full page look
+    // partial and stall the drain one page short.
+    const truncated = page.fetched > limit
+    const delivered = truncated ? page.rows.slice(0, limit) : page.rows
 
     const nowMs = clock()
     const newPending: PendingApproval[] = []

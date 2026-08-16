@@ -1,6 +1,6 @@
 import type { PendingApproval } from '../policy/approvals/queue-file.js'
 import type { ApprovalQueue } from '../policy/approvals/queue.js'
-import { UI_QUEUE_POLL_INTERVAL_MS } from './constants.js'
+import { UI_QUEUE_DRAIN_MAX_PAGES, UI_QUEUE_POLL_INTERVAL_MS } from './constants.js'
 import type { IntervalHandle, Scheduler, UiEvent } from './events.js'
 
 /**
@@ -127,12 +127,19 @@ export function createQueueWatcher(deps: WatchDeps): QueueWatcher {
       // Drain: a bounded read can leave more behind, and its watermark stops at
       // the last change it delivered. Looping until the feed is caught up keeps
       // a backlog from taking one poll interval per page to work through, while
-      // the bound still keeps any single read cheap. The loop is finite — each
-      // page strictly advances the watermark.
+      // the bound still keeps any single read cheap.
+      //
+      // Two independent stops. The loop is finite by construction — each page
+      // strictly advances the watermark — but a writer faster than the drain
+      // could keep producing pages and hold this tick for an unbounded stretch
+      // of wall clock. The page cap yields back to the event loop; nothing is
+      // lost, because the watermark has already moved past what was delivered.
+      let pages = 0
       let changes = await deps.queue.changesSince(watermark)
       watermark = changes.latestSeq
       publishApprovalDeltas(announced, changes.newPending, changes.resolvedIds)
-      while (changes.truncated) {
+      while (changes.truncated && pages < UI_QUEUE_DRAIN_MAX_PAGES) {
+        pages += 1
         changes = await deps.queue.changesSince(watermark)
         watermark = changes.latestSeq
         publishApprovalDeltas(announced, changes.newPending, changes.resolvedIds)

@@ -1,5 +1,5 @@
 import type { IncomingMessage } from 'node:http'
-import type { AdminResolver, LoginRateLimiter, SessionManager } from './auth.js'
+import type { AdminResolver, LoginRateLimiter, PenaltyGate, SessionManager } from './auth.js'
 import { loginRateLimitKey, serializeSessionCookie } from './auth.js'
 import {
   BODY_TOO_MANY_REQUESTS,
@@ -54,6 +54,11 @@ export interface LoginFlowDeps {
   readonly trustedProxyHeader?: string
   /** Sleep used to pay the global-ceiling penalty; injectable for tests. */
   readonly sleep?: (ms: number) => Promise<void>
+  /**
+   * Bounds how many attempts wait out the penalty at once. Absent, every
+   * attempt pays it — see `createPenaltyGate` for why that is not free.
+   */
+  readonly penaltyGate?: PenaltyGate
 }
 
 /** Default penalty sleep. */
@@ -78,9 +83,16 @@ export async function handleLoginRequest(
   // The global ceiling slows every attempt down instead of refusing any: an
   // unkeyed refusal is a lockout primitive for anyone who can reach `/login`.
   const penalty = deps.rateLimiter.penaltyMs(key)
-  if (penalty > 0) {
+  // Past the concurrency bound the delay is SKIPPED, not turned into a refusal:
+  // a held request is a held socket, and the throttle must never cost us more
+  // than it costs the flood. Skipping degrades to the pre-penalty behaviour.
+  if (penalty > 0 && (deps.penaltyGate === undefined || deps.penaltyGate.acquire())) {
     deps.stderr.write(`${LOGIN_GLOBAL_PENALTY_WARNING}\n`)
-    await (deps.sleep ?? realSleep)(penalty)
+    try {
+      await (deps.sleep ?? realSleep)(penalty)
+    } finally {
+      deps.penaltyGate?.release()
+    }
   }
   if (!deps.rateLimiter.allow(key)) {
     deps.stderr.write(`${LOGIN_RATE_LIMIT_WARNING}\n`)

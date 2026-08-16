@@ -170,6 +170,17 @@ export const UI_SESSION_SWEEP_INTERVAL_MS = 2000
 /** Poll cadence for the approvals/quarantine watcher (`watch.ts`). */
 export const UI_QUEUE_POLL_INTERVAL_MS = 1000
 
+/**
+ * How many bounded change pages one poll tick will drain before yielding.
+ *
+ * The drain loop terminates on its own (each page strictly advances the
+ * watermark), but an authenticated agent enqueueing in a tight loop could keep
+ * it producing pages and hold one tick for an unbounded stretch of wall clock.
+ * Capping the pages hands control back to the event loop; the remainder is
+ * picked up on the next tick, because the watermark has already advanced.
+ */
+export const UI_QUEUE_DRAIN_MAX_PAGES = 20
+
 // --- Login rate limiting --------------------------------------------------
 
 /**
@@ -197,6 +208,18 @@ export const LOGIN_GLOBAL_MAX_FAILURES = 100
  * during one notices a pause rather than an outage.
  */
 export const LOGIN_GLOBAL_PENALTY_DELAY_MS = 1000
+
+/**
+ * How many login attempts may be sitting in the penalty delay at once.
+ *
+ * The delay throttles a flood without denying anyone — but a held request is a
+ * held socket, and nothing else in the process bounds how many can pile up
+ * while the ceiling is tripped. Past this cap an attempt is served WITHOUT the
+ * delay, which is exactly the pre-penalty behaviour: the throttle degrades, the
+ * login never does. Refusing here instead would put back the unkeyed lockout
+ * the delay exists to remove.
+ */
+export const LOGIN_MAX_CONCURRENT_PENALTIES = 32
 
 /**
  * Cap on tracked client addresses. Bounds the limiter's memory against a

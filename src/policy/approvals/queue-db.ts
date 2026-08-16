@@ -376,9 +376,21 @@ export function selectChangesSince(
   database: StateDatabase,
   sinceSeq: number,
   limit: number,
-): ApprovalChangeRow[] {
+): ChangePage {
   const rows = database.prepare(SELECT_CHANGES_SINCE).all(sinceSeq, limit)
-  return rows.map(changeRow).filter((row): row is ApprovalChangeRow => row !== null)
+  return {
+    // `fetched` counts what SQL returned, BEFORE malformed rows are dropped.
+    // The caller decides truncation by comparing it to the limit, and a dropped
+    // row must not make a full page look like a partial one.
+    fetched: rows.length,
+    rows: rows.map(changeRow).filter((row): row is ApprovalChangeRow => row !== null),
+  }
+}
+
+/** One page of the change feed: the usable rows plus how many SQL actually returned. */
+export interface ChangePage {
+  readonly rows: readonly ApprovalChangeRow[]
+  readonly fetched: number
 }
 
 function changeRow(row: unknown): ApprovalChangeRow | null {

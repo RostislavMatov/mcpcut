@@ -1,7 +1,12 @@
 import { describe, expect, test } from 'vitest'
 import type { IncomingMessage } from 'node:http'
 import type { AdminRecord } from '../../src/admin/store.js'
-import { createLoginRateLimiter, createSessionManager, loginRateLimitKey } from '../../src/ui/auth.js'
+import {
+  createLoginRateLimiter,
+  createPenaltyGate,
+  createSessionManager,
+  loginRateLimitKey,
+} from '../../src/ui/auth.js'
 import {
   LOGIN_GLOBAL_PENALTY_DELAY_MS,
   SESSION_IDLE_TIMEOUT_MS,
@@ -262,5 +267,41 @@ describe('the global login ceiling degrades to delay, not refusal', () => {
     now += 2000
 
     expect(limiter.penaltyMs('10.0.0.250')).toBe(0)
+  })
+})
+
+describe('the penalty delay must not become its own resource sink', () => {
+  test('the gate admits up to its cap and refuses past it', () => {
+    const gate = createPenaltyGate({ maxConcurrent: 2 })
+
+    expect(gate.acquire()).toBe(true)
+    expect(gate.acquire()).toBe(true)
+    // Refusing here means "serve this attempt WITHOUT the delay" — never
+    // "refuse the login". Both reviews flagged the same hazard: while the
+    // global ceiling is tripped, every attempt was held open for a second with
+    // nothing bounding how many such connections could pile up.
+    expect(gate.acquire()).toBe(false)
+  })
+
+  test('a released slot is reusable', () => {
+    const gate = createPenaltyGate({ maxConcurrent: 1 })
+    expect(gate.acquire()).toBe(true)
+    expect(gate.acquire()).toBe(false)
+
+    gate.release()
+
+    expect(gate.acquire()).toBe(true)
+  })
+
+  test('release never drives the count below zero', () => {
+    const gate = createPenaltyGate({ maxConcurrent: 1 })
+
+    gate.release()
+    gate.release()
+
+    // An unbalanced release must not mint extra capacity, or the cap it exists
+    // to enforce could be lifted by a code path that releases twice.
+    expect(gate.acquire()).toBe(true)
+    expect(gate.acquire()).toBe(false)
   })
 })
