@@ -61,6 +61,38 @@ export const MAX_SESSIONS = 64
  */
 export const SESSIONS_PER_ADMIN_MAX = 8
 
+/**
+ * Slots at the top of the pool that only an `owner` login may take. The manual
+ * M4 smoke reproduced the bug this closes: eight `viewer` sessions filled the
+ * pool and the owner could not log in until the 8-hour TTL expired. Refusing to
+ * evict a live session is the right call (see `MAX_SESSIONS`), so the fix is to
+ * keep a landing strip rather than to start evicting.
+ *
+ * Sized to one admin's full per-admin allowance, so the reserve is enough for
+ * an owner to actually work, not merely to peek.
+ */
+export const SESSION_OWNER_RESERVED_SLOTS = 8
+
+/**
+ * The reserve is additionally capped at `maxSessions / this` — a small pool
+ * (tests, or a deliberately tiny deployment) degrades to the pre-reserve
+ * behaviour instead of becoming an owner-only plane. At the default pool of 64
+ * the two rules agree exactly on 8.
+ */
+export const SESSION_OWNER_RESERVE_POOL_DIVISOR = 8
+
+/**
+ * Inactivity after which a session is dead regardless of its absolute TTL.
+ * Without it a browser tab left open on a laptop lid holds its slot (and its
+ * share of the per-admin cap) for the full 8 hours, which is how a handful of
+ * forgotten tabs turns into a login refusal for everyone else.
+ *
+ * Only real requests count as activity: the SSE heartbeat's liveness probe
+ * deliberately does not refresh the window, or one forgotten tab with an open
+ * stream would defeat the timeout entirely.
+ */
+export const SESSION_IDLE_TIMEOUT_MS = 60 * 60 * 1000
+
 // --- Server-Sent Events (SSE) ---------------------------------------------
 
 /**
@@ -109,8 +141,20 @@ export const LOGIN_MAX_FAILURES = 5
  * Failed logins tolerated across ALL addresses within the window — the backstop
  * against a distributed flood that never trips a per-address window. Set well
  * above `LOGIN_MAX_FAILURES` so ordinary mistyping never reaches it.
+ *
+ * Past it attempts are DELAYED, never refused: a refusal here is keyed on
+ * nothing, so any process that can reach `/login` (127.0.0.0/8 aliases are
+ * plenty) could spend 100 wrong guesses and lock every admin out. A delay costs
+ * an attacker the same throughput without ever denying a legitimate login.
  */
 export const LOGIN_GLOBAL_MAX_FAILURES = 100
+
+/**
+ * Delay added to each login attempt while the global ceiling is exceeded. Long
+ * enough to flatten a flood's throughput, short enough that a human logging in
+ * during one notices a pause rather than an outage.
+ */
+export const LOGIN_GLOBAL_PENALTY_DELAY_MS = 1000
 
 /**
  * Cap on tracked client addresses. Bounds the limiter's memory against a
@@ -124,6 +168,10 @@ export const LOGIN_RATE_WINDOW_MS = 60_000
 
 /** Emitted to the warn sink when the login rate limit trips. */
 export const LOGIN_RATE_LIMIT_WARNING = '[ui] login rate limit exceeded; refusing further attempts'
+
+/** Emitted while the global ceiling is exceeded and attempts are being delayed. */
+export const LOGIN_GLOBAL_PENALTY_WARNING =
+  '[ui] global login failure ceiling exceeded; delaying attempts (not refusing them)'
 
 /** Emitted when a login is refused because a session cap is already met. */
 export const SESSION_CAPACITY_WARNING =

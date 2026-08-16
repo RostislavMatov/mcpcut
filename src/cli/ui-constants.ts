@@ -58,10 +58,28 @@ export const TOKEN_STDOUT_REDIRECT_WARNING =
 export const UI_USAGE = `Usage:
   mcp-journal ui [--port ${DEFAULT_UI_PORT}] [--host ${DEFAULT_UI_HOST}] [--behind-tls]
                  [--allowed-host <host[:port]>]... [--allowed-origin <origin>]...
+                 [--trusted-proxy-header <name>]
                                          Run the local admin UI (approvals queue, quarantine,
                                          servers, agents, journal). Bind loopback and terminate
                                          TLS in front of it; --behind-tls marks cookies Secure.
+                                         --trusted-proxy-header keys the login rate limit on a
+                                         forwarding header instead of the peer address; enable it
+                                         ONLY when the proxy rewrites that header.
 `
+
+/**
+ * Printed at startup whenever `--trusted-proxy-header` is on. The flag makes
+ * the login rate limit trust a value the plane cannot verify: with no proxy in
+ * front — or with one that forwards the client's own copy — every caller picks
+ * its own bucket and the per-address window stops meaning anything.
+ */
+export function trustedProxyHeaderNotice(header: string): string {
+  return (
+    `[ui] --trusted-proxy-header ${header}: login rate limiting now keys on that header, ` +
+    'not the peer address. This is safe ONLY if the reverse proxy in front rewrites it; ' +
+    'if it passes the client value through, any caller can choose its own rate-limit bucket.'
+  )
+}
 
 export const ADMIN_USAGE = `Usage:
   admin add <name> --role ${ADMIN_ROLES.join('|')}

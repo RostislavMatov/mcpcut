@@ -87,6 +87,13 @@ export interface UiServerOptions {
   readonly allowedHosts?: readonly string[]
   /** Exact-match additions to the Origin allowlist. */
   readonly allowedOrigins?: readonly string[]
+  /**
+   * Header the login rate limit keys on instead of the peer address, for a
+   * deployment behind a reverse proxy (`--trusted-proxy-header`). Off by
+   * default: trusting it without a rewriting proxy in front lets any caller
+   * pick its own bucket.
+   */
+  readonly trustedProxyHeader?: string
   readonly maxBodyBytes?: number
   /**
    * The session manager. Supply one when something outside the server holds
@@ -282,7 +289,16 @@ export function createUiServer(opts: UiServerOptions): UiServer {
         writeResult(
           res,
           await handleLoginRequest(
-            { adminStore: opts.adminStore, sessions, rateLimiter, behindTls, stderr },
+            {
+              adminStore: opts.adminStore,
+              sessions,
+              rateLimiter,
+              behindTls,
+              stderr,
+              ...(opts.trustedProxyHeader !== undefined
+                ? { trustedProxyHeader: opts.trustedProxyHeader }
+                : {}),
+            },
             loginCtx,
             req,
           ),

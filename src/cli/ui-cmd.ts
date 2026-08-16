@@ -22,6 +22,7 @@ import {
   DEFAULT_UI_PORT,
   DEFAULT_UI_SIGNALS,
   EXIT_STARTUP_FAILURE,
+  trustedProxyHeaderNotice,
   UI_USAGE,
   type UiCliIo,
 } from './ui-constants.js'
@@ -91,7 +92,12 @@ interface UiFlags {
   readonly behindTls: boolean
   readonly allowedHosts: readonly string[]
   readonly allowedOrigins: readonly string[]
+  /** Header the login rate limit keys on when a reverse proxy is in front. */
+  readonly trustedProxyHeader?: string
 }
+
+/** RFC 9110 field-name token; anything else is not a header name. */
+const HEADER_NAME_PATTERN = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/
 
 type FlagResult = { readonly flags: UiFlags } | { readonly error: string }
 
@@ -107,6 +113,7 @@ function parseUiFlags(argv: readonly string[]): FlagResult {
         'behind-tls': { type: 'boolean', default: false },
         'allowed-host': { type: 'string', multiple: true },
         'allowed-origin': { type: 'string', multiple: true },
+        'trusted-proxy-header': { type: 'string' },
       },
       allowPositionals: false,
       strict: true,
@@ -129,6 +136,12 @@ function parseUiFlags(argv: readonly string[]): FlagResult {
   if (allowedOrigins.some(isRejectedOriginFlagValue)) {
     return { error: `Invalid --allowed-origin "null": the opaque origin can never be allowed.` }
   }
+  const rawProxyHeader = values['trusted-proxy-header']
+  if (rawProxyHeader !== undefined && !HEADER_NAME_PATTERN.test(String(rawProxyHeader))) {
+    return {
+      error: `Invalid --trusted-proxy-header "${String(rawProxyHeader)}": expected a header name (e.g. x-forwarded-for).`,
+    }
+  }
 
   return {
     flags: {
@@ -137,6 +150,7 @@ function parseUiFlags(argv: readonly string[]): FlagResult {
       behindTls: values['behind-tls'] === true,
       allowedHosts: Array.isArray(values['allowed-host']) ? (values['allowed-host'] as string[]) : [],
       allowedOrigins,
+      ...(typeof rawProxyHeader === 'string' ? { trustedProxyHeader: rawProxyHeader } : {}),
     },
   }
 }
@@ -210,6 +224,9 @@ function buildRuntime(flags: UiFlags, io: UiCliIo, opts: UiCommandOptions): UiRu
     behindTls: flags.behindTls,
     allowedHosts: flags.allowedHosts,
     allowedOrigins: flags.allowedOrigins,
+    ...(flags.trustedProxyHeader !== undefined
+      ? { trustedProxyHeader: flags.trustedProxyHeader }
+      : {}),
     stderr: io.stderr,
     ...(opts.clock !== undefined ? { clock: opts.clock } : {}),
   })
@@ -283,6 +300,9 @@ export async function runUi(
   }
 
   runtime.watcher.start()
+  if (flags.trustedProxyHeader !== undefined) {
+    io.stderr.write(`${trustedProxyHeaderNotice(flags.trustedProxyHeader)}\n`)
+  }
   io.stderr.write(`ui: listening on http://${flags.host}:${bound.port}\n`)
   await waitForShutdown(runtime, io, opts, { port: bound.port, host: flags.host })
   return 0
