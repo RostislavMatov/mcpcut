@@ -187,13 +187,25 @@ export const UI_QUEUE_DRAIN_MAX_PAGES = 20
  * Failed logins tolerated from ONE client address within the window before
  * `/login` answers 429 to that address. Keyed rather than global: an unkeyed
  * counter lets one wrong-guessing client lock out every other admin.
+ *
+ * `login-flow.ts` counts an attempt against this window the moment it is
+ * admitted, before the token is looked up, and a successful login then clears
+ * the whole window. So the number bounds failures within the window PLUS the
+ * attempts from that address still in flight — the only ordering in which
+ * concurrent attempts cannot all pass a window none of them has touched yet.
  */
 export const LOGIN_MAX_FAILURES = 5
 
 /**
- * Failed logins tolerated across ALL addresses within the window — the backstop
- * against a distributed flood that never trips a per-address window. Set well
- * above `LOGIN_MAX_FAILURES` so ordinary mistyping never reaches it.
+ * Login attempts tolerated across ALL addresses within the window — the
+ * backstop against a distributed flood that never trips a per-address window.
+ * Set well above `LOGIN_MAX_FAILURES` so ordinary mistyping never reaches it.
+ *
+ * Attempts, not failures: an attempt is counted when it is admitted (see
+ * `LOGIN_MAX_FAILURES`), and the per-address forgiveness on success does not
+ * reach the global window. A hundred SUCCESSFUL logins a minute therefore trips
+ * this too — which on a plane holding 8-hour sessions means a flood, and which
+ * costs the admins who caused it a one-second pause, nothing more.
  *
  * Past it attempts are DELAYED, never refused: a refusal here is keyed on
  * nothing, so any process that can reach `/login` (127.0.0.0/8 aliases are

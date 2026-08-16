@@ -1,4 +1,5 @@
 import { parseArgs } from 'node:util'
+import { APPROVALS_LIST_MAX_ROWS } from '../config.js'
 import { formatReadableField } from '../journal/format.js'
 import {
   createApprovalQueue,
@@ -30,6 +31,13 @@ export interface ApprovalsCliOptions {
   readonly baseDir?: string
   /** Injectable clock for deterministic tests. Defaults to `Date.now`. */
   readonly clock?: () => number
+  /**
+   * Injectable queue, for tests exercising the bounded-read truncation path
+   * (`list()` capped at `APPROVALS_LIST_MAX_ROWS`) without seeding hundreds
+   * of real rows through the on-disk queue. Defaults to a queue built from
+   * `baseDir`/`clock`.
+   */
+  readonly queue?: ApprovalQueue
 }
 
 const USAGE = `Usage:
@@ -52,10 +60,12 @@ export async function runApprovals(
   opts: ApprovalsCliOptions = {},
 ): Promise<number> {
   const subcommand = args[0]
-  const queue = createApprovalQueue({
-    ...(opts.baseDir !== undefined ? { baseDir: opts.baseDir } : {}),
-    ...(opts.clock !== undefined ? { clock: opts.clock } : {}),
-  })
+  const queue =
+    opts.queue ??
+    createApprovalQueue({
+      ...(opts.baseDir !== undefined ? { baseDir: opts.baseDir } : {}),
+      ...(opts.clock !== undefined ? { clock: opts.clock } : {}),
+    })
   const clock = opts.clock ?? Date.now
 
   if (subcommand === 'list') {
@@ -92,9 +102,23 @@ async function runList(
   }
 
   const entries = await queue.list()
+  // `list()` is bounded (APPROVALS_LIST_MAX_ROWS); pair it with `countPending()`
+  // so a queue larger than the bound doesn't read as "the whole queue" to
+  // either a human or a script (code-review finding 4). Mirrors
+  // `ui/handlers/approvals.ts`'s aggregation of the same two calls.
+  const totalPending = await queue.countPending()
+  // Truncation is a property of THIS read hitting its own bound, not of a
+  // comparison between two reads. The two calls are separate transactions, so
+  // a request committing between them made `totalPending > entries.length`
+  // true on a queue of one — reporting truncation that never happened.
+  const truncated = entries.length >= APPROVALS_LIST_MAX_ROWS && totalPending > entries.length
 
   if (json) {
-    io.stdout.write(`${JSON.stringify(entries)}\n`)
+    // ONE shape, always. Emitting a bare array when untruncated and an object
+    // otherwise made the contract depend on runtime state: a script parsing it
+    // worked until the queue grew, then broke — and, via the race above, broke
+    // non-deterministically on a queue of one.
+    io.stdout.write(`${JSON.stringify({ truncated, totalPending, approvals: entries })}\n`)
     return 0
   }
 
@@ -103,8 +127,14 @@ async function runList(
     return 0
   }
 
-  io.stdout.write(formatListReadable(entries, clock()))
+  const truncationNote = truncated ? formatTruncationNote(entries.length, totalPending) : ''
+  io.stdout.write(truncationNote + formatListReadable(entries, clock()))
   return 0
+}
+
+/** Readable-mode counterpart of the JSON `truncated`/`totalPending` fields; phrasing matches `ui/pages/approvals.ts`. */
+function formatTruncationNote(shown: number, totalPending: number): string {
+  return `${shown} of ${totalPending} pending (showing the oldest)\n`
 }
 
 function formatListReadable(entries: readonly PendingApproval[], nowMs: number): string {

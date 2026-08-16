@@ -93,14 +93,25 @@ const STATUS_LABELS = {
  * like the four `STATE_FILES` entries, but a directory pair under `journalDir`. */
 const APPROVALS_QUEUE_LABEL = 'approvals/'
 
+/**
+ * An unreadable settled record is never silently dropped: a settled file the
+ * import could not parse is the one case where staying quiet would let a
+ * decision a human already made look like it never existed. Reported on
+ * `no-file` too — "nothing to migrate" must not be able to mean "a settled
+ * record was lost".
+ */
+function unreadableSettledSuffix(count: number): string {
+  return count === 0 ? '' : `, ${count} unreadable settled`
+}
+
 function approvalsStatusLabel(result: ApprovalsMigrationResult): string {
   switch (result.status) {
     case 'imported':
-      return `imported (${result.pendingCount} pending, ${result.resolvedCount} resolved)`
+      return `imported (${result.pendingCount} pending, ${result.resolvedCount} resolved${unreadableSettledSuffix(result.unreadableSettledCount)})`
     case 'already-migrated':
       return 'already migrated'
     case 'no-file':
-      return 'no file'
+      return `no file${unreadableSettledSuffix(result.unreadableSettledCount)}`
   }
 }
 
