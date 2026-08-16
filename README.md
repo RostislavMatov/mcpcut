@@ -306,7 +306,8 @@ mcp-journal approvals approve <id> [--reason TEXT]
 mcp-journal approvals deny <id> [--reason TEXT]
 mcp-journal admin add <name> --role owner|operator|viewer
 mcp-journal admin list | remove <name> | rotate <name> | role <name> owner|operator|viewer
-mcp-journal ui [--port 8091] [--host 127.0.0.1] [--behind-tls] [--allowed-host H] [--allowed-origin URL]
+mcp-journal ui [--port 8091] [--host 127.0.0.1] [--behind-tls]
+               [--allowed-host <host[:port]>]... [--allowed-origin <origin>]... [--trusted-proxy-header <name>]
 mcp-journal migrate
 mcp-journal export [--session <id>]
 mcp-journal backup <destDir>
@@ -544,6 +545,17 @@ terminates TLS in front). `--allowed-host` and `--allowed-origin` extend the
 `Host`/`Origin` allowlists by exact match — needed only when something other
 than a loopback name fronts the UI; both may be repeated.
 
+Behind a TLS-terminating proxy those flags go together: `--behind-tls` alone is
+not enough. The browser sends the **public** `Host` (`127.0.0.1:8443` below),
+`Host` screening compares it against the UI's own bind address
+(`127.0.0.1:8092`), and answers **403 to everything, before authentication** —
+which reads as "`--behind-tls` is broken" when it is in fact the DNS-rebinding
+defence doing its job. Name the public host explicitly:
+
+```
+mcp-journal ui --port 8092 --behind-tls --allowed-host 127.0.0.1:8443
+```
+
 `--trusted-proxy-header <name>` (e.g. `x-forwarded-for`) keys the `/login` rate
 limit on that header instead of the peer address, so the limit still
 distinguishes clients behind a proxy. **Enable it only if the proxy rewrites
@@ -557,7 +569,7 @@ The UI is its own process on its own port — it is not part of `serve`, and
 main M3 scenario (`connect`, stdio) never runs `serve` at all; if the queue
 only had a UI when `serve` was up, that scenario would have no UI ever.
 
-On the very first run, if `~/.mcp-journal/admins.json` does not exist yet,
+On the very first run, if the admin store in `~/.mcp-journal/state.db` holds no admins yet,
 `mcp-journal ui` creates one `owner` account (named `owner`) and prints the
 sign-in URL and its plaintext token **to stderr only, once** — never to stdout,
 never to a file. The token is printed beside the URL, not embedded in it, so

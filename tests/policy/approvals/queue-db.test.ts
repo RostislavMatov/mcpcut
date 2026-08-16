@@ -13,6 +13,7 @@ import {
   approvalsDbPath,
   bumpChangeSeq,
   openApprovalsDb,
+  selectExpiredPendingRows,
   type ApprovalsDb,
 } from '../../../src/policy/approvals/queue-db.js'
 import { createJsonStore } from '../../../src/policy/store.js'
@@ -523,5 +524,72 @@ describe('resolve under contention: exactly one winner', () => {
     ])
 
     expect(results.filter((result) => result.ok)).toHaveLength(1)
+  })
+})
+
+describe('selectExpiredPendingRows: the sweep candidates (see queue-sweep.ts)', () => {
+  /** Inserts one row with full control over `status` and the `expires_at` COLUMN. */
+  async function insertRow(approvalId: string, status: string, expiresAt: string): Promise<void> {
+    const db = await openApprovalsDb(baseDir)
+    db.handle.db
+      .prepare(
+        'INSERT INTO approvals (approval_id, status, doc, server_name, tool_name, args_hash, ' +
+          'requested_at, expires_at, change_seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)',
+      )
+      .run(approvalId, status, '{}', 'github', 'create_issue', 'a'.repeat(64), '2026-01-01T00:00:00.000Z', expiresAt)
+  }
+
+  test('returns only pending rows at or before the cutoff, oldest expiry first, within the bound', async () => {
+    await insertRow('01A', 'pending', '2026-01-01T00:00:02.000Z')
+    await insertRow('01B', 'pending', '2026-01-01T00:00:01.000Z')
+    await insertRow('01C', 'pending', '2026-01-01T00:10:00.000Z') // still live
+    await insertRow('01D', 'resolved', '2026-01-01T00:00:01.000Z') // already settled
+
+    const db = await openApprovalsDb(baseDir)
+    const cutoff = '2026-01-01T00:00:02.000Z' // `>=` is expired: the instant itself counts
+    const rows = selectExpiredPendingRows(db.handle.db, cutoff, 10)
+
+    expect(rows.map((row) => row.approvalId)).toEqual(['01B', '01A'])
+    // The bound is the sweep's, not the table's: a backlog is settled across
+    // several reads rather than in one unbounded batch.
+    expect(selectExpiredPendingRows(db.handle.db, cutoff, 1).map((row) => row.approvalId)).toEqual([
+      '01B',
+    ])
+  })
+
+  test('carries the PRIMARY KEY, not the record — a doc pointing at another id must not steer the write', async () => {
+    await insertRow('01REALKEY', 'pending', '2026-01-01T00:00:01.000Z')
+    const db = await openApprovalsDb(baseDir)
+    db.handle.db
+      .prepare('UPDATE approvals SET doc = ? WHERE approval_id = ?')
+      .run(JSON.stringify({ approvalId: '01SOMEONEELSE' }), '01REALKEY')
+
+    const rows = selectExpiredPendingRows(db.handle.db, '2026-06-01T00:00:00.000Z', 10)
+
+    expect(rows[0]?.approvalId).toBe('01REALKEY')
+  })
+})
+
+describe('the sweep under contention: a human decision always wins its own row', () => {
+  test('a sweep racing an operator resolve yields exactly one outcome', async () => {
+    let nowMs = Date.UTC(2026, 0, 1)
+    const sweeper = createApprovalQueue({ baseDir, clock: () => nowMs })
+    const operator = createApprovalQueue({ baseDir, clock: () => nowMs })
+    const { approvalId } = await sweeper.enqueue(enqueueRequest({ timeoutMs: 1000 }))
+    nowMs += 5000 // expired, so both the sweep and the resolve want this row
+
+    const before = (await sweeper.changesSince(null)).latestSeq
+    const [, resolved] = await Promise.all([
+      sweeper.countPending(),
+      operator.resolve(approvalId, { outcome: 'denied', actor: 'alice' }),
+    ])
+    const after = (await sweeper.changesSince(null)).latestSeq
+
+    // One write transaction, therefore one change-sequence bump, therefore one
+    // outcome — whichever of the two got the writer lock first.
+    expect(after).toBe(before + 1)
+    const resolution = await sweeper.readResolution(approvalId)
+    expect(resolution?.outcome).toBe(resolved.ok ? 'denied' : 'expired')
+    if (resolved.ok) expect(resolution?.actor).toBe('alice') // never overwritten by the sweep
   })
 })

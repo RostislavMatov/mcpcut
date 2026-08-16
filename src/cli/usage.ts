@@ -28,7 +28,10 @@ export const USAGE = `Usage:
                                          Print one session's journal records
   mcp-journal policy validate [path]    Validate the resolved (or given) policy file
   mcp-journal policy show [--server <name>] [--json] [--policy <path>]
-                                         Print the effective policy (defaults applied)
+                          [--entry-point <name>]
+                                         Print the effective policy (defaults applied);
+                                         --entry-point resolves the source the way that
+                                         entry point does
   mcp-journal quarantine list [--server <name>] [--json]
                                          List quarantined tools
   mcp-journal quarantine approve <server> <tool> | --all --server <name>

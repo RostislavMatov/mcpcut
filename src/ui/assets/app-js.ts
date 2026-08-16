@@ -32,7 +32,10 @@ import { buildAsset, type Asset } from './app-css.js'
  *     `data-live-src` (default: current URL) and swaps the container's
  *     innerHTML from the matching `data-live-region` node in the response.
  *   - `data-pending-count` on any element is kept in sync and mirrored into
- *     the document title so a background tab shows a badge.
+ *     the document title so a background tab shows a badge. The optional
+ *     `data-pending-total` on the SAME element overrides it when it is larger:
+ *     queue reads are bounded, and a badge built from the truncated count
+ *     would under-report the backlog the page body admits to.
  *
  *  Fallback
  *   - if SSE errors, the script polls `data-live-src` (or the page) every
@@ -129,6 +132,12 @@ const APP_JS_SOURCE = `"use strict";
     var node = (scope || document).querySelector("[data-pending-count]");
     if (!node) return;
     var count = parseInt(node.getAttribute("data-pending-count") || "0", 10) || 0;
+    // A bounded read renders fewer cards than the queue holds and says so in
+    // the page body; the tab badge must report the QUEUE, not the page, or a
+    // glance at the tab reads a truncated backlog as drained. NaN (attribute
+    // absent, the untruncated case) fails this compare and leaves count alone.
+    var total = parseInt(node.getAttribute("data-pending-total") || "", 10);
+    if (total > count) count = total;
     var base = document.title.replace(/^\\(\\d+\\)\\s*/, "");
     document.title = count > 0 ? "(" + count + ") " + base : base;
   }

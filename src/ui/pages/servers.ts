@@ -1,6 +1,7 @@
 import type { ServerRecord } from '../../registry/schema.js'
 import type { SecretInfo } from '../../vault/store.js'
 import { html, join, type Html } from '../html.js'
+import { EMPTY_SERVER_FORM, type ServerFormValues } from '../server-form.js'
 import { renderLayout, type CurrentAdmin } from './layout.js'
 
 /**
@@ -38,16 +39,27 @@ function renderValueMap(label: string, map: Record<string, string> | undefined):
   return html`<h4>${label}</h4><table>${join(rows)}</table>`
 }
 
+/**
+ * The argument vector, one argument per item. Deliberately NOT joined with
+ * spaces: an argument that itself contains a space would then be
+ * indistinguishable from two arguments, and this markup is reused by the
+ * confirmation interstitial — the one screen whose whole purpose is letting a
+ * human see the exact command line that will be spawned on their host. Each
+ * argument still goes through the escaping `html` tag, like every other
+ * untrusted value here.
+ */
+function renderArgs(args: readonly string[] | undefined): Html {
+  if (args === undefined || args.length === 0) return html``
+  const items = join(args.map((arg) => html`<li><code>${arg}</code></li>`))
+  return html`<p class="muted">args:</p><ul>${items}</ul>`
+}
+
 /** The transport-specific target line and env/header block of one server. */
 function renderServerDetails(record: ServerRecord): Html {
   if (record.transport === 'stdio') {
-    const args =
-      record.args !== undefined && record.args.length > 0
-        ? html`<p class="muted">args: <code>${record.args.join(' ')}</code></p>`
-        : html``
     return html`
       <p>command: <code>${record.command}</code></p>
-      ${args}
+      ${renderArgs(record.args)}
       ${renderValueMap('env', record.env)}
     `
   }
@@ -80,28 +92,50 @@ function renderServerCard(record: ServerRecord, canManage: boolean, csrfToken: s
   `
 }
 
-/** The owner-only "register a server" form. Env/headers are one `K=V` per line. */
-function renderAddForm(csrfToken: string): Html {
+/** One transport choice, pre-selected when it is the submitted one. */
+function transportOption(value: string, chosen: string): Html {
+  return value === chosen
+    ? html`<option value="${value}" selected>${value}</option>`
+    : html`<option value="${value}">${value}</option>`
+}
+
+/**
+ * The owner-only "register a server" form. Env/headers are one `K=V` per line.
+ *
+ * `form` carries back what a rejected submission contained, so correcting one
+ * field does not mean retyping the other seven. It has already passed through
+ * `echoableServerForm`, which strips the parts the validator called secrets —
+ * this template must never be handed raw submitted fields.
+ */
+function renderAddForm(csrfToken: string, form: ServerFormValues): Html {
   return html`
     <div class="card">
       <h2>Register a server</h2>
       <form method="post" action="/servers/add">
         ${csrfField(csrfToken)}
-        <p><label>name <input name="name" required /></label></p>
+        <p><label>name <input name="name" value="${form.name}" required /></label></p>
         <p>
           <label>transport
             <select name="transport">
-              <option value="stdio">stdio</option>
-              <option value="http">http</option>
+              ${transportOption('stdio', form.transport)}
+              ${transportOption('http', form.transport)}
             </select>
           </label>
         </p>
-        <p><label>command (stdio) <input name="command" /></label></p>
-        <p><label>args (comma-separated) <input name="args" /></label></p>
-        <p><label>url (http) <input name="url" /></label></p>
-        <p><label>protocol (http) <input name="protocol" placeholder="auto" /></label></p>
-        <p><label>env — one K=V per line<br /><textarea name="env" rows="3"></textarea></label></p>
-        <p><label>headers — one K=V per line<br /><textarea name="headers" rows="3"></textarea></label></p>
+        <p><label>command (stdio) <input name="command" value="${form.command}" /></label></p>
+        <p><label>args (comma-separated) <input name="args" value="${form.args}" /></label></p>
+        <p><label>url (http) <input name="url" value="${form.url}" /></label></p>
+        <p>
+          <label>protocol (http)
+            <input name="protocol" value="${form.protocol}" placeholder="auto" />
+          </label>
+        </p>
+        <p><label>env — one K=V per line<br /><textarea name="env" rows="3">${form.env}</textarea></label></p>
+        <p>
+          <label>headers — one K=V per line<br />
+            <textarea name="headers" rows="3">${form.headers}</textarea>
+          </label>
+        </p>
         <p class="muted">Secrets never live here: use <code>vault:&lt;name&gt;</code> references, not literals.</p>
         <button type="submit">Register</button>
       </form>
@@ -116,6 +150,11 @@ export interface ServersView {
   readonly csrfToken: string
   readonly currentAdmin: CurrentAdmin
   readonly error?: string
+  /**
+   * The add form's state to re-render, already stripped of secret literals by
+   * `echoableServerForm`. Absent on a plain page load (blank form).
+   */
+  readonly form?: ServerFormValues
 }
 
 /** Renders the `/servers` document: the registry list plus, for owners, an add form. */
@@ -130,7 +169,7 @@ export function renderServersPage(view: ServersView): string {
     <h1>Servers</h1>
     ${banner}
     ${list}
-    ${view.canManage ? renderAddForm(view.csrfToken) : html``}
+    ${view.canManage ? renderAddForm(view.csrfToken, view.form ?? EMPTY_SERVER_FORM) : html``}
   `
   return renderLayout({
     title: 'Servers',

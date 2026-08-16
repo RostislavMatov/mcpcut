@@ -80,16 +80,28 @@ export interface ApprovalTimeoutErrorInfo {
 
 /**
  * A `tools/call` that required human approval, and timed out waiting for
- * one. The message is written to prompt a retry: once an operator approves
- * the pending request, the agent is expected to call the tool again.
+ * one. The message prompts a retry once a human operator approves the
+ * pending request — but deliberately does not tell the agent *how* to make
+ * that happen: the approve command belongs to the human, who already sees
+ * the pending request in the admin UI and `approvals list`, not to the
+ * blocked party reading this string. Handing the agent a ready-to-run
+ * self-approval command through the one channel it reads and trusts by
+ * default would make the human-in-the-loop guarantee rest on the agent's
+ * unwillingness to run it, not on any mechanism.
+ *
+ * `approvalId` stays out of the prose for the same reason — pairing it with
+ * free text an agent parses is what turns a fact into an instruction it can
+ * act on — but it remains in `data.approvalId` for legitimate structured
+ * correlation (e.g. tooling matching this refusal to a queue entry), which
+ * the human-facing surfaces already have without needing it echoed back.
  */
 export function approvalTimeoutError(id: SynthesizableId, info: ApprovalTimeoutErrorInfo): Buffer {
   return synthesizeError(id, {
     code: ERROR_CODE_APPROVAL,
     message:
       `Call to tool "${info.toolName}" requires human approval and timed out waiting for one. ` +
-      `An operator can approve it with \`mcp-journal approvals approve ${info.approvalId}\` — ` +
-      'retry this call after they confirm.',
+      'A human operator needs to approve the pending request before this call can proceed; ' +
+      'retry once they do.',
     data: { reason: 'approval_timeout', toolName: info.toolName, approvalId: info.approvalId },
   })
 }
@@ -112,14 +124,19 @@ export interface QuarantinedErrorInfo {
   readonly serverName: string
 }
 
-/** A `tools/call` to a new or changed tool still awaiting quarantine review. */
+/**
+ * A `tools/call` to a new or changed tool still awaiting quarantine review.
+ *
+ * Same reasoning as {@link approvalTimeoutError}: the reviewer's approve
+ * command is not included, since the only reader of this string is the
+ * party the quarantine gates, not the operator who reviews it elsewhere.
+ */
 export function quarantinedError(id: SynthesizableId, info: QuarantinedErrorInfo): Buffer {
   return synthesizeError(id, {
     code: ERROR_CODE_QUARANTINED,
     message:
       `Tool "${info.toolName}" on server "${info.serverName}" is quarantined (new or changed) ` +
-      'and cannot be called until reviewed. An operator can approve it with ' +
-      `\`mcp-journal quarantine approve ${info.serverName} ${info.toolName}\`.`,
+      'and cannot be called until a human operator reviews it.',
     data: { reason: 'quarantined', toolName: info.toolName, serverName: info.serverName },
   })
 }

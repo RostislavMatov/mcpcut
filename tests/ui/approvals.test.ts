@@ -253,6 +253,11 @@ describe('a bounded read never reads as a drained queue', () => {
     const body = bodyText(result)
     expect(body).toContain('2 of 5 pending')
     expect(body).toContain('showing the oldest')
+    // …and the tab badge must not contradict that line: the client script
+    // builds it from these attributes, so the true total has to travel with
+    // them or a glance at the tab reads the backlog as drained to the bound.
+    expect(body).toContain('data-pending-count="2"')
+    expect(body).toContain('data-pending-total="5"')
   })
 
   test('an unbounded read says nothing about truncation', async () => {
@@ -263,6 +268,9 @@ describe('a bounded read never reads as a drained queue', () => {
 
     expect(body).toContain('1 pending')
     expect(body).not.toContain('showing the oldest')
+    // No truncation, no override: the badge stays the plain pending count.
+    expect(body).toContain('data-pending-count="1"')
+    expect(body).not.toContain('data-pending-total')
   })
 
   test('the JSON API carries the total beside the bounded array', async () => {

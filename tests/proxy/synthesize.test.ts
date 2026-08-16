@@ -1,8 +1,10 @@
 import { describe, expect, test } from 'vitest'
+import * as synthesizeModule from '../../src/proxy/synthesize.js'
 import {
   ERROR_CODE_APPROVAL,
   ERROR_CODE_POLICY_DENIED,
   ERROR_CODE_QUARANTINED,
+  type SynthesizableId,
   approvalDeniedError,
   approvalTimeoutError,
   denialError,
@@ -117,13 +119,15 @@ describe('approvalTimeoutError', () => {
     expect(errorOf(bytes)['code']).toBe(ERROR_CODE_APPROVAL)
   })
 
-  test('message is actionable: names the CLI approve command with the approval id and tells the agent to retry', () => {
+  test('message tells the agent it needs human approval and to retry, without a self-approval command', () => {
     const bytes = approvalTimeoutError('req-2', { toolName: 'send_email', approvalId: 'appr-42' })
     const message = errorOf(bytes)['message'] as string
 
-    expect(message).toContain('mcp-journal approvals approve appr-42')
     expect(message).toContain('send_email')
+    expect(message.toLowerCase()).toContain('human')
     expect(message.toLowerCase()).toContain('retry')
+    expect(message).not.toContain('mcp-journal')
+    expect(message).not.toContain('appr-42')
   })
 
   test('data carries the machine-readable reason, tool name, and approval id', () => {
@@ -166,12 +170,13 @@ describe('quarantinedError', () => {
     expect(errorOf(bytes)['code']).toBe(ERROR_CODE_QUARANTINED)
   })
 
-  test('message is actionable: names the CLI quarantine-approve command with server and tool', () => {
+  test('message tells the agent it is quarantined pending human review, without a self-approval command', () => {
     const bytes = quarantinedError('req-4', { toolName: 'new_tool', serverName: 'billing' })
     const message = errorOf(bytes)['message'] as string
 
-    expect(message).toContain('mcp-journal quarantine approve billing new_tool')
     expect(message.toLowerCase()).toContain('quarantine')
+    expect(message.toLowerCase()).toContain('human')
+    expect(message).not.toContain('mcp-journal')
   })
 
   test('data carries the machine-readable reason, tool name, and server name', () => {
@@ -182,5 +187,51 @@ describe('quarantinedError', () => {
       toolName: 'new_tool',
       serverName: 'billing',
     })
+  })
+})
+
+/**
+ * Pins the guarantee at the center of this module's threat model: none of
+ * these messages may hand the blocked party — the only reader of
+ * `error.message` — a ready-to-run command that unblocks itself. A human
+ * operator already sees pending requests in the admin UI and
+ * `approvals`/`quarantine` CLI listings; this string has exactly one
+ * audience, and that audience must never be told the override command.
+ *
+ * Every export named `*Error` (other than the generic `synthesizeError`
+ * primitive, whose message is caller-supplied rather than templated here)
+ * is discovered and probed reflectively, via a `Proxy` that answers any
+ * field access with a placeholder string — so a new builder is covered by
+ * this test automatically, without updating a hand-maintained list, as long
+ * as it keeps taking `(id, info)` and returning a synthesized error buffer.
+ */
+describe('agent-facing safety invariant: no self-approval command', () => {
+  const builderNames = Object.keys(synthesizeModule).filter(
+    (name) => name.endsWith('Error') && name !== 'synthesizeError',
+  )
+
+  test('discovers the known builders, guarding against a silently empty sweep', () => {
+    expect(builderNames).toEqual(
+      expect.arrayContaining([
+        'denialError',
+        'approvalTimeoutError',
+        'approvalDeniedError',
+        'quarantinedError',
+      ]),
+    )
+  })
+
+  test.each(builderNames)('%s never contains an operator override command', (name) => {
+    type Builder = (id: SynthesizableId, info: Record<string, unknown>) => Buffer
+    const builder = (synthesizeModule as unknown as Record<string, Builder>)[name] as Builder
+    const placeholderInfo = new Proxy({}, { get: () => 'placeholder' }) as Record<string, unknown>
+
+    const bytes = builder('req-x', placeholderInfo)
+    const message = errorOf(bytes)['message'] as string
+
+    expect(message).not.toContain('mcp-journal')
+    expect(message.toLowerCase()).not.toContain('approvals approve')
+    expect(message.toLowerCase()).not.toContain('quarantine approve')
+    expect(message).not.toMatch(/`[^`]*`/)
   })
 })

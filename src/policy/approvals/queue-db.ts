@@ -89,6 +89,20 @@ const SELECT_RESOLVED_FOR_GRANT =
   'AND args_hash = ? ORDER BY approval_id DESC LIMIT ?'
 
 /**
+ * Candidates for the lazy expiry sweep, oldest expiry first. The `expires_at`
+ * column is a denormalized copy of the record's own `expiresAt`, so this
+ * comparison only NARROWS the candidate set — the caller re-checks each
+ * candidate against the record itself. That asymmetry is deliberate: a column
+ * that does not compare as its record would (a legacy timestamp written without
+ * milliseconds, a foreign writer) can then make the sweep miss a row, which
+ * leaves it exactly as it is today, but can never make the sweep expire a
+ * request that is still live.
+ */
+const SELECT_EXPIRED_PENDING =
+  "SELECT approval_id, doc FROM approvals WHERE status = 'pending' AND expires_at <= ? " +
+  'ORDER BY expires_at LIMIT ?'
+
+/**
  * Retention: a bounded delete of the oldest settled requests. `resolved_at`
  * holds a fixed-width UTC ISO timestamp, so string comparison IS chronological
  * comparison and the cutoff needs no parsing. The inner SELECT keeps one call's
@@ -290,6 +304,38 @@ export function countPendingRows(database: StateDatabase): number {
   if (typeof row !== 'object' || row === null) return 0
   const { n } = row as Record<string, unknown>
   return typeof n === 'number' ? n : Number(n ?? 0)
+}
+
+/** A pending row identified by its PRIMARY KEY, with the record it stores. */
+export interface PendingRowRef {
+  /** The `approval_id` COLUMN — the key any write must target, never `doc.approvalId`. */
+  readonly approvalId: string
+  readonly doc: string
+}
+
+/**
+ * At most `limit` pending rows whose `expires_at` column is at or before
+ * `nowIso` (an ISO-8601 UTC instant), oldest expiry first. See
+ * `SELECT_EXPIRED_PENDING`: these are CANDIDATES, not a verdict.
+ */
+export function selectExpiredPendingRows(
+  database: StateDatabase,
+  nowIso: string,
+  limit: number,
+): PendingRowRef[] {
+  return database
+    .prepare(SELECT_EXPIRED_PENDING)
+    .all(nowIso, limit)
+    .map(pendingRowRef)
+    .filter((row): row is PendingRowRef => row !== null)
+}
+
+/** Skips a row whose key or `doc` is not text, exactly as `docText` does. */
+function pendingRowRef(row: unknown): PendingRowRef | null {
+  if (typeof row !== 'object' || row === null) return null
+  const { approval_id: approvalId, doc } = row as Record<string, unknown>
+  if (typeof approvalId !== 'string' || typeof doc !== 'string') return null
+  return { approvalId, doc }
 }
 
 /** The pending record's JSON text, or `null` when the id is unknown or resolved. */

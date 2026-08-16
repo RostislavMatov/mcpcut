@@ -157,6 +157,11 @@ const APPROVALS_LIVE_TOPICS = 'approval-pending approval-resolved'
 /** Where the client refetches this region from (`GET /` serves this page). */
 const APPROVALS_LIVE_SRC = '/'
 
+/** True when the queue holds more pending requests than this page renders. */
+function isTruncated(input: ApprovalsPageInput): boolean {
+  return input.totalPending !== undefined && input.totalPending > input.cards.length
+}
+
 /** Renders the full approvals document (string ready for the HTTP body). */
 /**
  * The count line. When the read was truncated it says so explicitly — showing
@@ -164,11 +169,24 @@ const APPROVALS_LIVE_SRC = '/'
  * drained when it is not.
  */
 function renderPendingCount(input: ApprovalsPageInput): Html {
-  const total = input.totalPending
-  if (total === undefined || total <= input.cards.length) {
-    return html`${String(input.cards.length)} pending`
+  const shown = String(input.cards.length)
+  if (!isTruncated(input)) {
+    return html`${shown} pending`
   }
-  return html`${String(input.cards.length)} of ${String(total)} pending (showing the oldest)`
+  return html`${shown} of ${String(input.totalPending)} pending (showing the oldest)`
+}
+
+/**
+ * The truncated total, as an extra attribute on the very node the client
+ * script already reads for the tab badge. Emitted ONLY when the read was cut
+ * short: without it `assets/app-js.ts` badges the bounded card count, i.e. the
+ * exact number the count line above exists to correct, and an operator
+ * glancing at the tab (rather than the page) reads the backlog as drained down
+ * to the bound. Absent on an untruncated read, so that path is unchanged.
+ */
+function renderPendingTotalAttribute(input: ApprovalsPageInput): Html {
+  if (!isTruncated(input)) return html``
+  return html` data-pending-total="${String(input.totalPending)}"`
 }
 
 export function renderApprovalsPage(input: ApprovalsPageInput): string {
@@ -182,7 +200,7 @@ export function renderApprovalsPage(input: ApprovalsPageInput): string {
     data-live-src="${APPROVALS_LIVE_SRC}"
   >
     <h1>Approvals</h1>
-    <p class="pending-count" data-pending-count="${input.cards.length}">
+    <p class="pending-count" data-pending-count="${input.cards.length}"${renderPendingTotalAttribute(input)}>
       ${renderPendingCount(input)}
     </p>
     ${body}

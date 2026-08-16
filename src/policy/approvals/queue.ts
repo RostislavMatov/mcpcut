@@ -58,9 +58,12 @@ export {
   type ResolveOutcome,
   type ResolvedApprovalFile,
 } from './queue-file.js'
+import { sweepExpiredPending } from './queue-sweep.js'
 import {
+  isExpiredAt,
   isPendingApprovalFile,
   isResolvedApprovalFile,
+  parseDoc,
   type ApprovalResolution,
   type PendingApproval,
   type PendingApprovalFile,
@@ -71,18 +74,6 @@ import {
 
 /** Approval ids are ULIDs; validated before ever reaching a query parameter. */
 const APPROVAL_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
-
-/**
- * "Expired" is `now >= expiresAt` — the expiry INSTANT is already expired —
- * on BOTH the list and the resolve path, so an operator can never see a
- * request as live that `resolve()` would downgrade (or vice versa). An
- * unparseable timestamp cannot reach here (`isPendingApprovalFile` rejects
- * it, review H2) but is treated as already expired anyway: fail closed twice.
- */
-function isExpiredAt(expiresAt: string, nowMs: number): boolean {
-  const expiresAtMs = Date.parse(expiresAt)
-  return Number.isNaN(expiresAtMs) || nowMs >= expiresAtMs
-}
 
 export interface EnqueueRequest {
   readonly serverName: string
@@ -158,12 +149,26 @@ export interface ApprovalQueue {
    * `APPROVALS_LIST_MAX_ROWS`). Bounded because an undrained queue otherwise
    * turned every UI poll into a full scan of the pending set; pair it with
    * `countPending()` to tell the operator what is not being shown.
+   *
+   * SWEEPS FIRST (`queue-sweep.ts`): a request that outlived its `expiresAt`
+   * settles as `expired` and leaves this list instead of lingering as a dead
+   * card until its session ends. Nothing is lost — the record keeps the
+   * outcome `markExpired()` writes, so `readResolution()`, `listResolved()`
+   * and the journal's `timeout` decision record still say what happened.
    */
   list(opts?: BoundedReadOptions): Promise<PendingApproval[]>
-  /** How many requests are pending in total, regardless of any list bound. */
+  /**
+   * How many requests are pending in total, regardless of any list bound.
+   * Sweeps first, exactly as `list()` does, so the number an operator is shown
+   * counts only requests a decision could still act on.
+   */
   countPending(): Promise<number>
   resolve(approvalId: string, resolution: ResolveInput): Promise<ResolveResult>
-  /** Records an unresolved approval as `expired`, for session teardown. */
+  /**
+   * Records an unresolved approval as `expired` — session teardown
+   * (`cancelPending`) and the lazy sweep share this one write, so a swept
+   * request and a torn-down one are indistinguishable.
+   */
   markExpired(approvalId: string): Promise<ResolveResult>
   /** `null` when the id is unknown or still pending. */
   readResolution(approvalId: string): Promise<ApprovalResolution | null>
@@ -200,17 +205,6 @@ export interface ApprovalQueueOptions {
  */
 export function isValidApprovalId(approvalId: string): boolean {
   return APPROVAL_ID_PATTERN.test(approvalId)
-}
-
-/** Parses one stored record, returning `null` for anything the validators reject. */
-function parseDoc<T>(text: string, isShape: (raw: unknown) => raw is T): T | null {
-  let raw: unknown
-  try {
-    raw = JSON.parse(text)
-  } catch {
-    return null // malformed JSON: skip, never throw on garbage content
-  }
-  return isShape(raw) ? raw : null // malformed shape: skip
 }
 
 /** A caller-supplied bound, clamped to a positive integer no larger than the default. */
@@ -269,8 +263,13 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
   }
 
   async function list(listOpts: BoundedReadOptions = {}): Promise<PendingApproval[]> {
-    const db = await openApprovalsDb(baseDir)
     const nowMs = clock()
+    // Expiry must not depend on session lifetime (see `queue-sweep.ts`): a
+    // request past its own `expiresAt` settles HERE, so what follows lists live
+    // work only. Rows the bounded pass missed stay pending, and are still
+    // reported as `expired` below.
+    await sweepExpiredPending({ baseDir, nowMs, markExpired })
+    const db = await openApprovalsDb(baseDir)
     // Ordered by the query (oldest request first); `expired` is derived here
     // rather than stored, so it can never go stale in storage.
     return selectPendingDocs(db.handle.db, boundedLimit(listOpts.limit))
@@ -385,6 +384,10 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
   }
 
   async function countPending(): Promise<number> {
+    // Swept on the same terms as `list()`: this count is the UI badge, and
+    // both reads sweeping alike is what keeps a page render (list, then count)
+    // from showing cards it then calls not pending.
+    await sweepExpiredPending({ baseDir, nowMs: clock(), markExpired })
     const db = await openApprovalsDb(baseDir)
     return countPendingRows(db.handle.db)
   }

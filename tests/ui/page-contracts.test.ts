@@ -229,3 +229,106 @@ describe('live-region attributes match what APP_JS consumes (M-3)', () => {
     expect(attributeValues(document, 'data-events-url')).toHaveLength(0)
   })
 })
+
+/**
+ * The tab badge must not contradict the page. Reads of the approvals queue are
+ * bounded (`APPROVALS_LIST_MAX_ROWS`), and the page body says so explicitly
+ * ("500 of 520 pending (showing the oldest)"). A badge built from the bounded
+ * card count would repeat the very number that line exists to correct, and an
+ * operator glancing at the tab instead of the page would read the backlog as
+ * drained down to the bound.
+ *
+ * These tests run the REAL `syncPendingBadge` out of the shipped `APP_JS`
+ * source (there is no DOM in this suite, so the function is lifted from the
+ * script and fed a stub built from the REAL rendered page) — a copy of the
+ * logic here would pass while the shipped script regressed.
+ */
+describe('the pending badge reports the queue, not the page (smoke LOW-3)', () => {
+  /** The shipped `syncPendingBadge`, bound to a stub `document`. */
+  function loadSyncPendingBadge(documentStub: { title: string }): (scope: unknown) => void {
+    const source = /\n {2}function syncPendingBadge\(scope\) \{[\s\S]*?\n {2}\}/.exec(JS_SOURCE)?.[0]
+    expect(source, 'syncPendingBadge not found in APP_JS').toBeDefined()
+    return new Function('document', `${source ?? ''}\nreturn syncPendingBadge;`)(documentStub) as (
+      scope: unknown,
+    ) => void
+  }
+
+  /** A `querySelector`-alike over the one tag that carries `data-pending-count`. */
+  function scopeOf(documentHtml: string): unknown {
+    const tag = /<[a-z]+[^>]*\sdata-pending-count="[^"]*"[^>]*>/i.exec(documentHtml)?.[0]
+    if (tag === undefined) return { querySelector: () => null }
+    const attributes = new Map<string, string>()
+    for (const match of tag.matchAll(/([a-z-]+)="([^"]*)"/g)) {
+      attributes.set(match[1] ?? '', match[2] ?? '')
+    }
+    const node = { getAttribute: (name: string) => attributes.get(name) ?? null }
+    return { querySelector: () => node }
+  }
+
+  /** Title the shipped script would set for a page rendered from `input`. */
+  function badgedTitle(input: Parameters<typeof renderApprovalsPage>[0]): string {
+    const documentStub = { title: 'Approvals · mcp-journal' }
+    loadSyncPendingBadge(documentStub)(scopeOf(renderApprovalsPage(input)))
+    return documentStub.title
+  }
+
+  const CARDS = (count: number): ApprovalCardView[] =>
+    Array.from({ length: count }, (_unused, index) => ({
+      ...APPROVAL_CARD,
+      approvalId: `01J000000000000000000000${String(index).padStart(2, '0')}`,
+    }))
+
+  test('a truncated read badges the true total, never the bound it was cut to', () => {
+    const title = badgedTitle({ cards: CARDS(2), csrfToken: SESSION.csrfToken, totalPending: 520 })
+
+    expect(title).toBe('(520) Approvals · mcp-journal')
+  })
+
+  test('an untruncated read badges the plain pending count', () => {
+    expect(badgedTitle({ cards: CARDS(3), csrfToken: SESSION.csrfToken })).toBe(
+      '(3) Approvals · mcp-journal',
+    )
+    // A total that merely equals what is shown is not a truncation.
+    expect(badgedTitle({ cards: CARDS(3), csrfToken: SESSION.csrfToken, totalPending: 3 })).toBe(
+      '(3) Approvals · mcp-journal',
+    )
+  })
+
+  test('an empty queue leaves the title unbadged', () => {
+    expect(badgedTitle({ cards: [], csrfToken: SESSION.csrfToken })).toBe('Approvals · mcp-journal')
+    expect(badgedTitle({ cards: [], csrfToken: SESSION.csrfToken, totalPending: 0 })).toBe(
+      'Approvals · mcp-journal',
+    )
+  })
+
+  test('the badge is replaced, not stacked, when a refresh re-runs it', () => {
+    // `swapRegion` calls the badge sync on every SSE refresh; the leading
+    // "(n) " it strips must still match the badge it writes.
+    const documentStub = { title: 'Approvals · mcp-journal' }
+    const sync = loadSyncPendingBadge(documentStub)
+    const truncated = scopeOf(
+      renderApprovalsPage({ cards: CARDS(2), csrfToken: SESSION.csrfToken, totalPending: 520 }),
+    )
+    sync(truncated)
+    sync(truncated)
+    expect(documentStub.title).toBe('(520) Approvals · mcp-journal')
+
+    sync(scopeOf(renderApprovalsPage({ cards: CARDS(1), csrfToken: SESSION.csrfToken })))
+    expect(documentStub.title).toBe('(1) Approvals · mcp-journal')
+  })
+
+  test('the truncated total rides on the same node the script already reads', () => {
+    // `swapRegion` re-runs the sync against the REFETCHED document, finding the
+    // node by `[data-pending-count]`. Carrying the total anywhere else (a
+    // header, the layout) would leave the SSE path badging the bounded number.
+    const document = renderApprovalsPage({
+      cards: CARDS(2),
+      csrfToken: SESSION.csrfToken,
+      totalPending: 520,
+    })
+    const tag = /<[a-z]+[^>]*\sdata-pending-count="[^"]*"[^>]*>/i.exec(document)?.[0] ?? ''
+
+    expect(tag).toContain('data-pending-total="520"')
+    expect(document).toContain('data-live-region=') // the node is inside the live region
+  })
+})

@@ -13,6 +13,7 @@ import {
   type ResolvedPolicySource,
 } from '../policy/source.js'
 import { policyFlagRefusal, policySourceIgnoredNote } from './connect-constants.js'
+import { BARE_SHOW_TRUST_CLASS, BARE_SHOW_VIEW_LINES } from './policy-show-constants.js'
 
 /**
  * `policy validate|show` -- operator-facing inspection of the resolved
@@ -288,10 +289,15 @@ function reportLoadedShow(
     return 1
   }
 
+  // `--json` gets the label too -- a machine consumer needs it MORE than a
+  // human does: it never sees the hint line, and a bare `sourcePath` is
+  // indistinguishable from the `connect` answer. `entryPoint` stays absent
+  // when none was named (it means "an entry point was asked for"), so
+  // existing consumers keying on it are unaffected; no field is renamed.
   const entry =
     view.resolution !== undefined
       ? { entryPoint: view.resolution.entryPoint, trustClass: view.resolution.trustClass }
-      : {}
+      : { trustClass: BARE_SHOW_TRUST_CLASS }
 
   if (view.json) {
     io.stdout.write(`${JSON.stringify({ ...entry, sourcePath, policy })}\n`)
@@ -323,7 +329,7 @@ function formatReadableShow(
   const lines = [
     ...(resolution !== undefined
       ? [`entry point: ${resolution.entryPoint} (${resolution.trustClass})`]
-      : []),
+      : BARE_SHOW_VIEW_LINES),
     `source: ${sourcePath}`,
     `defaultDecision: ${policy.defaultDecision}`,
     `classDefaults: ${JSON.stringify(policy.classDefaults ?? {})}`,

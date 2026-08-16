@@ -66,8 +66,19 @@ async function overwriteDoc(approvalId: string, doc: string): Promise<void> {
   db.handle.db.prepare('UPDATE approvals SET doc = ? WHERE approval_id = ?').run(doc, approvalId)
 }
 
-/** Inserts a row directly, for records no current writer would produce. */
-async function insertRawRow(doc: Record<string, unknown>, status = 'pending'): Promise<void> {
+/**
+ * Inserts a row directly, for records no current writer would produce.
+ *
+ * `expiresAtColumn` overrides the denormalized `expires_at` COLUMN while the
+ * `doc` keeps its own `expiresAt`: that is how a row reaches the queue with the
+ * indexed copy disagreeing with the record (a hand-written row, a foreign
+ * writer, a legacy import of a differently formatted timestamp).
+ */
+async function insertRawRow(
+  doc: Record<string, unknown>,
+  status = 'pending',
+  expiresAtColumn?: string,
+): Promise<void> {
   const db = await openApprovalsDb(baseDir)
   db.handle.db
     .prepare(
@@ -82,7 +93,7 @@ async function insertRawRow(doc: Record<string, unknown>, status = 'pending'): P
       String(doc['toolName']),
       String(doc['argsHash']),
       String(doc['requestedAt']),
-      String(doc['expiresAt']),
+      expiresAtColumn ?? String(doc['expiresAt']),
     )
 }
 
@@ -337,16 +348,18 @@ describe('createApprovalQueue: list', () => {
     ])
   })
 
-  test('marks entries past expiresAt as expired but still lists them', async () => {
+  test('an entry past expiresAt is settled by the sweep instead of being listed as live work', async () => {
     let nowMs = Date.UTC(2026, 0, 1)
     const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
 
     await queue.enqueue(baseRequest({ timeoutMs: 1000 }))
     nowMs += 5000
 
-    const listed = await queue.list()
-    expect(listed).toHaveLength(1)
-    expect(listed[0]?.expired).toBe(true)
+    // Expiry no longer waits for session teardown (see the sweep block at the
+    // end of this file): `list()` offers only requests a decision can still
+    // act on. The `expired` flag it derives now covers the rows a bounded
+    // sweep pass has not reached — asserted there.
+    await expect(queue.list()).resolves.toEqual([])
   })
 
   test('unexpired entries are not marked expired', async () => {
@@ -488,20 +501,31 @@ describe('createApprovalQueue: resolve', () => {
     expect(result.ok).toBe(false)
   })
 
-  test('H2: resolving exactly at expiresAt is already expired (list and resolve agree on >= )', async () => {
+  test('H2: resolving exactly at expiresAt is already expired (the >= boundary of the resolve path)', async () => {
     let nowMs = Date.UTC(2026, 0, 1)
     const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
     const { approvalId } = await queue.enqueue(baseRequest({ timeoutMs: 60_000 }))
 
     nowMs += 60_000 // exactly the expiry instant
 
-    const listed = await queue.list()
-    expect(listed[0]?.expired).toBe(true)
-
     const result = await queue.resolve(approvalId, { outcome: 'approved', actor: 'alice' })
     expect(result.ok).toBe(true)
     if (!result.ok) throw new Error('expected ok result')
     expect(result.record.resolution.outcome).toBe('expired')
+  })
+
+  test('H2: at exactly expiresAt the list agrees with resolve — it settles the request, never offers it', async () => {
+    let nowMs = Date.UTC(2026, 0, 1)
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
+    const { approvalId } = await queue.enqueue(baseRequest({ timeoutMs: 60_000 }))
+
+    nowMs += 60_000 // exactly the expiry instant
+
+    // Both paths read `isExpiredAt` (`queue-file.ts`), so an operator can never
+    // see as live what the resolve path would refuse — and what the sweep
+    // persists on that instant is the same verdict: expired, never approved.
+    await expect(queue.list()).resolves.toEqual([])
+    await expect(queue.readResolution(approvalId)).resolves.toMatchObject({ outcome: 'expired' })
   })
 
   test('an approval id with path-traversal characters is rejected, not resolved', async () => {
@@ -655,5 +679,165 @@ describe('bounded reads (availability: an unbounded pending set made every UI po
 
     expect(page.truncated).toBe(false)
     expect(page.newPending).toHaveLength(1)
+  })
+})
+
+/**
+ * Expiry used to depend on session lifetime: a request nobody resolved was
+ * only taken out of `pending` by `cancelPending()` at teardown (`gate-core.ts`),
+ * so in a `wrap`/`connect` session that lives for hours the dead requests piled
+ * up in `pending` — and `countPending()`, which feeds the UI badge and the
+ * "N of M pending" line, counted requests that could never yield a grant.
+ *
+ * The sweep runs lazily on the two reads whose truthfulness is at stake
+ * (`list()` and `countPending()`), never on a timer, and it goes through the
+ * SAME `markExpired()` teardown uses — so a swept row is byte-identical to a
+ * torn-down one and the one-outcome-per-id invariant is the conditional
+ * `UPDATE … WHERE status = 'pending'` it already rests on.
+ */
+describe('lazy expiry sweep (a request nobody answers must not outlive its own expiry)', () => {
+  test('countPending() stops counting a request whose expiry has passed', async () => {
+    let nowMs = Date.UTC(2026, 0, 1)
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
+    await queue.enqueue(baseRequest({ timeoutMs: 1000 }))
+    expect(await queue.countPending()).toBe(1)
+
+    nowMs += 5000 // past expiresAt, with no session teardown in sight
+
+    expect(await queue.countPending()).toBe(0)
+    const rows = await queueRows()
+    expect(rows).toHaveLength(1) // swept, not deleted
+    expect(rows[0]?.status).toBe('resolved')
+  })
+
+  test('list() drops a swept request, and it keeps its trace as a resolved "expired" record', async () => {
+    let nowMs = Date.UTC(2026, 0, 1)
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
+    const { approvalId } = await queue.enqueue(baseRequest({ timeoutMs: 1000 }))
+
+    nowMs += 5000
+    await expect(queue.list()).resolves.toEqual([])
+
+    // Not "vanished": the record survives with the same outcome session
+    // teardown writes, so `readResolution`, `listResolved` and every export
+    // still show what happened to the request.
+    const resolution = await queue.readResolution(approvalId)
+    expect(resolution?.outcome).toBe('expired')
+    expect(resolution?.resolvedAt).toBe(new Date(nowMs).toISOString())
+    expect(await queue.listResolved({ limit: 5 })).toHaveLength(1)
+  })
+
+  test('a request that has not expired yet is untouched by the sweep', async () => {
+    let nowMs = Date.UTC(2026, 0, 1)
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
+    const { approvalId } = await queue.enqueue(baseRequest({ timeoutMs: 60_000 }))
+
+    nowMs += 59_999 // one millisecond short of the expiry instant
+
+    expect(await queue.countPending()).toBe(1)
+    const listed = await queue.list()
+    expect(listed).toHaveLength(1)
+    expect(listed[0]?.expired).toBe(false)
+    await expect(queue.readResolution(approvalId)).resolves.toBeNull()
+  })
+
+  test('a request a human already resolved is never rewritten by the sweep', async () => {
+    let nowMs = Date.UTC(2026, 0, 1)
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
+    const { approvalId } = await queue.enqueue(baseRequest({ timeoutMs: 1000 }))
+    await queue.resolve(approvalId, { outcome: 'approved', actor: 'alice' })
+    const decidedAt = new Date(nowMs).toISOString()
+
+    nowMs += 5000 // the grant window elapses; the sweep now looks at the table
+    await queue.countPending()
+    await queue.list()
+
+    const resolution = await queue.readResolution(approvalId)
+    expect(resolution?.outcome).toBe('approved') // a real decision, not an expiry
+    expect(resolution?.actor).toBe('alice')
+    expect(resolution?.resolvedAt).toBe(decidedAt)
+  })
+
+  test('two concurrent sweeps of the same request produce exactly one outcome', async () => {
+    let nowMs = Date.UTC(2026, 0, 1)
+    // Two queue instances over one directory: the shape two processes (a CLI
+    // `approvals list` and a UI page render) have on the same `state.db`.
+    const first = createApprovalQueue({ baseDir, clock: () => nowMs })
+    const second = createApprovalQueue({ baseDir, clock: () => nowMs })
+    await first.enqueue(baseRequest({ timeoutMs: 1000 }))
+    nowMs += 5000
+
+    const before = (await first.changesSince(null)).latestSeq
+    await Promise.all([first.countPending(), second.countPending(), first.list(), second.list()])
+    const after = (await first.changesSince(null)).latestSeq
+
+    // Every write transaction bumps the change sequence exactly once, so a
+    // second outcome for the same row would show up as a second bump.
+    expect(after).toBe(before + 1)
+    const rows = await queueRows()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.status).toBe('resolved')
+  })
+
+  test('a resolve landing after the sweep is refused and leaves no reusable grant', async () => {
+    let nowMs = Date.UTC(2026, 0, 1)
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
+    const { approvalId } = await queue.enqueue(baseRequest({ timeoutMs: 1000 }))
+
+    nowMs += 5000
+    await queue.countPending() // the sweep expires it
+
+    const result = await queue.resolve(approvalId, { outcome: 'approved', actor: 'late-operator' })
+
+    expect(result).toEqual({ ok: false, reason: 'not-found-or-already-resolved' })
+    // The same refusal `markExpired()` at teardown produces: no `approved`
+    // resolution reached storage, so `checkRecentApproval` cannot mint a grant.
+    const parsed = await storedDoc(approvalId)
+    expect((parsed['resolution'] as Record<string, unknown>)['outcome']).toBe('expired')
+  })
+
+  test('a row the sweep cannot reach is still listed as expired: the flag is derived, never stored', async () => {
+    // The `expires_at` COLUMN only narrows the sweep's candidates; the record
+    // is the authority. A row whose column disagrees (hand-written, foreign
+    // writer, legacy import) is left pending — and `list()` must still tell the
+    // operator the truth about it rather than presenting it as live.
+    const nowMs = Date.UTC(2026, 0, 1)
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
+    const approvalId = '01HXXXXXXXXXXXXXXXXXXXXXXX'
+    await insertRawRow(
+      {
+        approvalId,
+        serverName: 'github',
+        toolName: 'create_issue',
+        toolClass: 'write',
+        argsRedacted: {},
+        argsHash: 'a'.repeat(64),
+        sessionId: 'session-1',
+        requestedAt: '2025-12-31T23:00:00.000Z',
+        expiresAt: '2025-12-31T23:01:00.000Z', // long past `nowMs`
+      },
+      'pending',
+      '2099-01-01T00:00:00.000Z', // …but the indexed column says otherwise
+    )
+
+    const listed = await queue.list()
+
+    expect(listed).toHaveLength(1)
+    expect(listed[0]?.expired).toBe(true)
+    expect((await queueRows())[0]?.status).toBe('pending')
+  })
+
+  test('a malformed pending record is left alone by the sweep, exactly as by resolve()', async () => {
+    let nowMs = Date.UTC(2026, 0, 1)
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
+    const { approvalId } = await queue.enqueue(baseRequest({ timeoutMs: 1000 }))
+    await overwriteDoc(approvalId, 'not json at all')
+
+    nowMs += 5000
+    await queue.list()
+
+    // Unresolvable is unresolvable: the sweep must not invent a resolution for
+    // a record it cannot read (`markExpired` refuses it too).
+    expect((await queueRows())[0]?.status).toBe('pending')
   })
 })

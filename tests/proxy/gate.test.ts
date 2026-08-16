@@ -518,7 +518,8 @@ describe('createPolicyGate: deny', () => {
     expect(verdict).toEqual({ action: 'drop' })
     const answer = parseWritten(written[0]!)
     expect(answer.error.code).toBe(ERROR_CODE_QUARANTINED)
-    expect(answer.error.message).toContain('quarantine approve')
+    expect(answer.error.message.toLowerCase()).toContain('quarantine')
+    expect(answer.error.message).not.toContain('mcp-journal')
     const decisions = await readDecisions()
     expect(decisions[0]!.decision).toMatchObject({ outcome: 'quarantined', rule: 'quarantine' })
   })
@@ -614,7 +615,10 @@ describe('createPolicyGate: require-approval', () => {
     expect(await verdictPromise).toEqual({ action: 'drop' })
     const answer = parseWritten(written[0]!)
     expect(answer.id).toBe(3)
-    expect(answer.error.message).toContain(`approvals approve ${pending.approvalId}`)
+    expect(answer.error.message.toLowerCase()).toContain('human')
+    expect(answer.error.message).not.toContain('mcp-journal')
+    expect(answer.error.message).not.toContain(pending.approvalId)
+    expect(answer.error.data.approvalId).toBe(pending.approvalId)
     expect((await readDecisions())[1]!.decision?.outcome).toBe('timeout')
 
     // Approving after the fact must not resurrect the already-answered call.

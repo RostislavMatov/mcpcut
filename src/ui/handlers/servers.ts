@@ -10,6 +10,7 @@ import {
   HTTP_STATUS_SEE_OTHER,
 } from '../constants.js'
 import { parseBodyFields, headerValue, type UiHandler, type UiRequestContext, type UiResult } from '../routes.js'
+import { echoableServerForm, splitKeyValueLine } from '../server-form.js'
 import type { CurrentAdmin } from '../pages/layout.js'
 import {
   renderAddConfirm,
@@ -82,11 +83,9 @@ function parseKeyValueLines(block: string | undefined): Record<string, string> |
   if (block === undefined || block.trim() === '') return undefined
   const map: Record<string, string> = Object.create(null) as Record<string, string>
   for (const rawLine of block.split(/\r?\n/)) {
-    const line = rawLine.trim()
-    if (line === '') continue
-    const eq = line.indexOf('=')
-    if (eq <= 0) continue
-    map[line.slice(0, eq)] = line.slice(eq + 1)
+    const pair = splitKeyValueLine(rawLine)
+    if (pair === null) continue
+    map[pair.key] = pair.value
   }
   return Object.keys(map).length > 0 ? map : undefined
 }
@@ -122,18 +121,32 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
     return { kind: 'response', status: HTTP_STATUS_OK, body }
   }
 
+  /**
+   * A rejected registration: 400 with the reason AND the form re-filled. The
+   * values go through `echoableServerForm` first, so whatever the validator
+   * called a secret is dropped instead of being handed back to the browser.
+   */
+  async function rejectedAdd(
+    ctx: UiRequestContext,
+    fields: Readonly<Record<string, string>>,
+    error: string,
+  ): Promise<UiResult> {
+    const body = renderServersPage({
+      servers: await deps.registry.listServers(),
+      canManage: ctx.session?.role === 'owner',
+      csrfToken: csrfTokenOf(ctx),
+      currentAdmin: currentAdminOf(ctx),
+      error,
+      form: echoableServerForm(fields),
+    })
+    return { kind: 'response', status: HTTP_STATUS_BAD_REQUEST, body }
+  }
+
   async function serversAdd(ctx: UiRequestContext): Promise<UiResult> {
     const fields = fieldsOf(ctx)
     const parsed = parseServerRecord(buildCandidate(fields))
     if (!parsed.ok) {
-      const body = renderServersPage({
-        servers: await deps.registry.listServers(),
-        canManage: ctx.session?.role === 'owner',
-        csrfToken: csrfTokenOf(ctx),
-        currentAdmin: currentAdminOf(ctx),
-        error: formatPolicyErrors(parsed.error).join('; '),
-      })
-      return { kind: 'response', status: HTTP_STATUS_BAD_REQUEST, body }
+      return rejectedAdd(ctx, fields, formatPolicyErrors(parsed.error).join('; '))
     }
     // Validation runs BEFORE the interstitial, so confirming is never a way
     // past it — and the page shows the record the schema actually accepted,
@@ -150,14 +163,7 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
     try {
       await deps.registry.addServer(parsed.record)
     } catch (error: unknown) {
-      const body = renderServersPage({
-        servers: await deps.registry.listServers(),
-        canManage: ctx.session?.role === 'owner',
-        csrfToken: csrfTokenOf(ctx),
-        currentAdmin: currentAdminOf(ctx),
-        error: error instanceof Error ? error.message : String(error),
-      })
-      return { kind: 'response', status: HTTP_STATUS_BAD_REQUEST, body }
+      return rejectedAdd(ctx, fields, error instanceof Error ? error.message : String(error))
     }
     audit(ctx, 'server.add', parsed.record.name)
     return redirect('/servers')

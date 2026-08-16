@@ -355,11 +355,17 @@ describe('runWrap: a late CLI approval after a timeout grants the identical retr
     session = await finishProxySession(started, journalDir())
   })
 
-  test('the first call times out with an error that names the approval id', () => {
+  test('the first call times out carrying the approval id in `data`, never in the message', () => {
     const timedOut = session.messages.find((message) => message.id === 1)
 
     expect((timedOut?.error as { code: number }).code).toBe(ERROR_CODE_APPROVAL)
-    expect((timedOut?.error as { message: string }).message).toContain(firstApprovalId)
+    // Correlation belongs in the structured payload. The prose the agent reads
+    // must not hand it the id (nor the CLI command that takes one): the party
+    // being gated is the one party that must not be told how to lift the gate.
+    expect((timedOut?.error as { data: { approvalId: string } }).data.approvalId).toBe(firstApprovalId)
+    const message = (timedOut?.error as { message: string }).message
+    expect(message).not.toContain(firstApprovalId)
+    expect(message).not.toContain('mcp-journal')
   })
 
   test('the retry is forwarded and answered, without a second pending approval', () => {
