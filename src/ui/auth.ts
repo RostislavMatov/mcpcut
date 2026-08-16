@@ -11,6 +11,7 @@ import {
   LOGIN_RATE_WINDOW_MS,
   MAX_SESSIONS,
   SESSION_COOKIE_NAME,
+  SESSION_COOKIE_NAME_SECURE,
   SESSION_ID_RANDOM_BYTES,
   SESSION_IDLE_TIMEOUT_MS,
   SESSION_OWNER_RESERVE_POOL_DIVISOR,
@@ -430,14 +431,28 @@ export function loginRateLimitKey(
 // Cookie parsing / serialization
 // ---------------------------------------------------------------------------
 
+/**
+ * The cookie name for the mode. Behind TLS the `__Host-` prefixed name is the
+ * ONLY one read or written: accepting the unprefixed name as well would restore
+ * the exact fixation the prefix exists to block, since a sibling subdomain can
+ * set that one and the browser would send both.
+ */
+export function sessionCookieName(opts: { secure: boolean }): string {
+  return opts.secure ? SESSION_COOKIE_NAME_SECURE : SESSION_COOKIE_NAME
+}
+
 /** Extracts the session id from a raw `Cookie` header, or `undefined`. */
-export function parseSessionCookie(cookieHeader: string | undefined): string | undefined {
+export function parseSessionCookie(
+  cookieHeader: string | undefined,
+  opts: { secure: boolean } = { secure: false },
+): string | undefined {
   if (cookieHeader === undefined) return undefined
+  const wanted = sessionCookieName(opts)
   for (const part of cookieHeader.split(';')) {
     const eq = part.indexOf('=')
     if (eq === -1) continue
     const name = part.slice(0, eq).trim()
-    if (name === SESSION_COOKIE_NAME) {
+    if (name === wanted) {
       const value = part.slice(eq + 1).trim()
       return value === '' ? undefined : value
     }
@@ -447,25 +462,21 @@ export function parseSessionCookie(cookieHeader: string | undefined): string | u
 
 /** Builds the `Set-Cookie` value for a new session (HttpOnly, SameSite=Strict, Path=/). */
 export function serializeSessionCookie(sessionId: string, opts: { secure: boolean }): string {
-  const attributes = [
-    `${SESSION_COOKIE_NAME}=${sessionId}`,
-    'HttpOnly',
-    'SameSite=Strict',
-    'Path=/',
-  ]
-  if (opts.secure) attributes.push('Secure')
-  return attributes.join('; ')
+  return cookieAttributes(`${sessionCookieName(opts)}=${sessionId}`, opts).join('; ')
 }
 
 /** Builds the `Set-Cookie` value that clears the session cookie (logout). */
 export function clearSessionCookie(opts: { secure: boolean }): string {
-  const attributes = [
-    `${SESSION_COOKIE_NAME}=`,
-    'HttpOnly',
-    'SameSite=Strict',
-    'Path=/',
-    'Max-Age=0',
-  ]
+  return [...cookieAttributes(`${sessionCookieName(opts)}=`, opts), 'Max-Age=0'].join('; ')
+}
+
+/**
+ * The shared attribute set. `Path=/` and the absence of `Domain` are not
+ * cosmetic: `__Host-` is invalid without both, so the secure name would be
+ * silently dropped by the browser if either ever changed.
+ */
+function cookieAttributes(nameValue: string, opts: { secure: boolean }): string[] {
+  const attributes = [nameValue, 'HttpOnly', 'SameSite=Strict', 'Path=/']
   if (opts.secure) attributes.push('Secure')
-  return attributes.join('; ')
+  return attributes
 }

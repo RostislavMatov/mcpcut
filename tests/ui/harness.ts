@@ -34,6 +34,13 @@ import { INVENTORY_FILE_NAME } from '../../src/policy/inventory.js'
  * they assert.
  */
 
+/**
+ * Origin a browser attaches to every POST from a page of this UI. The server
+ * requires it on state-changing requests; any localhost origin is allowed, so
+ * the ephemeral port need not be reflected here.
+ */
+const UI_TEST_ORIGIN = 'http://127.0.0.1'
+
 /** One admin the harness mints before the UI starts listening. */
 export interface AdminSpec {
   readonly name: string
@@ -200,7 +207,7 @@ export async function startUiHarness(opts: StartUiOptions): Promise<UiTestHarnes
     const loggedIn = await send(
       'POST',
       '/login',
-      { 'content-type': 'application/json' },
+      { 'content-type': 'application/json', origin: UI_TEST_ORIGIN },
       JSON.stringify({ token }),
     )
     if (loggedIn.status !== 303) {
@@ -221,7 +228,7 @@ export async function startUiHarness(opts: StartUiOptions): Promise<UiTestHarnes
       send(
         'POST',
         path,
-        { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+        { cookie, 'content-type': 'application/x-www-form-urlencoded', origin: UI_TEST_ORIGIN },
         encodeForm(withCsrf ? { csrf_token: csrfToken, ...fields } : fields),
       )
 

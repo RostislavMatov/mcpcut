@@ -634,11 +634,23 @@ true.
   requests are refused immediately.
 - **Auth**: a token exchanges for a session cookie (`HttpOnly`,
   `SameSite=Strict`, `Path=/`, and `Secure` when started with `--behind-tls`).
+  With `--behind-tls` the cookie is named with the `__Host-` prefix, which the
+  browser will only accept from a secure origin with `Path=/` and no `Domain` —
+  so no sibling subdomain can overwrite the admin plane's session cookie. The
+  unprefixed name is not accepted in that mode. `--behind-tls` also turns on
+  HSTS; over plain loopback HTTP it is deliberately not sent.
   Sessions live in the UI process's memory only — nothing about a session is
   written to disk, so a restart logs every admin out.
-- **CSRF**: `SameSite=Strict` plus a double-submit token embedded in every
-  form and `fetch` call in the page; a POST without a matching token is
-  rejected even with a valid session cookie.
+- **CSRF**: three independent checks. `SameSite=Strict`; a double-submit token
+  embedded in every form and `fetch` call in the page; and a mandatory `Origin`
+  header on every POST — a browser always sends one on a state change, so a POST
+  without it did not come from a page of this UI. Reads are exempt (typing a URL
+  into the address bar sends no `Origin`).
+- **Registering a server is code execution**: a `stdio` server definition is a
+  command line the plane will spawn on this host — the same power as the CLI's
+  `server add`. The UI form therefore goes through a confirmation interstitial
+  that echoes the validated record before anything is written; validation runs
+  before that step, so confirming is never a way past it.
 - **Confused deputy**: the browser is the threat, not just the network — any
   tab open to `127.0.0.1:8091` could otherwise fire a POST that approves a
   write call on an admin's behalf. `Origin`/`Host` validation, CSRF, and

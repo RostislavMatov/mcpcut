@@ -18,8 +18,26 @@ export const MAX_UI_BODY_BYTES = 1 * 1024 * 1024
 
 // --- Sessions -------------------------------------------------------------
 
-/** Name of the session cookie. */
+/** Name of the session cookie when the UI is reached over plain HTTP (loopback). */
 export const SESSION_COOKIE_NAME = 'mcp_admin_session'
+
+/**
+ * Name of the session cookie behind TLS. The `__Host-` prefix is enforced by
+ * the browser rather than by us: it may only be set from a secure origin, must
+ * be `Path=/` with no `Domain`, and therefore cannot be overwritten by a
+ * sibling subdomain — which is the session-fixation path an unprefixed cookie
+ * on a shared parent domain leaves open. The prefix cannot be used without
+ * `Secure`, so the name has to follow the mode.
+ */
+export const SESSION_COOKIE_NAME_SECURE = `__Host-${SESSION_COOKIE_NAME}`
+
+/**
+ * `Strict-Transport-Security`, sent only with `--behind-tls`. Over plain
+ * loopback HTTP it would be inert; worse, if the UI is ever reached by a name
+ * shared with other services, it would pin that whole name to HTTPS for a year
+ * from a listener that does not serve it.
+ */
+export const STRICT_TRANSPORT_SECURITY = 'max-age=31536000; includeSubDomains'
 
 /** Random bytes in a session id (base64url-encoded). 256 bits, unguessable. */
 export const SESSION_ID_RANDOM_BYTES = 32
