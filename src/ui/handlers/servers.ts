@@ -12,6 +12,7 @@ import {
 import { parseBodyFields, headerValue, type UiHandler, type UiRequestContext, type UiResult } from '../routes.js'
 import type { CurrentAdmin } from '../pages/layout.js'
 import {
+  renderAddConfirm,
   renderRemoveWarning,
   renderServersPage,
   renderVaultPage,
@@ -122,7 +123,8 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
   }
 
   async function serversAdd(ctx: UiRequestContext): Promise<UiResult> {
-    const parsed = parseServerRecord(buildCandidate(fieldsOf(ctx)))
+    const fields = fieldsOf(ctx)
+    const parsed = parseServerRecord(buildCandidate(fields))
     if (!parsed.ok) {
       const body = renderServersPage({
         servers: await deps.registry.listServers(),
@@ -132,6 +134,18 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
         error: formatPolicyErrors(parsed.error).join('; '),
       })
       return { kind: 'response', status: HTTP_STATUS_BAD_REQUEST, body }
+    }
+    // Validation runs BEFORE the interstitial, so confirming is never a way
+    // past it — and the page shows the record the schema actually accepted,
+    // not the raw form, so what is confirmed is what will be stored.
+    if (fields.confirm !== 'true') {
+      const body = renderAddConfirm({
+        record: parsed.record,
+        fields,
+        csrfToken: csrfTokenOf(ctx),
+        currentAdmin: currentAdminOf(ctx),
+      })
+      return { kind: 'response', status: HTTP_STATUS_OK, body }
     }
     try {
       await deps.registry.addServer(parsed.record)

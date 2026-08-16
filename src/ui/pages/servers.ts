@@ -141,6 +141,60 @@ export function renderServersPage(view: ServersView): string {
   })
 }
 
+/** View model for the add-server confirmation interstitial. */
+export interface AddConfirmView {
+  /** The record as the registry schema accepted it — already validated. */
+  readonly record: ServerRecord
+  /** The submitted form fields, replayed verbatim so confirming re-posts them. */
+  readonly fields: Readonly<Record<string, string>>
+  readonly csrfToken: string
+  readonly currentAdmin: CurrentAdmin
+}
+
+/**
+ * The confirmation page shown before a server is registered. Registering a
+ * `stdio` server is remote code execution by design — the plane will spawn that
+ * command line — and a `http` one names an endpoint the plane will speak to
+ * with vault-held credentials. The CLI's `server add` makes an operator type
+ * the command out; the browser form otherwise turns the same power into a
+ * single POST, so this step shows exactly what is about to be registered.
+ *
+ * Every echoed value goes through the escaping `html` template: the command,
+ * args and env come from the form and are untrusted for render.
+ */
+export function renderAddConfirm(view: AddConfirmView): string {
+  const replay = join(
+    Object.entries(view.fields)
+      .filter(([key]) => key !== 'csrf_token' && key !== 'confirm')
+      .map(([key, value]) => html`<input type="hidden" name="${key}" value="${value}" />`),
+  )
+  const content = html`
+    <h1>Register server “${view.record.name}”?</h1>
+    <div class="card">
+      <p class="muted" role="alert">
+        The control plane will use this definition to reach the server. A
+        <code>stdio</code> server means the plane spawns this exact command on this host.
+        Confirm that it is what you intend to run.
+      </p>
+      ${renderServerDetails(view.record)}
+      <form method="post" action="/servers/add">
+        ${csrfField(view.csrfToken)}
+        ${replay}
+        <input type="hidden" name="confirm" value="true" />
+        <button type="submit" class="danger">Register it</button>
+      </form>
+      <p><a href="/servers">Cancel</a></p>
+    </div>
+  `
+  return renderLayout({
+    title: 'Register server',
+    content,
+    csrfToken: view.csrfToken,
+    currentAdmin: view.currentAdmin,
+    activeNav: 'servers',
+  })
+}
+
 /** View model for the remove-with-grants confirmation interstitial. */
 export interface RemoveWarningView {
   readonly serverName: string

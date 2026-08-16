@@ -24,6 +24,8 @@ import { DEFAULT_UI_HOST, DEFAULT_UI_PORT } from '../../src/ui/constants.js'
  * the one-time bootstrap credential — goes to stderr.
  */
 
+/** Origin a browser attaches to every POST; the UI requires it on state changes. */
+const UI_TEST_ORIGIN = 'http://127.0.0.1'
 const TOKEN_PATTERN = /mcpa_[A-Za-z0-9_-]+/g
 const SHUTDOWN_TIMEOUT_MS = 10_000
 const POLL_INTERVAL_MS = 20
@@ -249,7 +251,8 @@ interface LoggedIn {
 async function loginSession(base: string, token: string): Promise<LoggedIn> {
   const response = await httpCall(base, '/login', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    // A browser always sends Origin on a POST, and the UI now requires it.
+    headers: { 'content-type': 'application/json', origin: UI_TEST_ORIGIN },
     body: JSON.stringify({ token }),
   })
   const raw = response.headers['set-cookie']
@@ -277,6 +280,7 @@ async function postAction(
       cookie: session.cookie,
       'content-type': 'application/x-www-form-urlencoded',
       'x-csrf-token': session.csrf,
+      origin: UI_TEST_ORIGIN,
     },
     body: new URLSearchParams(fields).toString(),
   })

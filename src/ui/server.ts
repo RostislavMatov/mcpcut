@@ -59,7 +59,8 @@ import {
  *
  * Fixed request order, fail-closed at every step:
  *  1. Host not naming this listener → 403 (DNS rebinding; before anything).
- *  2. Origin present and not allowed → the same 403.
+ *  2. Origin present and not allowed → the same 403; and on a POST, Origin
+ *     ABSENT is also a 403 (a browser always sends it on a state change).
  *  3. Route match against the normative `ROUTE_TABLE`; no match → 403
  *     (deny-by-default: an unlisted route is denied to everyone, no oracle).
  *  4. Public routes (`/login`, assets) dispatch straight away.
@@ -157,14 +158,17 @@ export function createUiServer(opts: UiServerOptions): UiServer {
 
   function writeResult(res: ServerResponse, result: UiResult, identity?: StreamIdentity): void {
     if (result.kind === 'stream') {
-      res.writeHead(HTTP_STATUS_OK, { ...SSE_HEADERS, ...securityHeaders() })
+      res.writeHead(HTTP_STATUS_OK, { ...SSE_HEADERS, ...securityHeaders({ behindTls }) })
       result.onStream(res, identity)
       return
     }
     // Security headers are spread LAST: a handler may pick its own content type
     // and cache policy (assets do), but must not be able to weaken the CSP,
     // nosniff, referrer or frame policy — accidentally or otherwise.
-    const headers: Record<string, string> = { ...(result.headers ?? {}), ...securityHeaders() }
+    const headers: Record<string, string> = {
+      ...(result.headers ?? {}),
+      ...securityHeaders({ behindTls }),
+    }
     if (result.body !== undefined && headers['content-type'] === undefined) {
       headers['content-type'] =
         typeof result.body === 'string' ? CONTENT_TYPE_HTML : CONTENT_TYPE_JSON
@@ -231,7 +235,7 @@ export function createUiServer(opts: UiServerOptions): UiServer {
     query: URLSearchParams,
     body: Buffer,
   ): Promise<void> {
-    const sessionId = parseSessionCookie(headerValue(req.headers, 'cookie'))
+    const sessionId = parseSessionCookie(headerValue(req.headers, 'cookie'), { secure: behindTls })
     const session = await sessions.resolve(sessionId, opts.adminStore)
     const decision = authorize(entry, session)
     const identity: StreamIdentity | undefined =
@@ -326,7 +330,19 @@ export function createUiServer(opts: UiServerOptions): UiServer {
       sendPlan(res, HTTP_STATUS_FORBIDDEN, BODY_FORBIDDEN)
       return
     }
-    if (!isOriginAllowed(headerValue(req.headers, 'origin'), allowedOrigins)) {
+    const origin = headerValue(req.headers, 'origin')
+    if (!isOriginAllowed(origin, allowedOrigins)) {
+      sendPlan(res, HTTP_STATUS_FORBIDDEN, BODY_FORBIDDEN)
+      return
+    }
+    // A browser always attaches Origin to a POST, so a state-changing request
+    // without one did not come from a page of this UI. Requiring it turns the
+    // CSRF story from "SameSite + double-submit token" into a third
+    // independent check, and costs nothing a real browser does. Reads are
+    // deliberately exempt: typing the URL into the address bar sends no Origin,
+    // and requiring one there would break the UI without removing any option
+    // from an attacker.
+    if (req.method === 'POST' && origin === undefined) {
       sendPlan(res, HTTP_STATUS_FORBIDDEN, BODY_FORBIDDEN)
       return
     }

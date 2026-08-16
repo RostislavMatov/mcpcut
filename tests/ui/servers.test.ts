@@ -156,6 +156,71 @@ describe('serversAdd', () => {
     expect(h.audit).toHaveLength(0)
   })
 
+  test('a valid submission without confirmation shows an interstitial and persists nothing', async () => {
+    h = makeHarness()
+    const res = asResponse(
+      await h.handlers.serversAdd(
+        formPost({
+          csrf_token: OWNER.csrfToken,
+          name: 'local',
+          transport: 'stdio',
+          command: 'node',
+          args: 'server.js,--flag',
+        }),
+      ),
+    )
+
+    // Registering a stdio server is remote code execution by design: the plane
+    // will later spawn exactly this command line. It is the same power as the
+    // CLI's `server add`, so the browser path gets an explicit "this is what
+    // will be run" step rather than a one-click form post.
+    expect(res.status).toBe(200)
+    const body = String(res.body)
+    expect(body).toContain('node')
+    expect(body).toContain('server.js')
+    expect(body).toContain('name="confirm"')
+    expect(await h.registry.listServers()).toHaveLength(0)
+    expect(h.audit).toHaveLength(0)
+  })
+
+  test('the interstitial escapes the command it echoes back', async () => {
+    h = makeHarness()
+    const res = asResponse(
+      await h.handlers.serversAdd(
+        formPost({
+          csrf_token: OWNER.csrfToken,
+          name: 'evil',
+          transport: 'stdio',
+          command: '<script>alert(1)</script>',
+        }),
+      ),
+    )
+
+    const body = String(res.body)
+    expect(body).not.toContain('<script>alert(1)</script>')
+    expect(body).toContain('&lt;script&gt;')
+  })
+
+  test('a rejected submission is rejected before the interstitial, not after it', async () => {
+    h = makeHarness()
+    const res = asResponse(
+      await h.handlers.serversAdd(
+        formPost({
+          csrf_token: OWNER.csrfToken,
+          name: 'gh',
+          transport: 'stdio',
+          command: 'node',
+          env: 'GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789',
+          confirm: 'true',
+        }),
+      ),
+    )
+
+    // Confirming must not be a way past validation.
+    expect(res.status).toBe(400)
+    expect(await h.registry.listServers()).toHaveLength(0)
+  })
+
   test('persists a valid server, redirects, and attributes the mutation to the admin', async () => {
     h = makeHarness()
     const res = asResponse(
@@ -166,6 +231,7 @@ describe('serversAdd', () => {
           transport: 'stdio',
           command: 'node',
           args: 'server.js,--flag',
+          confirm: 'true',
         }),
       ),
     )
@@ -188,6 +254,7 @@ describe('serversAdd', () => {
           transport: 'http',
           url: 'https://api.github.com',
           headers: 'Authorization=vault:gh-token',
+          confirm: 'true',
         }),
       ),
     )

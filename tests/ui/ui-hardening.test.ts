@@ -11,6 +11,13 @@ import { createLoginRateLimiter } from '../../src/ui/auth.js'
 import { CONTENT_SECURITY_POLICY, SESSIONS_PER_ADMIN_MAX } from '../../src/ui/constants.js'
 
 /**
+ * Origin a browser would attach to every POST from a page of this UI. The
+ * server requires it on state-changing requests; any localhost origin passes
+ * the allowlist, so the port does not need to match the ephemeral one.
+ */
+const UI_TEST_ORIGIN = 'http://127.0.0.1'
+
+/**
  * Hardening tests for the admin UI HTTP core (M4 Task 9) — written before the
  * implementation. They pin the security surface: deny-by-default authz across
  * every route × role, no existence oracle, CSRF, security headers, DNS
@@ -83,7 +90,8 @@ async function startUi(overrides: Partial<UiServerOptions> = {}): Promise<Starte
   async function login(token: string): Promise<{ cookie: string; csrf: string; status: number }> {
     const res = await fetch(`${base}/login`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      // A browser always sends Origin on a POST, and the server now requires it.
+      headers: { 'content-type': 'application/json', origin: base },
       body: JSON.stringify({ token }),
       redirect: 'manual',
     })
@@ -184,7 +192,10 @@ describe('deny-by-default role matrix (every route × every role × no session)'
       for (const role of ROLES) {
         const { cookie, csrf } = cookies[role]
         const headers: Record<string, string> = { cookie }
-        if (entry.method === 'POST') headers['x-csrf-token'] = csrf
+        if (entry.method === 'POST') {
+          headers['x-csrf-token'] = csrf
+          headers.origin = UI_TEST_ORIGIN
+        }
         const res = await fetch(`${started.base}${path}`, {
           method: entry.method,
           headers,
@@ -214,7 +225,7 @@ describe('deny-by-default role matrix (every route × every role × no session)'
     for (const entry of postRoutes) {
       const res = await fetch(`${started.base}${pathFor(entry)}`, {
         method: 'POST',
-        headers: { cookie, 'x-csrf-token': csrf },
+        headers: { cookie, 'x-csrf-token': csrf, origin: UI_TEST_ORIGIN },
       })
       expect(res.status, `viewer POST ${entry.pattern}`).toBe(403)
     }
@@ -265,12 +276,12 @@ describe('login credential handling', () => {
     started = await startUi()
     const wrong = await fetch(`${started.base}/login`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: UI_TEST_ORIGIN },
       body: JSON.stringify({ token: 'mcpa_wrongwrongwrong' }),
     })
     const missing = await fetch(`${started.base}/login`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: UI_TEST_ORIGIN },
       body: JSON.stringify({}),
     })
     expect(wrong.status).toBe(401)
@@ -285,14 +296,14 @@ describe('login credential handling', () => {
     for (let i = 0; i < 3; i += 1) {
       const res = await fetch(`${started.base}/login`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', origin: UI_TEST_ORIGIN },
         body: JSON.stringify({ token: 'mcpa_bad' }),
       })
       expect(res.status).toBe(401)
     }
     const blocked = await fetch(`${started.base}/login`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: UI_TEST_ORIGIN },
       body: JSON.stringify({ token: 'mcpa_bad' }),
     })
     expect(blocked.status).toBe(429)
@@ -411,7 +422,7 @@ describe('CSRF', () => {
     const { cookie } = await started.login(started.tokens.operator)
     const res = await fetch(`${started.base}/approvals/x/approve`, {
       method: 'POST',
-      headers: { cookie, 'x-csrf-token': 'not-the-token' },
+      headers: { cookie, 'x-csrf-token': 'not-the-token', origin: UI_TEST_ORIGIN },
     })
     expect(res.status).toBe(403)
   })
@@ -456,6 +467,116 @@ describe('DNS rebinding (Host/Origin)', () => {
       headers: { cookie, origin: 'https://evil.com' },
     })
     expect(res.status).toBe(403)
+  })
+})
+
+describe('Origin is mandatory on every state-changing request', () => {
+  test('a POST without an Origin header is 403, even with valid credentials', async () => {
+    started = await startUi()
+
+    // A browser ALWAYS sends Origin on a POST. A POST without one did not come
+    // from the UI's own pages, so the CSRF story (SameSite + double-submit)
+    // never had to be relied on alone.
+    const res = await fetch(`${started.base}/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token: started.tokens.owner }),
+      redirect: 'manual',
+    })
+
+    expect(res.status).toBe(403)
+  })
+
+  test('a POST with the listener own origin is served', async () => {
+    started = await startUi()
+
+    const res = await fetch(`${started.base}/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: started.base },
+      body: JSON.stringify({ token: started.tokens.owner }),
+      redirect: 'manual',
+    })
+
+    expect(res.status).toBe(303)
+  })
+
+  test('a GET without an Origin header is unaffected', async () => {
+    started = await startUi()
+
+    // Typing the URL into the address bar sends no Origin; requiring one on
+    // reads would make the UI unusable without changing any attacker's options.
+    const res = await fetch(`${started.base}/login`)
+
+    expect(res.status).toBe(200)
+    await res.text()
+  })
+})
+
+describe('cookie and transport hardening behind TLS', () => {
+  test('with --behind-tls the session cookie carries the __Host- prefix and Secure', async () => {
+    started = await startUi({ behindTls: true })
+
+    const res = await fetch(`${started.base}/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: started.base },
+      body: JSON.stringify({ token: started.tokens.owner }),
+      redirect: 'manual',
+    })
+    const setCookie = res.headers.get('set-cookie') ?? ''
+
+    // `__Host-` is enforced by the browser: only a secure origin may set it, it
+    // must be Path=/ with no Domain, so no sibling subdomain can overwrite the
+    // session cookie of the admin plane.
+    expect(setCookie).toContain('__Host-')
+    expect(setCookie).toContain('Secure')
+    expect(setCookie).toContain('Path=/')
+    expect(setCookie).not.toContain('Domain=')
+    await res.text()
+  })
+
+  test('a __Host- cookie is accepted behind TLS and the plain name is not', async () => {
+    started = await startUi({ behindTls: true })
+    const login = await started.login(started.tokens.owner)
+    expect(login.status).toBe(303)
+    const [name, value] = login.cookie.split('=') as [string, string]
+    expect(name.startsWith('__Host-')).toBe(true)
+
+    const good = await fetch(`${started.base}/`, { headers: { cookie: login.cookie } })
+    expect(good.status).toBe(200)
+    await good.text()
+
+    // The same session id under the unprefixed name must NOT authenticate: a
+    // subdomain can set that one, and accepting both would hand back exactly
+    // the fixation `__Host-` exists to prevent.
+    const stripped = await fetch(`${started.base}/`, {
+      headers: { cookie: `mcp_admin_session=${value}` },
+    })
+    expect(stripped.status).toBe(403)
+    await stripped.text()
+  })
+
+  test('with --behind-tls every response carries HSTS', async () => {
+    started = await startUi({ behindTls: true })
+
+    const res = await fetch(`${started.base}/login`)
+
+    expect(res.headers.get('strict-transport-security')).toContain('max-age=')
+    await res.text()
+  })
+
+  test('without --behind-tls there is no HSTS and no __Host- prefix', async () => {
+    started = await startUi()
+
+    const res = await fetch(`${started.base}/login`)
+
+    // Sending HSTS over plain loopback HTTP would be inert at best and, if the
+    // UI is ever reached by a name shared with real sites, would pin that name
+    // to HTTPS for a year from a page that does not serve it.
+    expect(res.headers.get('strict-transport-security')).toBeNull()
+    await res.text()
+
+    const login = await started.login(started.tokens.owner)
+    expect(login.cookie.startsWith('mcp_admin_session=')).toBe(true)
   })
 })
 

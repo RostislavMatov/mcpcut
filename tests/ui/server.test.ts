@@ -9,6 +9,13 @@ import { createUiServer, type UiServer, type UiServerOptions } from '../../src/u
 import { CONTENT_SECURITY_POLICY, SESSION_COOKIE_NAME } from '../../src/ui/constants.js'
 
 /**
+ * Origin a browser would attach to every POST from a page of this UI. The
+ * server requires it on state-changing requests; any localhost origin passes
+ * the allowlist, so the port does not need to match the ephemeral one.
+ */
+const UI_TEST_ORIGIN = 'http://127.0.0.1'
+
+/**
  * Happy-path and contract tests for the admin UI HTTP core (M4 Task 9):
  * login → session → authorized page → logout, plus the injectable handler
  * contract. Security-oriented tables live in `ui-hardening.test.ts`.
@@ -72,7 +79,7 @@ async function startUi(overrides: Partial<UiServerOptions> = {}): Promise<Starte
   async function login(token: string): Promise<{ cookie: string; csrf: string; status: number }> {
     const res = await fetch(`${base}/login`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: UI_TEST_ORIGIN },
       body: JSON.stringify({ token }),
       redirect: 'manual',
     })
@@ -128,7 +135,7 @@ describe('login', () => {
     started = await startUi()
     const res = await fetch(`${started.base}/login`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: UI_TEST_ORIGIN },
       body: JSON.stringify({ token: started.tokens.owner }),
       redirect: 'manual',
     })
@@ -147,7 +154,7 @@ describe('login', () => {
     started = await startUi()
     const res = await fetch(`${started.base}/login`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: UI_TEST_ORIGIN },
       body: JSON.stringify({ token: started.tokens.owner }),
       redirect: 'manual',
     })
@@ -163,7 +170,7 @@ describe('login', () => {
     started = await startUi()
     const res = await fetch(`${started.base}/login`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: UI_TEST_ORIGIN },
       body: JSON.stringify({ token: started.tokens.viewer }),
       redirect: 'manual',
     })
@@ -180,7 +187,7 @@ describe('login', () => {
     started = await startUi({ behindTls: true })
     const res = await fetch(`${started.base}/login`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: UI_TEST_ORIGIN },
       body: JSON.stringify({ token: started.tokens.owner }),
       redirect: 'manual',
     })
@@ -203,7 +210,7 @@ describe('authenticated access', () => {
     const { cookie, csrf } = await started.login(started.tokens.operator)
     const res = await fetch(`${started.base}/approvals/abc/approve`, {
       method: 'POST',
-      headers: { cookie, 'x-csrf-token': csrf },
+      headers: { cookie, 'x-csrf-token': csrf, origin: UI_TEST_ORIGIN },
     })
     expect(res.status).toBe(200)
     expect(await res.text()).toContain('handler:approvalsApprove')
@@ -215,7 +222,7 @@ describe('authenticated access', () => {
     expect(started.server.sessionCount()).toBe(1)
     const res = await fetch(`${started.base}/logout`, {
       method: 'POST',
-      headers: { cookie, 'x-csrf-token': csrf },
+      headers: { cookie, 'x-csrf-token': csrf, origin: UI_TEST_ORIGIN },
       redirect: 'manual',
     })
     expect(res.status).toBe(302)
@@ -252,7 +259,7 @@ describe('session caps never evict a live session (M-4)', () => {
 
     const out = await fetch(`${started.base}/logout`, {
       method: 'POST',
-      headers: { cookie: first.cookie, 'x-csrf-token': first.csrf },
+      headers: { cookie: first.cookie, 'x-csrf-token': first.csrf, origin: UI_TEST_ORIGIN },
       redirect: 'manual',
     })
     expect(out.status).toBe(302)
@@ -298,7 +305,7 @@ describe('handler headers cannot weaken the security headers (M-5)', () => {
       const base = `http://127.0.0.1:${port}`
       const loginRes = await fetch(`${base}/login`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', origin: UI_TEST_ORIGIN },
         body: JSON.stringify({ token }),
         redirect: 'manual',
       })

@@ -11,6 +11,13 @@ import { REQUIRED_HANDLER_KEYS, type UiHandlers } from '../../src/ui/routes.js'
 import { createUiServer, type UiServer } from '../../src/ui/server.js'
 
 /**
+ * Origin a browser would attach to every POST from a page of this UI. The
+ * server requires it on state-changing requests; any localhost origin passes
+ * the allowlist, so the port does not need to match the ephemeral one.
+ */
+const UI_TEST_ORIGIN = 'http://127.0.0.1'
+
+/**
  * Live-stream revocation (review HIGH-2). Sessions are re-validated on every
  * ordinary request, but an SSE stream is one request that never ends — before
  * this fix a revoked, rotated, demoted or simply expired admin kept receiving
@@ -104,7 +111,7 @@ async function startUi(sessionTtlMs = 60_000): Promise<Started> {
   async function login(token: string): Promise<string> {
     const res = await fetch(`http://127.0.0.1:${port}/login`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: UI_TEST_ORIGIN },
       body: JSON.stringify({ token }),
       redirect: 'manual',
     })
@@ -245,7 +252,7 @@ describe('a live SSE stream does not outlive its session', () => {
 
     const res = await fetch(`http://127.0.0.1:${started.port}/logout`, {
       method: 'POST',
-      headers: { cookie, 'x-csrf-token': csrf },
+      headers: { cookie, 'x-csrf-token': csrf, origin: UI_TEST_ORIGIN },
       redirect: 'manual',
     })
     expect(res.status).toBe(302)

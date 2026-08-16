@@ -11,6 +11,13 @@ import { REQUIRED_HANDLER_KEYS, type UiHandlers } from '../../src/ui/routes.js'
 import { createUiServer, type UiServer } from '../../src/ui/server.js'
 
 /**
+ * Origin a browser would attach to every POST from a page of this UI. The
+ * server requires it on state-changing requests; any localhost origin passes
+ * the allowlist, so the port does not need to match the ephemeral one.
+ */
+const UI_TEST_ORIGIN = 'http://127.0.0.1'
+
+/**
  * Composed SSE-seam test (SSE-seam HIGH fix): the REAL `createEventsHandler` +
  * `createEventHub` wired into a REAL `createUiServer`, exercised over a real
  * `/events` HTTP connection. This is the path the unit tests could not cover —
@@ -62,7 +69,7 @@ async function startUi(maxSubscribers: number): Promise<Started> {
     // Set-Cookie lives on that redirect, not on the page it points at.
     const res = await fetch(`${base}/login`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: UI_TEST_ORIGIN },
       body: JSON.stringify({ token: t }),
       redirect: 'manual',
     })
