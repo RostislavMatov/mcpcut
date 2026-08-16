@@ -1,4 +1,5 @@
 import { html, type Html, render, safeUrl } from '../html.js'
+import { csrfField } from './csrf-field.js'
 
 /**
  * The shared page shell. Every server-rendered UI page is wrapped by this so
@@ -55,10 +56,6 @@ function renderNavLink([href, key, label]: readonly [string, string, string], ac
 }
 
 /** A hidden CSRF field for a real `<form>` POST (server enforces the check). */
-function csrfField(csrfToken: string): Html {
-  return html`<input type="hidden" name="csrf_token" value="${csrfToken}" />`
-}
-
 /**
  * The sign-out control, rendered only when a session exists.
  *

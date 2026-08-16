@@ -1,6 +1,7 @@
 import type { AgentGrant, AgentRecord } from '../../agents/schema.js'
 import type { UiSession } from '../auth.js'
 import { html, type Html, join, safeUrl } from '../html.js'
+import { csrfField } from './csrf-field.js'
 import { type CurrentAdmin, renderLayout } from './layout.js'
 
 /**
@@ -18,10 +19,6 @@ function currentAdmin(session: UiSession): CurrentAdmin {
 }
 
 /** The hidden anti-CSRF field every state-changing form embeds. */
-function csrfField(session: UiSession): Html {
-  return html`<input type="hidden" name="csrf_token" value="${session.csrfToken}">`
-}
-
 /**
  * The owner-only link to the admin-management page. `operator`/`viewer` never
  * see it (nor can they reach the route — ROUTE_TABLE pins `/admins` to owner);
@@ -47,7 +44,7 @@ function displayGrant(value: AgentGrant['tools'] | AgentGrant['resources']): Htm
 /** A per-grant "remove this server" form. */
 function ungrantForm(agentName: string, server: string, session: UiSession): Html {
   return html`<form method="post" action="/agents/ungrant" class="inline">
-    ${csrfField(session)}
+    ${csrfField(session.csrfToken)}
     <input type="hidden" name="agent" value="${agentName}">
     <input type="hidden" name="server" value="${server}">
     <button type="submit">Ungrant</button>
@@ -81,7 +78,7 @@ function grantTable(agent: AgentRecord, session: UiSession): Html {
 /** A per-agent "revoke this agent" form. */
 function revokeForm(agentName: string, session: UiSession): Html {
   return html`<form method="post" action="/agents/revoke" class="inline">
-    ${csrfField(session)}
+    ${csrfField(session.csrfToken)}
     <input type="hidden" name="agent" value="${agentName}">
     <button type="submit" class="danger">Revoke agent</button>
   </form>`
@@ -100,7 +97,7 @@ function agentSection(agent: AgentRecord, session: UiSession): Html {
 /** The "create a new agent" form (issues a one-time token on submit). */
 function createForm(session: UiSession): Html {
   return html`<form method="post" action="/agents/create" class="stacked">
-    ${csrfField(session)}
+    ${csrfField(session.csrfToken)}
     <label>New agent name <input type="text" name="name" required></label>
     <button type="submit">Create agent</button>
   </form>`
@@ -113,7 +110,7 @@ function createForm(session: UiSession): Html {
  */
 function grantForm(session: UiSession): Html {
   return html`<form method="post" action="/agents/grant" class="stacked">
-    ${csrfField(session)}
+    ${csrfField(session.csrfToken)}
     <label>Agent <input type="text" name="agent" required></label>
     <label>Server <input type="text" name="server" required></label>
     <label>Tools <input type="text" name="tools" placeholder="* or foo, bar_*"></label>

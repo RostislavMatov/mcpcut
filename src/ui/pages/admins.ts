@@ -2,6 +2,7 @@ import { ADMIN_ROLES } from '../../admin/constants.js'
 import type { AdminRecord } from '../../admin/store.js'
 import type { UiSession } from '../auth.js'
 import { html, type Html, join, safeUrl } from '../html.js'
+import { csrfField } from './csrf-field.js'
 import { type CurrentAdmin, renderLayout } from './layout.js'
 
 /**
@@ -15,10 +16,6 @@ import { type CurrentAdmin, renderLayout } from './layout.js'
 
 function currentAdmin(session: UiSession): CurrentAdmin {
   return { name: session.adminName, role: session.role }
-}
-
-function csrfField(session: UiSession): Html {
-  return html`<input type="hidden" name="csrf_token" value="${session.csrfToken}">`
 }
 
 /** A role `<select>`; options come from the fixed vocabulary, not user input. */
@@ -48,7 +45,7 @@ function adminRow(admin: AdminRecord, session: UiSession): Html {
 
 function roleForm(admin: AdminRecord, session: UiSession): Html {
   return html`<form method="post" action="/admins/role" class="inline">
-    ${csrfField(session)}
+    ${csrfField(session.csrfToken)}
     <input type="hidden" name="name" value="${admin.name}">
     ${roleSelect(admin.role)}
     <button type="submit">Set role</button>
@@ -57,7 +54,7 @@ function roleForm(admin: AdminRecord, session: UiSession): Html {
 
 function rotateForm(name: string, session: UiSession): Html {
   return html`<form method="post" action="/admins/rotate" class="inline">
-    ${csrfField(session)}
+    ${csrfField(session.csrfToken)}
     <input type="hidden" name="name" value="${name}">
     <button type="submit">Rotate token</button>
   </form>`
@@ -65,7 +62,7 @@ function rotateForm(name: string, session: UiSession): Html {
 
 function removeForm(name: string, session: UiSession): Html {
   return html`<form method="post" action="/admins/remove" class="inline">
-    ${csrfField(session)}
+    ${csrfField(session.csrfToken)}
     <input type="hidden" name="name" value="${name}">
     <button type="submit" class="danger">Remove</button>
   </form>`
@@ -74,7 +71,7 @@ function removeForm(name: string, session: UiSession): Html {
 /** The "add a new admin" form (issues a one-time token on submit). */
 function addForm(session: UiSession): Html {
   return html`<form method="post" action="/admins/add" class="stacked">
-    ${csrfField(session)}
+    ${csrfField(session.csrfToken)}
     <label>New admin name <input type="text" name="name" required></label>
     <label>Role ${roleSelect('operator')}</label>
     <button type="submit">Add admin</button>
