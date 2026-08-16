@@ -312,12 +312,29 @@ export interface LoginRateLimiter {
   allow(key: string): boolean
   /**
    * Delay to serve this attempt behind, in ms — non-zero only while the global
-   * ceiling is exceeded. Always paid, whatever `allow` says.
+   * ceiling is exceeded. Read before `allow`, but paid only by attempts `allow`
+   * ADMITTED: an attempt already refused by its own key learns nothing from the
+   * pause, and holding a socket on behalf of a caller we have refused is a cost
+   * to us and not to them.
    */
   penaltyMs(key: string): number
-  /** Records a failed login from `key` (counts toward both windows). */
+  /**
+   * Counts one attempt from `key` against both windows.
+   *
+   * Named for what it is used for and not for what it means: the caller records
+   * it PROVISIONALLY, immediately after `allow` and before the token is even
+   * looked up, then calls `recordSuccess` to forgive it if the login turns out
+   * to be genuine. That ordering is the whole per-key guarantee — counting only
+   * after the token check leaves an `await` between the check and the count, and
+   * every attempt already in flight passes an untouched window (a burst of
+   * `LOGIN_MAX_CONCURRENT_PENALTIES` against an allowance of
+   * `LOGIN_MAX_FAILURES`). Adjacent synchronous calls have no such gap.
+   *
+   * Consequence for the global window, which `recordSuccess` does NOT forgive:
+   * it counts admitted attempts, not failures. See `LOGIN_GLOBAL_MAX_FAILURES`.
+   */
   recordFailure(key: string): void
-  /** Clears that key's window on a successful login. */
+  /** Clears that key's window, forgiving its provisional count, on a successful login. */
   recordSuccess(key: string): void
 }
 

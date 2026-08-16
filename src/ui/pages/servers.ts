@@ -2,6 +2,7 @@ import type { ServerRecord } from '../../registry/schema.js'
 import type { SecretInfo } from '../../vault/store.js'
 import { html, join, type Html } from '../html.js'
 import { EMPTY_SERVER_FORM, type ServerFormValues } from '../server-form.js'
+import { csrfField } from './csrf-field.js'
 import { renderLayout, type CurrentAdmin } from './layout.js'
 
 /**
@@ -18,10 +19,6 @@ import { renderLayout, type CurrentAdmin } from './layout.js'
  */
 
 /** A hidden CSRF field for a real `<form>` POST (server enforces the check). */
-function csrfField(csrfToken: string): Html {
-  return html`<input type="hidden" name="csrf_token" value="${csrfToken}" />`
-}
-
 /** Renders one env/header value: a `vault:` reference is badged, else a literal. */
 function renderValue(value: string): Html {
   return value.startsWith('vault:')
