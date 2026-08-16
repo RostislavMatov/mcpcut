@@ -9,6 +9,7 @@ import type { AdminResolver, UiSession } from './auth.js'
 import {
   clearSessionCookie,
   createLoginRateLimiter,
+  createPenaltyGate,
   createSessionManager,
   parseSessionCookie,
   tokensEqual,
@@ -145,6 +146,10 @@ export function createUiServer(opts: UiServerOptions): UiServer {
       ...(opts.sessionTtlMs !== undefined ? { ttlMs: opts.sessionTtlMs } : {}),
       ...(opts.maxSessions !== undefined ? { maxSessions: opts.maxSessions } : {}),
     })
+  // One gate per server: bounds how many logins sit in the global-ceiling
+  // penalty at once, so the throttle cannot cost us more sockets than it costs
+  // the flood it throttles.
+  const penaltyGate = createPenaltyGate()
   const rateLimiter: LoginRateLimiter = createLoginRateLimiter({
     clock,
     ...(opts.loginMaxFailures !== undefined ? { maxFailures: opts.loginMaxFailures } : {}),
@@ -313,6 +318,7 @@ export function createUiServer(opts: UiServerOptions): UiServer {
               adminStore: opts.adminStore,
               sessions,
               rateLimiter,
+              penaltyGate,
               behindTls,
               stderr,
               ...(opts.trustedProxyHeader !== undefined

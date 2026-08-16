@@ -6,6 +6,7 @@ import {
   CSRF_TOKEN_RANDOM_BYTES,
   LOGIN_GLOBAL_MAX_FAILURES,
   LOGIN_GLOBAL_PENALTY_DELAY_MS,
+  LOGIN_MAX_CONCURRENT_PENALTIES,
   LOGIN_MAX_FAILURES,
   LOGIN_RATE_LIMIT_MAX_KEYS,
   LOGIN_RATE_WINDOW_MS,
@@ -389,6 +390,44 @@ export function createLoginRateLimiter(opts: RateLimiterOptions = {}): LoginRate
     },
     recordSuccess(key: string): void {
       perKey.delete(key)
+    },
+  }
+}
+
+/**
+ * Bounds how many login attempts wait out the global penalty delay at once.
+ *
+ * The delay is a throttle, not a control: holding a request open costs a socket
+ * and a handler, and while the ceiling is tripped EVERY attempt pays it. Without
+ * a bound, a sustained flood converts "one second of delay" into an unbounded
+ * number of concurrently held connections — the cost the delay was supposed to
+ * impose on the attacker, imposed on us instead.
+ *
+ * `acquire()` returning false means "serve this attempt WITHOUT the delay",
+ * never "refuse it": degrading to the pre-penalty behaviour denies nobody,
+ * while refusing would restore the unkeyed lockout primitive the delay replaced.
+ */
+export interface PenaltyGate {
+  /** Takes a slot if one is free. False = skip the delay for this attempt. */
+  acquire(): boolean
+  /** Returns a slot. Never drives the count below zero. */
+  release(): void
+}
+
+export function createPenaltyGate(
+  opts: { readonly maxConcurrent?: number } = {},
+): PenaltyGate {
+  const maxConcurrent = opts.maxConcurrent ?? LOGIN_MAX_CONCURRENT_PENALTIES
+  let inFlight = 0
+  return {
+    acquire(): boolean {
+      if (inFlight >= maxConcurrent) return false
+      inFlight += 1
+      return true
+    },
+    release(): void {
+      // Clamped: an unbalanced release must not mint capacity beyond the cap.
+      if (inFlight > 0) inFlight -= 1
     },
   }
 }
