@@ -209,10 +209,23 @@ describe('live-region attributes match what APP_JS consumes (M-3)', () => {
     expect(region).not.toContain('"')
   })
 
-  test('the layout names the SSE endpoint the script defaults to', () => {
-    const document = renderApprovalsPage({ cards: [], csrfToken: SESSION.csrfToken })
+  test('an authenticated layout names the SSE endpoint the script consumes', () => {
+    const document = renderApprovalsPage({
+      cards: [],
+      csrfToken: SESSION.csrfToken,
+      currentAdmin: { name: SESSION.adminName, role: SESSION.role },
+    })
     const url = attributeValues(document, 'data-events-url')[0]
     expect(url).toBeDefined()
     expect(matchRoute('GET', url ?? '')).not.toBeNull()
+  })
+
+  test('a page with no signed-in admin names no SSE endpoint at all', () => {
+    // The login page is the only such page. It used to carry the attribute and
+    // therefore made every visitor's browser open a stream that `/events` could
+    // only refuse — a 403 in the console of every unauthenticated visitor.
+    const document = renderApprovalsPage({ cards: [], csrfToken: SESSION.csrfToken })
+
+    expect(attributeValues(document, 'data-events-url')).toHaveLength(0)
   })
 })

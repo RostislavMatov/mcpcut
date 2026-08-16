@@ -416,3 +416,54 @@ describe('createEventsHandler: GET /events', () => {
     expect(hub.subscriberCount()).toBe(1)
   })
 })
+
+describe('per-admin subscriber quota', () => {
+  test('one admin cannot occupy every slot in the hub', () => {
+    const hub = createEventHub({
+      scheduler: new FakeScheduler(),
+      maxSubscribers: 8,
+      maxSubscribersPerAdmin: 2,
+    })
+
+    expect(hub.subscribe(new FakeSink(), { sessionId: 's1', adminName: 'greedy' }).ok).toBe(true)
+    expect(hub.subscribe(new FakeSink(), { sessionId: 's2', adminName: 'greedy' }).ok).toBe(true)
+
+    const refused = hub.subscribe(new FakeSink(), { sessionId: 's3', adminName: 'greedy' })
+    expect(refused.ok).toBe(false)
+
+    // The degradation is a polling fallback for that admin, not a loss of the
+    // stream for everyone else.
+    expect(hub.subscribe(new FakeSink(), { sessionId: 's4', adminName: 'other' }).ok).toBe(true)
+    hub.close()
+  })
+
+  test('capacity is reported per admin so the server can answer 503 before writing a stream', () => {
+    const hub = createEventHub({
+      scheduler: new FakeScheduler(),
+      maxSubscribers: 8,
+      maxSubscribersPerAdmin: 1,
+    })
+    hub.subscribe(new FakeSink(), { sessionId: 's1', adminName: 'greedy' })
+
+    expect(hub.hasCapacityFor('greedy')).toBe(false)
+    expect(hub.hasCapacityFor('other')).toBe(true)
+    // The global check is unchanged for callers that have no identity yet.
+    expect(hub.hasCapacity()).toBe(true)
+    hub.close()
+  })
+
+  test('a closed stream returns its slot to that admin', () => {
+    const hub = createEventHub({
+      scheduler: new FakeScheduler(),
+      maxSubscribers: 8,
+      maxSubscribersPerAdmin: 1,
+    })
+    hub.subscribe(new FakeSink(), { sessionId: 's1', adminName: 'greedy' })
+    expect(hub.hasCapacityFor('greedy')).toBe(false)
+
+    hub.closeSession('s1')
+
+    expect(hub.hasCapacityFor('greedy')).toBe(true)
+    hub.close()
+  })
+})

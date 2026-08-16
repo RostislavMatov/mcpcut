@@ -185,8 +185,11 @@ describe('deny-by-default role matrix (every route × every role × no session)'
       // No session. Oracle fix: a missing session yields the SAME byte-identical
       // 403 as an unlisted route (no more 302→/login for GET vs 403 for
       // unlisted), so a protected route cannot be enumerated without a session.
-      const anon = await fetch(`${started.base}${path}`, { method: entry.method, redirect: 'manual' })
-      expect(anon.status, `no session → ${entry.method} ${path}`).toBe(403)
+      // The single exception is the root path, which is not a secret.
+      if (!(entry.method === 'GET' && entry.pattern === '/')) {
+        const anon = await fetch(`${started.base}${path}`, { method: entry.method, redirect: 'manual' })
+        expect(anon.status, `no session → ${entry.method} ${path}`).toBe(403)
+      }
 
       // Each role.
       for (const role of ROLES) {
@@ -253,6 +256,10 @@ describe('no session', () => {
     started = await startUi()
     for (const entry of ROUTE_TABLE) {
       if (entry.minRole === 'public') continue
+      // `GET /` is the one deliberate exception: it redirects to `/login`.
+      // The path is not a secret (every visitor types it), so it leaks nothing
+      // — see the landing-page describe above.
+      if (entry.method === 'GET' && entry.pattern === '/') continue
       const res = await fetch(`${started.base}${pathFor(entry)}`, {
         method: entry.method,
         redirect: 'manual',
@@ -470,6 +477,42 @@ describe('DNS rebinding (Host/Origin)', () => {
   })
 })
 
+describe('the unauthenticated landing page (smoke M4: a bare 403)', () => {
+  test('an anonymous GET / redirects to /login', async () => {
+    started = await startUi()
+
+    const res = await fetch(`${started.base}/`, { redirect: 'manual' })
+
+    expect(res.status).toBe(303)
+    expect(res.headers.get('location')).toBe('/login')
+    await res.text()
+  })
+
+  test('every OTHER protected route still answers the byte-identical 403', async () => {
+    started = await startUi()
+
+    // The redirect is scoped to exactly `/` and nothing else. Redirecting any
+    // protected path would restore the enumeration oracle the 403 exists to
+    // close: 303 for a listed route vs 403 for an unlisted one tells an
+    // anonymous caller which routes exist.
+    for (const path of ['/journal', '/servers', '/agents', '/vault', '/nope']) {
+      const res = await fetch(`${started.base}${path}`, { redirect: 'manual' })
+      expect(res.status, `anonymous GET ${path}`).toBe(403)
+      await res.text()
+    }
+  })
+
+  test('an authenticated GET / still renders the app', async () => {
+    started = await startUi()
+    const { cookie } = await started.login(started.tokens.viewer)
+
+    const res = await fetch(`${started.base}/`, { headers: { cookie }, redirect: 'manual' })
+
+    expect(res.status).toBe(200)
+    await res.text()
+  })
+})
+
 describe('Origin is mandatory on every state-changing request', () => {
   test('a POST without an Origin header is 403, even with valid credentials', async () => {
     started = await startUi()
@@ -541,15 +584,18 @@ describe('cookie and transport hardening behind TLS', () => {
     const [name, value] = login.cookie.split('=') as [string, string]
     expect(name.startsWith('__Host-')).toBe(true)
 
-    const good = await fetch(`${started.base}/`, { headers: { cookie: login.cookie } })
+    const good = await fetch(`${started.base}/journal`, { headers: { cookie: login.cookie } })
     expect(good.status).toBe(200)
     await good.text()
 
     // The same session id under the unprefixed name must NOT authenticate: a
     // subdomain can set that one, and accepting both would hand back exactly
     // the fixation `__Host-` exists to prevent.
-    const stripped = await fetch(`${started.base}/`, {
+    // Asserted on `/journal`: the root path redirects an unauthenticated
+    // visitor to `/login` by design, which would pass for the wrong reason.
+    const stripped = await fetch(`${started.base}/journal`, {
       headers: { cookie: `mcp_admin_session=${value}` },
+      redirect: 'manual',
     })
     expect(stripped.status).toBe(403)
     await stripped.text()
@@ -585,12 +631,14 @@ describe('session lifecycle', () => {
     mutableNow = Date.UTC(2026, 7, 11, 12, 0, 0)
     started = await startUi({ sessionTtlMs: 1000, clock: () => mutableNow })
     const { cookie } = await started.login(started.tokens.viewer)
-    const before = await fetch(`${started.base}/`, { headers: { cookie }, redirect: 'manual' })
+    const before = await fetch(`${started.base}/journal`, { headers: { cookie }, redirect: 'manual' })
     expect(before.status).toBe(200)
     await before.text()
     mutableNow += 2000
-    const after = await fetch(`${started.base}/`, { headers: { cookie }, redirect: 'manual' })
-    // An expired session is indistinguishable from none: uniform 403.
+    const after = await fetch(`${started.base}/journal`, { headers: { cookie }, redirect: 'manual' })
+    // An expired session is indistinguishable from none: uniform 403. Asserted
+    // on `/journal`, not `/` — the root path redirects to `/login` by design,
+    // which would prove nothing about the session either way.
     expect(after.status).toBe(403)
   })
 
@@ -600,9 +648,12 @@ describe('session lifecycle', () => {
     const viewer = await started.login(started.tokens.viewer)
     await started.adminStore.rotateAdmin('op-admin')
 
-    const opRes = await fetch(`${started.base}/`, { headers: { cookie: op.cookie }, redirect: 'manual' })
+    const opRes = await fetch(`${started.base}/journal`, {
+      headers: { cookie: op.cookie },
+      redirect: 'manual',
+    })
     expect(opRes.status).toBe(403)
-    const viewerRes = await fetch(`${started.base}/`, {
+    const viewerRes = await fetch(`${started.base}/journal`, {
       headers: { cookie: viewer.cookie },
       redirect: 'manual',
     })
@@ -614,7 +665,10 @@ describe('session lifecycle', () => {
     started = await startUi()
     const op = await started.login(started.tokens.operator)
     await started.adminStore.removeAdmin('op-admin')
-    const res = await fetch(`${started.base}/`, { headers: { cookie: op.cookie }, redirect: 'manual' })
+    const res = await fetch(`${started.base}/journal`, {
+      headers: { cookie: op.cookie },
+      redirect: 'manual',
+    })
     expect(res.status).toBe(403)
   })
 
@@ -622,7 +676,7 @@ describe('session lifecycle', () => {
     started = await startUi()
     const viewer = await started.login(started.tokens.viewer)
     await started.adminStore.setRole('view-admin', 'operator')
-    const res = await fetch(`${started.base}/`, {
+    const res = await fetch(`${started.base}/journal`, {
       headers: { cookie: viewer.cookie },
       redirect: 'manual',
     })

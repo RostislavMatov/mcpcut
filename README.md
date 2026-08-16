@@ -630,8 +630,10 @@ true.
   tab returns its slot; an open SSE stream's heartbeat does not count as
   activity.
 - **Revocation SLA**: `admin remove`/`admin rotate`/`admin role` from the CLI
-  close that admin's open SSE streams within one heartbeat (≤ 15 s); their
-  requests are refused immediately.
+  close that admin's open SSE streams within ~2 s; their requests are refused
+  immediately. Those commands run in a different process and the state lives in
+  SQLite, which offers no cross-process notification — so the UI re-reads the
+  store on a dedicated sweep rather than riding the 15-second heartbeat.
 - **Auth**: a token exchanges for a session cookie (`HttpOnly`,
   `SameSite=Strict`, `Path=/`, and `Secure` when started with `--behind-tls`).
   With `--behind-tls` the cookie is named with the `__Host-` prefix, which the

@@ -121,12 +121,21 @@ function formatSearchedLocations(
   const projectPath = resolve(cwd, join(PROJECT_POLICY_SUBDIR, POLICY_FILE_NAME))
   const homePath = resolve(cwd, join(journalDir, POLICY_FILE_NAME))
 
+  // The project-level candidate is resolved against the CURRENT DIRECTORY, so
+  // running from inside `~/.mcp-journal` legitimately produces
+  // `~/.mcp-journal/.mcp-journal/policy.json`. That looked like a path bug in
+  // the manual M4 smoke because the lines were unlabelled; label them, and
+  // print one line when the two candidates are the same file.
+  const locations =
+    projectPath === homePath
+      ? [`  3. ${projectPath} (project-level and home-level are the same path here)`]
+      : [`  3. ${projectPath} (project-level, relative to the current directory)`, `  4. ${homePath} (home-level)`]
+
   return [
     'no policy file found. Searched, in order:',
     '  1. --policy <path> (explicit path flag) -- not given',
     `  2. $${POLICY_ENV_VAR} (environment variable) -- not set`,
-    `  3. ${projectPath}`,
-    `  4. ${homePath}`,
+    ...locations,
   ].join('\n')
 }
 

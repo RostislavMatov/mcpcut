@@ -11,7 +11,12 @@
  * with a plain fake and never depends on `node:http` internals.
  */
 
-import { UI_MAX_SSE_SUBSCRIBERS, UI_SSE_HEARTBEAT_INTERVAL_MS } from './constants.js'
+import {
+  UI_MAX_SSE_SUBSCRIBERS,
+  UI_MAX_SSE_SUBSCRIBERS_PER_ADMIN,
+  UI_SESSION_SWEEP_INTERVAL_MS,
+  UI_SSE_HEARTBEAT_INTERVAL_MS,
+} from './constants.js'
 
 /** The three delta kinds the UI listens for; the client keys its DOM updates on these. */
 export type UiEventName = 'approval-pending' | 'approval-resolved' | 'quarantine-changed'
@@ -67,7 +72,16 @@ export interface SseIdentity {
 
 export interface EventHubOptions {
   readonly heartbeatIntervalMs?: number
+  /**
+   * How often `isSessionLive` re-checks open streams. Separate from the
+   * heartbeat: the heartbeat's job is to keep intermediaries from idling a
+   * connection out, and stretching a revocation to that cadence made the
+   * out-of-process revocation SLA 15 seconds.
+   */
+  readonly sweepIntervalMs?: number
   readonly maxSubscribers?: number
+  /** Cap on the streams ONE admin may hold, so nobody can take the whole hub. */
+  readonly maxSubscribersPerAdmin?: number
   readonly scheduler?: Scheduler
   /**
    * Liveness probe for an open stream, run on every heartbeat tick. Wiring it
@@ -84,7 +98,7 @@ export interface EventHubOptions {
 
 export type SubscribeResult =
   | { readonly ok: true }
-  | { readonly ok: false; readonly reason: 'at-capacity' }
+  | { readonly ok: false; readonly reason: 'at-capacity' | 'per-admin-capacity' }
 
 export interface EventHub {
   /**
@@ -93,6 +107,13 @@ export interface EventHub {
    * answered with a clean 503 instead of a broken half-written stream.
    */
   hasCapacity(): boolean
+  /**
+   * Same check, narrowed to one admin's quota. `server.ts` uses this on the
+   * stream path so an admin at their own cap gets the same clean 503 +
+   * `Retry-After` as one arriving at a full hub — the degradation is the
+   * client's polling fallback, not a lost function.
+   */
+  hasCapacityFor(adminName: string): boolean
   /**
    * Registers an already-authenticated stream whose headers `server.ts` has
    * already written. Does NOT write headers. Refuses (without side effects) if
@@ -137,7 +158,9 @@ function encodeEvent(event: UiEvent): string {
 export function createEventHub(opts: EventHubOptions = {}): EventHub {
   const scheduler = opts.scheduler ?? defaultScheduler
   const heartbeatIntervalMs = opts.heartbeatIntervalMs ?? UI_SSE_HEARTBEAT_INTERVAL_MS
+  const sweepIntervalMs = opts.sweepIntervalMs ?? UI_SESSION_SWEEP_INTERVAL_MS
   const maxSubscribers = opts.maxSubscribers ?? UI_MAX_SSE_SUBSCRIBERS
+  const maxPerAdmin = opts.maxSubscribersPerAdmin ?? UI_MAX_SSE_SUBSCRIBERS_PER_ADMIN
 
   const isSessionLive = opts.isSessionLive
   /** Roster: sink → the identity it was opened under (`undefined` = unbound). */
@@ -146,10 +169,16 @@ export function createEventHub(opts: EventHubOptions = {}): EventHub {
 
   const heartbeat = scheduler.setInterval(() => {
     for (const sink of subscribers.keys()) safeWrite(sink, ': heartbeat\n\n')
-    // The same tick that keeps live streams open retires the dead ones.
-    void sweepSessions()
   }, heartbeatIntervalMs)
   heartbeat.unref?.()
+
+  // Retiring dead streams runs on its own, faster cadence — a revocation made
+  // in another process (the CLI) is only visible by re-reading the store, and
+  // tying that to the heartbeat put a 15-second floor under it.
+  const sweep = scheduler.setInterval(() => {
+    void sweepSessions()
+  }, sweepIntervalMs)
+  sweep.unref?.()
 
   /** A dead socket must never take the whole fan-out down; drop it instead. */
   function safeWrite(sink: SseSink, chunk: string): void {
@@ -174,9 +203,25 @@ export function createEventHub(opts: EventHubOptions = {}): EventHub {
     return !closed && subscribers.size < maxSubscribers
   }
 
+  /** How many open streams one admin currently holds across all their sessions. */
+  function countForAdmin(adminName: string): number {
+    let total = 0
+    for (const identity of subscribers.values()) {
+      if (identity?.adminName === adminName) total += 1
+    }
+    return total
+  }
+
+  function hasCapacityFor(adminName: string): boolean {
+    return hasCapacity() && countForAdmin(adminName) < maxPerAdmin
+  }
+
   function subscribe(sink: SseSink, identity?: SseIdentity): SubscribeResult {
     if (!hasCapacity()) {
       return { ok: false, reason: 'at-capacity' }
+    }
+    if (identity !== undefined && countForAdmin(identity.adminName) >= maxPerAdmin) {
+      return { ok: false, reason: 'per-admin-capacity' }
     }
     subscribers.set(sink, identity)
     // The peer dropping the connection frees its slot exactly once.
@@ -266,6 +311,7 @@ export function createEventHub(opts: EventHubOptions = {}): EventHub {
     if (closed) return
     closed = true
     scheduler.clearInterval(heartbeat)
+    scheduler.clearInterval(sweep)
     for (const sink of subscribers.keys()) {
       try {
         sink.end()
@@ -278,6 +324,7 @@ export function createEventHub(opts: EventHubOptions = {}): EventHub {
 
   return Object.freeze({
     hasCapacity,
+    hasCapacityFor,
     subscribe,
     publish,
     subscriberCount,

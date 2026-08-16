@@ -24,8 +24,9 @@ import { buildAsset, type Asset } from './app-css.js'
  *   - after a 2xx the script reloads, unless `data-no-reload` is present.
  *
  *  Live regions (SSE-driven refresh)
- *   - `<body data-events-url="/events">` names the SSE endpoint (default
- *     `/events`).
+ *   - `<body data-events-url="/events">` names the SSE endpoint. The attribute
+ *     is present only on authenticated pages; without it the script opens no
+ *     stream at all (the login page has no live channel).
  *   - a container with `data-live-region="approval-pending approval-resolved"`
  *     lists the SSE topics that should refresh it; the script re-fetches
  *     `data-live-src` (default: current URL) and swaps the container's
@@ -39,7 +40,6 @@ import { buildAsset, type Asset } from './app-css.js'
  */
 const APP_JS_SOURCE = `"use strict";
 (function () {
-  var DEFAULT_EVENTS_URL = "/events";
   var DEFAULT_POLL_MS = 5000;
   var LIVE_TOPICS = ["approval-pending", "approval-resolved", "quarantine-changed"];
 
@@ -165,7 +165,11 @@ const APP_JS_SOURCE = `"use strict";
   }
 
   function connect() {
-    var url = document.body.getAttribute("data-events-url") || DEFAULT_EVENTS_URL;
+    var url = document.body.getAttribute("data-events-url");
+    // No attribute means this page has no live channel (the login page is the
+    // only one): opening a stream there could only ever be refused, and the
+    // 403 landed in the console of every visitor.
+    if (!url) { return; }
     if (typeof window.EventSource === "undefined") { startPolling(url); return; }
     var source = new EventSource(url, { withCredentials: true });
     source.onopen = function () { stopPolling(); };

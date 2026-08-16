@@ -213,6 +213,33 @@ describe('runPolicyShow', () => {
     expect(io.err()).toContain('no policy file found')
   })
 
+  test('the searched-locations list labels each candidate and never repeats a path', async () => {
+    // Manual M4 smoke, finding 4: run from inside the journal directory and the
+    // list read `…/.mcp-journal/.mcp-journal/policy.json`. That path was
+    // correct — the project-level candidate is resolved against the cwd — but
+    // the output gave an operator no way to tell which line was which, so it
+    // read as a bug. Label the two, and collapse them when they coincide.
+    const io = fakeIo()
+
+    await runPolicyShow([], io, { cwd: journalDir, journalDir, env: {} })
+
+    const err = io.err()
+    expect(err).toContain('project-level')
+    expect(err).toContain('home-level')
+    const policyLines = err.split('\n').filter((line) => line.includes('policy.json'))
+    expect(new Set(policyLines.map((line) => line.trim())).size).toBe(policyLines.length)
+  })
+
+  test('the two candidates are listed separately when they are different paths', async () => {
+    const io = fakeIo()
+
+    await runPolicyShow([], io, { cwd, journalDir, env: {} })
+
+    const err = io.err()
+    expect(err).toContain(join(cwd, '.mcp-journal', 'policy.json'))
+    expect(err).toContain(join(journalDir, 'policy.json'))
+  })
+
   test('broken policy file: exit 1, error prefixed with source path', async () => {
     const path = join(cwd, 'broken.json')
     await writeFile(path, '{ not json', 'utf8')

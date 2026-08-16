@@ -54,6 +54,9 @@ export const ROUTE_TABLE: readonly RouteEntry[] = [
   { method: 'GET', pattern: '/login', minRole: 'public', handler: 'loginPage' },
   { method: 'POST', pattern: '/login', minRole: 'public', handler: '@login' },
   { method: 'GET', pattern: '/assets/*', minRole: 'public', handler: 'assets' },
+  // A browser probes this one unprompted; without a route, deny-by-default put
+  // a 403 in the console of every page (manual M4 smoke).
+  { method: 'GET', pattern: '/favicon.ico', minRole: 'public', handler: 'assets' },
 
   // --- viewer: read-only pages, the approvals feed, the SSE stream ---
   { method: 'POST', pattern: '/logout', minRole: 'viewer', handler: '@logout' },
