@@ -1,10 +1,13 @@
-import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import {
+  SqliteBackupError,
   SqliteBusyError,
   SqliteOpenError,
+  backupSqlite,
+  integrityProblemsOf,
   openSqlite,
   type SqliteHandle,
 } from '../../src/store/sqlite.js'
@@ -243,6 +246,99 @@ describe('transaction()', () => {
     expect(result).toBe('recovered')
   })
 })
+
+/** Enough rows to spill the table past page 1, so page 2 is a real b-tree page. */
+const POPULATED_ROW_COUNT = 200
+
+function populate(handle: SqliteHandle): void {
+  handle.db.exec('CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT NOT NULL)')
+  handle.transaction((db) => {
+    const insert = db.prepare('INSERT INTO items (name) VALUES (?)')
+    for (let index = 0; index < POPULATED_ROW_COUNT; index += 1) {
+      insert.run(`row-${index}-${'x'.repeat(200)}`)
+    }
+  })
+}
+
+function allItems(handle: SqliteHandle): unknown[] {
+  return handle.db.prepare('SELECT id, name FROM items ORDER BY id').all()
+}
+
+describe('backupSqlite()', () => {
+  test('writes a copy that opens and answers identical rows', async () => {
+    const source = await open(dbPath, { synchronous: 'normal' })
+    populate(source)
+    const destPath = join(tempDir, 'backup.db')
+
+    const pageCount = await backupSqlite(source, destPath)
+
+    expect(pageCount).toBeGreaterThan(0)
+    const copy = await open(destPath, { synchronous: 'normal' })
+    expect(allItems(copy)).toEqual(allItems(source))
+  })
+
+  test('creates the copy at 0600 so its -wal side file inherits the mode', async () => {
+    const source = await open(dbPath, { synchronous: 'normal' })
+    populate(source)
+    const destPath = join(tempDir, 'backup.db')
+
+    await backupSqlite(source, destPath)
+
+    // Read the mode before any open(): openSqlite would tighten it itself.
+    const destStat = await stat(destPath)
+    expect(destStat.mode & 0o777).toBe(0o600)
+  })
+
+  test('refuses to overwrite an existing destination file', async () => {
+    const source = await open(dbPath, { synchronous: 'normal' })
+    populate(source)
+    const destPath = join(tempDir, 'backup.db')
+    await writeFile(destPath, 'previous snapshot', 'utf8')
+
+    const error = await backupSqlite(source, destPath).catch((e: unknown) => e)
+
+    expect(error).toBeInstanceOf(SqliteBackupError)
+    expect((error as Error).message).toContain(destPath)
+    expect((error as Error).message).toContain(dbPath)
+    expect(await readFile(destPath, 'utf8')).toBe('previous snapshot')
+  })
+})
+
+describe('integrityProblemsOf()', () => {
+  test('reports no problems for a healthy database', async () => {
+    const handle = await open(dbPath, { synchronous: 'normal' })
+    populate(handle)
+
+    expect(integrityProblemsOf(handle)).toEqual([])
+  })
+
+  test('reports problems for a database whose page bytes were overwritten', async () => {
+    const source = await open(dbPath, { synchronous: 'normal' })
+    const pageSize = Number(pragmaValue(source, 'page_size'))
+    populate(source)
+    // Closing checkpoints the WAL into the main file, so the copy is complete.
+    source.close()
+    const corruptPath = join(tempDir, 'corrupt.db')
+    await copyFile(dbPath, corruptPath)
+    await overwriteAtPageBoundary(corruptPath, pageSize)
+
+    const corrupt = await open(corruptPath, { synchronous: 'normal' })
+
+    expect(integrityProblemsOf(corrupt).length).toBeGreaterThan(0)
+  })
+})
+
+/** Replaces the head of page 2 with garbage — page 1 (the header) stays valid. */
+async function overwriteAtPageBoundary(filePath: string, pageSize: number): Promise<void> {
+  const original = await readFile(filePath)
+  const garbage = Buffer.alloc(pageSize, 0xff)
+  const corrupted = Buffer.concat([
+    original.subarray(0, pageSize),
+    garbage,
+    original.subarray(pageSize * 2),
+  ])
+  await writeFile(filePath, corrupted)
+}
 
 describe('close()', () => {
   test('a closed handle refuses further work', async () => {

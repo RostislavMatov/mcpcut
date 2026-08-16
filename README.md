@@ -2,8 +2,8 @@
 
 A transparent stdio proxy for MCP (Model Context Protocol) servers. It sits
 between an AI agent and a real MCP server, forwards traffic byte-for-byte in
-both directions, and writes a persistent, secret-redacted JSONL journal of the
-messages and stderr lines it observes.
+both directions, and writes a persistent, secret-redacted journal of the
+messages and stderr lines it observes, into `journal.db` (SQLite).
 
 When enforcement is enabled, every observed `tools/call` is classified before
 forwarding. Without a policy file, the proxy is journaling-only and forwards
@@ -30,11 +30,19 @@ pitch and landing material must not claim more than it does.
 | admin UI / approval queue | shipped | e2e + UI test suites, TS + security reviews, manual browser smoke (`docs/smoke-m4.md`), `docs/adr/0004-admin-ui-architecture.md` |
 | named admin accounts (owner/operator/viewer) | shipped | admin CLI + role-enforcement tests |
 
-Today the journal is a persistent, append-oriented, secret-redacted JSONL file.
-It is **not** tamper-evident and there is **no** audit-report export yet; see
-the trust-boundary note below.
+Today the journal is a persistent, append-oriented, secret-redacted SQLite
+database (`journal.db`; JSONL is the export format — `mcp-journal export` —
+and the format legacy pre-M4.5 installs used on disk before `migrate`). It is
+**not** tamper-evident and there is **no** audit-report export yet; see the
+trust-boundary note below.
 
 ## Install
+
+Requires **Node.js 24+** (`engines: ">=24"` in `package.json`). The floor is
+not arbitrary: `node:sqlite`'s API — the storage layer since M4.5 — is only
+complete from v24.19.0 (older builds either lack the module entirely or lack
+the `Session` class M5's audit export will use); see `docs/adr/0006-storage-sqlite.md`
+for the measured version matrix.
 
 ```
 npm install
@@ -266,6 +274,14 @@ Without one of those, a journal write failure is logged and traffic keeps
 flowing — "no audit record, no action" is a mode you choose, not a property
 the proxy guarantees out of the box.
 
+Records from several concurrent sessions can share one write batch (a
+`serve` daemon batches across its sessions on purpose, for throughput); if
+that batch's commit and its retry both fail, every record in it is dropped,
+not just one session's. Each session's own dropped-record count
+(`droppedRecordCount()`, and the fail-closed exit path above) stays accurate
+for that session either way — it is the batch, not the accounting, that is
+shared.
+
 ### CLI command reference
 
 ```
@@ -291,7 +307,29 @@ mcp-journal approvals deny <id> [--reason TEXT]
 mcp-journal admin add <name> --role owner|operator|viewer
 mcp-journal admin list | remove <name> | rotate <name> | role <name> owner|operator|viewer
 mcp-journal ui [--port 8091] [--host 127.0.0.1] [--behind-tls] [--allowed-host H] [--allowed-origin URL]
+mcp-journal migrate
+mcp-journal export [--session <id>]
+mcp-journal backup <destDir>
 ```
+
+`serve`, `ui`, `connect` and `wrap` — the four long-lived entry points — run
+`PRAGMA integrity_check` on `state.db` and `journal.db` before binding a port
+or spawning a server (an install with neither file yet is not touched by this
+check, and it never creates the databases). A damaged database refuses the
+process instead of letting it run on state nobody can later prove anything
+about:
+
+```
+state.db failed PRAGMA integrity_check: <first problem line>
+Refusing to start. Restore the database from a backup (see README "Backup & restore").
+```
+
+Short-lived commands (`sessions`, `show`, `export`, `migrate`, …) do not run
+this check — a `sessions` call that prints normally is therefore *not*
+evidence the databases are intact; only the startup preflight of a
+long-lived entry point (or a restore verified by it) is. See
+[Backup & restore](#backup--restore) for what to do if a short-lived
+command turns up corruption.
 
 ### Known limitation: trust boundary of the wrapped process
 
@@ -299,8 +337,9 @@ The wrapped MCP server runs as a child process under the *same OS user* as
 `mcp-journal` itself. It could, in principle, write directly to the journal,
 approval queue, or quarantine store files on disk — nothing currently stops
 a malicious or compromised server from tampering with its own audit trail or
-self-approving a quarantined tool. The journal is an **append-oriented** JSONL
-file: nothing in the current implementation makes it append-*only*. Making the
+self-approving a quarantined tool. The journal is an **append-oriented**
+SQLite database (`journal.db`): nothing in the current implementation makes
+it append-*only*. Making the
 journal and policy stores tamper-evident (e.g. append-only signing, a separate
 privileged writer) is tracked for a later milestone; today this is a known,
 accepted gap, not an oversight. Do not describe the current journal as
@@ -344,11 +383,12 @@ Its state lives in `~/.mcp-journal/`:
 
 | File | Holds | Changed by |
 |---|---|---|
-| `registry.json` | Servers by name: transport, command/URL, env & header **references** | `mcp-journal server ...` |
+| `state.db` | Control-plane state, one document/table per store: server registry, agent identities & grant matrix, admin accounts, tool inventory (quarantine baselines), approvals queue. Supersedes the legacy `registry.json`/`agents.json`/`admins.json`/`tool-inventory.json`/`approvals/` files below (M4.5, ADR-0006) | `mcp-journal server/agent/admin/quarantine/approvals ...` |
+| `journal.db` | The journal (`journal_records` table), plus a marker of which legacy `*.jsonl` files have been imported | the proxy; `mcp-journal migrate` |
+| `registry.json`, `agents.json`, `admins.json`, `tool-inventory.json`, `approvals/` | Legacy pre-M4.5 files — read once into `state.db` (by `migrate`, or lazily on first touch), then left untouched as a cold backup | — (historical; no longer written) |
 | `vault.enc`, `vault.key` | Secrets encrypted with AES-256-GCM, plus the master key | `mcp-journal vault ...` |
-| `agents.json` | Agent identities (token *hashes* only) and the grant matrix | `mcp-journal agent ...` |
 | `policy.json` | Allow / deny / require-approval rules | **you**, by hand |
-| `<sessionId>.jsonl` | The journal | the proxy |
+| `<sessionId>.jsonl` | Legacy journal (pre-M4.5), read only via `mcp-journal migrate`; the proxy no longer writes this format | — (historical; no longer written) |
 
 `policy.json` stays the one hand-edited file on purpose. The registry, the
 vault and the grant matrix change often, and a typo in any of them is a
@@ -592,9 +632,92 @@ true.
   post-pilot item, not something this release claims.
 
 None of this changes what the journal itself is: a persistent,
-append-oriented, secret-redacted JSONL file. The UI gives you a faster way to
-read and act on it; it does not make the journal tamper-evident or turn it
-into an audit-ready export — that is `M5`, not `M4` (see Status, above).
+append-oriented, secret-redacted SQLite database. The UI gives you a faster
+way to read and act on it; it does not make the journal tamper-evident or
+turn it into an audit-ready export — that is `M5`, not `M4.5` (see Status,
+above).
+
+## Upgrade to M4.5 storage
+
+M4.5 moved control-plane state and the journal off plain files and onto two
+SQLite databases, `state.db` and `journal.db` (`docs/adr/0006-storage-sqlite.md`).
+Upgrading an existing `~/.mcp-journal/` install is **mandatory**, not
+optional — a smoke test on the M4.5 branch found that a process still running
+on the old code cannot see (or resolve) work created by a process running the
+new code, because they read different storage. Do this in order:
+
+1. **Stop every long-lived process** pointed at this journal directory:
+   `serve`, `ui`, any live `wrap`/`connect` session, and any external watcher
+   or script that polls the directory. Do this first — a process still
+   running on the pre-M4.5 code will keep writing the old files while you
+   migrate, and those writes will not be picked up by the new storage.
+2. **Run the migration**:
+   ```
+   mcp-journal migrate
+   ```
+   This imports `agents.json`, `admins.json`, `registry.json`,
+   `tool-inventory.json`, the `approvals/` queue, and every `*.jsonl` journal
+   file into `state.db`/`journal.db`, one report line per store. It is safe
+   to run more than once — an already-migrated store reports `already
+   migrated` and is left untouched.
+
+   Migrate **in place, from the original directory** if you can. Each legacy
+   `*.jsonl` file carries only per-session ordering; the *cross*-session
+   order of the imported journal (what `export` streams, and what the M5
+   hash chain will attest) is reconstructed from file modification times. A
+   `cp`/`rsync` that does not preserve mtimes scrambles that global order —
+   per-session history stays intact, but sessions may interleave differently
+   than they originally ran. Use `cp -p` / `rsync -t` if you must relocate
+   legacy files before migrating.
+3. **Restart** `serve` / `ui` / `wrap` / `connect` on the new build.
+4. **Update external tooling.** Anything that read `approvals/pending/` or
+   `<sessionId>.jsonl` directly off disk — a watcher, a cron job, a
+   dashboard — now sees a stale, frozen snapshot: the plane no longer writes
+   those files. Point it at the CLI (`mcp-journal approvals list --json`,
+   `mcp-journal export`) or the admin UI instead.
+
+Nothing is deleted. The legacy `agents.json`, `admins.json`, `registry.json`,
+`tool-inventory.json`, `approvals/`, and `*.jsonl` files stay on disk exactly
+where they were, as a cold backup, but they are no longer read live. An
+un-imported legacy journal file only becomes visible again by running
+`migrate`; until then, `sessions` and `show` print a loud reminder on
+stderr:
+
+```
+1 legacy *.jsonl session file(s) are not imported; run `mcp-journal migrate` to see them.
+```
+
+A fresh install (no pre-M4.5 files at all) needs none of this — `state.db`
+and `journal.db` are created on first write, same as the old files were.
+
+## Backup & restore
+
+```
+mcp-journal backup <destDir>
+```
+
+Copies `state.db` and `journal.db` (whichever exist) into `<destDir>` using
+SQLite's own online backup, one file per database. It refuses to overwrite an
+existing file at the destination rather than silently clobbering a previous
+snapshot — pick a fresh directory (or timestamp it) per backup.
+
+**Do not copy `state.db` on its own with `cp`.** Both databases run in WAL
+mode: recent commits can still be sitting in a `-wal` sidecar file rather
+than in `state.db` itself, so a plain file copy can miss data that a client
+reading through SQLite would see. `mcp-journal backup` folds the sidecar in
+for you; that is the whole reason it exists instead of "copy the directory
+and hope."
+
+The rest of `~/.mcp-journal/` is ordinary files and copies fine with `cp`,
+`rsync`, or your usual backup tool: `vault.enc` and `vault.key` (copy both
+together — one is useless without the other), `policy.json`, and any legacy
+`*.jsonl`/`*.json` files left over from before an M4.5 upgrade.
+
+To restore: stop every process using the journal directory (same first step
+as the upgrade procedure above), put the backed-up files back in place, then
+start `serve`/`ui`/`wrap`/`connect` again — the startup `PRAGMA
+integrity_check` (see the CLI reference above) confirms the restored
+databases are intact before anything else touches them.
 
 ## Wiring into `.mcp.json`
 

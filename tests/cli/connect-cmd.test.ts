@@ -10,6 +10,7 @@ import { journalDbPathFor } from '../../src/journal/db.js'
 import type { JournalRecord } from '../../src/journal/record.js'
 import { EXIT_CODE_JOURNAL_FAILURE } from '../../src/proxy/wrap.js'
 import { readJournalRecords, requestLine, waitUntil } from '../proxy/harness.js'
+import { writeCorruptDatabase } from '../support/corrupt-db.js'
 import {
   ENV_ECHO_FIXTURE,
   HTTP_SESSIONFUL_FIXTURE,
@@ -171,6 +172,22 @@ describe('connect: argument handling', () => {
 
     expect(exitCode).toBe(1)
     expect(io.err()).toContain('Usage:')
+  })
+})
+
+describe('connect: startup integrity preflight', () => {
+  test('a damaged state.db refuses the run before the token is even looked at', async () => {
+    await writeCorruptDatabase(join(tempDir, 'state.db'))
+
+    const exitCode = await runConnect([SERVER, '--agent', AGENT], io, depsOf({ env: {} }))
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('state.db failed PRAGMA integrity_check')
+    expect(io.err()).toContain('Refusing to start.')
+    // The refusal that WOULD have come next: its absence proves the preflight
+    // runs ahead of authentication, and so ahead of any spawn.
+    expect(io.err()).not.toContain('MCP_AGENT_TOKEN')
+    expect(stdio.stdoutText()).toBe('')
   })
 })
 

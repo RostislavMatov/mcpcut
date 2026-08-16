@@ -1,34 +1,38 @@
-import { LIST_SESSIONS_CONCURRENCY, JOURNAL_DIR } from '../config.js'
-import { mapWithConcurrency } from './concurrency.js'
-import { dbHasSession, dbSessionSummaries } from './db-read.js'
-import { dbSessionSummaryFor } from './db-read-session.js'
-import { isShadowedByDb, openJournalDbIfPresent } from './read-routing.js'
-import {
-  isBlankLine,
-  journalPath,
-  parseJournalLine,
-  resolveJournalReadDeps,
-  sessionIdOf,
-  type JournalReadDeps,
-} from './line-source.js'
+import { join } from 'node:path'
+import { JOURNAL_DIR } from '../config.js'
+import { openJournalDbIfPresent } from './db.js'
+import { dbSessionLastSeqs, type DbSessionLastSeq, type DbSessionSummary } from './db-read.js'
+import { dbSessionLastSeqFor, dbSessionSummaryFor } from './db-read-session.js'
 import { assertValidSessionId } from './session-id.js'
+import type { SqliteHandle } from '../store/sqlite.js'
 
 /**
- * In-memory summary cache for the session list.
+ * In-memory summary cache for the session list (M4.5 wave 5: rebuilt on the
+ * database's own freshness, closing wave-4 Issue 3 — `listSessions()`
+ * re-running an O(rows) aggregate on every UI refresh).
  *
- * `reader.listSessions()` re-reads every journal file on every call, which is
- * right for a one-shot CLI print and wrong for a page an operator refreshes:
- * the cost grows with the whole journal, not with what changed. A JSONL file
- * is append-only, so `stat()` answers "did this change?" for a fraction of the
- * cost of reading it — size *and* mtime together, because either one alone can
- * stay put across a rewrite (same-length edit, or a restored timestamp).
+ * The read side is DB-only since the wave-5 cutover: `dbSessionSummaryFor` is
+ * already one indexed `GROUP BY` per session, cheap enough on its own that
+ * caching its ANSWER buys nothing. What this cache avoids is re-running that
+ * query for a session that has not written since the page was last drawn —
+ * the problem a UI an operator refreshes has and a one-shot CLI print does
+ * not.
  *
- * Deliberately not persisted: a cache on disk beside the journal would be a
- * second place claiming to know what the journal says, and this one is
- * rebuildable in the time it takes to read the files once.
+ * Freshness token: a session's highest `seq` (`MAX(seq)`), the DB analogue of
+ * a file's mtime — monotonic (`AUTOINCREMENT`, never reused), cheap to read
+ * (`idx_journal_session_seq` answers it without a table scan), and unlike
+ * mtime it cannot lie about "changed vs not" (no same-length rewrite, no
+ * restored timestamp). A cache entry is stale on ANY difference in `lastSeq`,
+ * not just an increase: a session whose rows were later pruned (M5
+ * retention) has a LOWER `lastSeq` than what is cached, and must still
+ * re-summarize — hence inequality, never `>`, in `takeFresh` below.
+ *
+ * Deliberately not persisted, same as before the cutover: a cache on disk
+ * would be a second place claiming to know what `journal.db` says, and this
+ * one is rebuildable in the time it takes to run the queries once.
  */
 
-/** Cached summary of one session file. */
+/** Cached summary of one session. */
 export interface SessionSummaryEntry {
   readonly sessionId: string
   readonly firstTs: string
@@ -45,9 +49,9 @@ export interface SessionIndexCacheOptions {
 }
 
 export interface SessionIndexCache {
-  /** Every session in `dir`, newest activity first; missing dir yields []. */
+  /** Every session in `dir`, newest write first; a missing database yields []. */
   readonly listSessions: (dir?: string) => Promise<readonly SessionSummaryEntry[]>
-  /** One session's summary, or null when it has no readable record. */
+  /** One session's summary, or null when the database holds no row for it. */
   readonly getSession: (sessionId: string, dir?: string) => Promise<SessionSummaryEntry | null>
   /** Drops one session's cached summary. */
   readonly invalidate: (sessionId: string, dir?: string) => void
@@ -60,66 +64,82 @@ export interface SessionIndexCache {
 /** Default cache size: enough for a long-lived plane, bounded for a daemon. */
 export const DEFAULT_MAX_CACHED_SESSIONS = 500
 
+/**
+ * The database read seam, injectable so a test can count calls instead of
+ * touching a real database — the counting seam the file arm's
+ * `JournalReadDeps` gave this module's tests before the cutover.
+ */
+export interface SessionIndexCacheDeps {
+  readonly openDb: (dir: string) => Promise<SqliteHandle | null>
+  readonly lastSeqs: (handle: SqliteHandle) => readonly DbSessionLastSeq[]
+  readonly lastSeqFor: (handle: SqliteHandle, sessionId: string) => number | null
+  readonly summaryFor: (handle: SqliteHandle, sessionId: string) => DbSessionSummary | null
+}
+
+const defaultDeps: SessionIndexCacheDeps = {
+  openDb: openJournalDbIfPresent,
+  lastSeqs: dbSessionLastSeqs,
+  lastSeqFor: dbSessionLastSeqFor,
+  summaryFor: dbSessionSummaryFor,
+}
+
 interface CachedSummary {
-  readonly size: number
-  readonly mtimeMs: number
-  /** Null means "this file holds no readable record" — cached like any other
-   * verdict, so a directory of noise is not re-read on every refresh. */
-  readonly summary: SessionSummaryEntry | null
+  readonly lastSeq: number
+  readonly summary: SessionSummaryEntry
 }
 
 /**
- * Creates a summary cache. `deps` is the same injectable filesystem seam the
- * search layer uses, so a test can count exactly how many lines a refresh read.
+ * Creates a summary cache. `deps` overrides the real database reads — a test
+ * seam, never used by production wiring (`ui-wiring.ts` calls this with no
+ * arguments).
  */
 export function createSessionIndexCache(
-  deps: Partial<JournalReadDeps> = {},
+  deps: Partial<SessionIndexCacheDeps> = {},
   options: SessionIndexCacheOptions = {},
 ): SessionIndexCache {
-  const resolved = resolveJournalReadDeps(deps)
+  const resolved: SessionIndexCacheDeps = { ...defaultDeps, ...deps }
   const maxEntries = Math.max(1, options.maxEntries ?? DEFAULT_MAX_CACHED_SESSIONS)
   const cache = new Map<string, CachedSummary>()
 
-  async function summaryFor(dir: string, sessionId: string): Promise<SessionSummaryEntry | null> {
-    const filePath = journalPath(dir, sessionId)
-    const info = await resolved.statFile(filePath)
-    if (info === null) {
-      cache.delete(filePath)
+  /** `listSessions` and `getSession` share one cache keyed by directory + session. */
+  function keyFor(dir: string, sessionId: string): string {
+    return join(dir, sessionId)
+  }
+
+  function cachedSummaryFor(
+    handle: SqliteHandle,
+    key: string,
+    sessionId: string,
+    lastSeq: number,
+  ): SessionSummaryEntry | null {
+    const fresh = takeFresh(cache, key, lastSeq)
+    if (fresh !== undefined) {
+      return fresh.summary
+    }
+    const summary = resolved.summaryFor(handle, sessionId)
+    if (summary === null) {
+      cache.delete(key)
       return null
     }
-    const cached = takeFresh(cache, filePath, info.size, info.mtimeMs)
-    if (cached !== undefined) {
-      return cached.summary
-    }
-    const scanned = await summarizeFile(filePath, sessionId, resolved)
-    const summary = scanned === null ? null : { ...scanned, size: info.size, mtimeMs: info.mtimeMs }
-    store(cache, filePath, { size: info.size, mtimeMs: info.mtimeMs, summary }, maxEntries)
+    store(cache, key, { lastSeq, summary }, maxEntries)
     return summary
   }
 
   /**
-   * Both carriers, merged. The database's summaries are one indexed
-   * aggregate, so they are NOT cached: the cache exists to avoid re-reading
-   * files, and keeping a copy of a query this cheap would buy nothing but a
-   * staleness bug. Its `size`/`mtimeMs` are the aggregate's stand-ins (total
-   * `doc` bytes, last activity in epoch ms), which is what makes the two
-   * carriers' entries the same shape.
+   * Order is the query's own — newest write first — and is returned as-is,
+   * without a re-sort: `lastSeq` is already a total order (see
+   * `SELECT_SESSION_LAST_SEQ` in `db-read.ts`), the DB analogue of the file
+   * arm's mtime order.
    */
   async function listSessions(dir: string = JOURNAL_DIR): Promise<readonly SessionSummaryEntry[]> {
-    const handle = await openJournalDbIfPresent(dir)
-    const fromDb = handle === null ? [] : dbSessionSummaries(handle)
-    const isShadowed = isShadowedByDb(handle)
-    const sessionIds = (await resolved.listFiles(dir))
-      .map(sessionIdOf)
-      .filter((sessionId): sessionId is string => sessionId !== null)
-      .filter((sessionId) => !isShadowed(sessionId))
-    const summaries = await mapWithConcurrency(sessionIds, LIST_SESSIONS_CONCURRENCY, (sessionId) =>
-      summaryFor(dir, sessionId),
-    )
-    const fromFiles = summaries.filter((entry): entry is SessionSummaryEntry => entry !== null)
-    // Stable sort: on the (per-run-ULID-impossible) tie of two equal `lastTs`
-    // the database's entry stays ahead of the file's.
-    return [...fromDb, ...fromFiles].sort((a, b) => b.lastTs.localeCompare(a.lastTs))
+    const handle = await resolved.openDb(dir)
+    if (handle === null) {
+      return []
+    }
+    const summaries = resolved
+      .lastSeqs(handle)
+      .map((entry) => cachedSummaryFor(handle, keyFor(dir, entry.sessionId), entry.sessionId, entry.lastSeq))
+    return summaries.filter((entry): entry is SessionSummaryEntry => entry !== null)
   }
 
   async function getSession(
@@ -127,18 +147,22 @@ export function createSessionIndexCache(
     dir: string = JOURNAL_DIR,
   ): Promise<SessionSummaryEntry | null> {
     assertValidSessionId(sessionId)
-    const handle = await openJournalDbIfPresent(dir)
-    if (handle !== null && dbHasSession(handle, sessionId)) {
-      // One `GROUP BY` over this session, not over the whole database: an
-      // operator opening one session must not pay for every other one.
-      return dbSessionSummaryFor(handle, sessionId)
+    const handle = await resolved.openDb(dir)
+    if (handle === null) {
+      return null
     }
-    return summaryFor(dir, sessionId)
+    const key = keyFor(dir, sessionId)
+    const lastSeq = resolved.lastSeqFor(handle, sessionId)
+    if (lastSeq === null) {
+      cache.delete(key)
+      return null
+    }
+    return cachedSummaryFor(handle, key, sessionId, lastSeq)
   }
 
   function invalidate(sessionId: string, dir: string = JOURNAL_DIR): void {
     assertValidSessionId(sessionId)
-    cache.delete(journalPath(dir, sessionId))
+    cache.delete(keyFor(dir, sessionId))
   }
 
   return {
@@ -151,34 +175,33 @@ export function createSessionIndexCache(
 }
 
 /**
- * Returns the cached entry when it still describes the file on disk, marking
- * it most recently used. A difference in either size or mtime is a miss: both
- * are checked because either can survive a change on its own.
+ * Returns the cached entry when its `lastSeq` still matches, marking it most
+ * recently used. Any difference is a miss, not just a lower cached value —
+ * see the module doc for why "greater than" would be the wrong test.
  */
 function takeFresh(
   cache: Map<string, CachedSummary>,
-  filePath: string,
-  size: number,
-  mtimeMs: number,
+  key: string,
+  lastSeq: number,
 ): CachedSummary | undefined {
-  const cached = cache.get(filePath)
-  if (cached === undefined || cached.size !== size || cached.mtimeMs !== mtimeMs) {
+  const cached = cache.get(key)
+  if (cached === undefined || cached.lastSeq !== lastSeq) {
     return undefined
   }
-  cache.delete(filePath)
-  cache.set(filePath, cached)
+  cache.delete(key)
+  cache.set(key, cached)
   return cached
 }
 
 /** Inserts an entry as most recently used, evicting the oldest past the cap. */
 function store(
   cache: Map<string, CachedSummary>,
-  filePath: string,
+  key: string,
   entry: CachedSummary,
   maxEntries: number,
 ): void {
-  cache.delete(filePath)
-  cache.set(filePath, entry)
+  cache.delete(key)
+  cache.set(key, entry)
   while (cache.size > maxEntries) {
     const oldest = cache.keys().next()
     if (oldest.done === true) {
@@ -186,36 +209,4 @@ function store(
     }
     cache.delete(oldest.value)
   }
-}
-
-type ScannedSummary = Omit<SessionSummaryEntry, 'size' | 'mtimeMs'>
-
-/**
- * Streams a session file to derive its summary. Only the first and last
- * readable timestamps and two counters are kept, so the memory cost is the
- * same for a one-line journal and a gigabyte one. A file with no readable
- * record yields null, mirroring `reader.listSessions()`.
- */
-async function summarizeFile(
-  filePath: string,
-  sessionId: string,
-  deps: JournalReadDeps,
-): Promise<ScannedSummary | null> {
-  let firstTs: string | null = null
-  let lastTs = ''
-  let count = 0
-  let skippedLineCount = 0
-
-  for await (const line of deps.readLines(filePath)) {
-    const record = parseJournalLine(line)
-    if (record === null) {
-      skippedLineCount += isBlankLine(line) ? 0 : 1
-      continue
-    }
-    firstTs ??= record.ts
-    lastTs = record.ts
-    count += 1
-  }
-
-  return firstTs === null ? null : { sessionId, firstTs, lastTs, count, skippedLineCount }
 }

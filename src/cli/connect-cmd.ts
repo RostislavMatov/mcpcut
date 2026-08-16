@@ -10,6 +10,7 @@ import { EXIT_CODE_JOURNAL_FAILURE } from '../proxy/wrap.js'
 import { createOrderedWriter } from '../proxy/writer.js'
 import type { ServerRecord } from '../registry/schema.js'
 import { createRegistryStore, type RegistryStore } from '../registry/store.js'
+import { preflightDatabases } from '../store/preflight.js'
 import type { AgentRecordReader } from '../session/agent-watch.js'
 import type { SessionEndReason, SessionEndpoints } from '../session/core.js'
 import { createStdioMessageSink } from '../transport/stdio-adapter.js'
@@ -192,6 +193,13 @@ export async function runConnect(
 
   const env = deps.env ?? process.env
   const journalDir = deps.journalDir
+
+  // Ahead of authentication, and so ahead of any spawn: a session whose
+  // journal or control state cannot be trusted must not start at all.
+  if (!(await preflightDatabases(journalDir ?? JOURNAL_DIR, io.stderr))) {
+    return EXIT_CODE_REFUSED
+  }
+
   const onDiagnostic = (line: string): void => {
     io.stderr.write(line)
   }

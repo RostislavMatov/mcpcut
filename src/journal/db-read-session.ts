@@ -26,6 +26,21 @@ const SELECT_ONE_SESSION_AGGREGATE =
   'COUNT(*) AS recordCount, SUM(LENGTH(doc)) AS docLength ' +
   'FROM journal_records WHERE session_id = ? GROUP BY session_id'
 
+const SELECT_ONE_SESSION_LAST_SEQ =
+  'SELECT MAX(seq) AS lastSeq FROM journal_records WHERE session_id = ?'
+
+/**
+ * One session's freshness token, or null when it holds no rows —
+ * `index-cache.ts`'s per-session probe, an indexed seek on
+ * `idx_journal_session_seq` rather than the whole-database CTE
+ * `dbSessionLastSeqs` runs for the list view.
+ */
+export function dbSessionLastSeqFor(handle: SqliteHandle, sessionId: string): number | null {
+  const row = handle.db.prepare(SELECT_ONE_SESSION_LAST_SEQ).get(sessionId)
+  const raw = row?.['lastSeq']
+  return raw === null || raw === undefined ? null : numberOf(raw)
+}
+
 export function dbSessionSummaryFor(
   handle: SqliteHandle,
   sessionId: string,

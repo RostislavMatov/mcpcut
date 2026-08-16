@@ -1,6 +1,8 @@
 import { rm } from 'node:fs/promises'
 import { createServer as createNetServer, type AddressInfo } from 'node:net'
+import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
+import { writeCorruptDatabase } from '../support/corrupt-db.js'
 import {
   ADR_0002_REFERENCE,
   DEFAULT_SERVE_HOST,
@@ -122,6 +124,27 @@ describe('runServe: argument parsing and startup', () => {
     expect(code).toBe(1)
     expect(listened).toBe(false)
     expect(io.errText()).toContain(policyPath)
+  })
+
+  test('a damaged state.db stops serve before it listens', async () => {
+    const { journalDir, policyPath } = await createJournalDir()
+    await writeCorruptDatabase(join(journalDir, 'state.db'))
+
+    const io = captureIo()
+    let listened = false
+    const code = await runServe(['--port', '0', '--policy', policyPath], io, {
+      journalDir,
+      signals: [],
+      onListening: () => {
+        listened = true
+      },
+    })
+
+    expect(code).toBe(1)
+    expect(listened).toBe(false)
+    expect(io.errText()).toContain('state.db failed PRAGMA integrity_check')
+    expect(io.errText()).toContain('Refusing to start.')
+    expect(io.outText()).toBe('')
   })
 
   test('a port already in use fails with a clear error, not a stack trace', async () => {

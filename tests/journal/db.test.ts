@@ -1,10 +1,12 @@
-import { mkdtemp, rm, stat } from 'node:fs/promises'
+import { mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import {
   insertRecordRows,
+  JOURNAL_DB_FILE_NAME,
   journalDbPathFor,
+  openJournalDbIfPresent,
   openJournalDbShared,
   type JournalRecordRow,
 } from '../../src/journal/db.js'
@@ -231,5 +233,37 @@ describe('insertRecordRows', () => {
       n: number
     }
     expect(count.n).toBe(0)
+  })
+})
+
+/**
+ * The probe every read entry point goes through (moved here from the deleted
+ * `read-routing.test.ts` with the function itself, M4.5 wave 5). Its whole
+ * point is what it does NOT do: an empty database created by a read would
+ * answer "yes, I am the carrier" for every future check and silence a
+ * pure-legacy install's journal.
+ */
+describe('openJournalDbIfPresent', () => {
+  test('returns null for a directory with no journal.db, and creates none', async () => {
+    await writeFile(join(journalDir, 'legacy-only.jsonl'), '', 'utf8')
+
+    const handle = await openJournalDbIfPresent(journalDir)
+
+    expect(handle).toBeNull()
+    const entries = await readdir(journalDir)
+    expect(entries).toEqual(['legacy-only.jsonl'])
+    expect(entries.some((name) => name.startsWith(JOURNAL_DB_FILE_NAME))).toBe(false)
+  })
+
+  test('returns null for a directory that does not exist', async () => {
+    await expect(openJournalDbIfPresent(join(journalDir, 'nope'))).resolves.toBeNull()
+  })
+
+  test('returns the shared handle once journal.db exists', async () => {
+    const opened = await openJournalDbShared(journalDbPathFor(journalDir))
+
+    const probed = await openJournalDbIfPresent(journalDir)
+
+    expect(probed).toBe(opened)
   })
 })

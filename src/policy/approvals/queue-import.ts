@@ -1,5 +1,6 @@
 import { readdir, readFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
+import { APPROVALS_IMPORT_BATCH_ROWS } from '../../config.js'
 import {
   insertMigrationMarker,
   markerPresent,
@@ -31,8 +32,11 @@ import {
  *
  * Split from `queue-db.ts` for the <400-line file rule, the same way
  * `queue-file.ts` is split from `queue.ts`; it is the only part of the queue
- * that still reads files at all. The legacy files are NEVER deleted — they stay
- * as a cold backup until wave 5 retires the file paths for good.
+ * that still reads files at all. The legacy files are NEVER deleted — they
+ * stay as a cold backup indefinitely. (Wave 5 retired the JOURNAL's file-read
+ * arm — `search.ts`/`reader.ts` no longer walk `*.jsonl` — but that is a
+ * different subsystem's read path; this queue's lazy file import is a
+ * separate mechanism, unaffected, and stays lazy.)
  */
 
 const PENDING_SUBDIR = 'pending'
@@ -85,6 +89,18 @@ interface LegacyRow {
  *
  * Refusing loudly would therefore break ordinary operation of a healthy queue,
  * which is the opposite of what the document-store rule protects.
+ *
+ * The rows are inserted in chunks of `APPROVALS_IMPORT_BATCH_ROWS`, each its
+ * own write transaction, rather than one transaction for an arbitrarily large
+ * backlog: a years-old installation's `pending`/`resolved` directories can
+ * hold thousands of files, and a single synchronous transaction over all of
+ * them would hold the writer lock — and block the event loop — for the whole
+ * import. Only the LAST chunk writes the marker, so a crash between chunks
+ * leaves no marker at all; the rerun this implies is safe for the same reason
+ * a concurrent second pass is (see above): every insert is `INSERT OR IGNORE`
+ * on the approval id, so replaying already-imported chunks is a no-op, and
+ * the marker check inside each chunk's transaction stops the rerun the moment
+ * it reaches rows a completed run already covered.
  */
 export async function importLegacyApprovals(db: ApprovalsDb): Promise<number> {
   if (markerPresent(db.handle.db, APPROVALS_QUEUE_MARKER)) return 0
@@ -100,7 +116,21 @@ export async function importLegacyApprovals(db: ApprovalsDb): Promise<number> {
   // ULID file names: ascending order is chronological, so the change sequence
   // the rows get matches the order in which they were originally requested.
   const ordered = [...rows].sort((a, b) => (a.approvalId < b.approvalId ? -1 : 1))
-  return runWriteTransaction(db, (database) => insertLegacyRows(database, ordered))
+
+  let imported = 0
+  for (let start = 0; start < ordered.length; start += APPROVALS_IMPORT_BATCH_ROWS) {
+    const chunk = ordered.slice(start, start + APPROVALS_IMPORT_BATCH_ROWS)
+    const isLast = start + chunk.length >= ordered.length
+    const chunkImported = await runWriteTransaction(db, (database) =>
+      insertLegacyChunk(database, chunk, isLast),
+    )
+    // null = another process's import finished and wrote the marker between
+    // our chunks; stop here rather than re-inserting rows it already covered.
+    if (chunkImported === null) break
+    imported += chunkImported
+    if (!isLast) await new Promise<void>((resolve) => setImmediate(resolve))
+  }
+  return imported
 }
 
 /** Status set `mcp-journal migrate` reports for the approvals queue (its own, not the four
@@ -163,13 +193,25 @@ export async function migrateApprovalsQueue(journalDir: string): Promise<Approva
   return { status: 'imported', pendingCount: pendingRows.length, resolvedCount: resolvedRows.length }
 }
 
-function insertLegacyRows(database: StateDatabase, rows: readonly LegacyRow[]): number {
-  // The race window: another process may have imported the same directories
-  // between our marker read and this transaction taking the writer lock.
-  if (markerPresent(database, APPROVALS_QUEUE_MARKER)) return 0
+/**
+ * Inserts one chunk's rows inside its own write transaction. Returns `null`
+ * instead of a count when the marker is already present: the race window is
+ * the same one `insertLegacyRows` (pre-chunking) guarded against — another
+ * process may have imported the same directories between our marker read and
+ * this transaction taking the writer lock — but re-checked on EVERY chunk
+ * now, since the gap between chunks (`setImmediate`) is a second such window.
+ * Only `isLast` writes the marker, so a chunk that is not the last one never
+ * claims an import this call has not actually finished yet.
+ */
+function insertLegacyChunk(
+  database: StateDatabase,
+  chunk: readonly LegacyRow[],
+  isLast: boolean,
+): number | null {
+  if (markerPresent(database, APPROVALS_QUEUE_MARKER)) return null
 
   let imported = 0
-  for (const row of rows) {
+  for (const row of chunk) {
     const result = database
       .prepare(INSERT_LEGACY_ROW)
       .run(
@@ -187,7 +229,7 @@ function insertLegacyRows(database: StateDatabase, rows: readonly LegacyRow[]): 
       )
     imported += Number(result.changes)
   }
-  insertMigrationMarker(database, APPROVALS_QUEUE_MARKER)
+  if (isLast) insertMigrationMarker(database, APPROVALS_QUEUE_MARKER)
   return imported
 }
 

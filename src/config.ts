@@ -27,6 +27,18 @@ export const JOURNAL_BATCH_MAX_RECORDS = 256
 export const JOURNAL_BATCH_MAX_DELAY_MS = 10
 
 /**
+ * Chunk size for the approvals queue's lazy legacy-file import
+ * (`policy/approvals/queue-import.ts`): each chunk commits in its own write
+ * transaction, so a backlog of thousands of pre-M4.5 files cannot hold the
+ * event loop — and the process's only writer lock — for one long,
+ * synchronous transaction. A separate knob from `JOURNAL_BATCH_MAX_RECORDS`
+ * on purpose: that one bounds the journal's steady-state write path, this one
+ * bounds a one-time migration on an unrelated database, and the two have no
+ * reason to move together.
+ */
+export const APPROVALS_IMPORT_BATCH_ROWS = 256
+
+/**
  * Session ids become file names, so they are validated against this pattern
  * before any path is built from them (path-traversal guard). Deliberately
  * wider than the ULID alphabet: callers may inject their own session ids.
@@ -192,9 +204,6 @@ export const SIGKILL_ESCALATION_MS = 5000
  * exited. A client that stopped reading must not hold the proxy open forever.
  */
 export const RELAY_DRAIN_TIMEOUT_MS = 5000
-
-/** Max journal files read concurrently by listSessions. */
-export const LIST_SESSIONS_CONCURRENCY = 8
 
 /** Max time to keep an unanswered request id for duration correlation. */
 export const REQUEST_CORRELATION_TTL_MS = 5 * 60 * 1000

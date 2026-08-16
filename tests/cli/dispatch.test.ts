@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { dispatch, type CliIo } from '../../src/cli.js'
+import type { JournalRecord } from '../../src/journal/record.js'
+import { createJournalSink } from '../../src/journal/sink.js'
 import { createClientHarness } from '../proxy/harness.js'
 
 /**
@@ -171,11 +173,12 @@ describe('dispatch: show (regression)', () => {
       method: 'tools/list',
       payload: {},
     }
-    await writeFile(
-      join(tempDir, `${sessionId}.jsonl`),
-      `${JSON.stringify(decisionRecord)}\n${JSON.stringify(requestRecord)}\n`,
-      'utf8',
-    )
+    // Through the real sink: `journal.db` is the only read carrier since the
+    // M4.5 wave-5 cutover, so a hand-written `*.jsonl` would show nothing.
+    const sink = createJournalSink(sessionId, { dir: tempDir })
+    sink.write(decisionRecord as JournalRecord)
+    sink.write(requestRecord as JournalRecord)
+    await sink.close()
 
     const exitCode = await dispatch(['show', sessionId, '--kind', 'decision'], io, { journalDir: tempDir })
 
@@ -262,6 +265,29 @@ describe('dispatch: migrate', () => {
 
     expect(exitCode).toBe(0)
     expect(io.out()).toContain('no file')
-    expect(io.out()).toContain('Migrated 0 store(s) into state.db.')
+    expect(io.out()).toContain('Migrated 0 store(s).')
+  })
+})
+
+describe('dispatch: export', () => {
+  test('routes to export-cmd with an isolated journalDir', async () => {
+    const io = fakeIo()
+
+    const exitCode = await dispatch(['export'], io, { export: { journalDir: tempDir } })
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toBe('')
+  })
+})
+
+describe('dispatch: backup', () => {
+  test('routes to backup-cmd with an isolated journalDir', async () => {
+    const io = fakeIo()
+    const destDir = join(tempDir, 'backup-dest')
+
+    const exitCode = await dispatch(['backup', destDir], io, { backup: { journalDir: tempDir } })
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('No databases to back up.')
   })
 })

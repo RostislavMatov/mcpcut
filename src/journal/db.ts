@@ -123,6 +123,36 @@ export async function openJournalDbShared(dbPath: string): Promise<SqliteHandle>
   }
 }
 
+/**
+ * The journal directory's database, or null when the directory has none.
+ *
+ * The `stat` probe is the whole point: `openJournalDbShared` would create the
+ * file, and a read has no business doing that. A directory that cannot be
+ * probed at all (a permission error, say) is a real failure and propagates —
+ * quietly falling back to an empty answer would present half a journal as the
+ * whole one.
+ */
+export async function openJournalDbIfPresent(journalDir: string): Promise<SqliteHandle | null> {
+  const dbPath = journalDbPathFor(journalDir)
+  try {
+    await stat(dbPath)
+  } catch (error: unknown) {
+    if (isMissing(error)) {
+      return null
+    }
+    throw error
+  }
+  return openJournalDbShared(dbPath)
+}
+
+function isMissing(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null || !('code' in error)) {
+    return false
+  }
+  const code = (error as { code?: unknown }).code
+  return code === 'ENOENT' || code === 'ENOTDIR'
+}
+
 /** True while `dbPath` still points at the file the cached connection was opened against. */
 async function isSameFile(dbPath: string, cached: CachedJournalDb): Promise<boolean> {
   try {

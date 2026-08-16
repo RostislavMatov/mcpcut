@@ -7,6 +7,7 @@ import {
   dbHasSession,
   dbSearchAllSessions,
   dbSearchSession,
+  dbSessionLastSeqs,
   dbSessionSummaries,
 } from '../../src/journal/db-read.js'
 import type { DecisionInfo, JournalRecord } from '../../src/journal/record.js'
@@ -164,6 +165,40 @@ describe('dbSessionSummaries', () => {
 
     expect(summaries[0]?.count).toBe(2)
     expect(summaries[0]?.skippedLineCount).toBe(0)
+  })
+})
+
+describe('dbSessionLastSeqs', () => {
+  test('returns every session\'s last-write seq, newest write first', async () => {
+    await writeSession('seq-old', [record(), record()])
+    await writeSession('seq-new', [record(), record(), record()])
+    const handle = await openHandle()
+
+    const lastSeqs = dbSessionLastSeqs(handle)
+
+    expect(lastSeqs.map((entry) => entry.sessionId)).toEqual(['seq-new', 'seq-old'])
+    expect(lastSeqs[0]?.lastSeq).toBeGreaterThan(lastSeqs[1]?.lastSeq ?? 0)
+  })
+
+  test('agrees with lastTs order in the normal (writes-in-ts-order) case', async () => {
+    await writeSession('agree-old', [record({ ts: '2026-08-01T00:00:00.000Z' })])
+    await writeSession('agree-mid', [record({ ts: '2026-08-05T00:00:00.000Z' })])
+    await writeSession('agree-new', [record({ ts: '2026-08-10T00:00:00.000Z' })])
+    const handle = await openHandle()
+
+    const bySeq = dbSessionLastSeqs(handle).map((entry) => entry.sessionId)
+    const byTs = dbSessionSummaries(handle)
+      .slice()
+      .sort((a, b) => b.lastTs.localeCompare(a.lastTs))
+      .map((entry) => entry.sessionId)
+
+    expect(bySeq).toEqual(byTs)
+  })
+
+  test('an empty database yields no sessions', async () => {
+    const handle = await openHandle()
+
+    expect(dbSessionLastSeqs(handle)).toEqual([])
   })
 })
 
