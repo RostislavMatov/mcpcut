@@ -841,3 +841,260 @@ describe('lazy expiry sweep (a request nobody answers must not outlive its own e
     expect((await queueRows())[0]?.status).toBe('pending')
   })
 })
+
+/**
+ * The sweep runs on the RENDER path — `list()` and `countPending()`, i.e. twice
+ * per approvals page and once per JSON poll. One write transaction per expired
+ * row therefore put N serial `BEGIN IMMEDIATE`/COMMIT pairs (each with its own
+ * busy-retry pacing) in front of the first byte an operator returning to an
+ * abandoned queue ever sees. The whole bounded pass is now ONE transaction.
+ *
+ * What must NOT change with it — and is what these cases actually pin:
+ *
+ *  - one outcome per id: the batch is still the conditional
+ *    `UPDATE … WHERE status = 'pending'` under `BEGIN IMMEDIATE`, run per row
+ *    inside the shared transaction, so a human decision is never overwritten
+ *    and two concurrent sweepers cannot both settle a row;
+ *  - `change_seq` bookkeeping: exactly one bump per row actually settled — the
+ *    watcher contract `ui/watch.ts` publishes `approval-resolved` off;
+ *  - best-effort: an unusable row is skipped, never rolled back onto the rest,
+ *    and nothing throws into the read.
+ */
+describe('the expiry sweep settles a backlog in one write transaction', () => {
+  /**
+   * Counts `BEGIN IMMEDIATE` transactions taken on the queue's shared
+   * connection while `run()` executes. `openStateDbShared` caches one handle
+   * per database per process, so wrapping it here observes every writer the
+   * queue opens afterwards — reads take no transaction and are invisible.
+   */
+  async function countWriteTransactions(run: () => Promise<void>): Promise<number> {
+    const { handle } = await openApprovalsDb(baseDir)
+    const original = handle.transaction
+    let taken = 0
+    handle.transaction = ((fn: Parameters<typeof original>[0]) => {
+      taken += 1
+      return original(fn)
+    }) as typeof handle.transaction
+    try {
+      await run()
+    } finally {
+      handle.transaction = original
+    }
+    return taken
+  }
+
+  /** `count` expired pending requests, and a clock already past their expiry. */
+  async function backlog(count: number): Promise<{ readonly queue: ReturnType<typeof createApprovalQueue>; readonly ids: string[] }> {
+    let nowMs = Date.UTC(2026, 0, 1)
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
+    const ids: string[] = []
+    for (let i = 0; i < count; i += 1) {
+      const { approvalId } = await queue.enqueue(baseRequest({ sessionId: `session-${i}`, timeoutMs: 1000 }))
+      ids.push(approvalId)
+    }
+    nowMs += 5000
+    return { queue, ids }
+  }
+
+  test('an abandoned backlog costs the render path one write transaction, not one per row', async () => {
+    const { queue } = await backlog(8)
+
+    const taken = await countWriteTransactions(async () => {
+      await queue.list()
+    })
+
+    expect(taken).toBe(1)
+    const rows = await queueRows()
+    expect(rows.every((row) => row.status === 'resolved')).toBe(true)
+  })
+
+  test('a read that finds nothing to expire takes no write transaction at all', async () => {
+    let nowMs = Date.UTC(2026, 0, 1)
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
+    await queue.enqueue(baseRequest({ timeoutMs: 60_000 }))
+
+    const taken = await countWriteTransactions(async () => {
+      await queue.countPending()
+      await queue.list()
+    })
+
+    expect(taken).toBe(0)
+  })
+
+  test('the batch bumps the change sequence exactly once per row it settles', async () => {
+    const { queue } = await backlog(4)
+    const before = (await queue.changesSince(null)).latestSeq
+
+    await queue.countPending()
+
+    // One bump per settled row — unchanged from one-transaction-per-row. A
+    // watcher replaying `changesSince` sees four resolutions, four sequences.
+    expect((await queue.changesSince(null)).latestSeq).toBe(before + 4)
+    const page = await queue.changesSince(before)
+    expect(page.resolvedIds).toHaveLength(4)
+    expect(new Set(page.resolvedIds).size).toBe(4)
+  })
+
+  test('a human decision inside the swept range is never overwritten by the batch', async () => {
+    let nowMs = Date.UTC(2026, 0, 1)
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
+    const ids: string[] = []
+    for (let i = 0; i < 5; i += 1) {
+      const { approvalId } = await queue.enqueue(baseRequest({ sessionId: `session-${i}`, timeoutMs: 1000 }))
+      ids.push(approvalId)
+    }
+    const decided = ids[2] as string
+    await queue.resolve(decided, { outcome: 'approved', actor: 'alice' })
+    const decidedAt = new Date(nowMs).toISOString()
+
+    nowMs += 5000
+    await queue.list()
+
+    const resolution = await queue.readResolution(decided)
+    expect(resolution?.outcome).toBe('approved')
+    expect(resolution?.actor).toBe('alice')
+    expect(resolution?.resolvedAt).toBe(decidedAt)
+    for (const other of ids.filter((id) => id !== decided)) {
+      await expect(queue.readResolution(other)).resolves.toMatchObject({ outcome: 'expired' })
+    }
+  })
+
+  test('two concurrent sweepers of a whole backlog still produce exactly one outcome per id', async () => {
+    let nowMs = Date.UTC(2026, 0, 1)
+    // Two instances over one directory: a CLI `approvals list` and a UI render.
+    const first = createApprovalQueue({ baseDir, clock: () => nowMs })
+    const second = createApprovalQueue({ baseDir, clock: () => nowMs })
+    for (let i = 0; i < 6; i += 1) {
+      await first.enqueue(baseRequest({ sessionId: `session-${i}`, timeoutMs: 1000 }))
+    }
+    nowMs += 5000
+
+    const before = (await first.changesSince(null)).latestSeq
+    await Promise.all([first.countPending(), second.countPending(), first.list(), second.list()])
+    const after = (await first.changesSince(null)).latestSeq
+
+    // Six rows, six bumps: a second outcome for any row would show as a
+    // seventh. The loser of the race writes nothing and bumps nothing.
+    expect(after).toBe(before + 6)
+    const rows = await queueRows()
+    expect(rows).toHaveLength(6)
+    expect(rows.every((row) => row.status === 'resolved')).toBe(true)
+  })
+
+  test('an unusable row in the middle of a batch does not cost the rest their outcome', async () => {
+    let nowMs = Date.UTC(2026, 0, 1)
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
+    const ids: string[] = []
+    for (let i = 0; i < 3; i += 1) {
+      const { approvalId } = await queue.enqueue(baseRequest({ sessionId: `session-${i}`, timeoutMs: 1000 }))
+      ids.push(approvalId)
+    }
+    await overwriteDoc(ids[1] as string, 'not json at all')
+
+    nowMs += 5000
+    await queue.list()
+
+    // Batching must not turn one unreadable record into a rollback of the pass.
+    const rows = await queueRows()
+    const byStatus = rows.map((row) => row.status)
+    expect(byStatus.filter((status) => status === 'resolved')).toHaveLength(2)
+    expect(byStatus.filter((status) => status === 'pending')).toHaveLength(1)
+  })
+})
+
+/**
+ * The watermark contract of `changesSince` is "a change may be delivered twice,
+ * never skipped". A TRUNCATED page therefore stops the watermark at the last
+ * change it delivered — but when every row of that page was dropped as
+ * malformed there is no last delivered change, and falling back to the GLOBAL
+ * sequence skips everything between the page and the head. `sinceSeq` is the
+ * only fallback that keeps the contract: the caller re-asks from where it was.
+ *
+ * Malformed rows cannot come from the STRICT schema, so the setup here is the
+ * case the reader guards against explicitly: a FOREIGN table of the same name.
+ */
+describe('changesSince watermark: a page that delivered nothing never skips ahead', () => {
+  /** Replaces the queue's table with an untyped (foreign) one of the same name. */
+  async function useForeignApprovalsTable(): Promise<void> {
+    const db = await openApprovalsDb(baseDir)
+    db.handle.db.exec('DROP TABLE approvals')
+    db.handle.db.exec(
+      'CREATE TABLE approvals (approval_id, status, doc, server_name, tool_name, ' +
+        'args_hash, requested_at, expires_at, outcome, resolved_at, change_seq)',
+    )
+  }
+
+  async function insertForeignRow(approvalId: unknown, changeSeq: number, doc: string): Promise<void> {
+    const db = await openApprovalsDb(baseDir)
+    db.handle.db
+      .prepare(
+        'INSERT INTO approvals (approval_id, status, doc, server_name, tool_name, args_hash, ' +
+          'requested_at, expires_at, change_seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      )
+      .run(
+        approvalId as string,
+        'pending',
+        doc,
+        'github',
+        'create_issue',
+        'a'.repeat(64),
+        '2026-01-01T00:00:00.000Z',
+        '2027-01-01T00:00:00.000Z',
+        changeSeq,
+      )
+  }
+
+  /** A record the pending validator accepts, so the row is delivered rather than dropped. */
+  function pendingDoc(approvalId: string): string {
+    return JSON.stringify({
+      approvalId,
+      serverName: 'github',
+      toolName: 'create_issue',
+      toolClass: 'write',
+      argsRedacted: {},
+      argsHash: 'a'.repeat(64),
+      sessionId: 'session-good',
+      requestedAt: '2026-01-01T00:00:00.000Z',
+      expiresAt: '2027-01-01T00:00:00.000Z',
+    })
+  }
+
+  test('a truncated page whose every row was dropped keeps the watermark at the caller sequence', async () => {
+    await useForeignApprovalsTable()
+    // Two rows the change reader cannot use (a non-text primary key), then a
+    // perfectly good change behind them.
+    await insertForeignRow(1, 1, '{}')
+    await insertForeignRow(2, 2, '{}')
+    await insertForeignRow('01ARZ3NDEKTSV4RRFFQ69G5FAV', 3, pendingDoc('01ARZ3NDEKTSV4RRFFQ69G5FAV'))
+    const db = await openApprovalsDb(baseDir)
+    db.handle.db.prepare('UPDATE approvals_meta SET change_seq = ? WHERE id = 1').run(9)
+    const queue = createApprovalQueue({ baseDir })
+
+    const page = await queue.changesSince(0, { limit: 1 })
+
+    expect(page.truncated).toBe(true)
+    expect(page.newPending).toEqual([])
+    // NOT the global 9: that would skip the good change at sequence 3 forever.
+    expect(page.latestSeq).toBe(0)
+  })
+
+  test('an UNtruncated page still drops the malformed rows and reports the global watermark', async () => {
+    // The guard for the fix above: only the truncated-and-empty case changes.
+    // A page that fits its bound has seen everything up to the head, so the
+    // global sequence is exactly the right watermark even when rows were
+    // dropped on the way — and the usable change is still delivered.
+    await useForeignApprovalsTable()
+    await insertForeignRow(1, 1, '{}')
+    await insertForeignRow(2, 2, '{}')
+    await insertForeignRow('01ARZ3NDEKTSV4RRFFQ69G5FAV', 3, pendingDoc('01ARZ3NDEKTSV4RRFFQ69G5FAV'))
+    const db = await openApprovalsDb(baseDir)
+    db.handle.db.prepare('UPDATE approvals_meta SET change_seq = ? WHERE id = 1').run(9)
+    const queue = createApprovalQueue({ baseDir })
+
+    const page = await queue.changesSince(0, { limit: 10 })
+
+    expect(page.truncated).toBe(false)
+    expect(page.newPending.map((entry) => entry.approvalId)).toEqual(['01ARZ3NDEKTSV4RRFFQ69G5FAV'])
+    expect(page.latestSeq).toBe(9)
+  })
+})

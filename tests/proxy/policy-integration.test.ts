@@ -81,10 +81,16 @@ function useJournalDir(prefix: string): () => string {
   return () => journalDir
 }
 
-/** Parses the JSON array `runApprovals(['list', '--json'])` writes to stdout. */
+/**
+ * Parses the envelope `runApprovals(['list', '--json'])` writes to stdout.
+ * The shape is unconditional — `{ truncated, totalPending, approvals }` — so a
+ * consumer never has to branch on runtime state to read it.
+ */
 function parsePendingApprovals(jsonOutput: string): Array<Record<string, unknown>> {
   const trimmed = jsonOutput.trim()
-  return trimmed.length === 0 ? [] : (JSON.parse(trimmed) as Array<Record<string, unknown>>)
+  if (trimmed.length === 0) return []
+  const parsed = JSON.parse(trimmed) as { approvals: Array<Record<string, unknown>> }
+  return parsed.approvals
 }
 
 // -- 1 + 5: deny, and tools/list filtering (with quarantine as a side effect) ----------

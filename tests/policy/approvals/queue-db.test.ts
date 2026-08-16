@@ -10,12 +10,14 @@ import {
 } from '../../../src/policy/approvals/queue-import.js'
 import { createApprovalQueue } from '../../../src/policy/approvals/queue.js'
 import {
+  SELECT_EXPIRED_PENDING,
   approvalsDbPath,
   bumpChangeSeq,
   openApprovalsDb,
   selectExpiredPendingRows,
   type ApprovalsDb,
 } from '../../../src/policy/approvals/queue-db.js'
+import { openStateDbShared } from '../../../src/policy/store-backend.js'
 import { createJsonStore } from '../../../src/policy/store.js'
 
 /**
@@ -567,6 +569,88 @@ describe('selectExpiredPendingRows: the sweep candidates (see queue-sweep.ts)', 
     const rows = selectExpiredPendingRows(db.handle.db, '2026-06-01T00:00:00.000Z', 10)
 
     expect(rows[0]?.approvalId).toBe('01REALKEY')
+  })
+})
+
+/**
+ * `SELECT_EXPIRED_PENDING` filters AND sorts on `expires_at`, but the schema
+ * shipped only `(status, change_seq)`, `(change_seq)` and the grant triple — so
+ * every sweep scanned the whole pending set and then built a temp b-tree to
+ * order it, defeating the `LIMIT` in exactly the undrained-queue case the sweep
+ * exists for. The plan, not the presence of the index, is what these pin: an
+ * index the planner ignores is worse than none, because it still costs writes.
+ */
+describe('the sweep candidate query is index-served, not a scan', () => {
+  function indexNames(db: ApprovalsDb): string[] {
+    const rows = db.handle.db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'index' ORDER BY name")
+      .all() as { name: string }[]
+    return rows.map((row) => row.name)
+  }
+
+  function queryPlan(db: ApprovalsDb, sql: string): string {
+    const rows = db.handle.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as { detail: string }[]
+    return rows.map((row) => row.detail).join(' | ')
+  }
+
+  test('the planner searches the (status, expires_at) index and needs no temp sort', async () => {
+    const db = await openApprovalsDb(baseDir)
+
+    // The EXACT statement the sweep runs, imported rather than retyped, so the
+    // plan asserted here can never drift from the query executed.
+    const plan = queryPlan(db, SELECT_EXPIRED_PENDING)
+
+    expect(plan).toContain('idx_approvals_status_expires')
+    expect(plan).toContain('SEARCH')
+    expect(plan).not.toContain('SCAN')
+    expect(plan).not.toContain('TEMP B-TREE')
+  })
+
+  test('a database created before the index gains it on the next open', async () => {
+    // Arrange: `state.db` with the pre-index schema, i.e. what an installation
+    // that ran an earlier build has on disk. `CREATE TABLE IF NOT EXISTS` will
+    // find the table already there, so only the index creation can fix it.
+    const legacy = await openStateDbShared(approvalsDbPath(baseDir))
+    legacy.db.exec(
+      'CREATE TABLE IF NOT EXISTS approvals (approval_id TEXT PRIMARY KEY, ' +
+        "status TEXT NOT NULL CHECK (status IN ('pending','resolved')), doc TEXT NOT NULL, " +
+        'server_name TEXT NOT NULL, tool_name TEXT NOT NULL, args_hash TEXT NOT NULL, ' +
+        'requested_at TEXT NOT NULL, expires_at TEXT NOT NULL, outcome TEXT, ' +
+        'resolved_at TEXT, change_seq INTEGER NOT NULL) STRICT',
+    )
+    legacy.db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_approvals_status_seq ON approvals(status, change_seq)',
+    )
+    legacy.db
+      .prepare(
+        'INSERT INTO approvals (approval_id, status, doc, server_name, tool_name, args_hash, ' +
+          'requested_at, expires_at, change_seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)',
+      )
+      .run(
+        '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+        'pending',
+        '{}',
+        'github',
+        'create_issue',
+        'a'.repeat(64),
+        '2026-01-01T00:00:00.000Z',
+        '2026-01-01T00:01:00.000Z',
+      )
+    // Sentinel: the arrangement really is a database without the index.
+    expect(indexNames({ handle: legacy, baseDir, dbPath: legacy.filePath })).not.toContain(
+      'idx_approvals_status_expires',
+    )
+
+    const db = await openApprovalsDb(baseDir)
+
+    expect(indexNames(db)).toContain('idx_approvals_status_expires')
+    // …and the pre-existing row survived the upgrade, which is the half a
+    // "safe on an existing database" claim actually rests on.
+    expect(
+      selectExpiredPendingRows(db.handle.db, '2026-06-01T00:00:00.000Z', 10).map(
+        (row) => row.approvalId,
+      ),
+    ).toEqual(['01ARZ3NDEKTSV4RRFFQ69G5FAV'])
   })
 })
 

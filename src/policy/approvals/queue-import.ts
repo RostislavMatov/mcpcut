@@ -18,6 +18,7 @@ import {
 import {
   isPendingApprovalFile,
   isResolvedApprovalFile,
+  parseDoc,
   type PendingApprovalFile,
   type ResolvedApprovalFile,
 } from './queue-file.js'
@@ -105,17 +106,8 @@ interface LegacyRow {
 export async function importLegacyApprovals(db: ApprovalsDb): Promise<number> {
   if (markerPresent(db.handle.db, APPROVALS_QUEUE_MARKER)) return 0
 
-  // Resolved first: should an id somehow exist in both directories, the
-  // settled record is the one that must win the `INSERT OR IGNORE`.
-  const rows = [
-    ...(await readLegacyDir(db.baseDir, RESOLVED_SUBDIR, true)),
-    ...(await readLegacyDir(db.baseDir, PENDING_SUBDIR, false)),
-  ]
-  if (rows.length === 0) return 0 // nothing to import, and no marker to write
-
-  // ULID file names: ascending order is chronological, so the change sequence
-  // the rows get matches the order in which they were originally requested.
-  const ordered = [...rows].sort((a, b) => (a.approvalId < b.approvalId ? -1 : 1))
+  const { rows: ordered } = await scanLegacyDirs(db.baseDir)
+  if (ordered.length === 0) return 0 // nothing to import, and no marker to write
 
   let imported = 0
   for (let start = 0; start < ordered.length; start += APPROVALS_IMPORT_BATCH_ROWS) {
@@ -145,6 +137,14 @@ export interface ApprovalsMigrationResult {
   readonly status: ApprovalsMigrationStatus
   readonly pendingCount: number
   readonly resolvedCount: number
+  /**
+   * `resolved/*.json` files found but NOT readable back as a settled record
+   * (truncated by a crash or a bad `cp`, hand-edited, missing
+   * `resolution.outcome`, carrying somebody else's `approvalId`). Reported
+   * beside the good counts the way the journal's per-session `Unreadable`
+   * column is, never swallowed; `scanLegacyDirs` covers what the id becomes.
+   */
+  readonly unreadableSettledCount: number
 }
 
 /**
@@ -175,29 +175,30 @@ export async function migrateApprovalsQueue(journalDir: string): Promise<Approva
   }
 
   if (markerPresent(db, APPROVALS_QUEUE_MARKER)) {
-    return { status: 'already-migrated', pendingCount: 0, resolvedCount: 0 }
+    return {
+      status: 'already-migrated',
+      pendingCount: 0,
+      resolvedCount: 0,
+      unreadableSettledCount: 0,
+    }
   }
 
-  const [resolvedRows, pendingRows] = await Promise.all([
-    readLegacyDir(baseDir, RESOLVED_SUBDIR, true),
-    readLegacyDir(baseDir, PENDING_SUBDIR, false),
-  ])
-  if (resolvedRows.length === 0 && pendingRows.length === 0) {
-    return { status: 'no-file', pendingCount: 0, resolvedCount: 0 }
+  // The SAME scan the import itself runs, not a second reading of the directories:
+  // the counts are then what the database will hold by construction, instead of a
+  // re-derivation of the import's dedup rules that can drift away from them.
+  const scan = await scanLegacyDirs(baseDir)
+  const { pendingCount, resolvedCount, unreadableSettledCount } = scan
+  // No importable record — but an unreadable settled file is still reported, so
+  // "nothing to migrate" can never quietly mean "a settled record was lost".
+  if (scan.rows.length === 0) {
+    return { status: 'no-file', pendingCount: 0, resolvedCount: 0, unreadableSettledCount }
   }
 
   // Triggers the lazy import as a side effect of opening the queue (marker-gated,
   // idempotent) — see the docstring above for why this module never imports directly.
   await openApprovalsDb(baseDir)
 
-  // Count what the import actually STORES, not what the directories hold. An id
-  // duplicated into both `pending/` and `resolved/` by hand loses the pending
-  // copy to `INSERT OR IGNORE` (the settled record is inserted first and wins),
-  // so counting it in both places reported one more record than exists.
-  const resolvedIds = new Set(resolvedRows.map((row) => row.approvalId))
-  const storedPending = pendingRows.filter((row) => !resolvedIds.has(row.approvalId))
-
-  return { status: 'imported', pendingCount: storedPending.length, resolvedCount: resolvedIds.size }
+  return { status: 'imported', pendingCount, resolvedCount, unreadableSettledCount }
 }
 
 /**
@@ -240,27 +241,141 @@ function insertLegacyChunk(
   return imported
 }
 
+/** One legacy directory as read: the usable rows, plus the file basenames (the
+ * record identity in that layout) whose content failed to parse or validate. */
+interface LegacyDirScan {
+  readonly rows: readonly LegacyRow[]
+  readonly unreadableIds: readonly string[]
+}
+
+/** Both directories reconciled: one row per approval id, ascending by id, ready to insert. */
+interface LegacyScan {
+  readonly rows: readonly LegacyRow[]
+  readonly pendingCount: number
+  readonly resolvedCount: number
+  readonly unreadableSettledCount: number
+}
+
+/**
+ * Reads both legacy directories and reconciles them into ONE row per approval
+ * id, decided here rather than left to `INSERT OR IGNORE`. The single source of
+ * the import's row set AND of `migrate`'s counts, so the two cannot drift.
+ *
+ * The one-outcome-per-id invariant must NOT depend on sort stability or on the
+ * order the two directories were concatenated in. Both held before this change,
+ * but only incidentally: ECMA-262 leaves the order an inconsistent comparator
+ * produces implementation-defined, so "the settled copy stays ahead of its
+ * pending twin" rested on a V8 detail. A Map keyed by the id, settled records
+ * inserted first, makes it structural — a pending twin is never even a
+ * candidate row, whatever any sort does afterwards.
+ *
+ * FAIL-CLOSED on an unreadable settled record. `resolved/<id>.json` that cannot
+ * be parsed used to be dropped silently, which let the `pending/<id>.json` twin
+ * import as an OPEN request — a settled decision resurrected as approvable, on
+ * exactly the route (`cp -p` of the legacy directories, M4.5 README) where a
+ * truncated file is most likely. Such an id is claimed BEFORE any pending row
+ * can take it: with a twin it becomes an inert settled row, without one it is
+ * only counted (see `inertRowFor`).
+ */
+async function scanLegacyDirs(baseDir: string): Promise<LegacyScan> {
+  const [resolved, pending] = await Promise.all([
+    readLegacyDir(baseDir, RESOLVED_SUBDIR, true),
+    readLegacyDir(baseDir, PENDING_SUBDIR, false),
+  ])
+
+  const byId = new Map<string, LegacyRow>()
+  for (const row of resolved.rows) if (!byId.has(row.approvalId)) byId.set(row.approvalId, row)
+
+  const pendingById = new Map(pending.rows.map((row) => [row.approvalId, row] as const))
+  let unreadableSettledCount = 0
+  for (const id of resolved.unreadableIds) {
+    if (byId.has(id)) continue // a readable settled record already owns this id
+    unreadableSettledCount += 1
+    const inert = inertRowFor(pendingById.get(id))
+    if (inert !== null) byId.set(id, inert)
+  }
+
+  for (const row of pending.rows) if (!byId.has(row.approvalId)) byId.set(row.approvalId, row)
+
+  // ULID ids: ascending order is chronological, so the change sequence the rows
+  // get matches the order in which they were originally requested. TOTAL
+  // comparator (0 on equality): ids are unique Map keys so a tie cannot arise,
+  // and a fake ordering is exactly what the invariant must not lean on again.
+  const rows = [...byId.values()].sort((a, b) => {
+    if (a.approvalId === b.approvalId) return 0
+    return a.approvalId < b.approvalId ? -1 : 1
+  })
+
+  return {
+    rows,
+    pendingCount: rows.filter((row) => row.status === 'pending').length,
+    resolvedCount: rows.filter((row) => row.status === 'resolved').length,
+    unreadableSettledCount,
+  }
+}
+
+/** The outcome an inert row carries: `markExpired()`'s, for a decision no operator made. */
+const UNREADABLE_SETTLED_OUTCOME = 'expired'
+const UNREADABLE_SETTLED_REASON = 'legacy settled record was unreadable at import'
+
+/**
+ * Turns the readable pending twin of an unreadable settled record into a settled
+ * and INERT row: `expired`, so nothing can approve it and `checkRecentApproval`
+ * can never mint a grant from it, yet still a record `listResolved()` shows —
+ * chosen over refusing the id outright because a silently absent row tells
+ * nobody a decision was lost, while this one names the request and its tool.
+ *
+ * `null` when there is no twin: nothing readable exists for that id anywhere, so
+ * there is no request to make inert and no honest record to synthesize from
+ * invented fields. That id is a LOST record — reported through
+ * `unreadableSettledCount`, and never approvable, since nothing inserts it.
+ */
+function inertRowFor(twin: LegacyRow | undefined): LegacyRow | null {
+  if (twin === undefined) return null
+  const record = parseDoc(twin.doc, isPendingApprovalFile)
+  if (record === null) return null // unreachable: `readLegacyFile` already validated it
+
+  const resolvedAt = new Date().toISOString()
+  const doc: ResolvedApprovalFile = {
+    ...record,
+    resolution: { outcome: UNREADABLE_SETTLED_OUTCOME, reason: UNREADABLE_SETTLED_REASON },
+    resolvedAt,
+  }
+  return {
+    ...twin,
+    status: 'resolved',
+    doc: JSON.stringify(doc),
+    outcome: UNREADABLE_SETTLED_OUTCOME,
+    resolvedAt,
+  }
+}
+
 /** Every readable, well-formed record in one legacy directory; a missing directory yields none. */
 async function readLegacyDir(
   baseDir: string,
   subdir: string,
   isResolved: boolean,
-): Promise<LegacyRow[]> {
+): Promise<LegacyDirScan> {
   const dir = join(baseDir, subdir)
   let names: string[]
   try {
     names = await readdir(dir)
   } catch {
-    return [] // no such directory (the common case): nothing to import
+    return { rows: [], unreadableIds: [] } // no such directory (the common case)
   }
 
   const rows: LegacyRow[] = []
+  const unreadableIds: string[] = []
   for (const name of names) {
     if (!name.endsWith(JSON_FILE_SUFFIX)) continue
     const row = await readLegacyFile(dir, name, isResolved)
-    if (row !== null) rows.push(row) // malformed entries are skipped, never fatal
+    // Malformed entries are never fatal — but they are no longer invisible
+    // either: the file name IS the record's identity here, so it is reported
+    // (and, for `resolved/`, claimed) under that id.
+    if (row === null) unreadableIds.push(basename(name, JSON_FILE_SUFFIX))
+    else rows.push(row)
   }
-  return rows
+  return { rows, unreadableIds }
 }
 
 async function readLegacyFile(

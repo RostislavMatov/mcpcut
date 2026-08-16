@@ -415,7 +415,13 @@ describe('e2e: the M2 policy chain applies on top of agent grants', () => {
     let approvalId = ''
     await waitUntilAsync(async () => {
       const listed = await plane.run(['approvals', 'list', '--json'])
-      const pending = JSON.parse(listed.out.trim() || '[]') as Array<Record<string, unknown>>
+      // `approvals list --json` emits one unconditional envelope, so a poller
+      // never has to branch on whether the read happened to be truncated.
+      const trimmed = listed.out.trim()
+      const pending =
+        trimmed === ''
+          ? []
+          : (JSON.parse(trimmed) as { approvals: Array<Record<string, unknown>> }).approvals
       approvalId = (pending[0]?.['approvalId'] as string | undefined) ?? ''
       return approvalId !== ''
     })

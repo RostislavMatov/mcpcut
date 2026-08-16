@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import type { IncomingMessage } from 'node:http'
 import type { AdminRecord } from '../../src/admin/store.js'
+import type { AdminResolver } from '../../src/ui/auth.js'
 import {
   createLoginRateLimiter,
   createPenaltyGate,
@@ -12,6 +13,8 @@ import {
   SESSION_IDLE_TIMEOUT_MS,
   SESSION_OWNER_RESERVED_SLOTS,
 } from '../../src/ui/constants.js'
+import { handleLoginRequest, type LoginFlowDeps } from '../../src/ui/login-flow.js'
+import type { UiRequestContext, UiResult } from '../../src/ui/routes.js'
 
 /**
  * Availability of the admin plane's login path (post-M4.5 hardening wave 1).
@@ -303,5 +306,191 @@ describe('the penalty delay must not become its own resource sink', () => {
     // to enforce could be lifted by a code path that releases twice.
     expect(gate.acquire()).toBe(true)
     expect(gate.acquire()).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The login flow's ORDERING: the penalty delay must not sit between a key's
+// rate-limit decision and the moment that decision is recorded.
+// ---------------------------------------------------------------------------
+
+const GOOD_TOKEN = 'mcpa_good_token'
+const BAD_TOKEN = 'mcpa_wrong_token'
+
+/** A penalty sleep the test drives; nothing here waits on the wall clock. */
+function controllableSleep() {
+  let waiters: readonly (() => void)[] = []
+  let requested: readonly number[] = []
+  let open = false
+  return {
+    /** Drop-in for `LoginFlowDeps.sleep`. */
+    sleep(ms: number): Promise<void> {
+      requested = [...requested, ms]
+      if (open) return Promise.resolve()
+      return new Promise<void>((resolve) => {
+        waiters = [...waiters, resolve]
+      })
+    },
+    /** How many attempts are sitting in the delay right now. */
+    pending: () => waiters.length,
+    /** Every delay asked for, in order. */
+    requested: () => [...requested],
+    /** Wakes everyone waiting and stops holding later sleepers. */
+    async releaseAll(): Promise<void> {
+      open = true
+      const waking = waiters
+      waiters = []
+      for (const resolve of waking) resolve()
+      await Promise.resolve()
+    },
+  }
+}
+
+/** Resolves exactly one token, like the real store resolves exactly one admin. */
+function tokenResolver(record: AdminRecord): AdminResolver {
+  return {
+    findAdminByToken: async (token: string) => (token === GOOD_TOKEN ? record : undefined),
+    getActiveAdmin: async () => record,
+  }
+}
+
+function loginRequestFrom(remoteAddress: string): IncomingMessage {
+  return { headers: {}, socket: { remoteAddress } } as unknown as IncomingMessage
+}
+
+function loginContext(token: string): UiRequestContext {
+  return {
+    method: 'POST',
+    path: '/login',
+    params: {},
+    query: new URLSearchParams(),
+    session: undefined,
+    body: Buffer.from(JSON.stringify({ token })),
+    headers: { 'content-type': 'application/json' },
+  }
+}
+
+function statusOf(result: UiResult): number {
+  if (result.kind !== 'response') throw new Error('expected a buffered response')
+  return result.status
+}
+
+/** One wiring of the login flow with every seam under the test's control. */
+function loginHarness(opts: {
+  readonly maxFailures: number
+  readonly globalMaxFailures: number
+  readonly maxConcurrentPenalties: number
+}) {
+  const owner: AdminRecord = admin('flow-owner', 'owner')
+  const warnings: string[] = []
+  const sleeps = controllableSleep()
+  const rateLimiter = createLoginRateLimiter({
+    maxFailures: opts.maxFailures,
+    globalMaxFailures: opts.globalMaxFailures,
+    windowMs: 60_000,
+  })
+  const deps: LoginFlowDeps = {
+    adminStore: tokenResolver(owner),
+    sessions: createSessionManager({ maxSessions: 256, maxSessionsPerAdmin: 256 }),
+    rateLimiter,
+    behindTls: false,
+    stderr: { write: (chunk: string) => warnings.push(chunk) },
+    sleep: sleeps.sleep,
+    penaltyGate: createPenaltyGate({ maxConcurrent: opts.maxConcurrentPenalties }),
+  }
+  return {
+    deps,
+    rateLimiter,
+    sleeps,
+    warnings: () => warnings.join(''),
+    /** Trips the global ceiling with failures spread over foreign addresses. */
+    tripCeiling(): void {
+      for (let i = 0; i < opts.globalMaxFailures; i += 1) rateLimiter.recordFailure(`10.0.0.${i}`)
+    },
+    attempt: (key: string, token: string) =>
+      handleLoginRequest(deps, loginContext(token), loginRequestFrom(key)),
+  }
+}
+
+describe('the penalty delay must not sit inside the per-key decision', () => {
+  test('a burst from ONE key while the ceiling is tripped cannot outrun that key window', async () => {
+    // Review finding 7: the delay was paid BEFORE `allow()` and long before the
+    // failure was recorded, so every attempt held in the delay woke to a window
+    // that still looked empty. A key's 5-per-minute allowance degraded to one
+    // burst of `LOGIN_MAX_CONCURRENT_PENALTIES`.
+    const h = loginHarness({ maxFailures: 5, globalMaxFailures: 10, maxConcurrentPenalties: 32 })
+    h.tripCeiling()
+
+    const burst = Array.from({ length: 32 }, () => h.attempt('198.51.100.7', BAD_TOKEN))
+    await h.sleeps.releaseAll()
+    const statuses = (await Promise.all(burst)).map(statusOf)
+
+    // Five guesses reached the token check; the other 27 were refused by the
+    // key's own window, exactly as five sequential guesses would have been.
+    expect(statuses.filter((s) => s === 401)).toHaveLength(5)
+    expect(statuses.filter((s) => s === 429)).toHaveLength(27)
+  })
+
+  test('a valid login from a fresh key while the ceiling is tripped is delayed, not refused', async () => {
+    const h = loginHarness({ maxFailures: 5, globalMaxFailures: 10, maxConcurrentPenalties: 32 })
+    h.tripCeiling()
+
+    const pending = h.attempt('203.0.113.9', GOOD_TOKEN)
+
+    // It is WAITING, not answered: the smoke measured a valid owner token
+    // returning 303 in ~1.00s while the ceiling was exceeded.
+    expect(h.sleeps.pending()).toBe(1)
+    expect(h.sleeps.requested()).toEqual([LOGIN_GLOBAL_PENALTY_DELAY_MS])
+    await h.sleeps.releaseAll()
+
+    expect(statusOf(await pending)).toBe(303)
+    expect(h.warnings()).toContain('delaying attempts')
+  })
+
+  test('past the concurrency cap the THROTTLE degrades, never the login', async () => {
+    const h = loginHarness({ maxFailures: 5, globalMaxFailures: 10, maxConcurrentPenalties: 1 })
+    h.tripCeiling()
+
+    const held = h.attempt('203.0.113.1', GOOD_TOKEN)
+    const overflow = h.attempt('203.0.113.2', GOOD_TOKEN)
+
+    // The second attempt found no free slot, so it skipped the delay entirely —
+    // and was served, not refused. A held request is a held socket.
+    expect(h.sleeps.pending()).toBe(1)
+    expect(statusOf(await overflow)).toBe(303)
+    await h.sleeps.releaseAll()
+    expect(statusOf(await held)).toBe(303)
+  })
+
+  test('the per-address window is unchanged: N failures, then 429, and no delay', async () => {
+    const h = loginHarness({ maxFailures: 5, globalMaxFailures: 1000, maxConcurrentPenalties: 32 })
+
+    for (let i = 0; i < 5; i += 1) {
+      expect(statusOf(await h.attempt('198.51.100.8', BAD_TOKEN)), `guess #${i + 1}`).toBe(401)
+    }
+
+    expect(statusOf(await h.attempt('198.51.100.8', BAD_TOKEN))).toBe(429)
+    expect(h.warnings()).toContain('rate limit')
+    // Nothing was throttled: the global ceiling was never near.
+    expect(h.sleeps.requested()).toEqual([])
+  })
+
+  test('a peer address is unaffected by the refused one', async () => {
+    const h = loginHarness({ maxFailures: 2, globalMaxFailures: 1000, maxConcurrentPenalties: 32 })
+    for (let i = 0; i < 3; i += 1) await h.attempt('198.51.100.9', BAD_TOKEN)
+
+    expect(statusOf(await h.attempt('198.51.100.9', BAD_TOKEN))).toBe(429)
+    expect(statusOf(await h.attempt('198.51.100.10', GOOD_TOKEN))).toBe(303)
+  })
+
+  test('successful logins do not consume the address window', async () => {
+    // The ordering counts an attempt before it is known to be a failure, so a
+    // success MUST forgive it — otherwise a busy admin locks their own address
+    // out after `maxFailures` correct logins.
+    const h = loginHarness({ maxFailures: 3, globalMaxFailures: 1000, maxConcurrentPenalties: 32 })
+
+    for (let i = 0; i < 10; i += 1) {
+      expect(statusOf(await h.attempt('203.0.113.20', GOOD_TOKEN)), `login #${i + 1}`).toBe(303)
+    }
   })
 })

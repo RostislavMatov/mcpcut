@@ -2,8 +2,14 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { APPROVALS_LIST_MAX_ROWS } from '../../src/config.js'
 import { DEFAULT_GRANT_TTL_MS } from '../../src/policy/constants.js'
-import { createApprovalQueue, type EnqueueRequest } from '../../src/policy/approvals/queue.js'
+import {
+  createApprovalQueue,
+  type ApprovalQueue,
+  type EnqueueRequest,
+  type PendingApproval,
+} from '../../src/policy/approvals/queue.js'
 import { runApprovals } from '../../src/cli/approvals-cmd.js'
 
 let tempDir: string
@@ -43,6 +49,138 @@ function baseRequest(overrides: Partial<EnqueueRequest> = {}): EnqueueRequest {
     ...overrides,
   }
 }
+
+/**
+ * Minimal fake satisfying `ApprovalQueue`, for exercising the truncation path
+ * without seeding hundreds of real rows through the on-disk queue. Only
+ * `list`/`countPending` are exercised by the `list` subcommand; every other
+ * member throws if a test path reaches it unexpectedly.
+ */
+function fakeQueue(entries: PendingApproval[], totalPending: number): ApprovalQueue {
+  const notImplemented = (method: string) => (): never => {
+    throw new Error(`fakeQueue.${method} should not be called by this test`)
+  }
+  return {
+    enqueue: notImplemented('enqueue'),
+    list: async () => entries,
+    countPending: async () => totalPending,
+    resolve: notImplemented('resolve'),
+    markExpired: notImplemented('markExpired'),
+    readResolution: notImplemented('readResolution'),
+    listResolved: notImplemented('listResolved'),
+    changesSince: notImplemented('changesSince'),
+  }
+}
+
+function fakePendingEntry(index: number): PendingApproval {
+  return {
+    approvalId: `01ARZ3NDEKTSV4RRFFQ69G5FA${String(index).padStart(2, '0')}`,
+    serverName: 'github',
+    toolName: 'create_issue',
+    toolClass: 'write',
+    argsRedacted: { title: `entry-${index}` },
+    argsHash: 'hash',
+    sessionId: 'session-1',
+    requestedAt: '2026-01-01T00:00:00.000Z',
+    expiresAt: '2026-01-01T00:05:00.000Z',
+    expired: false,
+  }
+}
+
+/**
+ * A read that actually hit its bound. Truncation is derived from THIS, not from
+ * `totalPending > entries.length`: `list()` and `countPending()` are separate
+ * transactions, so a request committing between them once reported truncation
+ * on a queue of one — which flipped the JSON shape and broke a consumer.
+ */
+function fakeBoundedPage(): PendingApproval[] {
+  return Array.from({ length: APPROVALS_LIST_MAX_ROWS }, (_unused, index) => fakePendingEntry(index + 1))
+}
+
+describe('runApprovals: list, bounded-read truncation', () => {
+  test('readable mode: a queue larger than the bound states what is shown vs. what exists', async () => {
+    const queue = fakeQueue(fakeBoundedPage(), 900)
+    const io = fakeIo()
+
+    const exitCode = await runApprovals(['list'], io, { baseDir, queue })
+
+    expect(exitCode).toBe(0)
+    const out = io.out()
+    expect(out).toContain(`${APPROVALS_LIST_MAX_ROWS} of 900 pending`)
+    expect(out).toContain('showing the oldest')
+  })
+
+  test('--json mode: a queue larger than the bound reports truncated alongside the bounded page', async () => {
+    const entries = fakeBoundedPage()
+    const queue = fakeQueue(entries, 900)
+    const io = fakeIo()
+
+    const exitCode = await runApprovals(['list', '--json'], io, { baseDir, queue })
+
+    expect(exitCode).toBe(0)
+    const parsed = JSON.parse(io.out())
+    expect(parsed.truncated).toBe(true)
+    expect(parsed.totalPending).toBe(900)
+    expect(parsed.approvals).toHaveLength(APPROVALS_LIST_MAX_ROWS)
+    expect(parsed.approvals[0].approvalId).toBe(entries[0]?.approvalId)
+  })
+
+  test('a short page is never truncated, even if countPending() raced ahead of list()', async () => {
+    // The exact race that broke `policy-integration`: one entry listed, a
+    // second request committed between the two reads.
+    const queue = fakeQueue([fakePendingEntry(1)], 2)
+    const io = fakeIo()
+
+    const exitCode = await runApprovals(['list', '--json'], io, { baseDir, queue })
+
+    expect(exitCode).toBe(0)
+    const parsed = JSON.parse(io.out())
+    expect(parsed.truncated).toBe(false)
+    expect(parsed.approvals).toHaveLength(1)
+  })
+
+  test('readable mode: a queue at/under the bound prints no truncation note (pins existing behaviour)', async () => {
+    const entries = [fakePendingEntry(1)]
+    const queue = fakeQueue(entries, 1)
+    const io = fakeIo()
+
+    const exitCode = await runApprovals(['list'], io, { baseDir, queue })
+
+    expect(exitCode).toBe(0)
+    const out = io.out()
+    expect(out).not.toContain('showing the oldest')
+    expect(out).not.toMatch(/\bof\b.*\bpending\b/)
+  })
+
+  test('--json mode: the envelope shape is the same whether or not the read was truncated', async () => {
+    const queue = fakeQueue([fakePendingEntry(1)], 1)
+    const io = fakeIo()
+
+    const exitCode = await runApprovals(['list', '--json'], io, { baseDir, queue })
+
+    expect(exitCode).toBe(0)
+    const parsed = JSON.parse(io.out())
+    expect(parsed).toEqual({
+      truncated: false,
+      totalPending: 1,
+      approvals: [fakePendingEntry(1)],
+    })
+  })
+
+  test('an empty queue is unchanged in both modes', async () => {
+    const queue = fakeQueue([], 0)
+    const readableIo = fakeIo()
+    const jsonIo = fakeIo()
+
+    const readableExit = await runApprovals(['list'], readableIo, { baseDir, queue })
+    const jsonExit = await runApprovals(['list', '--json'], jsonIo, { baseDir, queue })
+
+    expect(readableExit).toBe(0)
+    expect(readableIo.out()).toBe('no pending approvals\n')
+    expect(jsonExit).toBe(0)
+    expect(JSON.parse(jsonIo.out())).toEqual({ truncated: false, totalPending: 0, approvals: [] })
+  })
+})
 
 describe('runApprovals: list', () => {
   test('prints "no pending approvals" and returns 0 when the queue is empty', async () => {
@@ -112,19 +250,18 @@ describe('runApprovals: list', () => {
 
     expect(exitCode).toBe(0)
     const parsed = JSON.parse(io.out())
-    expect(Array.isArray(parsed)).toBe(true)
-    expect(parsed).toHaveLength(1)
-    expect(parsed[0].approvalId).toBe(approvalId)
-    expect(parsed[0].argsRedacted.apiKey).toBe('[REDACTED]')
+    expect(parsed.approvals).toHaveLength(1)
+    expect(parsed.approvals[0].approvalId).toBe(approvalId)
+    expect(parsed.approvals[0].argsRedacted.apiKey).toBe('[REDACTED]')
   })
 
-  test('--json on an empty queue prints an empty, parseable array', async () => {
+  test('--json on an empty queue prints an empty, parseable envelope', async () => {
     const io = fakeIo()
 
     const exitCode = await runApprovals(['list', '--json'], io, { baseDir })
 
     expect(exitCode).toBe(0)
-    expect(JSON.parse(io.out())).toEqual([])
+    expect(JSON.parse(io.out())).toEqual({ truncated: false, totalPending: 0, approvals: [] })
   })
 
   test('truncates a long redacted-args preview to roughly 200 characters', async () => {

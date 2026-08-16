@@ -54,6 +54,16 @@ const CREATE_SEQ_INDEX =
 /** The grant lookup on the gate's hot path (`checkRecentApproval`). */
 const CREATE_GRANT_INDEX =
   'CREATE INDEX IF NOT EXISTS idx_approvals_grant ON approvals(server_name, tool_name, args_hash)'
+/**
+ * The lazy expiry sweep (`SELECT_EXPIRED_PENDING`), which both filters and
+ * SORTS on `expires_at`. Column order matters: `status` first makes the
+ * equality the index prefix, so the `expires_at` range is a seek and the
+ * `ORDER BY` is satisfied by the index itself — without it the sweep read the
+ * whole pending set and then built a temp b-tree to order it, which is exactly
+ * the undrained-queue case the `LIMIT` was added for.
+ */
+const CREATE_STATUS_EXPIRES_INDEX =
+  'CREATE INDEX IF NOT EXISTS idx_approvals_status_expires ON approvals(status, expires_at)'
 
 /**
  * A single-row counter, bumped in the same transaction as the insert/resolve
@@ -97,8 +107,12 @@ const SELECT_RESOLVED_FOR_GRANT =
  * milliseconds, a foreign writer) can then make the sweep miss a row, which
  * leaves it exactly as it is today, but can never make the sweep expire a
  * request that is still live.
+ *
+ * Exported so the index test can `EXPLAIN QUERY PLAN` the EXACT statement the
+ * sweep executes: an index the planner does not use is worse than no index at
+ * all, because it still costs every write.
  */
-const SELECT_EXPIRED_PENDING =
+export const SELECT_EXPIRED_PENDING =
   "SELECT approval_id, doc FROM approvals WHERE status = 'pending' AND expires_at <= ? " +
   'ORDER BY expires_at LIMIT ?'
 
@@ -189,6 +203,10 @@ async function prepare(db: ApprovalsDb): Promise<void> {
   database.exec(CREATE_STATUS_SEQ_INDEX)
   database.exec(CREATE_SEQ_INDEX)
   database.exec(CREATE_GRANT_INDEX)
+  // `IF NOT EXISTS` is what makes this a migration and not just a creation:
+  // an installation whose `approvals` table predates an index gets it on the
+  // next open, without a version table and without touching a single row.
+  database.exec(CREATE_STATUS_EXPIRES_INDEX)
   database.exec(CREATE_APPROVALS_META_TABLE)
   database.exec(SEED_APPROVALS_META)
   // First touch of the process also picks up whatever an M4 build left in

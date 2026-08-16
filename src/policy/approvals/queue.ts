@@ -75,6 +75,12 @@ import {
 /** Approval ids are ULIDs; validated before ever reaching a query parameter. */
 const APPROVAL_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
 
+/** The single refusal every unresolvable id gets: unknown, invalid, already settled, or malformed. */
+const NOT_RESOLVABLE = {
+  ok: false,
+  reason: 'not-found-or-already-resolved',
+} as const satisfies ResolveResult
+
 export interface EnqueueRequest {
   readonly serverName: string
   readonly toolName: string
@@ -268,7 +274,7 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
     // request past its own `expiresAt` settles HERE, so what follows lists live
     // work only. Rows the bounded pass missed stay pending, and are still
     // reported as `expired` below.
-    await sweepExpiredPending({ baseDir, nowMs, markExpired })
+    await sweepExpiredPending({ baseDir, nowMs, markExpiredBatch })
     const db = await openApprovalsDb(baseDir)
     // Ordered by the query (oldest request first); `expired` is derived here
     // rather than stored, so it can never go stale in storage.
@@ -279,51 +285,80 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
   }
 
   /**
-   * Resolves a pending request in one transaction: the pending record is read
-   * and the conditional `UPDATE … WHERE status = 'pending'` written under the
-   * same `BEGIN IMMEDIATE`, so two concurrent resolvers of one id cannot both
-   * observe it as pending. The loser — and any caller of an unknown, already
-   * resolved, or malformed id — gets `not-found-or-already-resolved`.
+   * Resolves a WHOLE BATCH of pending ids in ONE transaction, in order,
+   * returning a result per input id.
+   *
+   * Per row the write is unchanged: the pending record is read and the
+   * conditional `UPDATE … WHERE status = 'pending'` written under the same
+   * `BEGIN IMMEDIATE`, so two concurrent resolvers of one id cannot both
+   * observe it as pending, and `change_seq` is bumped once per row that
+   * actually settles — never for a row somebody else already resolved. What
+   * the batch removes is the PER-ROW `BEGIN IMMEDIATE`/COMMIT (each with its
+   * own busy-retry pacing), which the expiry sweep paid on the render path.
+   *
+   * A row that cannot be read is skipped, not rolled back onto the rest: one
+   * unreadable record must not cost the whole pass its outcomes.
    */
-  async function moveToResolved(
-    approvalId: string,
+  async function moveToResolvedBatch(
+    approvalIds: readonly string[],
     buildResolution: (pending: PendingApprovalFile) => Omit<ApprovalResolution, 'resolvedAt'>,
-  ): Promise<ResolveResult> {
-    if (!isValidApprovalId(approvalId)) {
-      return { ok: false, reason: 'not-found-or-already-resolved' }
-    }
+  ): Promise<ResolveResult[]> {
+    const targets = approvalIds.filter(isValidApprovalId)
+    if (targets.length === 0) return []
     const db = await openApprovalsDb(baseDir)
 
-    return runWriteTransaction(db, (database): ResolveResult => {
+    return runWriteTransaction(db, (database): ResolveResult[] => {
       // The clock is read INSIDE the transaction, once the writer lock is
       // held: `resolvedAt` (and the expiry downgrade built from the same
       // moment) then describe when the resolution actually lands, so a
       // resolve that waited out a contended lock can never persist an
-      // `approved` whose request expired during the wait.
+      // `approved` whose request expired during the wait. One instant for the
+      // batch, because the batch commits as one instant.
       const resolvedAt = new Date(clock()).toISOString()
-      const text = selectPendingDoc(database, approvalId)
-      const pending = text === null ? null : parseDoc(text, isPendingApprovalFile)
-      // A malformed pending record is as unresolvable as a missing one: it
-      // must never be listed, approved, or downgraded.
-      if (pending === null) return { ok: false, reason: 'not-found-or-already-resolved' }
+      return targets.map((approvalId) => {
+        const text = selectPendingDoc(database, approvalId)
+        const pending = text === null ? null : parseDoc(text, isPendingApprovalFile)
+        // A malformed pending record is as unresolvable as a missing one: it
+        // must never be listed, approved, or downgraded.
+        if (pending === null) return NOT_RESOLVABLE
 
-      const record: ResolvedApprovalFile = {
-        ...pending,
-        resolution: buildResolution(pending),
-        resolvedAt,
-      }
-      const won = resolvePendingRow(database, {
-        approvalId,
-        doc: JSON.stringify(record),
-        outcome: record.resolution.outcome,
-        resolvedAt,
-        changeSeq: bumpChangeSeq(database),
+        const record: ResolvedApprovalFile = {
+          ...pending,
+          resolution: buildResolution(pending),
+          resolvedAt,
+        }
+        const won = resolvePendingRow(database, {
+          approvalId,
+          doc: JSON.stringify(record),
+          outcome: record.resolution.outcome,
+          resolvedAt,
+          changeSeq: bumpChangeSeq(database),
+        })
+        // Unreachable while the row is read and written under one write lock;
+        // kept as the defence in depth that owns the "one winner" invariant.
+        return won ? { ok: true, record } : NOT_RESOLVABLE
       })
-      // Unreachable while the row is read and written under one write lock;
-      // kept as the defence in depth that owns the "one winner" invariant.
-      if (!won) return { ok: false, reason: 'not-found-or-already-resolved' }
-      return { ok: true, record }
     })
+  }
+
+  /** One id through the batch: an unknown, already resolved, invalid or malformed id is refused. */
+  async function moveToResolved(
+    approvalId: string,
+    buildResolution: (pending: PendingApprovalFile) => Omit<ApprovalResolution, 'resolvedAt'>,
+  ): Promise<ResolveResult> {
+    const [result] = await moveToResolvedBatch([approvalId], buildResolution)
+    return result ?? NOT_RESOLVABLE
+  }
+
+  /**
+   * The lazy sweep's write (`queue-sweep.ts`): a bounded batch of already
+   * identified pending ids, expired in one transaction. Returns how many rows
+   * this pass actually settled — a row somebody else resolved first keeps that
+   * decision and is simply not counted.
+   */
+  async function markExpiredBatch(approvalIds: readonly string[]): Promise<number> {
+    const results = await moveToResolvedBatch(approvalIds, () => ({ outcome: 'expired' }))
+    return results.filter((result) => result.ok).length
   }
 
   /**
@@ -387,7 +422,7 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
     // Swept on the same terms as `list()`: this count is the UI badge, and
     // both reads sweeping alike is what keeps a page render (list, then count)
     // from showing cards it then calls not pending.
-    await sweepExpiredPending({ baseDir, nowMs: clock(), markExpired })
+    await sweepExpiredPending({ baseDir, nowMs: clock(), markExpiredBatch })
     const db = await openApprovalsDb(baseDir)
     return countPendingRows(db.handle.db)
   }
@@ -427,10 +462,14 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
       newPending.push({ ...record, expired: isExpiredAt(record.expiresAt, nowMs) })
     }
     // A truncated page stops the watermark at the last change it delivered —
-    // the global one would skip the remainder outright.
+    // the global one would skip the remainder outright. When the page hit its
+    // bound but every row was dropped as malformed there is no last delivered
+    // change, and the fallback is `sinceSeq`, NOT the global sequence: the
+    // caller re-asks from where it was, which re-delivers (allowed) instead of
+    // skipping every change between this page and the head (forbidden).
     const lastDelivered = delivered.at(-1)
     return {
-      latestSeq: truncated && lastDelivered !== undefined ? lastDelivered.changeSeq : latestSeq,
+      latestSeq: truncated ? (lastDelivered?.changeSeq ?? sinceSeq) : latestSeq,
       truncated,
       newPending,
       resolvedIds,
