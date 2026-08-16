@@ -144,6 +144,27 @@ export interface ApprovalsPageInput {
    * page is the whole queue.
    */
   readonly totalPending?: number
+  /**
+   * True only when `cards` is a genuinely bounded/partial view: the read that
+   * produced it hit its own row bound (`APPROVALS_LIST_MAX_ROWS`) AND
+   * `totalPending` exceeds what is shown. Deliberately NOT derived in this
+   * module from `totalPending > cards.length` alone — that comparison is
+   * unsound here for two separate reasons:
+   *  - `cards` and `totalPending` come from two independent queue reads
+   *    (`list()` then `countPending()`); a request committing between them can
+   *    make `totalPending > cards.length` true on a queue nowhere near
+   *    truncated (the identical mistake shipped in the CLI's `approvals list
+   *    --json`, fixed in commit f05c6d2).
+   *  - `cards` is already the POST-filter view: `list()` drops rows that fail
+   *    to parse, so `cards.length` can sit BELOW the bound even though nothing
+   *    beyond the bound was missed — comparing it to `totalPending` alone
+   *    would then report truncation for a read that fetched everything there
+   *    was to fetch.
+   * The caller (`ui/handlers/approvals.ts`) is the one place that sees the raw
+   * `list()` result before any of that and can apply the honest test; this
+   * module only renders the verdict it is handed.
+   */
+  readonly truncated?: boolean
 }
 
 /**
@@ -157,9 +178,14 @@ const APPROVALS_LIVE_TOPICS = 'approval-pending approval-resolved'
 /** Where the client refetches this region from (`GET /` serves this page). */
 const APPROVALS_LIVE_SRC = '/'
 
-/** True when the queue holds more pending requests than this page renders. */
+/**
+ * True when the queue holds more pending requests than this page renders.
+ * Trusts the caller's verdict (see `ApprovalsPageInput.truncated`) rather than
+ * re-deriving it from `totalPending`/`cards.length` — that comparison is
+ * unsound in this module, which never sees the raw, pre-filter read.
+ */
 function isTruncated(input: ApprovalsPageInput): boolean {
-  return input.totalPending !== undefined && input.totalPending > input.cards.length
+  return input.truncated === true && input.totalPending !== undefined
 }
 
 /** Renders the full approvals document (string ready for the HTTP body). */

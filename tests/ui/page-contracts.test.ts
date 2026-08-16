@@ -279,7 +279,12 @@ describe('the pending badge reports the queue, not the page (smoke LOW-3)', () =
     }))
 
   test('a truncated read badges the true total, never the bound it was cut to', () => {
-    const title = badgedTitle({ cards: CARDS(2), csrfToken: SESSION.csrfToken, totalPending: 520 })
+    const title = badgedTitle({
+      cards: CARDS(2),
+      csrfToken: SESSION.csrfToken,
+      totalPending: 520,
+      truncated: true,
+    })
 
     expect(title).toBe('(520) Approvals · mcp-journal')
   })
@@ -292,6 +297,20 @@ describe('the pending badge reports the queue, not the page (smoke LOW-3)', () =
     expect(badgedTitle({ cards: CARDS(3), csrfToken: SESSION.csrfToken, totalPending: 3 })).toBe(
       '(3) Approvals · mcp-journal',
     )
+  })
+
+  test('a totalPending above cards.length with no explicit truncated flag is not truncation', () => {
+    // This is the page renderer's half of the two-read-race fix: `totalPending`
+    // exceeding `cards.length` is NOT sufficient on its own — `cards` and
+    // `totalPending` can come from two separate queue reads with a commit
+    // racing between them, or `cards` can be shorter than the raw row count for
+    // reasons (malformed rows dropped) that have nothing to do with truncation.
+    // Only the caller (`ui/handlers/approvals.ts`), which sees the raw `list()`
+    // result before any of that, can tell — so this pure renderer trusts the
+    // explicit `truncated` flag, never re-derives it from the two numbers.
+    expect(
+      badgedTitle({ cards: CARDS(2), csrfToken: SESSION.csrfToken, totalPending: 520 }),
+    ).toBe('(2) Approvals · mcp-journal')
   })
 
   test('an empty queue leaves the title unbadged', () => {
@@ -307,7 +326,12 @@ describe('the pending badge reports the queue, not the page (smoke LOW-3)', () =
     const documentStub = { title: 'Approvals · mcp-journal' }
     const sync = loadSyncPendingBadge(documentStub)
     const truncated = scopeOf(
-      renderApprovalsPage({ cards: CARDS(2), csrfToken: SESSION.csrfToken, totalPending: 520 }),
+      renderApprovalsPage({
+        cards: CARDS(2),
+        csrfToken: SESSION.csrfToken,
+        totalPending: 520,
+        truncated: true,
+      }),
     )
     sync(truncated)
     sync(truncated)
@@ -325,6 +349,7 @@ describe('the pending badge reports the queue, not the page (smoke LOW-3)', () =
       cards: CARDS(2),
       csrfToken: SESSION.csrfToken,
       totalPending: 520,
+      truncated: true,
     })
     const tag = /<[a-z]+[^>]*\sdata-pending-count="[^"]*"[^>]*>/i.exec(document)?.[0] ?? ''
 

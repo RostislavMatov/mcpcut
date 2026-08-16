@@ -15,8 +15,8 @@ import type { IntervalHandle, Scheduler, UiEvent } from './events.js'
  * sequence" read (M4.5 wave 3), not a re-read of the whole pending set every
  * tick — so this module never touches the queue's storage directly.
  *
- * Seeding: the FIRST poll only takes a baseline (the current sequence plus the
- * ids already pending) and emits nothing, so entries that already exist when
+ * Seeding: the FIRST poll REPLAYS the whole change feed to rebuild the set of
+ * ids that are already pending, and emits nothing — so entries that exist when
  * the UI starts are not replayed as "new" (a freshly attached browser fetches
  * current state over the JSON API; SSE carries only changes from here on).
  *
@@ -32,8 +32,8 @@ export interface WatchStderr {
 }
 
 export interface WatchDeps {
-  /** Read through the existing queue: a baseline `list()` plus its delta feed. */
-  readonly queue: Pick<ApprovalQueue, 'list' | 'changesSince'>
+  /** Read through the existing queue: its delta feed is the only surface used. */
+  readonly queue: Pick<ApprovalQueue, 'changesSince'>
   /**
    * An opaque fingerprint of current quarantine state. `ui/server.ts` derives
    * it from the inventory store; the watcher only compares it for equality, so
@@ -85,6 +85,8 @@ export function createQueueWatcher(deps: WatchDeps): QueueWatcher {
   /** Ids this watcher has announced as pending; `null` until the seed poll runs. */
   let announced: Set<string> | null = null
   let watermark = 0
+  /** The one in-flight seed, so overlapping ticks share it instead of racing. */
+  let seedInFlight: Promise<void> | null = null
   let quarantineSnapshot: string | null = null
   let handle: IntervalHandle | null = null
 
@@ -93,34 +95,66 @@ export function createQueueWatcher(deps: WatchDeps): QueueWatcher {
   }
 
   /**
-   * Seeds from a BASELINE (`changesSince(null)`) plus one `list()`: the
-   * baseline fixes the watermark without replaying anything, and the listing
-   * gives the set of ids that are already pending — so a later resolve of one
-   * of them is still recognized as a retraction of something the client may
-   * have fetched over the JSON API.
+   * Seeds by REPLAYING the change feed from its beginning: every row appears
+   * exactly once, at its current sequence, so applying `newPending` as an add
+   * and `resolvedIds` as a delete rebuilds the pending set EXACTLY — and the
+   * last page's watermark is where live polling starts. Nothing is published:
+   * a client fetches current state over the JSON API, SSE carries changes.
    *
-   * KNOWN, ACCEPTED GAP (reviewed 2026-08-16, decided "document, do not fix"):
-   * the two reads are not one snapshot. A request that was already pending and
-   * gets resolved BETWEEN them lands in neither — it is gone from `list()`, so
-   * it never enters `announced`, and its change is below the baseline
-   * watermark, so no `approval-resolved` event is published for it. The window
-   * is sub-millisecond and exists only at UI startup, and the client refetches
-   * the list over the JSON API on load, so the page self-heals on its first
-   * render. Closing it properly means reading both under one transaction, which
-   * would put a queue-wide read lock on the startup path to fix a stale row
-   * that no one sees.
+   * Why not `list()`: it is bounded (`APPROVALS_LIST_MAX_ROWS`) and has no
+   * cursor, so on a queue deeper than one page it seeds only the oldest N ids.
+   * The rest become visible as the queue drains, but their resolution matched
+   * nothing in `announced` and published no `approval-resolved` — the card
+   * stayed on an open page until the operator reloaded by hand. Why not
+   * `changesSince(null)`: that is a BASELINE by contract (watermark, no rows),
+   * so it cannot enumerate anything, and pairing it with a second read was
+   * also what made seeding two non-snapshot reads. This is ONE walk of ONE
+   * monotonic feed: nothing is derived by comparing two reads.
+   *
+   * COST, deliberately placed: this runs ONCE, before the first delta, and
+   * reads the pending set plus resolved rows still inside their 24h retention
+   * (`RESOLVED_FILE_RETENTION_MS`) — in bounded pages, over
+   * `idx_approvals_change_seq`. Per POLL nothing changed: still one bounded
+   * `changesSince(watermark)` plus the pre-existing drain. The bound exists to
+   * keep the POLL proportional to what changed rather than to the backlog, and
+   * it still is.
+   *
+   * The loop is finite by construction (a truncated page strictly advances the
+   * watermark) and stops anyway if it ever fails to advance, so a feed that
+   * cannot make progress degrades to today's behaviour instead of hanging
+   * startup. No page cap: nothing is published until it finishes, so yielding
+   * early would only start live polling from an incomplete set — which is the
+   * defect being fixed.
    */
   async function seedApprovals(): Promise<void> {
-    const baseline = await deps.queue.changesSince(null)
-    const current = await deps.queue.list()
-    watermark = baseline.latestSeq
-    announced = new Set(current.map((entry) => entry.approvalId))
+    const seeded = new Set<string>()
+    let seq = 0
+    for (;;) {
+      const page = await deps.queue.changesSince(seq)
+      for (const entry of page.newPending) seeded.add(entry.approvalId)
+      for (const id of page.resolvedIds) seeded.delete(id)
+      if (!page.truncated || page.latestSeq <= seq) {
+        seq = Math.max(seq, page.latestSeq)
+        break
+      }
+      seq = page.latestSeq
+    }
+    watermark = seq
+    announced = seeded
+  }
+
+  /** One seed per watcher, shared by any ticks that overlap a long replay. */
+  function seedOnce(): Promise<void> {
+    seedInFlight ??= seedApprovals().finally(() => {
+      seedInFlight = null
+    })
+    return seedInFlight
   }
 
   async function pollApprovals(): Promise<void> {
     try {
       if (announced === null) {
-        await seedApprovals()
+        await seedOnce()
         return
       }
 

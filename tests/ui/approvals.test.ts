@@ -2,10 +2,15 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
-import { createApprovalQueue, type ApprovalQueue } from '../../src/policy/approvals/queue.js'
+import { APPROVALS_LIST_MAX_ROWS } from '../../src/config.js'
+import {
+  createApprovalQueue,
+  type ApprovalQueue,
+  type PendingApproval,
+} from '../../src/policy/approvals/queue.js'
 import type { UiRequestContext, UiResult } from '../../src/ui/routes.js'
 import type { UiSession } from '../../src/ui/auth.js'
-import { createApprovalsHandlers } from '../../src/ui/handlers/approvals.js'
+import { createApprovalsHandlers, type ApprovalsQueue } from '../../src/ui/handlers/approvals.js'
 import { eligibleForBatch, type ApprovalCardView } from '../../src/ui/pages/approvals.js'
 
 /**
@@ -61,6 +66,26 @@ async function enqueueSample(over: Partial<Parameters<ApprovalQueue['enqueue']>[
     ...over,
   })
   return approvalId
+}
+
+/**
+ * A synthetic `list()` row, for tests that need to simulate a raw queue read
+ * shape (a bound hit, or malformed rows already dropped) without paying for
+ * hundreds of real sqlite writes through `enqueueSample()`.
+ */
+function syntheticPending(approvalId: string, requestedAtMs: number): PendingApproval {
+  return {
+    approvalId,
+    serverName: 'github',
+    toolName: 'create_issue',
+    toolClass: 'write',
+    argsRedacted: {},
+    argsHash: 'hash',
+    sessionId: 'sess-1',
+    requestedAt: new Date(requestedAtMs).toISOString(),
+    expiresAt: new Date(requestedAtMs + GRANT_MS).toISOString(),
+    expired: false,
+  }
 }
 
 function bodyText(result: UiResult): string {
@@ -235,32 +260,97 @@ describe('approval id validation at the handler boundary (LOW-2)', () => {
 })
 
 describe('a bounded read never reads as a drained queue', () => {
-  test('the page says how many pending requests it is NOT showing', async () => {
-    const handlers = createApprovalsHandlers({
-      queue: {
-        list: () => queue.list({ limit: 2 }),
-        countPending: () => queue.countPending(),
-        resolve: (id, options) => queue.resolve(id, options),
+  /**
+   * Truncation must be a property of THIS read hitting its own row bound
+   * (`APPROVALS_LIST_MAX_ROWS`), never a bare comparison of `cards.length` to
+   * `totalPending` — the identical mistake shipped in the CLI (`approvals-cmd.ts`
+   * `runList`, fixed in commit f05c6d2) and broke a polling consumer
+   * non-deterministically: `list()` and `countPending()` are separate
+   * transactions, so a request committing between them made
+   * `totalPending > cards.length` true on a queue nowhere near truncated.
+   * The UI has its own second way to trip the same bare comparison: `list()`
+   * drops rows that fail to parse (`parseDoc`), so `cards.length` can be BELOW
+   * the bound even when nothing beyond the bound was missed.
+   */
+  test('a read below the bound with a larger totalPending (the race) is not truncation', async () => {
+    // Simulates a second approval committing after `list()` already returned
+    // but before `countPending()` runs — the exact race the two-read
+    // aggregation in `loadCards` cannot itself prevent.
+    let totalPending = 1
+    const raceQueue: ApprovalsQueue = {
+      list: async () => {
+        const result = [syntheticPending('01J0000000000000000000001', now)]
+        totalPending = 2
+        return result
       },
-      clock: () => now,
-    })
-    for (let i = 0; i < 5; i += 1) await enqueueSample()
+      countPending: async () => totalPending,
+      resolve: (id, options) => queue.resolve(id, options),
+    }
+    const handlers = createApprovalsHandlers({ queue: raceQueue, clock: () => now })
+
+    const body = bodyText(await handlers.approvalsPage(makeCtx({})))
+
+    expect(body).toContain('1 pending')
+    expect(body).not.toContain('showing the oldest')
+    expect(body).toContain('data-pending-count="1"')
+    expect(body).not.toContain('data-pending-total')
+  })
+
+  test('malformed rows dropped from an unbounded read are not truncation', async () => {
+    // `list()` fetched everything there was to fetch (well under the bound);
+    // `countPending()` counts rows by status regardless of whether their JSON
+    // parses, so a queue with unparseable rows legitimately reports a higher
+    // total than the parsed, rendered card count — that gap is not a hidden
+    // backlog, it is unrenderable content, and the current behaviour (silently
+    // showing "2 pending") is itself imperfect: an operator has no signal that
+    // rows exist beyond what a bound could ever have hidden. Closing that gap
+    // honestly needs the queue to report a drop count, which is out of scope
+    // here (see report) — this test only pins that it must NOT be misreported
+    // as a truncated (bound-hit) read.
+    const malformedQueue: ApprovalsQueue = {
+      list: async () => [
+        syntheticPending('01J0000000000000000000001', now),
+        syntheticPending('01J0000000000000000000002', now),
+      ],
+      countPending: async () => 5,
+      resolve: (id, options) => queue.resolve(id, options),
+    }
+    const handlers = createApprovalsHandlers({ queue: malformedQueue, clock: () => now })
+
+    const body = bodyText(await handlers.approvalsPage(makeCtx({})))
+
+    expect(body).toContain('2 pending')
+    expect(body).not.toContain('showing the oldest')
+    expect(body).toContain('data-pending-count="2"')
+    expect(body).not.toContain('data-pending-total')
+  })
+
+  test('a read that hits its own bound still reads as truncated, with the right numbers', async () => {
+    const cards = Array.from({ length: APPROVALS_LIST_MAX_ROWS }, (_unused, index) =>
+      syntheticPending(`01J${String(index).padStart(23, '0')}`, now),
+    )
+    const boundedQueue: ApprovalsQueue = {
+      list: async () => cards,
+      countPending: async () => APPROVALS_LIST_MAX_ROWS + 5,
+      resolve: (id, options) => queue.resolve(id, options),
+    }
+    const handlers = createApprovalsHandlers({ queue: boundedQueue, clock: () => now })
 
     const result = await handlers.approvalsPage(makeCtx({}))
 
-    // Showing "2 pending" on a queue of five would tell an operator the backlog
-    // is drained when three requests are still waiting out their timeouts.
+    // Showing only the bound on a bigger queue would tell an operator the
+    // backlog is drained when it is not.
     const body = bodyText(result)
-    expect(body).toContain('2 of 5 pending')
+    expect(body).toContain(`${APPROVALS_LIST_MAX_ROWS} of ${APPROVALS_LIST_MAX_ROWS + 5} pending`)
     expect(body).toContain('showing the oldest')
     // …and the tab badge must not contradict that line: the client script
     // builds it from these attributes, so the true total has to travel with
     // them or a glance at the tab reads the backlog as drained to the bound.
-    expect(body).toContain('data-pending-count="2"')
-    expect(body).toContain('data-pending-total="5"')
+    expect(body).toContain(`data-pending-count="${APPROVALS_LIST_MAX_ROWS}"`)
+    expect(body).toContain(`data-pending-total="${APPROVALS_LIST_MAX_ROWS + 5}"`)
   })
 
-  test('an unbounded read says nothing about truncation', async () => {
+  test('an untruncated read says nothing about truncation', async () => {
     const handlers = createApprovalsHandlers({ queue, clock: () => now })
     await enqueueSample()
 
@@ -273,7 +363,41 @@ describe('a bounded read never reads as a drained queue', () => {
     expect(body).not.toContain('data-pending-total')
   })
 
-  test('the JSON API carries the total beside the bounded array', async () => {
+  test('an empty queue is unchanged: no cards, no truncation', async () => {
+    const handlers = createApprovalsHandlers({ queue, clock: () => now })
+
+    const body = bodyText(await handlers.approvalsPage(makeCtx({})))
+
+    expect(body).toContain('No pending approvals.')
+    expect(body).toContain('0 pending')
+    expect(body).not.toContain('showing the oldest')
+    expect(body).toContain('data-pending-count="0"')
+    expect(body).not.toContain('data-pending-total')
+  })
+
+  test('the JSON API carries the total and the truncated flag beside the bounded array', async () => {
+    const cards = Array.from({ length: APPROVALS_LIST_MAX_ROWS }, (_unused, index) =>
+      syntheticPending(`01J${String(index).padStart(23, '0')}`, now),
+    )
+    const boundedQueue: ApprovalsQueue = {
+      list: async () => cards,
+      countPending: async () => APPROVALS_LIST_MAX_ROWS + 5,
+      resolve: (id, options) => queue.resolve(id, options),
+    }
+    const handlers = createApprovalsHandlers({ queue: boundedQueue, clock: () => now })
+
+    const payload = JSON.parse(bodyText(await handlers.approvalsApi(makeCtx({})))) as {
+      approvals: unknown[]
+      totalPending: number
+      truncated: boolean
+    }
+
+    expect(payload.approvals).toHaveLength(APPROVALS_LIST_MAX_ROWS)
+    expect(payload.totalPending).toBe(APPROVALS_LIST_MAX_ROWS + 5)
+    expect(payload.truncated).toBe(true)
+  })
+
+  test('the JSON API does not claim truncation for a read below the bound', async () => {
     const handlers = createApprovalsHandlers({
       queue: {
         list: () => queue.list({ limit: 1 }),
@@ -287,9 +411,11 @@ describe('a bounded read never reads as a drained queue', () => {
     const payload = JSON.parse(bodyText(await handlers.approvalsApi(makeCtx({})))) as {
       approvals: unknown[]
       totalPending: number
+      truncated: boolean
     }
 
     expect(payload.approvals).toHaveLength(1)
     expect(payload.totalPending).toBe(3)
+    expect(payload.truncated).toBe(false)
   })
 })
