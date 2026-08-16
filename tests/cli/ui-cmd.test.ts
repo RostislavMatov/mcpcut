@@ -400,6 +400,40 @@ describe('runUi: flag parsing and startup', () => {
     expect(io.errText().toLowerCase()).toContain('null')
   })
 
+  test('--trusted-proxy-header requires a header name', async () => {
+    const io = captureIo()
+
+    expect(
+      await runUi(['--trusted-proxy-header', ''], io, {
+        journalDir: await makeJournalDir(),
+        signals: [],
+      }),
+    ).toBe(1)
+    expect(io.errText()).toContain('--trusted-proxy-header')
+  })
+
+  test('--trusted-proxy-header rejects a name that is not a valid header token', async () => {
+    const io = captureIo()
+
+    expect(
+      await runUi(['--trusted-proxy-header', 'x forwarded for'], io, {
+        journalDir: await makeJournalDir(),
+        signals: [],
+      }),
+    ).toBe(1)
+    expect(io.errText()).toContain('--trusted-proxy-header')
+  })
+
+  test('--trusted-proxy-header without --behind-tls warns that the header must be rewritten', async () => {
+    const fixture = await startUi({ argv: ['--trusted-proxy-header', 'x-forwarded-for'] })
+
+    // Trusting a forwarding header with nothing in front (or with a proxy that
+    // passes the client's copy through) hands every caller a free-form
+    // rate-limit key. The operator gets told, loudly, at startup.
+    expect(fixture.io.errText()).toContain('--trusted-proxy-header')
+    expect(fixture.io.outText()).toBe('')
+  })
+
   test('a damaged state.db refuses the run before anything is bound', async () => {
     const journalDir = await makeJournalDir()
     await writeCorruptDatabase(join(journalDir, 'state.db'))

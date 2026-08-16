@@ -336,7 +336,7 @@ describe('login rate limiting is per client, not global (M-1)', () => {
     expect(limiter.allow('10.0.0.1')).toBe(true)
   })
 
-  test('the global ceiling still stops a distributed flood', () => {
+  test('the global ceiling throttles a distributed flood without refusing anyone', () => {
     const limiter = createLoginRateLimiter({
       maxFailures: 3,
       globalMaxFailures: 10,
@@ -344,8 +344,14 @@ describe('login rate limiting is per client, not global (M-1)', () => {
     })
     for (let i = 0; i < 10; i += 1) limiter.recordFailure(`10.0.0.${i}`)
 
-    // Each address is well under its own window, but the flood is not.
-    expect(limiter.allow('10.0.0.250')).toBe(false)
+    // This test used to assert `allow(...) === false` here. That expectation was
+    // wrong, not merely strict: a ceiling keyed on nothing is a lockout anyone
+    // who can reach `/login` can pull (127.0.0.0/8 aliases suffice), which is
+    // the ROADMAP "global login ceiling as a lockout primitive" finding. The
+    // flood is now paid for in latency instead — same throughput cost to the
+    // attacker, no denial to a legitimate admin.
+    expect(limiter.allow('10.0.0.250')).toBe(true)
+    expect(limiter.penaltyMs('10.0.0.250')).toBeGreaterThan(0)
   })
 
   test('the tracked-key map is bounded and forgets the least-recently-seen', () => {

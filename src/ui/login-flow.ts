@@ -1,6 +1,6 @@
 import type { IncomingMessage } from 'node:http'
 import type { AdminResolver, LoginRateLimiter, SessionManager } from './auth.js'
-import { serializeSessionCookie } from './auth.js'
+import { loginRateLimitKey, serializeSessionCookie } from './auth.js'
 import {
   BODY_TOO_MANY_REQUESTS,
   BODY_UNAUTHORIZED,
@@ -8,6 +8,7 @@ import {
   HTTP_STATUS_SEE_OTHER,
   HTTP_STATUS_TOO_MANY_REQUESTS,
   HTTP_STATUS_UNAUTHORIZED,
+  LOGIN_GLOBAL_PENALTY_WARNING,
   LOGIN_RATE_LIMIT_WARNING,
   POST_LOGIN_LOCATION,
   SESSION_CAPACITY_WARNING,
@@ -46,21 +47,25 @@ export interface LoginFlowDeps {
   /** Adds `Secure` to the session cookie (TLS terminated in front). */
   readonly behindTls: boolean
   readonly stderr: LoginWarnSink
+  /**
+   * Opt-in header the rate-limit key is read from when a reverse proxy is in
+   * front (`--trusted-proxy-header`). Absent — the peer address is used.
+   */
+  readonly trustedProxyHeader?: string
+  /** Sleep used to pay the global-ceiling penalty; injectable for tests. */
+  readonly sleep?: (ms: number) => Promise<void>
+}
+
+/** Default penalty sleep. */
+function realSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms).unref()
+  })
 }
 
 /** A JSON refusal body with the uniform content type. */
 function refusal(status: number, body: Buffer): UiResult {
   return { kind: 'response', status, headers: { 'content-type': CONTENT_TYPE_JSON }, body }
-}
-
-/**
- * Rate-limit key for a login attempt: the peer address. Keying the window per
- * client is what keeps one wrong-guessing machine from locking every admin out;
- * an unresolvable address collapses into one shared bucket, which is the
- * conservative side of the trade.
- */
-export function loginRateLimitKey(req: IncomingMessage): string {
-  return req.socket.remoteAddress ?? 'unknown'
 }
 
 /** Handles one `POST /login`, returning the plan for the server to write. */
@@ -69,7 +74,14 @@ export async function handleLoginRequest(
   ctx: UiRequestContext,
   req: IncomingMessage,
 ): Promise<UiResult> {
-  const key = loginRateLimitKey(req)
+  const key = loginRateLimitKey(req, deps.trustedProxyHeader)
+  // The global ceiling slows every attempt down instead of refusing any: an
+  // unkeyed refusal is a lockout primitive for anyone who can reach `/login`.
+  const penalty = deps.rateLimiter.penaltyMs(key)
+  if (penalty > 0) {
+    deps.stderr.write(`${LOGIN_GLOBAL_PENALTY_WARNING}\n`)
+    await (deps.sleep ?? realSleep)(penalty)
+  }
   if (!deps.rateLimiter.allow(key)) {
     deps.stderr.write(`${LOGIN_RATE_LIMIT_WARNING}\n`)
     return refusal(HTTP_STATUS_TOO_MANY_REQUESTS, BODY_TOO_MANY_REQUESTS)

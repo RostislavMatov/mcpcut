@@ -536,12 +536,21 @@ same way (first one wins, the other gets a clear "already resolved").
 ```
 mcp-journal ui [--port 8091] [--host 127.0.0.1] [--behind-tls]
                [--allowed-host <host[:port]>]... [--allowed-origin <origin>]...
+               [--trusted-proxy-header <name>]
 ```
 
 `--behind-tls` marks the session cookie `Secure` (use it when a reverse proxy
 terminates TLS in front). `--allowed-host` and `--allowed-origin` extend the
 `Host`/`Origin` allowlists by exact match — needed only when something other
 than a loopback name fronts the UI; both may be repeated.
+
+`--trusted-proxy-header <name>` (e.g. `x-forwarded-for`) keys the `/login` rate
+limit on that header instead of the peer address, so the limit still
+distinguishes clients behind a proxy. **Enable it only if the proxy rewrites
+that header.** The UI takes the header's *rightmost* value, which is the one a
+proxy that appends writes — but a proxy that forwards the client's copy
+unchanged hands every caller the ability to pick its own rate-limit bucket, and
+the limit stops meaning anything. The flag prints that warning at startup.
 
 The UI is its own process on its own port — it is not part of `serve`, and
 `serve` does not need to be running for it to work. That matters because the
@@ -604,10 +613,22 @@ true.
   beyond localhost prints a loud warning; TLS is not the UI's job — terminate
   it in a reverse proxy in front of the UI and let the UI keep listening on
   loopback, exactly like `serve`.
-- **Behind a reverse proxy**: with `--behind-tls`, every login the proxy
-  forwards arrives from the proxy's own source address, so the UI's
-  per-address `/login` rate limit degrades to one shared bucket for all
-  logins through that proxy. Rate-limit `/login` at the proxy as well.
+- **Behind a reverse proxy**: by default every login the proxy forwards arrives
+  from the proxy's own source address, so the UI's per-address `/login` rate
+  limit degrades to one shared bucket for all logins through that proxy. Either
+  rate-limit `/login` at the proxy, or pass `--trusted-proxy-header` — and if
+  you pass it, make the proxy rewrite that header.
+- **Login availability**: neither rate limit can lock an admin out of the plane.
+  The per-address window refuses only the address that earned it; the global
+  ceiling *delays* attempts rather than refusing them, because a ceiling keyed
+  on nothing is a lockout any process that can reach `/login` could trigger.
+- **Session slots**: the pool is capped (64 global, 8 per admin) and a live
+  session is never evicted to make room. The top 8 slots are reserved for
+  `owner` logins, so a pool filled by lower-privilege admins cannot lock the
+  owner out — a state the M4 smoke reproduced. Sessions also expire after an
+  hour of inactivity, well before the 8-hour absolute lifetime, so a forgotten
+  tab returns its slot; an open SSE stream's heartbeat does not count as
+  activity.
 - **Revocation SLA**: `admin remove`/`admin rotate`/`admin role` from the CLI
   close that admin's open SSE streams within one heartbeat (≤ 15 s); their
   requests are refused immediately.

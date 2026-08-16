@@ -1,15 +1,20 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
+import type { IncomingMessage } from 'node:http'
 import type { AdminRecord } from '../admin/store.js'
 import type { Role } from './authz.js'
 import {
   CSRF_TOKEN_RANDOM_BYTES,
   LOGIN_GLOBAL_MAX_FAILURES,
+  LOGIN_GLOBAL_PENALTY_DELAY_MS,
   LOGIN_MAX_FAILURES,
   LOGIN_RATE_LIMIT_MAX_KEYS,
   LOGIN_RATE_WINDOW_MS,
   MAX_SESSIONS,
   SESSION_COOKIE_NAME,
   SESSION_ID_RANDOM_BYTES,
+  SESSION_IDLE_TIMEOUT_MS,
+  SESSION_OWNER_RESERVE_POOL_DIVISOR,
+  SESSION_OWNER_RESERVED_SLOTS,
   SESSION_TTL_MS,
   SESSIONS_PER_ADMIN_MAX,
 } from './constants.js'
@@ -48,14 +53,20 @@ interface SessionEntry extends UiSession {
   readonly tokenHash: string
   /** Absolute expiry (ms epoch). */
   readonly expiresAt: number
+  /** Last request made under this session (ms epoch); drives the idle timeout. */
+  readonly lastSeenAt: number
 }
 
 export interface SessionManagerOptions {
   /** Clock override for deterministic TTL in tests. */
   readonly clock?: () => number
   readonly ttlMs?: number
+  /** Inactivity after which a session dies regardless of `ttlMs`. */
+  readonly idleTimeoutMs?: number
   readonly maxSessions?: number
   readonly maxSessionsPerAdmin?: number
+  /** Slots at the top of the pool reserved for `owner` logins. */
+  readonly ownerReservedSlots?: number
 }
 
 export interface CreatedSession {
@@ -72,7 +83,10 @@ export interface CreatedSession {
  */
 export type CreateSessionResult =
   | ({ readonly ok: true } & CreatedSession)
-  | { readonly ok: false; readonly reason: 'at-capacity' | 'per-admin-capacity' }
+  | {
+      readonly ok: false
+      readonly reason: 'at-capacity' | 'per-admin-capacity' | 'reserved-for-owner'
+    }
 
 /** A session that has just been dropped, for anyone holding resources keyed on it. */
 export interface DroppedSession {
@@ -119,11 +133,27 @@ export function tokensEqual(a: string, b: string): boolean {
   return timingSafeEqual(bufA, bufB)
 }
 
+/**
+ * How many top-of-pool slots only an `owner` may take. Capped at a fraction of
+ * the pool so a small `maxSessions` degrades to the pre-reserve behaviour
+ * instead of locking every non-owner out — the reserve exists to stop a
+ * lockout, not to create a different one.
+ */
+export function ownerReservedSlots(maxSessions: number, configured: number): number {
+  const byFraction = Math.floor(maxSessions / SESSION_OWNER_RESERVE_POOL_DIVISOR)
+  return Math.max(0, Math.min(configured, byFraction))
+}
+
 export function createSessionManager(opts: SessionManagerOptions = {}): SessionManager {
   const clock = opts.clock ?? (() => Date.now())
   const ttlMs = opts.ttlMs ?? SESSION_TTL_MS
+  const idleTimeoutMs = opts.idleTimeoutMs ?? SESSION_IDLE_TIMEOUT_MS
   const maxSessions = opts.maxSessions ?? MAX_SESSIONS
   const maxPerAdmin = opts.maxSessionsPerAdmin ?? SESSIONS_PER_ADMIN_MAX
+  const reservedForOwner = ownerReservedSlots(
+    maxSessions,
+    opts.ownerReservedSlots ?? SESSION_OWNER_RESERVED_SLOTS,
+  )
   /** Insertion-ordered so the oldest session is the first key. */
   const sessions = new Map<string, SessionEntry>()
   const dropListeners: Array<(dropped: DroppedSession) => void> = []
@@ -136,9 +166,14 @@ export function createSessionManager(opts: SessionManagerOptions = {}): SessionM
     for (const listener of dropListeners) listener({ sessionId, adminName: entry.adminName })
   }
 
+  /** Dead = past its absolute lifetime OR idle longer than the idle window. */
+  function isDead(entry: SessionEntry, now: number): boolean {
+    return entry.expiresAt <= now || now - entry.lastSeenAt >= idleTimeoutMs
+  }
+
   function reapExpired(now: number): void {
     for (const [id, entry] of [...sessions]) {
-      if (entry.expiresAt <= now) drop(id)
+      if (isDead(entry, now)) drop(id)
     }
   }
 
@@ -163,6 +198,12 @@ export function createSessionManager(opts: SessionManagerOptions = {}): SessionM
       // every other admin, owners included.
       return { ok: false, reason: 'at-capacity' }
     }
+    if (admin.role !== 'owner' && sessions.size >= maxSessions - reservedForOwner) {
+      // The landing strip. Refusing a viewer here is a smaller harm than the
+      // one the M4 smoke reproduced: eight of them filling the pool and the
+      // owner unable to log in for the next eight hours.
+      return { ok: false, reason: 'reserved-for-owner' }
+    }
     const id = randomBytes(SESSION_ID_RANDOM_BYTES).toString('base64url')
     const entry: SessionEntry = {
       id,
@@ -171,19 +212,28 @@ export function createSessionManager(opts: SessionManagerOptions = {}): SessionM
       csrfToken: randomBytes(CSRF_TOKEN_RANDOM_BYTES).toString('base64url'),
       tokenHash: admin.tokenHash,
       expiresAt: now + ttlMs,
+      lastSeenAt: now,
     }
     sessions.set(id, entry)
     return { ok: true, sessionId: id, session: publicView(entry) }
   }
 
-  async function resolve(
+  /**
+   * The one lookup path. `touch` records the request against the idle window;
+   * a heartbeat liveness probe passes `false`, because counting it as activity
+   * would let one forgotten tab with an open SSE stream hold its slot until the
+   * absolute TTL and defeat the idle timeout outright.
+   */
+  async function lookup(
     sessionId: string | undefined,
     resolver: AdminResolver,
+    touch: boolean,
   ): Promise<UiSession | undefined> {
     if (sessionId === undefined) return undefined
     const entry = sessions.get(sessionId)
     if (entry === undefined) return undefined
-    if (entry.expiresAt <= clock()) {
+    const now = clock()
+    if (isDead(entry, now)) {
       drop(sessionId)
       return undefined
     }
@@ -197,11 +247,21 @@ export function createSessionManager(opts: SessionManagerOptions = {}): SessionM
       drop(sessionId)
       return undefined
     }
+    // Immutable update in place: `Map.set` on an existing key keeps the entry's
+    // insertion position, so the oldest-first ordering elsewhere is unaffected.
+    if (touch) sessions.set(sessionId, { ...entry, lastSeenAt: now })
     return publicView(entry)
   }
 
+  async function resolve(
+    sessionId: string | undefined,
+    resolver: AdminResolver,
+  ): Promise<UiSession | undefined> {
+    return lookup(sessionId, resolver, true)
+  }
+
   async function isLive(sessionId: string, resolver: AdminResolver): Promise<boolean> {
-    return (await resolve(sessionId, resolver)) !== undefined
+    return (await lookup(sessionId, resolver, false)) !== undefined
   }
 
   function destroy(sessionId: string | undefined): void {
@@ -235,13 +295,24 @@ function publicView(entry: SessionEntry): UiSession {
  * trigger at will. A looser global ceiling stays as a backstop for a
  * distributed flood, since per-key windows alone are unbounded work.
  *
+ * The global ceiling DELAYS rather than refuses. Refusing on an unkeyed counter
+ * is the same lockout primitive in slower motion: any process that can reach
+ * `/login` — 127.0.0.0/8 aliases are enough — spends `globalMaxFailures` wrong
+ * guesses and nobody logs in until the window slides. A delay costs a flood the
+ * same throughput while a legitimate login merely pauses.
+ *
  * The key map is capped (`LOGIN_RATE_LIMIT_MAX_KEYS`) so a spoofed-source flood
  * cannot grow it without bound; the oldest-touched key is dropped when full,
  * which at worst forgives one attacker's history — never a lockout.
  */
 export interface LoginRateLimiter {
-  /** True if another attempt from `key` is allowed right now. */
+  /** True if another attempt from `key` is allowed right now (per-key window only). */
   allow(key: string): boolean
+  /**
+   * Delay to serve this attempt behind, in ms — non-zero only while the global
+   * ceiling is exceeded. Always paid, whatever `allow` says.
+   */
+  penaltyMs(key: string): number
   /** Records a failed login from `key` (counts toward both windows). */
   recordFailure(key: string): void
   /** Clears that key's window on a successful login. */
@@ -257,6 +328,8 @@ export interface RateLimiterOptions {
   readonly windowMs?: number
   /** Cap on tracked keys before the least-recently-touched is forgotten. */
   readonly maxKeys?: number
+  /** Delay applied to every attempt while the global ceiling is exceeded. */
+  readonly globalPenaltyMs?: number
 }
 
 /** Drops timestamps older than the window; returns the surviving ones. */
@@ -270,6 +343,7 @@ export function createLoginRateLimiter(opts: RateLimiterOptions = {}): LoginRate
   const globalMaxFailures = opts.globalMaxFailures ?? LOGIN_GLOBAL_MAX_FAILURES
   const windowMs = opts.windowMs ?? LOGIN_RATE_WINDOW_MS
   const maxKeys = opts.maxKeys ?? LOGIN_RATE_LIMIT_MAX_KEYS
+  const globalPenaltyMs = opts.globalPenaltyMs ?? LOGIN_GLOBAL_PENALTY_DELAY_MS
   /** Insertion-ordered: re-inserting on touch makes the first key the LRU one. */
   const perKey = new Map<string, number[]>()
   let global: number[] = []
@@ -298,7 +372,13 @@ export function createLoginRateLimiter(opts: RateLimiterOptions = {}): LoginRate
     allow(key: string): boolean {
       const now = clock()
       const kept = prune(key, now)
-      return kept.length < maxFailures && global.length < globalMaxFailures
+      // The global window deliberately does NOT refuse here — see `penaltyMs`.
+      return kept.length < maxFailures
+    },
+    penaltyMs(key: string): number {
+      const now = clock()
+      prune(key, now)
+      return global.length >= globalMaxFailures ? globalPenaltyMs : 0
     },
     recordFailure(key: string): void {
       const now = clock()
@@ -310,6 +390,40 @@ export function createLoginRateLimiter(opts: RateLimiterOptions = {}): LoginRate
       perKey.delete(key)
     },
   }
+}
+
+/**
+ * Rate-limit key for a login attempt.
+ *
+ * By default the peer address, which is the only value the plane can vouch for.
+ * Behind a reverse proxy every login arrives from the proxy's address and the
+ * per-address window collapses into one shared bucket — so an operator may opt
+ * in to a trusted forwarding header with `--trusted-proxy-header`.
+ *
+ * The RIGHTMOST element is taken, never the leftmost: a client that
+ * pre-populates the header gets its value pushed left by the proxy's append, so
+ * the last element is the one the trusted hop wrote. A proxy that overwrites
+ * the header instead leaves exactly one element, and the same rule reads it.
+ *
+ * This is opt-in for a reason: trusting the header with no proxy in front (or
+ * with one that forwards the client's copy unchanged) hands every caller a
+ * free-form key and makes the window trivially evadable. README says so at the
+ * flag.
+ */
+export function loginRateLimitKey(
+  req: Pick<IncomingMessage, 'headers' | 'socket'>,
+  trustedProxyHeader?: string,
+): string {
+  const peer = req.socket.remoteAddress ?? 'unknown'
+  if (trustedProxyHeader === undefined) return peer
+  const raw = req.headers[trustedProxyHeader.toLowerCase()]
+  const value = Array.isArray(raw) ? raw.join(',') : raw
+  if (value === undefined) return peer
+  const hops = value
+    .split(',')
+    .map((hop) => hop.trim())
+    .filter((hop) => hop !== '')
+  return hops.at(-1) ?? peer
 }
 
 // ---------------------------------------------------------------------------
