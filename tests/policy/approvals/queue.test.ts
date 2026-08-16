@@ -575,3 +575,85 @@ describe('createApprovalQueue: readResolution', () => {
     await expect(queue.readResolution(approvalId)).resolves.toBeNull()
   })
 })
+
+describe('bounded reads (availability: an unbounded pending set made every UI poll a full scan)', () => {
+  test('list() is capped, returning the OLDEST requests — the ones an operator must act on first', async () => {
+    const queue = createApprovalQueue({ baseDir })
+    for (let i = 0; i < 12; i += 1) {
+      await queue.enqueue(baseRequest({ sessionId: `session-${i}` }))
+    }
+
+    const all = await queue.list()
+    const listed = await queue.list({ limit: 5 })
+
+    expect(listed).toHaveLength(5)
+    // `list()` orders oldest-first, and truncation keeps that end: dropping the
+    // oldest would hide exactly the requests closest to timing out. Compared
+    // against the unbounded read rather than against insertion order, because
+    // requests enqueued within one millisecond tie on `requested_at` and are
+    // ordered by their ULID — which is the query's contract, not a detail.
+    expect(listed.map((entry) => entry.approvalId)).toEqual(
+      all.slice(0, 5).map((entry) => entry.approvalId),
+    )
+  })
+
+  test('countPending() reports the true total so a caller can say how much it is not showing', async () => {
+    const queue = createApprovalQueue({ baseDir })
+    for (let i = 0; i < 7; i += 1) await queue.enqueue(baseRequest({ sessionId: `session-${i}` }))
+
+    expect(await queue.countPending()).toBe(7)
+    expect(await queue.list({ limit: 3 })).toHaveLength(3)
+  })
+
+  test('a resolved request leaves the pending count', async () => {
+    const queue = createApprovalQueue({ baseDir })
+    const first = await queue.enqueue(baseRequest())
+    await queue.enqueue(baseRequest({ sessionId: 'session-2' }))
+
+    await queue.resolve(first.approvalId, { outcome: 'denied' })
+
+    expect(await queue.countPending()).toBe(1)
+  })
+
+  test('changesSince() is capped and reports the truncation', async () => {
+    const queue = createApprovalQueue({ baseDir })
+    const baseline = await queue.changesSince(null)
+    for (let i = 0; i < 10; i += 1) await queue.enqueue(baseRequest({ sessionId: `session-${i}` }))
+
+    const page = await queue.changesSince(baseline.latestSeq, { limit: 4 })
+
+    expect(page.newPending).toHaveLength(4)
+    expect(page.truncated).toBe(true)
+  })
+
+  test('a truncated page moves the watermark only as far as it actually delivered', async () => {
+    const queue = createApprovalQueue({ baseDir })
+    const baseline = await queue.changesSince(null)
+    for (let i = 0; i < 10; i += 1) await queue.enqueue(baseRequest({ sessionId: `session-${i}` }))
+
+    // Draining in pages must lose nothing: reporting the GLOBAL watermark on a
+    // truncated read would silently skip every change the page left behind,
+    // breaking the queue's at-least-once contract.
+    const seen: string[] = []
+    let watermark = baseline.latestSeq
+    for (let page = 0; page < 5; page += 1) {
+      const changes = await queue.changesSince(watermark, { limit: 4 })
+      seen.push(...changes.newPending.map((entry) => entry.sessionId))
+      watermark = changes.latestSeq
+      if (!changes.truncated) break
+    }
+
+    expect(new Set(seen).size).toBe(10)
+  })
+
+  test('an untruncated page reports no truncation and the global watermark', async () => {
+    const queue = createApprovalQueue({ baseDir })
+    const baseline = await queue.changesSince(null)
+    await queue.enqueue(baseRequest())
+
+    const page = await queue.changesSince(baseline.latestSeq, { limit: 100 })
+
+    expect(page.truncated).toBe(false)
+    expect(page.newPending).toHaveLength(1)
+  })
+})

@@ -210,6 +210,7 @@ describe('approval id validation at the handler boundary (LOW-2)', () => {
     const spying = createApprovalsHandlers({
       queue: {
         list: () => queue.list(),
+        countPending: () => queue.countPending(),
         resolve: (id, options) => {
           seen.push(id)
           return queue.resolve(id, options)
@@ -230,5 +231,57 @@ describe('approval id validation at the handler boundary (LOW-2)', () => {
       makeCtx({ method: 'POST', params: { id: '01J0000000000000000000000A' } }),
     )
     if (unknown.kind === 'response') expect(unknown.status).toBe(409)
+  })
+})
+
+describe('a bounded read never reads as a drained queue', () => {
+  test('the page says how many pending requests it is NOT showing', async () => {
+    const handlers = createApprovalsHandlers({
+      queue: {
+        list: () => queue.list({ limit: 2 }),
+        countPending: () => queue.countPending(),
+        resolve: (id, options) => queue.resolve(id, options),
+      },
+      clock: () => now,
+    })
+    for (let i = 0; i < 5; i += 1) await enqueueSample()
+
+    const result = await handlers.approvalsPage(makeCtx({}))
+
+    // Showing "2 pending" on a queue of five would tell an operator the backlog
+    // is drained when three requests are still waiting out their timeouts.
+    const body = bodyText(result)
+    expect(body).toContain('2 of 5 pending')
+    expect(body).toContain('showing the oldest')
+  })
+
+  test('an unbounded read says nothing about truncation', async () => {
+    const handlers = createApprovalsHandlers({ queue, clock: () => now })
+    await enqueueSample()
+
+    const body = bodyText(await handlers.approvalsPage(makeCtx({})))
+
+    expect(body).toContain('1 pending')
+    expect(body).not.toContain('showing the oldest')
+  })
+
+  test('the JSON API carries the total beside the bounded array', async () => {
+    const handlers = createApprovalsHandlers({
+      queue: {
+        list: () => queue.list({ limit: 1 }),
+        countPending: () => queue.countPending(),
+        resolve: (id, options) => queue.resolve(id, options),
+      },
+      clock: () => now,
+    })
+    for (let i = 0; i < 3; i += 1) await enqueueSample()
+
+    const payload = JSON.parse(bodyText(await handlers.approvalsApi(makeCtx({})))) as {
+      approvals: unknown[]
+      totalPending: number
+    }
+
+    expect(payload.approvals).toHaveLength(1)
+    expect(payload.totalPending).toBe(3)
   })
 })

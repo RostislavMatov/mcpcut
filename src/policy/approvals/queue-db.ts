@@ -74,7 +74,7 @@ const INSERT_PENDING =
   "requested_at, expires_at, change_seq) VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?)"
 
 const SELECT_PENDING_DOCS =
-  "SELECT doc FROM approvals WHERE status = 'pending' ORDER BY requested_at, approval_id"
+  "SELECT doc FROM approvals WHERE status = 'pending' ORDER BY requested_at, approval_id LIMIT ?"
 const SELECT_PENDING_DOC =
   "SELECT doc FROM approvals WHERE approval_id = ? AND status = 'pending'"
 const SELECT_RESOLVED_DOC =
@@ -99,9 +99,11 @@ const DELETE_OLD_RESOLVED =
   "WHERE status = 'resolved' AND resolved_at < ? ORDER BY resolved_at LIMIT ?)"
 
 const SELECT_LATEST_SEQ = 'SELECT change_seq FROM approvals_meta WHERE id = 1'
+const COUNT_PENDING = "SELECT COUNT(*) AS n FROM approvals WHERE status = 'pending'"
 /** Every row touched after `?`, oldest change first, so a reader can replay in order. */
 const SELECT_CHANGES_SINCE =
-  'SELECT approval_id, status, doc FROM approvals WHERE change_seq > ? ORDER BY change_seq'
+  'SELECT approval_id, status, doc, change_seq FROM approvals WHERE change_seq > ? ' +
+  'ORDER BY change_seq LIMIT ?'
 
 const RESOLVE_PENDING =
   "UPDATE approvals SET status = 'resolved', doc = ?, outcome = ?, resolved_at = ?, " +
@@ -270,9 +272,24 @@ export function resolvePendingRow(database: StateDatabase, row: ResolveRowInput)
   return Number(changes) === 1
 }
 
-/** Every pending record's JSON text, oldest request first (the queue's list order). */
-export function selectPendingDocs(database: StateDatabase): string[] {
-  return docTexts(database.prepare(SELECT_PENDING_DOCS).all())
+/**
+ * At most `limit` pending records' JSON text, oldest request first.
+ *
+ * The bound is not an optimisation: without it every UI poll read the entire
+ * pending set, so a queue nobody drains turned each poll into a full scan.
+ * Truncation keeps the OLDEST end — those are the requests closest to timing
+ * out, and hiding them is the one loss an operator cannot recover from.
+ */
+export function selectPendingDocs(database: StateDatabase, limit: number): string[] {
+  return docTexts(database.prepare(SELECT_PENDING_DOCS).all(limit))
+}
+
+/** How many requests are pending right now — the total a bounded list cannot show. */
+export function countPendingRows(database: StateDatabase): number {
+  const row = database.prepare(COUNT_PENDING).get()
+  if (typeof row !== 'object' || row === null) return 0
+  const { n } = row as Record<string, unknown>
+  return typeof n === 'number' ? n : Number(n ?? 0)
 }
 
 /** The pending record's JSON text, or `null` when the id is unknown or resolved. */
@@ -344,6 +361,8 @@ export interface ApprovalChangeRow {
   readonly approvalId: string
   readonly status: string
   readonly doc: string
+  /** This row's change sequence — the watermark a truncated page stops at. */
+  readonly changeSeq: number
 }
 
 /**
@@ -356,19 +375,26 @@ export interface ApprovalChangeRow {
 export function selectChangesSince(
   database: StateDatabase,
   sinceSeq: number,
+  limit: number,
 ): ApprovalChangeRow[] {
-  const rows = database.prepare(SELECT_CHANGES_SINCE).all(sinceSeq)
+  const rows = database.prepare(SELECT_CHANGES_SINCE).all(sinceSeq, limit)
   return rows.map(changeRow).filter((row): row is ApprovalChangeRow => row !== null)
 }
 
 function changeRow(row: unknown): ApprovalChangeRow | null {
   if (typeof row !== 'object' || row === null) return null
-  const { approval_id: approvalId, status, doc } = row as Record<string, unknown>
+  const { approval_id: approvalId, status, doc, change_seq: changeSeq } = row as Record<string, unknown>
   if (typeof approvalId !== 'string' || typeof status !== 'string') return null
+  if (typeof changeSeq !== 'number' && typeof changeSeq !== 'bigint') return null
   // A malformed `doc` is kept as an empty string rather than dropping the row:
   // the id and status are still the truth about WHAT changed, and the record
   // parser above this layer skips the unusable content (MALFORMED_SKIP).
-  return { approvalId, status, doc: typeof doc === 'string' ? doc : '' }
+  return {
+    approvalId,
+    status,
+    doc: typeof doc === 'string' ? doc : '',
+    changeSeq: Number(changeSeq),
+  }
 }
 
 /**

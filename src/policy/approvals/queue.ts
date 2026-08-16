@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { ulid } from 'ulid'
-import { JOURNAL_DIR } from '../../config.js'
+import { APPROVALS_LIST_MAX_ROWS, JOURNAL_DIR } from '../../config.js'
 import { redact } from '../../redact/redact.js'
 import { canonicalJson, sha256Hex } from '../hash.js'
 import type { ToolClass } from '../schema.js'
@@ -10,6 +10,7 @@ import {
   openApprovalsDb,
   resolvePendingRow,
   runWriteTransaction,
+  countPendingRows,
   selectChangesSince,
   selectLatestChangeSeq,
   selectNewestResolvedDocs,
@@ -126,16 +127,41 @@ export interface ListResolvedOptions {
  * caller deduplicates by id — see `ui/watch.ts`.
  */
 export interface ApprovalChanges {
+  /**
+   * The watermark to pass to the NEXT call. On a truncated page this is the
+   * sequence of the last change actually DELIVERED, not the global latest —
+   * reporting the global one would silently skip everything the page left
+   * behind and break the "never skipped" contract.
+   */
   readonly latestSeq: number
+  /**
+   * True when the read hit its row bound and more changes are already waiting.
+   * A caller draining a backlog should poll again immediately rather than
+   * waiting out its normal interval.
+   */
+  readonly truncated: boolean
   /** Requests still pending as of this read, with `expired` derived as in `list()`. */
   readonly newPending: readonly PendingApproval[]
   /** Ids of requests that have been resolved (by an operator, or as expired). */
   readonly resolvedIds: readonly string[]
 }
 
+/** Row bound for a queue read; omitted means the module default. */
+export interface BoundedReadOptions {
+  readonly limit?: number
+}
+
 export interface ApprovalQueue {
   enqueue(req: EnqueueRequest): Promise<EnqueueResult>
-  list(): Promise<PendingApproval[]>
+  /**
+   * At most `limit` pending requests, OLDEST first (default
+   * `APPROVALS_LIST_MAX_ROWS`). Bounded because an undrained queue otherwise
+   * turned every UI poll into a full scan of the pending set; pair it with
+   * `countPending()` to tell the operator what is not being shown.
+   */
+  list(opts?: BoundedReadOptions): Promise<PendingApproval[]>
+  /** How many requests are pending in total, regardless of any list bound. */
+  countPending(): Promise<number>
   resolve(approvalId: string, resolution: ResolveInput): Promise<ResolveResult>
   /** Records an unresolved approval as `expired`, for session teardown. */
   markExpired(approvalId: string): Promise<ResolveResult>
@@ -153,7 +179,7 @@ export interface ApprovalQueue {
    * watermark and no changes at all, so attaching to a live queue never
    * replays its backlog.
    */
-  changesSince(sinceSeq: number | null): Promise<ApprovalChanges>
+  changesSince(sinceSeq: number | null, opts?: BoundedReadOptions): Promise<ApprovalChanges>
 }
 
 export interface ApprovalQueueOptions {
@@ -185,6 +211,14 @@ function parseDoc<T>(text: string, isShape: (raw: unknown) => raw is T): T | nul
     return null // malformed JSON: skip, never throw on garbage content
   }
   return isShape(raw) ? raw : null // malformed shape: skip
+}
+
+/** A caller-supplied bound, clamped to a positive integer no larger than the default. */
+function boundedLimit(requested: number | undefined): number {
+  if (requested === undefined || !Number.isInteger(requested) || requested <= 0) {
+    return APPROVALS_LIST_MAX_ROWS
+  }
+  return Math.min(requested, APPROVALS_LIST_MAX_ROWS)
 }
 
 /** Creates an approvals queue rooted at `opts.baseDir` (default `JOURNAL_DIR/approvals`). */
@@ -234,12 +268,12 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
     return { approvalId, argsHash }
   }
 
-  async function list(): Promise<PendingApproval[]> {
+  async function list(listOpts: BoundedReadOptions = {}): Promise<PendingApproval[]> {
     const db = await openApprovalsDb(baseDir)
     const nowMs = clock()
     // Ordered by the query (oldest request first); `expired` is derived here
     // rather than stored, so it can never go stale in storage.
-    return selectPendingDocs(db.handle.db)
+    return selectPendingDocs(db.handle.db, boundedLimit(listOpts.limit))
       .map((text) => parseDoc(text, isPendingApprovalFile))
       .filter((record): record is PendingApprovalFile => record !== null)
       .map((record) => ({ ...record, expired: isExpiredAt(record.expiresAt, nowMs) }))
@@ -350,19 +384,34 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
       .filter((record): record is ResolvedApprovalFile => record !== null)
   }
 
+  async function countPending(): Promise<number> {
+    const db = await openApprovalsDb(baseDir)
+    return countPendingRows(db.handle.db)
+  }
+
   /** See `ApprovalQueue.changesSince`. */
-  async function changesSince(sinceSeq: number | null): Promise<ApprovalChanges> {
+  async function changesSince(
+    sinceSeq: number | null,
+    changeOpts: BoundedReadOptions = {},
+  ): Promise<ApprovalChanges> {
     const db = await openApprovalsDb(baseDir)
     const database = db.handle.db
     // Watermark first, rows second: see `selectChangesSince` — this order can
     // only ever re-deliver a change, never lose one.
     const latestSeq = selectLatestChangeSeq(database)
-    if (sinceSeq === null) return { latestSeq, newPending: [], resolvedIds: [] }
+    if (sinceSeq === null) return { latestSeq, truncated: false, newPending: [], resolvedIds: [] }
+
+    // One row over the bound, so "is there more" is answered by the same read
+    // rather than by a second query against a moving table.
+    const limit = boundedLimit(changeOpts.limit)
+    const rows = selectChangesSince(database, sinceSeq, limit + 1)
+    const truncated = rows.length > limit
+    const delivered = truncated ? rows.slice(0, limit) : rows
 
     const nowMs = clock()
     const newPending: PendingApproval[] = []
     const resolvedIds: string[] = []
-    for (const row of selectChangesSince(database, sinceSeq)) {
+    for (const row of delivered) {
       if (row.status === 'resolved') {
         resolvedIds.push(row.approvalId)
         continue
@@ -371,8 +420,25 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
       if (record === null) continue // malformed content: skip, as `list()` does
       newPending.push({ ...record, expired: isExpiredAt(record.expiresAt, nowMs) })
     }
-    return { latestSeq, newPending, resolvedIds }
+    // A truncated page stops the watermark at the last change it delivered —
+    // the global one would skip the remainder outright.
+    const lastDelivered = delivered.at(-1)
+    return {
+      latestSeq: truncated && lastDelivered !== undefined ? lastDelivered.changeSeq : latestSeq,
+      truncated,
+      newPending,
+      resolvedIds,
+    }
   }
 
-  return { enqueue, list, resolve, markExpired, readResolution, listResolved, changesSince }
+  return {
+    enqueue,
+    list,
+    countPending,
+    resolve,
+    markExpired,
+    readResolution,
+    listResolved,
+    changesSince,
+  }
 }

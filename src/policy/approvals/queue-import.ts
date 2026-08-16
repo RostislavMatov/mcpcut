@@ -190,7 +190,14 @@ export async function migrateApprovalsQueue(journalDir: string): Promise<Approva
   // idempotent) — see the docstring above for why this module never imports directly.
   await openApprovalsDb(baseDir)
 
-  return { status: 'imported', pendingCount: pendingRows.length, resolvedCount: resolvedRows.length }
+  // Count what the import actually STORES, not what the directories hold. An id
+  // duplicated into both `pending/` and `resolved/` by hand loses the pending
+  // copy to `INSERT OR IGNORE` (the settled record is inserted first and wins),
+  // so counting it in both places reported one more record than exists.
+  const resolvedIds = new Set(resolvedRows.map((row) => row.approvalId))
+  const storedPending = pendingRows.filter((row) => !resolvedIds.has(row.approvalId))
+
+  return { status: 'imported', pendingCount: storedPending.length, resolvedCount: resolvedIds.size }
 }
 
 /**

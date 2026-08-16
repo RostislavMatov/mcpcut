@@ -224,6 +224,31 @@ describe('migrate: approvals queue', () => {
     await expect(queue.readResolution(RESOLVED_ID)).resolves.not.toBeNull()
   })
 
+  test('an id present in BOTH pending/ and resolved/ is reported once, as resolved', async () => {
+    // A hand-duplicated id (an operator copying files, or a half-finished move)
+    // used to be counted in both directories, so the report claimed two records
+    // where `INSERT OR IGNORE` stored one — and the one it stored was the
+    // resolved copy, which is the settled truth.
+    const approvalsDir = join(journalDir, 'approvals')
+    await mkdir(join(approvalsDir, 'pending'), { recursive: true })
+    await mkdir(join(approvalsDir, 'resolved'), { recursive: true })
+    const bothId = '01CCCCCCCCCCCCCCCCCCCCCCCC'
+    await writeFile(join(approvalsDir, 'pending', `${bothId}.json`), legacyPendingDoc(bothId), 'utf8')
+    await writeFile(
+      join(approvalsDir, 'resolved', `${bothId}.json`),
+      legacyResolvedDoc(bothId),
+      'utf8',
+    )
+    const io = fakeIo()
+
+    expect(await run([], io)).toBe(0)
+
+    expect(io.out()).toContain('state: approvals/ -> imported (0 pending, 1 resolved)')
+    const queue = createApprovalQueue({ baseDir: approvalsDir })
+    await expect(queue.list()).resolves.toHaveLength(0)
+    await expect(queue.readResolution(bothId)).resolves.not.toBeNull()
+  })
+
   test('a second run reports "already migrated" for approvals and imports nothing again', async () => {
     await writeLegacyApprovals()
     await run([])
