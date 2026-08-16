@@ -24,7 +24,7 @@ import type { UiSession } from '../auth.js'
  */
 
 /** The queue surface these handlers need (a subset of `ApprovalQueue`). */
-export type ApprovalsQueue = Pick<ApprovalQueue, 'list' | 'resolve'>
+export type ApprovalsQueue = Pick<ApprovalQueue, 'list' | 'resolve' | 'countPending'>
 
 export interface ApprovalsHandlerDeps {
   readonly queue: ApprovalsQueue
@@ -48,11 +48,22 @@ function jsonResult(status: number, payload: unknown): UiResult {
   return { kind: 'response', status, body: Buffer.from(JSON.stringify(payload), 'utf8') }
 }
 
-/** Builds the display cards from the live queue at the handler's clock. */
-async function loadCards(deps: ApprovalsHandlerDeps): Promise<ApprovalCardView[]> {
+/** The cards a bounded read returned, plus the true total behind them. */
+interface ApprovalsView {
+  readonly cards: ApprovalCardView[]
+  readonly totalPending: number
+}
+
+/**
+ * Builds the display cards from the live queue at the handler's clock. The read
+ * is bounded (an undrained queue would otherwise make every poll a full scan),
+ * so the total is fetched alongside it and the page says what it is not showing.
+ */
+async function loadCards(deps: ApprovalsHandlerDeps): Promise<ApprovalsView> {
   const nowMs = (deps.clock ?? Date.now)()
   const pending = await deps.queue.list()
-  return pending.map((entry) => toApprovalCard(entry, nowMs))
+  const totalPending = await deps.queue.countPending()
+  return { cards: pending.map((entry) => toApprovalCard(entry, nowMs)), totalPending }
 }
 
 function currentAdminOf(session: UiSession | undefined): { name: string; role: string } | undefined {
@@ -60,11 +71,12 @@ function currentAdminOf(session: UiSession | undefined): { name: string; role: s
 }
 
 async function renderPage(deps: ApprovalsHandlerDeps, ctx: UiRequestContext): Promise<UiResult> {
-  const cards = await loadCards(deps)
+  const view = await loadCards(deps)
   const csrfToken = ctx.session?.csrfToken ?? ''
   const currentAdmin = currentAdminOf(ctx.session)
   const html = renderApprovalsPage({
-    cards,
+    cards: view.cards,
+    totalPending: view.totalPending,
     csrfToken,
     ...(currentAdmin !== undefined ? { currentAdmin } : {}),
   })
@@ -72,7 +84,10 @@ async function renderPage(deps: ApprovalsHandlerDeps, ctx: UiRequestContext): Pr
 }
 
 async function renderApi(deps: ApprovalsHandlerDeps): Promise<UiResult> {
-  return jsonResult(HTTP_STATUS_OK, { approvals: await loadCards(deps) })
+  const view = await loadCards(deps)
+  // `totalPending` travels beside the bounded array so a JSON consumer sees the
+  // truncation too, instead of inferring "that is all of them" from the length.
+  return jsonResult(HTTP_STATUS_OK, { approvals: view.cards, totalPending: view.totalPending })
 }
 
 /**

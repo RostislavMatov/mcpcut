@@ -39,6 +39,22 @@ export const JOURNAL_BATCH_MAX_DELAY_MS = 10
 export const APPROVALS_IMPORT_BATCH_ROWS = 256
 
 /**
+ * Row bound for one read of the pending approvals set (`list`, `changesSince`).
+ *
+ * The file-based queue read the whole `pending/` directory too, so this is not
+ * a regression it introduces — it closes an availability hole both carried: an
+ * undrained queue made every UI poll proportional to the backlog. Sized well
+ * above any plausible working set, so an operator with a normal queue never
+ * sees truncation, and a pathological one degrades to "showing the oldest N of
+ * M" rather than to a slow plane.
+ *
+ * Retention DEFAULTS — how long a settled request is kept at all — are a
+ * separate question and deliberately still open (M5): they need dogfood data,
+ * while this bound needs none.
+ */
+export const APPROVALS_LIST_MAX_ROWS = 500
+
+/**
  * Session ids become file names, so they are validated against this pattern
  * before any path is built from them (path-traversal guard). Deliberately
  * wider than the ULID alphabet: callers may inject their own session ids.

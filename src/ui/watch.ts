@@ -98,6 +98,17 @@ export function createQueueWatcher(deps: WatchDeps): QueueWatcher {
    * gives the set of ids that are already pending — so a later resolve of one
    * of them is still recognized as a retraction of something the client may
    * have fetched over the JSON API.
+   *
+   * KNOWN, ACCEPTED GAP (reviewed 2026-08-16, decided "document, do not fix"):
+   * the two reads are not one snapshot. A request that was already pending and
+   * gets resolved BETWEEN them lands in neither — it is gone from `list()`, so
+   * it never enters `announced`, and its change is below the baseline
+   * watermark, so no `approval-resolved` event is published for it. The window
+   * is sub-millisecond and exists only at UI startup, and the client refetches
+   * the list over the JSON API on load, so the page self-heals on its first
+   * render. Closing it properly means reading both under one transaction, which
+   * would put a queue-wide read lock on the startup path to fix a stale row
+   * that no one sees.
    */
   async function seedApprovals(): Promise<void> {
     const baseline = await deps.queue.changesSince(null)
@@ -113,9 +124,19 @@ export function createQueueWatcher(deps: WatchDeps): QueueWatcher {
         return
       }
 
-      const changes = await deps.queue.changesSince(watermark)
+      // Drain: a bounded read can leave more behind, and its watermark stops at
+      // the last change it delivered. Looping until the feed is caught up keeps
+      // a backlog from taking one poll interval per page to work through, while
+      // the bound still keeps any single read cheap. The loop is finite — each
+      // page strictly advances the watermark.
+      let changes = await deps.queue.changesSince(watermark)
       watermark = changes.latestSeq
       publishApprovalDeltas(announced, changes.newPending, changes.resolvedIds)
+      while (changes.truncated) {
+        changes = await deps.queue.changesSince(watermark)
+        watermark = changes.latestSeq
+        publishApprovalDeltas(announced, changes.newPending, changes.resolvedIds)
+      }
     } catch (error: unknown) {
       log(`approvals poll failed: ${describeError(error)}`)
     }

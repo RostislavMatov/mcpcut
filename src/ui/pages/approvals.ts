@@ -138,6 +138,12 @@ export interface ApprovalsPageInput {
   readonly cards: readonly ApprovalCardView[]
   readonly csrfToken: string
   readonly currentAdmin?: CurrentAdmin
+  /**
+   * Total pending requests, when it exceeds what `cards` holds. Reads of the
+   * queue are bounded, and an operator must never be left believing a truncated
+   * page is the whole queue.
+   */
+  readonly totalPending?: number
 }
 
 /**
@@ -152,6 +158,19 @@ const APPROVALS_LIVE_TOPICS = 'approval-pending approval-resolved'
 const APPROVALS_LIVE_SRC = '/'
 
 /** Renders the full approvals document (string ready for the HTTP body). */
+/**
+ * The count line. When the read was truncated it says so explicitly — showing
+ * a bare "500 pending" on a queue of 900 would tell an operator the backlog is
+ * drained when it is not.
+ */
+function renderPendingCount(input: ApprovalsPageInput): Html {
+  const total = input.totalPending
+  if (total === undefined || total <= input.cards.length) {
+    return html`${String(input.cards.length)} pending`
+  }
+  return html`${String(input.cards.length)} of ${String(total)} pending (showing the oldest)`
+}
+
 export function renderApprovalsPage(input: ApprovalsPageInput): string {
   const body =
     input.cards.length === 0
@@ -164,7 +183,7 @@ export function renderApprovalsPage(input: ApprovalsPageInput): string {
   >
     <h1>Approvals</h1>
     <p class="pending-count" data-pending-count="${input.cards.length}">
-      ${input.cards.length} pending
+      ${renderPendingCount(input)}
     </p>
     ${body}
   </section>`

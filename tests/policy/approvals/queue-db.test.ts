@@ -396,7 +396,7 @@ describe('changesSince', () => {
     const baseline = await queue.changesSince(null)
 
     // The seed must never replay what is already there (the watcher contract).
-    expect(baseline).toEqual({ latestSeq: 1, newPending: [], resolvedIds: [] })
+    expect(baseline).toEqual({ latestSeq: 1, truncated: false, newPending: [], resolvedIds: [] })
   })
 
   test('an enqueue after the baseline surfaces as a new pending entry', async () => {
@@ -452,7 +452,7 @@ describe('changesSince', () => {
 
     expect(second.latestSeq).toBeGreaterThan(first.latestSeq)
     expect(third.latestSeq).toBe(second.latestSeq)
-    expect(third).toEqual({ latestSeq: second.latestSeq, newPending: [], resolvedIds: [] })
+    expect(third).toEqual({ latestSeq: second.latestSeq, truncated: false, newPending: [], resolvedIds: [] })
   })
 
   test('a malformed doc row is skipped, not thrown', async () => {
@@ -461,6 +461,7 @@ describe('changesSince', () => {
 
     await expect(createApprovalQueue({ baseDir }).changesSince(0)).resolves.toEqual({
       latestSeq: 0,
+      truncated: false,
       newPending: [],
       resolvedIds: [],
     })
