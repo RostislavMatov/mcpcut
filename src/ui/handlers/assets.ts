@@ -1,5 +1,6 @@
 import { APP_CSS } from '../assets/app-css.js'
 import { APP_JS } from '../assets/app-js.js'
+import { FAVICON } from '../assets/favicon.js'
 import type { Asset } from '../assets/app-css.js'
 import {
   HTTP_STATUS_NOT_FOUND,
@@ -36,8 +37,29 @@ const ASSETS: Readonly<Record<string, Asset>> = Object.freeze(
   Object.assign(Object.create(null) as Record<string, Asset>, {
     'app.css': APP_CSS,
     'app.js': APP_JS,
+    'favicon.svg': FAVICON,
   }),
 )
+
+/**
+ * Well-known paths a browser probes on its own, mapped to an allowlist NAME.
+ * `/favicon.ico` is the only one: the browser asks for it unprompted, and
+ * without a route deny-by-default answered 403 into the console of every page
+ * (manual M4 smoke). The alias is an exact-path lookup into the SAME two-step
+ * allowlist — it resolves to a name, never to a path, so it opens no second
+ * resolution channel.
+ */
+const PATH_ALIASES: Readonly<Record<string, string>> = Object.freeze(
+  Object.assign(Object.create(null) as Record<string, string>, {
+    '/favicon.ico': 'favicon.svg',
+  }),
+)
+
+/** The allowlist name for a request: the wildcard segment, or a path alias. */
+function assetNameFor(ctx: UiRequestContext): string | undefined {
+  if (ctx.params.rest !== undefined) return ctx.params.rest
+  return Object.hasOwn(PATH_ALIASES, ctx.path) ? PATH_ALIASES[ctx.path] : undefined
+}
 
 /** Looks up an asset by exact name, using an own-property check (no chain). */
 function resolveAsset(rest: string | undefined): Asset | undefined {
@@ -77,7 +99,7 @@ function serveAsset(asset: Asset, ifNoneMatch: string | undefined): UiResult {
 /** Builds the injectable `assets` handler. Pure over its constant allowlist. */
 export function createAssetsHandler(): UiHandler {
   return function assets(ctx: UiRequestContext): UiResult {
-    const asset = resolveAsset(ctx.params.rest)
+    const asset = resolveAsset(assetNameFor(ctx))
     if (asset === undefined) return notFound()
     return serveAsset(asset, headerValue(ctx.headers, 'if-none-match'))
   }

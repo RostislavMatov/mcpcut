@@ -29,8 +29,13 @@ const CONTENT_TYPE_TEXT = 'text/plain; charset=utf-8'
 
 /** Builds the injectable `events` handler bound to a single process-wide hub. */
 export function createEventsHandler(hub: EventHub): UiHandler {
-  return function events(): UiResult {
-    if (!hub.hasCapacity()) {
+  return function events(ctx): UiResult {
+    // The per-admin quota is checked on the same pre-`200` path as the global
+    // cap, so an admin at their own limit gets the same clean 503 + Retry-After
+    // and the client falls back to polling.
+    const adminName = ctx.session?.adminName
+    const hasRoom = adminName === undefined ? hub.hasCapacity() : hub.hasCapacityFor(adminName)
+    if (!hasRoom) {
       return {
         kind: 'response',
         status: HTTP_STATUS_SERVICE_UNAVAILABLE,

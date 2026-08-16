@@ -128,6 +128,14 @@ export const UI_SSE_HEARTBEAT_INTERVAL_MS = 15_000
 export const UI_MAX_SSE_SUBSCRIBERS = 64
 
 /**
+ * Cap on the streams ONE admin may hold. Without it a single admin's tabs (or a
+ * reconnect loop) can occupy all 64 slots and every other admin falls back to
+ * polling. Matches the per-admin session cap: a stream per session is the shape
+ * the UI actually opens.
+ */
+export const UI_MAX_SSE_SUBSCRIBERS_PER_ADMIN = 8
+
+/**
  * The single SSE response-header set, written once by `server.ts` on the stream
  * path together with `securityHeaders()`. `x-accel-buffering: no` defeats
  * reverse-proxy buffering that would otherwise hold events; `no-store,
@@ -140,6 +148,22 @@ export const SSE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
   connection: 'keep-alive',
   'x-accel-buffering': 'no',
 })
+
+/**
+ * How often open SSE streams are re-checked against the live admin store.
+ *
+ * Separate from the heartbeat on purpose. `admin remove`/`rotate`/`role` run in
+ * the CLI — a DIFFERENT process — so the `ui` process learns about a revocation
+ * only by re-reading the store. Requests were always refused immediately (each
+ * one re-validates), but a never-ending SSE stream has no next request, and
+ * riding the 15s heartbeat made the revocation SLA 15s.
+ *
+ * There is no cross-process notification to subscribe to: the state lives in
+ * SQLite (M4.5), and a filesystem watch on the database would fire on every
+ * unrelated write while still missing nothing useful. Polling is the honest
+ * mechanism; the cost is one deduplicated read per distinct session per tick.
+ */
+export const UI_SESSION_SWEEP_INTERVAL_MS = 2000
 
 // --- Watcher --------------------------------------------------------------
 

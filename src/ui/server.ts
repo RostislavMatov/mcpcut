@@ -46,6 +46,7 @@ import {
   HTTP_STATUS_NOT_IMPLEMENTED,
   HTTP_STATUS_OK,
   HTTP_STATUS_PAYLOAD_TOO_LARGE,
+  HTTP_STATUS_SEE_OTHER,
   MAX_UI_BODY_BYTES,
   NON_LOCALHOST_BIND_WARNING,
   SSE_HEADERS,
@@ -248,6 +249,21 @@ export function createUiServer(opts: UiServerOptions): UiServer {
     // (302 for a listed path vs 403 for an unlisted one). The login page is
     // still reachable directly at `GET /login` (public).
     if (decision.kind !== 'allow' || session === undefined) {
+      // One exception to the uniform 403: an anonymous GET of the ROOT path is
+      // sent to `/login`. `/` is not a secret — every visitor types it — so the
+      // redirect leaks nothing, while a bare 403 on the landing page reads as
+      // "the plane is broken" to an operator who simply is not signed in yet
+      // (manual M4 smoke). The exception is exactly `/` and nothing else:
+      // redirecting any other protected path would restore the enumeration
+      // oracle (303 for a listed route vs 403 for an unlisted one).
+      if (session === undefined && req.method === 'GET' && path === '/') {
+        writeResult(res, {
+          kind: 'response',
+          status: HTTP_STATUS_SEE_OTHER,
+          headers: { location: '/login' },
+        })
+        return
+      }
       sendPlan(res, HTTP_STATUS_FORBIDDEN, BODY_FORBIDDEN)
       return
     }

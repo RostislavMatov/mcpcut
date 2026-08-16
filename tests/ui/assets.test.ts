@@ -83,3 +83,42 @@ describe('assets handler — conditional requests', () => {
     expect(res.body).toBe(APP_CSS.body)
   })
 })
+
+describe('favicon (smoke M4: the browser probe answered 403)', () => {
+  /** The bare `/favicon.ico` probe every browser makes, matched as its own route. */
+  function faviconCtx(headers: Record<string, string> = {}): UiRequestContext {
+    return {
+      method: 'GET',
+      path: '/favicon.ico',
+      params: {},
+      query: new URLSearchParams(),
+      session: undefined,
+      body: Buffer.alloc(0),
+      headers,
+    }
+  }
+
+  test('/favicon.ico resolves to a real icon instead of failing closed', async () => {
+    const res = asResponse(await handler(faviconCtx()))
+
+    expect(res.status).toBe(200)
+    expect(res.headers?.['content-type']).toContain('image/')
+    expect(String(res.body).length).toBeGreaterThan(0)
+  })
+
+  test('the icon is also reachable under /assets, and honours If-None-Match', async () => {
+    const direct = asResponse(await handler(ctx('favicon.svg')))
+    expect(direct.status).toBe(200)
+
+    const etag = direct.headers?.etag ?? ''
+    const revalidated = asResponse(await handler(faviconCtx({ 'if-none-match': etag })))
+    expect(revalidated.status).toBe(304)
+  })
+
+  test('the path alias is exact: it does not open a second lookup channel', async () => {
+    // The alias must not become a way to name an asset by path — the allowlist
+    // stays the only resolution rule.
+    expect(asResponse(await handler({ ...faviconCtx(), path: '/app.js' })).status).toBe(404)
+    expect(asResponse(await handler({ ...faviconCtx(), path: '/favicon.ico/../app.js' })).status).toBe(404)
+  })
+})

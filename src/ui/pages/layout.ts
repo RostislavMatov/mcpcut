@@ -70,6 +70,19 @@ function renderNav(options: LayoutOptions): Html {
 }
 
 /**
+ * The live-updates attribute, present only on an AUTHENTICATED page.
+ *
+ * `GET /events` requires a session, so the login page carrying this attribute
+ * made every visitor's browser open a stream that could only be refused — a 403
+ * in the console of the one page an operator looks at while suspecting
+ * something is wrong (manual M4 smoke). No attribute, no connection: the client
+ * script treats its absence as "this page has no live channel".
+ */
+function liveAttribute(options: LayoutOptions): Html {
+  return options.currentAdmin === undefined ? html`` : html` data-events-url="/events"`
+}
+
+/**
  * Renders a complete HTML document string ready for the HTTP body. Returns a
  * `string` (not `Html`) because it is the terminal render step; internally it
  * is built entirely through the escaping `html` template.
@@ -83,8 +96,9 @@ export function renderLayout(options: LayoutOptions): string {
 <meta name="csrf-token" content="${options.csrfToken}">
 <title>${options.title} · mcp-journal</title>
 <link rel="stylesheet" href="/assets/app.css">
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
 </head>
-<body data-events-url="/events">
+<body${liveAttribute(options)}>
 ${renderNav(options)}
 <main>
 ${options.content}

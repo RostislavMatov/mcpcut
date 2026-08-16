@@ -296,6 +296,45 @@ async function waitForText(stream: OpenStream, needle: string): Promise<boolean>
   return false
 }
 
+/**
+ * Opens `/events` and reports when the server ENDS the stream — the signal an
+ * out-of-process revocation is supposed to produce without waiting for the
+ * 15-second heartbeat sweep.
+ */
+function openStreamTracked(
+  base: string,
+  headers: Record<string, string>,
+): Promise<{ status: number; isEnded: () => boolean; close: () => void }> {
+  const url = new URL('/events', base)
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      {
+        hostname: url.hostname,
+        port: url.port,
+        path: url.pathname,
+        method: 'GET',
+        headers,
+        agent: false,
+      },
+      (res: IncomingMessage) => {
+        let ended = false
+        res.setEncoding('utf8')
+        res.on('data', () => undefined)
+        res.on('end', () => {
+          ended = true
+        })
+        res.on('close', () => {
+          ended = true
+        })
+        res.on('error', () => undefined)
+        resolve({ status: res.statusCode ?? 0, isEnded: () => ended, close: () => req.destroy() })
+      },
+    )
+    req.on('error', reject)
+    req.end()
+  })
+}
+
 /** An inventory file holding exactly one quarantined tool. */
 function inventoryWithQuarantinedTool(serverName: string, toolName: string): string {
   return JSON.stringify({
@@ -590,7 +629,10 @@ describe('runUi: composed handlers', () => {
     expect(loginPage.status).toBe(200)
     expect(loginPage.body).toContain('<form')
 
-    expect((await httpCall(fixture.base, '/')).status).toBe(403)
+    // The landing page sends an unauthenticated visitor to the login form; any
+    // OTHER protected page keeps the uniform, oracle-free 403.
+    expect((await httpCall(fixture.base, '/')).status).toBe(303)
+    expect((await httpCall(fixture.base, '/journal')).status).toBe(403)
     expect(fixture.io.outText()).toBe('')
   })
 
@@ -714,6 +756,56 @@ describe('runUi: composed stores and watcher', () => {
 // ---------------------------------------------------------------------------
 // Graceful shutdown
 // ---------------------------------------------------------------------------
+
+describe('out-of-process revocation closes open streams well inside the heartbeat', () => {
+  test('an `admin remove` from another process ends that admin SSE stream', async () => {
+    const journalDir = await makeJournalDir()
+    const store = createAdminStore({ journalDir })
+    const { token } = await store.createAdmin('alice', 'owner')
+    await store.createAdmin('bob', 'owner')
+    const fixture = await startUi({ journalDir })
+    const session = await loginSession(fixture.base, token)
+
+    const stream = await openStreamTracked(fixture.base, { cookie: session.cookie })
+    expect(stream.status).toBe(200)
+    expect(stream.isEnded()).toBe(false)
+
+    // A SECOND store instance stands in for the CLI process: it writes the same
+    // state the running UI reads. Before this, the sweep rode the 15s heartbeat,
+    // so a revoked admin could keep receiving events for that long. There is no
+    // cross-process notification to subscribe to (the state is SQLite), so the
+    // fix is a dedicated, faster sweep — bounded, not instantaneous.
+    await createAdminStore({ journalDir }).removeAdmin('alice')
+
+    const deadline = Date.now() + 2000
+    while (!stream.isEnded() && Date.now() < deadline) await sleep(10)
+    expect(stream.isEnded()).toBe(true)
+
+    stream.close()
+    await fixture.shutdown()
+  })
+
+  test('an unrelated admin keeps their stream when someone else is revoked', async () => {
+    const journalDir = await makeJournalDir()
+    const store = createAdminStore({ journalDir })
+    const alice = await store.createAdmin('alice', 'owner')
+    const bob = await store.createAdmin('bob', 'owner')
+    const fixture = await startUi({ journalDir })
+    const bobSession = await loginSession(fixture.base, bob.token)
+
+    const bobStream = await openStreamTracked(fixture.base, { cookie: bobSession.cookie })
+    expect(bobStream.status).toBe(200)
+
+    await createAdminStore({ journalDir }).removeAdmin(alice.admin.name)
+    await sleep(300)
+
+    // The sweep is per-session liveness, not a blanket teardown of the hub.
+    expect(bobStream.isEnded()).toBe(false)
+
+    bobStream.close()
+    await fixture.shutdown()
+  })
+})
 
 describe('runUi: graceful shutdown', () => {
   test('SIGINT closes open SSE streams and the server without hanging', async () => {
