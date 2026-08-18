@@ -297,9 +297,34 @@ function fingerprintOfSpkiDer(publicKeyObject: ReturnType<typeof createPublicKey
  * This is what makes `signChainHeadAnchor`'s `keyFingerprint` trustworthy:
  * it can only ever name the key that ACTUALLY produced the signature below
  * it, not a caller's separate claim about which key that was.
+ *
+ * Exported for `report-signing.ts` (M5 wave 5), the report manifest's
+ * signer: that module must derive its `keyFingerprint` under exactly this
+ * rule, and reaching it through this one function is what guarantees the
+ * two signers cannot drift into deriving the fingerprint two different
+ * ways -- or, worse, into one of them accepting the caller's word for it.
  */
-function fingerprintOfPrivateKey(privateKeyPem: string): string {
+export function privateKeyFingerprint(privateKeyPem: string): string {
   return fingerprintOfSpkiDer(createPublicKey(createPrivateKey(privateKeyPem)))
+}
+
+/**
+ * The asymmetric algorithm a private key PEM actually holds -- `'ed25519'`
+ * for this installation's own keys, `'rsa'`/`'ec'`/... for anything else,
+ * and `'unknown'` for a key Node cannot classify.
+ *
+ * Exported for `report-signing.ts` (M5 wave 5, review round) for the same
+ * reason `privateKeyFingerprint` is: a signature file states the algorithm an
+ * auditor will verify with, and the review found that field ASSERTED rather
+ * than derived -- signing a manifest with an RSA key produced a file claiming
+ * `ed25519`, so an auditor verifying independently (openssl, a GRC tool)
+ * follows the stated algorithm and gets a wrong answer about evidence. The
+ * derivation lives here, beside the fingerprint derivation, because
+ * `report-signing.ts` is forbidden from importing key-import primitives
+ * itself (`tests/architecture/imports.test.ts`).
+ */
+export function privateKeyAlgorithm(privateKeyPem: string): string {
+  return createPrivateKey(privateKeyPem).asymmetricKeyType ?? 'unknown'
 }
 
 /**
@@ -313,7 +338,7 @@ export function signChainHeadAnchor(
   privateKeyPem: string,
   anchor: UnsignedChainHeadAnchor,
 ): SignedChainHeadAnchor {
-  const fullAnchor: ChainHeadAnchor = { ...anchor, keyFingerprint: fingerprintOfPrivateKey(privateKeyPem) }
+  const fullAnchor: ChainHeadAnchor = { ...anchor, keyFingerprint: privateKeyFingerprint(privateKeyPem) }
   const canonicalBytes = canonicalChainHeadAnchorBytes(fullAnchor)
   const signatureBase64 = cryptoSign(null, Buffer.from(canonicalBytes, 'utf8'), privateKeyPem).toString(
     'base64',

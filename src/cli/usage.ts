@@ -47,11 +47,20 @@ export const USAGE = `Usage:
                                          Deny a pending request (same token, same record)
   mcp-journal migrate                    Import legacy *.json state into state.db
   mcp-journal export [--session <id>]   Export journal records as JSONL to stdout
+  mcp-journal export --report [--session <id>] [--out <dir>]
+                                         Write an evidentiary report directory (report.json,
+                                         records.jsonl, summary.md, signature.json if a signing
+                                         key exists); --out defaults to ./mcp-journal-report
   mcp-journal backup <destDir>          Back up state.db and journal.db into <destDir>
   mcp-journal verify [--session <id>] [--sign]
                                          Recompute the record hash chain and report where it
                                          stays consistent (exit 0 ok, 1 could not run, 2 broken);
                                          --sign additionally signs the current chain head
+  mcp-journal verify --report <dir> [--pub <path>] [--require-signature]
+                                         Offline-check an exported report directory (no database
+                                         opened); --pub defaults to <journal dir>/signing.pub;
+                                         --require-signature fails an unsigned or unattributable
+                                         export (same exit codes: 0 ok, 1 could not run, 2 failed)
   mcp-journal keygen                     Generate this installation's Ed25519 signing key
                                          (prints the public key once; needed for "verify --sign")
   mcp-journal --help                    Show this message

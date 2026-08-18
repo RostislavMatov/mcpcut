@@ -412,17 +412,38 @@ describe('node:sqlite is reached through the store adapter alone', () => {
 })
 
 // ---------------------------------------------------------------------------
-// The signing boundary (M5 wave 4, task 4.4). `src/journal/signing.ts` is the
-// single point of contact with Ed25519/keypair primitives: the installation's
-// private key is generated, loaded and used to sign/verify ONLY there. Unlike
-// the `node:sqlite` rule above, banning the whole `node:crypto` module would
-// be wrong -- `node:crypto` is used legitimately all over this codebase for
-// unrelated primitives (`policy/hash.ts`'s `createHash`, `vault/crypto.ts`'s
-// AES-GCM, `security/token.ts`'s `timingSafeEqual`). What must stay confined
-// is specifically the asymmetric signing/keypair surface.
+// The signing boundary (M5 wave 4, task 4.4; widened in wave 5). Ed25519 /
+// keypair primitives are reached from an ENUMERATED set of adapter files and
+// nowhere else: the installation's private key is generated, loaded and used
+// to sign/verify only there. Unlike the `node:sqlite` rule above, banning the
+// whole `node:crypto` module would be wrong -- `node:crypto` is used
+// legitimately all over this codebase for unrelated primitives
+// (`policy/hash.ts`'s `createHash`, `vault/crypto.ts`'s AES-GCM,
+// `security/token.ts`'s `timingSafeEqual`). What must stay confined is
+// specifically the asymmetric signing/keypair surface.
+//
+// The set had exactly one member through wave 4. Wave 5 added a second,
+// `report-signing.ts`, because `signing.ts` had reached the project's hard
+// 400-line file cap and the report manifest's signer could not fit in it.
+// That is a real, if small, weakening -- two files to audit instead of one --
+// and it is recorded here rather than hidden: the rule is still "these files
+// and no others", every member is named below, and the non-vacuity check
+// runs per member so a listed adapter that stopped using signing primitives
+// (and should therefore be removed from the set) fails the suite instead of
+// quietly widening the exemption.
 // ---------------------------------------------------------------------------
 
-const SIGNING_ADAPTER = 'src/journal/signing.ts'
+const SIGNING_ADAPTERS: readonly string[] = ['src/journal/signing.ts', 'src/journal/report-signing.ts']
+
+/**
+ * The signing primitives each adapter is expected to reach for. Keyed by
+ * adapter so the non-vacuity test asserts something specific per file rather
+ * than "some crypto name appears somewhere".
+ */
+const SIGNING_ADAPTER_EXPECTED_APIS: Readonly<Record<string, readonly string[]>> = {
+  'src/journal/signing.ts': ['generateKeyPairSync', 'sign', 'verify'],
+  'src/journal/report-signing.ts': ['sign', 'verify'],
+}
 
 /**
  * The exact `node:crypto` names that create or operate on an asymmetric
@@ -466,13 +487,13 @@ function cryptoNamedImportsOf(source: string): string[] {
   return names
 }
 
-/** Every `.ts` under `src` except the signing adapter -- the whole set the rule covers. */
+/** Every `.ts` under `src` except the signing adapters -- the whole set the rule covers. */
 function nonSigningAdapterFiles(): string[] {
-  return collectTransportFiles(PROJECT_ROOT, ['src'], new Set([SIGNING_ADAPTER]))
+  return collectTransportFiles(PROJECT_ROOT, ['src'], new Set(SIGNING_ADAPTERS))
 }
 
-describe('Ed25519/signing crypto primitives are reached through journal/signing.ts alone', () => {
-  test('nothing outside the signing module imports a signing/keypair API from node:crypto', () => {
+describe('Ed25519/signing crypto primitives are reached through the named signing adapters alone', () => {
+  test('nothing outside the signing adapters imports a signing/keypair API from node:crypto', () => {
     const offenders = nonSigningAdapterFiles().filter((relativePath) =>
       cryptoNamedImportsOf(readFileSync(join(PROJECT_ROOT, relativePath), 'utf8')).some((name) =>
         SIGNING_CRYPTO_API_NAMES.has(name),
@@ -482,13 +503,39 @@ describe('Ed25519/signing crypto primitives are reached through journal/signing.
     expect(offenders).toEqual([])
   })
 
-  test('the signing module itself does import the signing API, so the rule is not vacuous', () => {
-    const source = readFileSync(join(PROJECT_ROOT, SIGNING_ADAPTER), 'utf8')
+  test('every listed adapter actually imports the signing API, so the exemption is not vacuous', () => {
+    // Per adapter, not "somewhere in the set": an adapter that no longer uses
+    // a signing primitive is an exemption that should be DELETED, and this is
+    // what makes that show up as a failure rather than as silent slack.
+    expect(Object.keys(SIGNING_ADAPTER_EXPECTED_APIS).sort()).toEqual([...SIGNING_ADAPTERS].sort())
+    for (const [adapter, expectedApis] of Object.entries(SIGNING_ADAPTER_EXPECTED_APIS)) {
+      const names = cryptoNamedImportsOf(readFileSync(join(PROJECT_ROOT, adapter), 'utf8'))
+      for (const expected of expectedApis) {
+        expect(names, `${adapter} should import ${expected}`).toContain(expected)
+      }
+    }
+  })
+
+  test('the adapter set stays small and explicit, so the boundary cannot widen unnoticed', () => {
+    expect(SIGNING_ADAPTERS).toEqual(['src/journal/signing.ts', 'src/journal/report-signing.ts'])
+  })
+
+  test('key derivation is not duplicated across adapters', () => {
+    // The second adapter (`report-signing.ts`) must answer both questions it
+    // asks ABOUT a key -- "which key signed this" (`privateKeyFingerprint`)
+    // and, since the wave-5 review, "what algorithm is this key"
+    // (`privateKeyAlgorithm`, so `signature.json` states the algorithm it
+    // actually signed with instead of asserting one) -- through `signing.ts`,
+    // never by importing `createPrivateKey`/`createPublicKey` itself. Two
+    // derivations could drift, and one of them could drift into trusting a
+    // caller's claim.
+    const source = readFileSync(join(PROJECT_ROOT, 'src/journal/report-signing.ts'), 'utf8')
 
     const names = cryptoNamedImportsOf(source)
-    expect(names).toContain('generateKeyPairSync')
-    expect(names).toContain('sign')
-    expect(names).toContain('verify')
+    expect(names).not.toContain('createPrivateKey')
+    expect(names).not.toContain('createPublicKey')
+    expect(source).toMatch(/import \{[^}]*\bprivateKeyFingerprint\b[^}]*\} from '\.\/signing\.js'/)
+    expect(source).toMatch(/import \{[^}]*\bprivateKeyAlgorithm\b[^}]*\} from '\.\/signing\.js'/)
   })
 
   test('node:crypto stays usable elsewhere for the non-signing primitives it is meant for', () => {
@@ -501,11 +548,13 @@ describe('Ed25519/signing crypto primitives are reached through journal/signing.
     }
   })
 
-  test('the covered set is the whole of src minus the signing adapter', () => {
+  test('the covered set is the whole of src minus the signing adapters', () => {
     const covered = nonSigningAdapterFiles()
 
-    expect(covered).not.toContain(SIGNING_ADAPTER)
-    for (const expected of ['src/cli/keygen-cmd.ts', 'src/cli/verify-sign.ts']) {
+    for (const adapter of SIGNING_ADAPTERS) {
+      expect(covered).not.toContain(adapter)
+    }
+    for (const expected of ['src/cli/keygen-cmd.ts', 'src/cli/verify-sign.ts', 'src/journal/report.ts']) {
       expect(covered).toContain(expected)
     }
   })

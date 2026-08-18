@@ -232,6 +232,82 @@ CLAUDE.md:3 запрещает слова «tamper-evident» и «audit-ready» 
 **Правка CLAUDE.md** случится в волне 6, задача 6.4, когда вся пятёрка волн доставлена и смок
 прошёл.
 
+### 11. Report format v1 (wave 5, task 5.5): a versioned, minimally-sufficient field set
+
+*(Written in English per the wave-5 documentation task's instruction; the rest of this ADR
+predates that instruction and stays in Russian.)*
+
+`REPORT_FORMAT_VERSION` (`src/journal/report.ts`) versions the report format as a whole —
+`report.json`'s field set, the `records.jsonl` line convention, and the definition of
+`chain.recomputable` — not any one field in isolation. Every consumer (`report-parse.ts`) checks
+it BEFORE running the zod schema, and rejects an unrecognized version outright rather than
+attempting a best-effort read: a v2 manifest handed to a v1-only build fails loudly ("this build
+understands version 1 only… a newer report needs a newer mcp-journal"), instead of silently
+degrading into a check that examines fields whose meaning this build no longer knows.
+
+v1's field set (the frozen contract, reproduced in `report.ts`'s `ReportManifest`) is deliberately
+the MINIMUM an offline auditor needs to re-derive every claim the report makes: the exact bytes
+exported (`records.sha256`/`lineCount`), the decision counts and outcomes, the chain state at
+export time, and whether that state can be independently re-folded from the export alone
+(`isChainRecomputable`). It does not try to anticipate every question a real auditor engagement
+will raise. The PRD's open question — an actual interview with a design partner's auditor — is
+expected to surface fields v1 does not have (a machine-readable diff against a prior report, a
+retention marker once wave 6 ships pruning, and others neither foreseeable nor useful to guess at
+now). That interview has not happened; guessing its answer today would either under-specify a v2
+that has to break v1 anyway, or over-specify a v1 carrying fields nobody asked for. `formatVersion`
+exists precisely so that gap can be closed later without invalidating every v1 report already
+handed to an auditor: an old report stays readable by an old-enough verifier, and a new report says
+plainly that it needs a newer one.
+
+### 12. Three known v2 candidates, deliberately not fixed in v1
+
+Three points came up during wave 5 implementation where v1 could say more than it does. All three
+are DIAGNOSABILITY gaps, not soundness holes — v1's checks still catch the underlying discrepancy,
+just less directly than a v2 field could — and all three are deferred to a v2 informed by the
+auditor interview above, rather than fixed now on a guess:
+
+- **(a) `records.lineCount` and `counts.records` can never legitimately disagree.** Both fields
+  count the same set of exported rows, produced by the same streaming pass
+  (`report.ts`'s `streamRecords`); no honest export can make them differ. `report-verify.ts`'s
+  manifest-self-consistency check turns that redundancy into a cross-check instead of leaving it
+  as dead weight: a manifest hand-edited after export to change one copy and not the other is
+  caught, where a maximally minimal manifest carrying only one of the two fields could not have
+  caught it. A v2 that dropped the redundant field would need a different way to catch the same
+  tamper.
+- **(b) `chain.verifiedAtExport` is derivable from `chain.break === null`.** Same shape as (a),
+  same treatment: `report-verify.ts` checks the two agree rather than dropping one of them, so a
+  post-export edit that changes only one is caught rather than silently accepted.
+- **(c) `signature.json` carries no binding to the specific report it signs** (no `manifestSha256`
+  or equivalent). `signature.json`'s `keyFingerprint` says which KEY signed; nothing in v1 says
+  which `report.json` the signature was produced OVER, beyond the signature verifying or not
+  verifying against whatever manifest happens to be present. A `signature.json` from a DIFFERENT
+  export of the same installation — same key, wrong manifest — is caught only indirectly:
+  `verifyReportManifestSignature` (`report-signing.ts`) recomputes the canonical bytes from the
+  manifest actually on disk, and the signature simply fails to verify against them. The auditor
+  reads "the signature does not verify," not "this signature belongs to a different report" — a
+  true but less specific diagnosis. No mix-and-match of a foreign `signature.json` onto a real
+  manifest can pass the check, ever; a v2 field could turn that generic failure into a directly
+  nameable "wrong report" error.
+
+### 13. Manifest signing is a second, explicitly enumerated signing adapter
+
+Manifest signing (`signReportManifest`/`verifyReportManifestSignature`) lives in
+`src/journal/report-signing.ts`, not in `src/journal/signing.ts` alongside
+`signChainHeadAnchor`. The reason is purely the project's 400-line file cap: `signing.ts` is
+already at that limit, and `report-signing.ts`'s own "why" comments would push it over.
+
+This widens the architecture rule `tests/architecture/imports.test.ts` enforces — from
+"asymmetric crypto lives in exactly one file" to "asymmetric crypto lives in an ENUMERATED set of
+files," now two, both named explicitly in that test rather than matched by a pattern. Nothing else
+may import a signing primitive; adding a third file to the set means touching that test
+deliberately, which keeps the boundary a decision each time, not a drift.
+
+Key-fingerprint DERIVATION is not duplicated by this split: `report-signing.ts` imports
+`privateKeyFingerprint`/`publicKeyFingerprint` from `signing.ts` rather than recomputing them, so
+both signers — the chain-head anchor and the report manifest — answer "which key signed this"
+through the same one code path. Splitting WHERE signing happens did not split WHERE a key's
+identity is computed.
+
 ## Что отвергнуто и почему
 
 | Вариант | Почему нет |

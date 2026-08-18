@@ -1,7 +1,9 @@
+import { createHash } from 'node:crypto'
 import { describe, expect, test } from 'vitest'
 import {
   CanonicalJsonDepthError,
   canonicalJson,
+  createIncrementalSha256,
   hashToolSchema,
   sha256Hex,
 } from '../../src/policy/hash.js'
@@ -159,5 +161,92 @@ describe('hashToolSchema', () => {
     const first = hashToolSchema({ name: 'delete_file' })
     const second = hashToolSchema({ name: 'delete_files' })
     expect(first).not.toBe(second)
+  })
+})
+
+describe('createIncrementalSha256', () => {
+  test('digests chunks fed one at a time exactly as sha256Hex digests their concatenation', () => {
+    const chunks = ['{"a":1}\n', '{"b":2}\n', '{"c":3}\n']
+
+    const hasher = createIncrementalSha256()
+    for (const chunk of chunks) {
+      hasher.update(chunk)
+    }
+
+    expect(hasher.digestHex()).toBe(sha256Hex(chunks.join('')))
+  })
+
+  test('digests nothing as the empty-string digest, so an empty export still has a valid claim', () => {
+    expect(createIncrementalSha256().digestHex()).toBe(sha256Hex(''))
+  })
+
+  test('is chunk-boundary independent: the same bytes split differently digest the same', () => {
+    const oneChunk = createIncrementalSha256()
+    oneChunk.update('abcdef')
+
+    const split = createIncrementalSha256()
+    split.update('ab')
+    split.update('')
+    split.update('cdef')
+
+    expect(split.digestHex()).toBe(oneChunk.digestHex())
+  })
+
+  test('hashes multi-byte characters as UTF-8, matching sha256Hex', () => {
+    const hasher = createIncrementalSha256()
+    hasher.update('client→server')
+
+    expect(hasher.digestHex()).toBe(sha256Hex('client→server'))
+  })
+})
+
+/**
+ * Binary chunks (M5 wave-5 review, finding V2). The offline verifier's
+ * digest claim is "sha256 over the EXACT bytes of records.jsonl", and it can
+ * only keep that promise if the digest never passes through a UTF-8
+ * decoder: decoding is LOSSY for invalid input (every bad byte collapses to
+ * U+FFFD), so two byte-different files hash the same once decoded. These
+ * tests pin the byte path AND the pre-existing string path, because the
+ * exporting side still feeds UTF-8 strings and must keep digesting them
+ * identically.
+ */
+describe('createIncrementalSha256: raw bytes', () => {
+  test('digests a byte chunk as those bytes, matching node crypto over the same buffer', () => {
+    const bytes = Buffer.from([0x7b, 0x80, 0x7d, 0x0a])
+
+    const hasher = createIncrementalSha256()
+    hasher.update(bytes)
+
+    expect(hasher.digestHex()).toBe(createHash('sha256').update(bytes).digest('hex'))
+  })
+
+  test('two files differing only in one INVALID utf-8 byte digest differently', () => {
+    // The reviewer's reproduction: 0x80 and 0xff are both invalid UTF-8 and
+    // both decode to U+FFFD, so a decoded digest cannot tell these apart.
+    const first = Buffer.from([0x7b, 0x80, 0x7d])
+    const second = Buffer.from([0x7b, 0xff, 0x7d])
+
+    const a = createIncrementalSha256()
+    a.update(first)
+    const b = createIncrementalSha256()
+    b.update(second)
+
+    expect(a.digestHex()).not.toBe(b.digestHex())
+  })
+
+  test('a string chunk still digests as UTF-8, so the exporting side is unchanged', () => {
+    const hasher = createIncrementalSha256()
+    hasher.update('client→server')
+
+    expect(hasher.digestHex()).toBe(sha256Hex('client→server'))
+  })
+
+  test('string and byte chunks mix in one digest, matching the concatenated bytes', () => {
+    const hasher = createIncrementalSha256()
+    hasher.update('{"a":1}')
+    hasher.update(Buffer.from('\n', 'utf8'))
+    hasher.update('{"b":2}\n')
+
+    expect(hasher.digestHex()).toBe(sha256Hex('{"a":1}\n{"b":2}\n'))
   })
 })
