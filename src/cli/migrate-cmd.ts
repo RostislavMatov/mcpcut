@@ -118,15 +118,54 @@ function approvalsStatusLabel(result: ApprovalsMigrationResult): string {
 /** The report line's left-hand name for the journal's legacy files — a glob, not a single basename. */
 const JOURNAL_FILES_LABEL = '*.jsonl'
 
+/** The stdout status suffix noting refused sessions, or '' when none were refused. */
+function refusedSuffix(refusedSessions: readonly string[]): string {
+  if (refusedSessions.length === 0) return ''
+  return `, ${refusedSessions.length} refused (see warnings above)`
+}
+
 function journalStatusLabel(result: JournalMigrationResult): string {
   switch (result.status) {
     case 'imported':
-      return `imported (${result.recordCount} records from ${result.sessionCount} sessions)`
+      return (
+        `imported (${result.recordCount} records from ${result.sessionCount} sessions` +
+        `${refusedSuffix(result.refusedSessions)})`
+      )
     case 'already-migrated':
-      return 'already migrated'
+      // "already migrated" alone is misleading when the reason nothing NEW
+      // imported is that every remaining file was refused, not that it was
+      // genuinely seen before — the suffix disambiguates without inventing a
+      // third top-level status for what is otherwise the same "0 imported"
+      // outcome (see `migrateJournalFiles`'s module doc).
+      return `already migrated${refusedSuffix(result.refusedSessions)}`
     case 'no-files':
       return 'no files'
   }
+}
+
+/**
+ * One session's stderr warning when `migrateJournalFiles` refuses its legacy
+ * file: rows already exist for the session but no import marker does. Written
+ * BEFORE the journal's own stdout status line (see the call site) so an
+ * operator reads the concrete reason ahead of the summary that references it.
+ *
+ * No recovery command is offered because none exists: this tool never deletes
+ * `journal_records` rows, so there is no "--force" that could safely resolve
+ * this automatically. The operator has to look — comparing the row count for
+ * this session against the legacy file's own record count is the honest way
+ * to tell a genuine partial-import leftover from anything else that could
+ * produce this state (see `import.ts`'s module doc for what that "anything
+ * else" is).
+ */
+function refusedSessionWarning(sessionId: string): string {
+  return (
+    `migrate: session "${sessionId}" has rows in journal.db but no import marker; ` +
+    'refusing to re-import its legacy file, since doing so would replace those rows and ' +
+    'break any hash chain built on top of them. This usually means an earlier `migrate` ' +
+    'was interrupted partway through this session. Compare the row count for this ' +
+    'session in journal.db against the record count in its *.jsonl file to judge whether ' +
+    'the existing rows are complete; this file was left untouched and was not imported.\n'
+  )
 }
 
 /** Errors this command converts into an exit-1 message instead of a crash. */
@@ -160,6 +199,7 @@ export async function runMigrateCommand(
 
   const journalDir = opts.journalDir ?? JOURNAL_DIR
   let importedCount = 0
+  let anyJournalSessionRefused = false
 
   try {
     for (const { fileName, importDocument } of STATE_FILES) {
@@ -181,6 +221,16 @@ export async function runMigrateCommand(
     // store (the `catch` below) never reaches this line either. The journal
     // counts as ONE store in the closing summary, whatever its session count.
     const journalResult = await migrateJournalFiles(journalDir)
+    if (journalResult.status !== 'no-files') {
+      // Written to stderr ahead of the stdout status line, not after: a
+      // refusal is the actionable half of this report, and a reader scanning
+      // stderr first should not have to also find the stdout line to learn
+      // which sessions it names.
+      for (const sessionId of journalResult.refusedSessions) {
+        io.stderr.write(refusedSessionWarning(sessionId))
+      }
+      if (journalResult.refusedSessions.length > 0) anyJournalSessionRefused = true
+    }
     io.stdout.write(`journal: ${JOURNAL_FILES_LABEL} -> ${journalStatusLabel(journalResult)}\n`)
     if (journalResult.status === 'imported') importedCount += 1
   } catch (error: unknown) {
@@ -192,5 +242,9 @@ export async function runMigrateCommand(
   }
 
   io.stdout.write(`Migrated ${importedCount} store(s).\n`)
-  return 0
+  // A refused journal session is not a halted run — every other file still
+  // imported and the summary above is accurate — but it must not report a
+  // clean exit either: `migrate`'s scripts/CI callers rely on the exit code
+  // alone to know whether something needs a human's attention.
+  return anyJournalSessionRefused ? 1 : 0
 }

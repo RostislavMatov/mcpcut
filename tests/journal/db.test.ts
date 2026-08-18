@@ -1,7 +1,8 @@
-import { mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { GENESIS_PREV_HASH, linkHashOf } from '../../src/journal/chain.js'
 import {
   insertRecordRows,
   JOURNAL_DB_FILE_NAME,
@@ -11,6 +12,7 @@ import {
   type JournalRecordRow,
 } from '../../src/journal/db.js'
 import { openSqlite } from '../../src/store/sqlite.js'
+import { readJournalChainRows } from '../support/journal-rows.js'
 
 /**
  * The storage substrate of the journal (M4.5 wave 4, ADR-0006): `journal.db`
@@ -93,6 +95,19 @@ describe('openJournalDbShared: schema', () => {
           Buffer.from('not text'),
         ),
     ).toThrow()
+  })
+
+  test('journal_records has nullable prev_hash/record_hash chain columns (M5 wave 3)', async () => {
+    const handle = await openJournalDbShared(journalDbPathFor(journalDir))
+
+    const columns = handle.db.prepare('PRAGMA table_info(journal_records)').all() as {
+      name: string
+      notnull: number
+    }[]
+    const byName = new Map(columns.map((column) => [column.name, column]))
+
+    expect(byName.get('prev_hash')).toMatchObject({ notnull: 0 })
+    expect(byName.get('record_hash')).toMatchObject({ notnull: 0 })
   })
 
   test('database file mode is 0600 (regression guard on the shared adapter)', async () => {
@@ -233,6 +248,200 @@ describe('insertRecordRows', () => {
       n: number
     }
     expect(count.n).toBe(0)
+  })
+})
+
+/**
+ * `insertRecordRows`'s hash chain (M5 wave 3, task 3.2): genesis, chaining
+ * within and across batches, legacy (pre-chain) rows, concurrent writers,
+ * and hash uniqueness. `linkHashOf` itself is unit-tested in isolation in
+ * `chain.test.ts`; these tests are about the WIRING — the head read, the
+ * in-memory fold, and the transaction boundary.
+ */
+describe('insertRecordRows: hash chain', () => {
+  test('genesis: the first record in a fresh db has an empty prevHash and a recordHash from linkHashOf', async () => {
+    const handle = await openJournalDbShared(journalDbPathFor(journalDir))
+    const row = makeRow({ doc: '{"hello":"world"}' })
+
+    handle.transaction((db) => insertRecordRows(db, [row]))
+
+    const [chained] = await readJournalChainRows(journalDir)
+    expect(chained.prevHash).toBe(GENESIS_PREV_HASH)
+    expect(chained.recordHash).toBe(linkHashOf(GENESIS_PREV_HASH, row.doc))
+  })
+
+  test('chains consecutive single-row batches: each prevHash equals the previous recordHash, and each recordHash re-derives from its own stored doc', async () => {
+    const handle = await openJournalDbShared(journalDbPathFor(journalDir))
+    const docs = ['{"n":1}', '{"n":2}', '{"n":3}']
+    for (const doc of docs) {
+      handle.transaction((db) => insertRecordRows(db, [makeRow({ doc })]))
+    }
+
+    const rows = await readJournalChainRows(journalDir)
+    expect(rows).toHaveLength(3)
+    let expectedPrev: string = GENESIS_PREV_HASH
+    for (const row of rows) {
+      expect(row.prevHash).toBe(expectedPrev)
+      expect(row.recordHash).toBe(linkHashOf(expectedPrev, row.doc))
+      expectedPrev = row.recordHash as string
+    }
+  })
+
+  test('a whole batch (multiple rows, one transaction) chains correctly within itself — the in-memory fold', async () => {
+    const handle = await openJournalDbShared(journalDbPathFor(journalDir))
+    const rows: JournalRecordRow[] = [
+      makeRow({ recordId: 'rec-1', doc: '{"n":1}' }),
+      makeRow({ recordId: 'rec-2', doc: '{"n":2}' }),
+      makeRow({ recordId: 'rec-3', doc: '{"n":3}' }),
+    ]
+
+    handle.transaction((db) => insertRecordRows(db, rows))
+
+    const chained = await readJournalChainRows(journalDir)
+    expect(chained).toHaveLength(3)
+    expect(chained[0]?.prevHash).toBe(GENESIS_PREV_HASH)
+    expect(chained[1]?.prevHash).toBe(chained[0]?.recordHash)
+    expect(chained[2]?.prevHash).toBe(chained[1]?.recordHash)
+  })
+
+  test('two separate batches (transactions) chain across the batch boundary', async () => {
+    const handle = await openJournalDbShared(journalDbPathFor(journalDir))
+
+    handle.transaction((db) =>
+      insertRecordRows(db, [makeRow({ recordId: 'a-1', doc: '{"n":1}' }), makeRow({ recordId: 'a-2', doc: '{"n":2}' })]),
+    )
+    handle.transaction((db) =>
+      insertRecordRows(db, [makeRow({ recordId: 'b-1', doc: '{"n":3}' }), makeRow({ recordId: 'b-2', doc: '{"n":4}' })]),
+    )
+
+    const chained = await readJournalChainRows(journalDir)
+    expect(chained).toHaveLength(4)
+    expect(chained[2]?.prevHash).toBe(chained[1]?.recordHash) // links across the batch boundary
+    expect(chained[3]?.prevHash).toBe(chained[2]?.recordHash)
+  })
+
+  test('record_hash is unique across rows even when their doc content is identical — chain position differentiates them', async () => {
+    const handle = await openJournalDbShared(journalDbPathFor(journalDir))
+    const doc = '{"same":"doc"}'
+
+    handle.transaction((db) =>
+      insertRecordRows(db, [makeRow({ recordId: 'r1', doc }), makeRow({ recordId: 'r2', doc })]),
+    )
+
+    const chained = await readJournalChainRows(journalDir)
+    expect(chained[0]?.doc).toBe(doc)
+    expect(chained[1]?.doc).toBe(doc)
+    expect(chained[0]?.recordHash).not.toBe(chained[1]?.recordHash)
+  })
+
+  test('legacy rows (inserted before the chain existed) keep NULL prevHash/recordHash, and the next chained insert starts from genesis, not from NULL', async () => {
+    const dbPath = journalDbPathFor(journalDir)
+    // Simulates a pre-M5 database: the OLD table shape, no prev_hash/record_hash
+    // columns at all, with one legacy row already in it.
+    const rawHandle = await openSqlite(dbPath, { synchronous: 'full' })
+    rawHandle.db.exec(
+      'CREATE TABLE IF NOT EXISTS journal_records (' +
+        'seq INTEGER PRIMARY KEY AUTOINCREMENT, ' +
+        'session_id TEXT NOT NULL, record_id TEXT NOT NULL, ts TEXT NOT NULL, ' +
+        'direction TEXT NOT NULL, kind TEXT NOT NULL, method TEXT, doc TEXT NOT NULL) STRICT',
+    )
+    rawHandle.transaction((db) => {
+      db.prepare(
+        'INSERT INTO journal_records (session_id, record_id, ts, direction, kind, method, doc) ' +
+          'VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run('session-legacy', 'rec-legacy', new Date(0).toISOString(), 'client→server', 'notification', null, '{"legacy":true}')
+      return undefined
+    })
+    rawHandle.close()
+
+    // Opening through the real entry point must migrate the schema cleanly.
+    const handle = await openJournalDbShared(dbPath)
+    const columns = (handle.db.prepare('PRAGMA table_info(journal_records)').all() as { name: string }[]).map(
+      (column) => column.name,
+    )
+    expect(columns).toEqual(expect.arrayContaining(['prev_hash', 'record_hash']))
+
+    const beforeChaining = await readJournalChainRows(journalDir)
+    expect(beforeChaining).toHaveLength(1)
+    expect(beforeChaining[0]?.prevHash).toBeNull()
+    expect(beforeChaining[0]?.recordHash).toBeNull()
+
+    handle.transaction((db) => insertRecordRows(db, [makeRow({ recordId: 'rec-first-chained', doc: '{"chained":true}' })]))
+
+    const afterChaining = await readJournalChainRows(journalDir)
+    expect(afterChaining).toHaveLength(2)
+    const firstChained = afterChaining[1]
+    expect(firstChained?.prevHash).toBe(GENESIS_PREV_HASH) // NOT the legacy row's NULL
+    expect(firstChained?.recordHash).toBe(linkHashOf(GENESIS_PREV_HASH, firstChained?.doc ?? ''))
+  })
+
+  test('the ALTER TABLE column migration is idempotent: opening an already-migrated database does not throw', async () => {
+    const dbPath = journalDbPathFor(journalDir)
+    const handle = await openJournalDbShared(dbPath)
+    handle.transaction((db) => insertRecordRows(db, [makeRow()]))
+    // Force everything out of the WAL and into the main file so a plain file
+    // copy below is a complete, self-contained database.
+    handle.db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+
+    const migratedDir = await mkdtemp(join(tmpdir(), 'mcp-journal-db-test-migrated-'))
+    try {
+      await copyFile(dbPath, journalDbPathFor(migratedDir))
+
+      // A fresh dbPath forces a real (non-cached) call into the open/migrate
+      // path against a database that ALREADY has both chain columns — this
+      // is what proves the guard is a no-op rather than throwing on the
+      // already-migrated case.
+      const reopened = await openJournalDbShared(journalDbPathFor(migratedDir))
+      const columns = (reopened.db.prepare('PRAGMA table_info(journal_records)').all() as { name: string }[]).map(
+        (column) => column.name,
+      )
+      expect(columns).toEqual(expect.arrayContaining(['prev_hash', 'record_hash']))
+    } finally {
+      await rm(migratedDir, { recursive: true, force: true })
+    }
+  })
+
+  test('two interleaved writers (separate connections to the same file) produce one unbroken chain, no fork', async () => {
+    const dbPath = journalDbPathFor(journalDir)
+    // Two independent SqliteHandles against the SAME file model two
+    // concurrent sinks (two processes) rather than two callers sharing one
+    // process-cached handle. `BEGIN IMMEDIATE` serializes them at the SQLite
+    // level; what this test checks is that the RESULT is one unbroken chain
+    // regardless of which writer committed which row — the plan's highest-
+    // risk scenario (busy-retry between concurrent sinks forking the chain).
+    // Bootstraps the schema first (mirrors what a real first-ever writer's
+    // process does before either sink touches the file): raw `openSqlite`
+    // below is the storage primitive alone and runs no DDL of its own.
+    await openJournalDbShared(dbPath)
+    const writerA = await openSqlite(dbPath, { synchronous: 'full' })
+    const writerB = await openSqlite(dbPath, { synchronous: 'full' })
+    try {
+      writerA.transaction((db) => insertRecordRows(db, [makeRow({ recordId: 'a-1', doc: '{"w":"a1"}' })]))
+      writerB.transaction((db) => insertRecordRows(db, [makeRow({ recordId: 'b-1', doc: '{"w":"b1"}' })]))
+      writerA.transaction((db) => insertRecordRows(db, [makeRow({ recordId: 'a-2', doc: '{"w":"a2"}' })]))
+      writerB.transaction((db) =>
+        insertRecordRows(db, [
+          makeRow({ recordId: 'b-2', doc: '{"w":"b2"}' }),
+          makeRow({ recordId: 'b-3', doc: '{"w":"b3"}' }),
+        ]),
+      )
+      writerA.transaction((db) => insertRecordRows(db, [makeRow({ recordId: 'a-3', doc: '{"w":"a3"}' })]))
+    } finally {
+      writerA.close()
+      writerB.close()
+    }
+
+    const rows = await readJournalChainRows(journalDir)
+    expect(rows).toHaveLength(6)
+    let expectedPrev: string = GENESIS_PREV_HASH
+    const seenHashes = new Set<string>()
+    for (const row of rows) {
+      expect(row.prevHash).toBe(expectedPrev)
+      expect(row.recordHash).toBe(linkHashOf(expectedPrev, row.doc))
+      expect(seenHashes.has(row.recordHash as string)).toBe(false) // no duplicate recordHash = no fork
+      seenHashes.add(row.recordHash as string)
+      expectedPrev = row.recordHash as string
+    }
   })
 })
 

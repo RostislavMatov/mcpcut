@@ -291,3 +291,14 @@ describe('dispatch: backup', () => {
     expect(io.err()).toContain('No databases to back up.')
   })
 })
+
+describe('dispatch: verify', () => {
+  test('routes to verify-cmd with an isolated journalDir', async () => {
+    const io = fakeIo()
+
+    const exitCode = await dispatch(['verify'], io, { verify: { journalDir: tempDir } })
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('No journal database found')
+  })
+})

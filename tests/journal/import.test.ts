@@ -9,17 +9,42 @@ import {
   openJournalDbShared,
   type JournalRecordRow,
 } from '../../src/journal/db.js'
+import { GENESIS_PREV_HASH, linkHashOf } from '../../src/journal/chain.js'
 import { readSession } from '../../src/journal/reader.js'
 import { JOURNAL_BATCH_MAX_RECORDS } from '../../src/config.js'
+import { readJournalChainRows } from '../support/journal-rows.js'
 
 /**
- * `migrateJournalFiles` (M4.5 wave 4, Task 7): bulk import of legacy
- * `*.jsonl` files into `journal.db`. Test structure mirrors
- * `tests/journal/db.test.ts` (mkdtemp + afterEach rm, direct SQL assertions
- * against the handle) plus behavioral assertions through the public reader,
- * which is what actually proves the reader (`reader.ts`, DB-only since wave
- * 5) serves an imported session from the database.
+ * `migrateJournalFiles` (M4.5 wave 4, Task 7; refusal behavior M5 task 3.4):
+ * bulk import of legacy `*.jsonl` files into `journal.db`. Test structure
+ * mirrors `tests/journal/db.test.ts` (mkdtemp + afterEach rm, direct SQL
+ * assertions against the handle) plus behavioral assertions through the
+ * public reader, which is what actually proves the reader (`reader.ts`,
+ * DB-only since wave 5) serves an imported session from the database.
+ *
+ * M5 task 3.4 replaced the old wipe-and-reload idempotency mechanism (a
+ * first-batch `DELETE FROM journal_records WHERE session_id = ?`) with a
+ * refusal: a session with rows but no marker is left untouched and reported
+ * in `refusedSessions`, because a chain is now folded across insertion order
+ * (`chain.ts`/`db.ts`) and deleting rows from its middle breaks every link
+ * after them. Every exact-equality assertion below therefore carries a
+ * `refusedSessions` field the old result shape did not have; the tests that
+ * exercised the DELETE directly are rewritten, not merely patched — see each
+ * one's comment for why its OLD expectation no longer holds.
  */
+
+/** Re-derives every session's chain from `linkHashOf` and confirms it matches what is
+ * stored, catching a broken or forked link the way a later `verify` command would. */
+async function assertChainIntact(journalDir: string): Promise<void> {
+  const rows = await readJournalChainRows(journalDir)
+  let prev = GENESIS_PREV_HASH
+  for (const row of rows) {
+    if (row.prevHash === null || row.recordHash === null) continue // pre-chain row: not attested
+    expect(row.prevHash).toBe(prev)
+    expect(row.recordHash).toBe(linkHashOf(row.prevHash, row.doc))
+    prev = row.recordHash
+  }
+}
 
 let journalDir: string
 
@@ -82,9 +107,15 @@ describe('migrateJournalFiles: importing legacy files', () => {
 
     const result = await migrateJournalFiles(journalDir)
 
-    expect(result).toEqual({ status: 'imported', recordCount: 5, sessionCount: 2 })
+    expect(result).toEqual({
+      status: 'imported',
+      recordCount: 5,
+      sessionCount: 2,
+      refusedSessions: [],
+    })
     await expect(markerPresent('session-a')).resolves.toBe(true)
     await expect(markerPresent('session-b')).resolves.toBe(true)
+    await assertChainIntact(journalDir)
 
     // Reading through the public reader (not raw SQL) proves the reader
     // actually serves these sessions from journal.db now.
@@ -101,7 +132,12 @@ describe('migrateJournalFiles: importing legacy files', () => {
 
     const result = await migrateJournalFiles(journalDir)
 
-    expect(result).toEqual({ status: 'imported', recordCount: 2, sessionCount: 1 })
+    expect(result).toEqual({
+      status: 'imported',
+      recordCount: 2,
+      sessionCount: 1,
+      refusedSessions: [],
+    })
     await expect(rowCountFor('session-mixed')).resolves.toBe(2)
   })
 
@@ -114,7 +150,12 @@ describe('migrateJournalFiles: importing legacy files', () => {
 
     const result = await migrateJournalFiles(journalDir)
 
-    expect(result).toEqual({ status: 'imported', recordCount: 0, sessionCount: 1 })
+    expect(result).toEqual({
+      status: 'imported',
+      recordCount: 0,
+      sessionCount: 1,
+      refusedSessions: [],
+    })
     await expect(markerPresent('session-garbage')).resolves.toBe(true)
     await expect(rowCountFor('session-garbage')).resolves.toBe(0)
   })
@@ -127,14 +168,23 @@ describe('migrateJournalFiles: idempotence', () => {
 
     const second = await migrateJournalFiles(journalDir)
 
-    expect(second).toEqual({ status: 'already-migrated' })
+    expect(second).toEqual({ status: 'already-migrated', refusedSessions: [] })
     await expect(rowCountFor('session-a')).resolves.toBe(3)
   })
 
-  test('a killed-mid-file import (partial rows, no marker) is wiped and fully reloaded on re-run', async () => {
+  test('a killed-mid-file import (partial rows, no marker) is refused, not wiped, and the rows survive untouched', async () => {
+    // OLD expectation (pre-M5-task-3.4): this scenario was "wiped and fully
+    // reloaded on re-run" — the first batch's `DELETE FROM journal_records
+    // WHERE session_id = ?` treated a marker-less session as always-safe to
+    // discard and replace. That was correct only because rows carried no
+    // relationship to each other. Wave 3's hash chain folds `prev_hash` across
+    // EVERY row in insertion order (`db.ts`'s `insertRecordRows`), so deleting
+    // rows from the middle of the chain — which is exactly what this DELETE
+    // does when other sessions were interleaved by `seq` — breaks every link
+    // after them, permanently. The DELETE is gone; this state is now refused.
     await writeLegacyFile('session-a', 5)
-    // Simulate a process killed between the first batch's DELETE+insert and
-    // the file's final batch: partial rows exist, but no marker was ever
+    // Simulate a process killed between the first batch's insert and the
+    // file's final batch: partial rows exist, but no marker was ever
     // written, because the marker only lands with the last batch.
     const handle = await openJournalDbShared(journalDbPathFor(journalDir))
     const partialRows: JournalRecordRow[] = [
@@ -163,10 +213,16 @@ describe('migrateJournalFiles: idempotence', () => {
 
     const result = await migrateJournalFiles(journalDir)
 
-    expect(result).toEqual({ status: 'imported', recordCount: 5, sessionCount: 1 })
-    // Exactly the file's own record count: the stale partial rows were wiped
-    // by the first batch's DELETE, not added to.
-    await expect(rowCountFor('session-a')).resolves.toBe(5)
+    expect(result).toEqual({
+      status: 'already-migrated',
+      refusedSessions: ['session-a'],
+    })
+    // The two partial rows are exactly what remains: neither deleted nor
+    // added to. The file's other 3 records were never read.
+    await expect(rowCountFor('session-a')).resolves.toBe(2)
+    const rows = await readJournalChainRows(journalDir, 'session-a')
+    expect(rows.map((row) => row.doc)).toEqual(['{"stale":true}', '{"stale":true}'])
+    await assertChainIntact(journalDir)
   })
 })
 
@@ -178,9 +234,46 @@ describe('migrateJournalFiles: mixed marker state', () => {
 
     const result = await migrateJournalFiles(journalDir)
 
-    expect(result).toEqual({ status: 'imported', recordCount: 4, sessionCount: 1 })
+    expect(result).toEqual({
+      status: 'imported',
+      recordCount: 4,
+      sessionCount: 1,
+      refusedSessions: [],
+    })
     await expect(rowCountFor('session-old')).resolves.toBe(2)
     await expect(rowCountFor('session-new')).resolves.toBe(4)
+  })
+
+  test('a refused file (partial rows, no marker) does not stop an unaffected file in the same directory', async () => {
+    await writeLegacyFile('session-partial', 5)
+    const handle = await openJournalDbShared(journalDbPathFor(journalDir))
+    const partialRow: JournalRecordRow = {
+      sessionId: 'session-partial',
+      recordId: 'stale-1',
+      ts: new Date(0).toISOString(),
+      direction: 'client→server',
+      kind: 'notification',
+      method: null,
+      doc: '{"stale":true}',
+    }
+    handle.transaction((db) => insertRecordRows(db, [partialRow]))
+    await writeLegacyFile('session-fresh', 3)
+
+    const result = await migrateJournalFiles(journalDir)
+
+    expect(result).toEqual({
+      status: 'imported',
+      recordCount: 3,
+      sessionCount: 1,
+      refusedSessions: ['session-partial'],
+    })
+    // The refused session's one stale row is untouched; the fresh file
+    // imported in full despite the refusal.
+    await expect(rowCountFor('session-partial')).resolves.toBe(1)
+    await expect(rowCountFor('session-fresh')).resolves.toBe(3)
+    await expect(markerPresent('session-fresh')).resolves.toBe(true)
+    await expect(markerPresent('session-partial')).resolves.toBe(false)
+    await assertChainIntact(journalDir)
   })
 })
 
@@ -206,30 +299,61 @@ describe('migrateJournalFiles: a concurrent migrate run', () => {
     }
   }
 
-  test("a marker planted before the only batch leaves the winner's committed rows byte-identical", async () => {
+  test("rows already present when the outer loop checks leave the winner's committed rows byte-identical", async () => {
+    // OLD expectation (pre-M5-task-3.4): a marker planted just before the
+    // loser's first-batch transaction was the ONLY thing that stopped the
+    // DELETE — proven here by mocking `handle.transaction` to plant the
+    // marker at the exact moment the loser's batch takes the writer lock.
+    // That mock is no longer needed to make this scenario safe: the outer
+    // loop now refuses a session with rows and no marker BEFORE ever calling
+    // `importOneFile`, so the winner's rows survive without depending on the
+    // marker race being won at all — the assertion that matters (the winner's
+    // rows are untouched) still holds, for a stronger reason than before.
     await writeLegacyFile('session-a', 3)
     const handle = await openJournalDbShared(journalDbPathFor(journalDir))
-    // What the run that won the race already committed. Its rows must survive
-    // the loser's first-batch DELETE untouched.
+    // What the run that won the race already committed, with no marker yet
+    // (still mid-import from this run's point of view).
     handle.transaction((db) => insertRecordRows(db, [staleRow('session-a', 0), staleRow('session-a', 1)]))
     const before = await recordIdsOf('session-a')
 
+    const result = await migrateJournalFiles(journalDir)
+
+    expect(result).toEqual({ status: 'already-migrated', refusedSessions: ['session-a'] })
+    expect(await recordIdsOf('session-a')).toEqual(before)
+    await assertChainIntact(journalDir)
+  })
+
+  test('rows landing for a session between the outer check and the first batch taking the write lock are refused, not deleted', async () => {
+    // The TOCTOU window the outer loop's `sessionHasRows` check cannot close
+    // on its own: `commitBatch` re-checks inside the transaction, after the
+    // write lock is held, so a writer that lands a row in this exact gap is
+    // caught before the first batch's insert runs.
+    await writeLegacyFile('session-a', 3)
+    const handle = await openJournalDbShared(journalDbPathFor(journalDir))
     const originalTransaction = handle.transaction
     let batchCalls = 0
     vi.spyOn(handle, 'transaction').mockImplementation((fn) => {
       batchCalls += 1
       if (batchCalls === 1) {
-        // The winner finishes between our outside marker check and this
-        // batch taking the writer lock — the exact race the re-check closes.
-        handle.db.prepare('INSERT OR IGNORE INTO imported_sessions (session_id) VALUES (?)').run('session-a')
+        // A concurrent writer's row lands after our outer-loop probe already
+        // read "no rows", but before this transaction takes the write lock.
+        handle.db.exec(
+          "INSERT INTO journal_records (session_id, record_id, ts, direction, kind, method, doc) " +
+            "VALUES ('session-a', 'concurrent-1', '1970-01-01T00:00:00.000Z', 'client→server', 'notification', NULL, '{\"concurrent\":true}')",
+        )
       }
       return originalTransaction(fn)
     })
 
     const result = await migrateJournalFiles(journalDir)
 
-    expect(result).toEqual({ status: 'already-migrated' })
-    expect(await recordIdsOf('session-a')).toEqual(before)
+    expect(batchCalls).toBe(1) // the first batch ran, saw the row, and refused — no second batch
+    expect(result).toEqual({ status: 'already-migrated', refusedSessions: ['session-a'] })
+    // The concurrent writer's row is exactly what remains: nothing from the
+    // legacy file was inserted alongside or over it.
+    const rows = await readJournalChainRows(journalDir, 'session-a')
+    expect(rows.map((row) => row.doc)).toEqual(['{"concurrent":true}'])
+    await assertChainIntact(journalDir)
   })
 
   test('a marker planted between batches stops the file without importing the second batch', async () => {
@@ -253,8 +377,9 @@ describe('migrateJournalFiles: a concurrent migrate run', () => {
     const result = await migrateJournalFiles(journalDir)
 
     expect(batchCalls).toBe(2) // the second batch ran, saw the marker, and stopped
-    expect(result).toEqual({ status: 'already-migrated' })
+    expect(result).toEqual({ status: 'already-migrated', refusedSessions: [] })
     await expect(rowCountFor('session-big')).resolves.toBe(JOURNAL_BATCH_MAX_RECORDS)
+    await assertChainIntact(journalDir)
   })
 })
 
@@ -310,7 +435,12 @@ describe('migrateJournalFiles: row identity', () => {
 
     const result = await migrateJournalFiles(journalDir)
 
-    expect(result).toEqual({ status: 'imported', recordCount: 1, sessionCount: 1 })
+    expect(result).toEqual({
+      status: 'imported',
+      recordCount: 1,
+      sessionCount: 1,
+      refusedSessions: [],
+    })
     await expect(rowCountFor('session-file-owner')).resolves.toBe(1)
     await expect(rowCountFor('session-other')).resolves.toBe(0)
 
@@ -318,5 +448,34 @@ describe('migrateJournalFiles: row identity', () => {
     expect(owned).toHaveLength(1)
     const orphaned = await readSession('session-other', { dir: journalDir })
     expect(orphaned).toHaveLength(0)
+  })
+})
+
+describe('migrateJournalFiles: refusal applies the same to a pre-chain database', () => {
+  test('rows with NULL prev_hash/record_hash (written before the chain existed) are refused exactly like chained rows', async () => {
+    // Decision (M5 task 3.4): one refusal rule for both a chained and a
+    // pre-chain database, rather than skipping the refusal when nothing has
+    // been chained yet. A pre-chain row without a marker is JUST as ambiguous
+    // in origin as a chained one — the chain gives the DELETE a cryptographic
+    // consequence, but the underlying question ("is this a genuine partial
+    // import leftover, or something else with a legitimate reason to have
+    // landed here?") is unanswerable from row/marker state alone either way,
+    // so branching on chain state would only add a second code path to keep
+    // correct for no safety benefit.
+    await writeLegacyFile('session-a', 5)
+    const handle = await openJournalDbShared(journalDbPathFor(journalDir))
+    // Written with the raw column list (no prev_hash/record_hash), the same
+    // shape a database predating M5 wave 3 would hold for every row.
+    handle.db.exec(
+      "INSERT INTO journal_records (session_id, record_id, ts, direction, kind, method, doc) " +
+        "VALUES ('session-a', 'pre-chain-1', '1970-01-01T00:00:00.000Z', 'client→server', 'notification', NULL, '{\"preChain\":true}')",
+    )
+    await expect(rowCountFor('session-a')).resolves.toBe(1)
+
+    const result = await migrateJournalFiles(journalDir)
+
+    expect(result).toEqual({ status: 'already-migrated', refusedSessions: ['session-a'] })
+    const rows = await readJournalChainRows(journalDir, 'session-a')
+    expect(rows).toEqual([{ prevHash: null, recordHash: null, doc: '{"preChain":true}' }])
   })
 })

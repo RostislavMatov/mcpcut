@@ -39,6 +39,48 @@ export async function readJournalRecords(
   return rows.map((row) => JSON.parse(textOf(row['doc'])) as JournalRecord)
 }
 
+/** One row's chain columns plus its raw `doc`, in `seq` order (M5 wave 3). */
+export interface JournalChainRow {
+  /** `NULL` on a pre-chain row (written before wave 3 landed); see `db.ts`'s module doc. */
+  readonly prevHash: string | null
+  /** `NULL` on a pre-chain row. */
+  readonly recordHash: string | null
+  /** The exact bytes `linkHashOf`/`export` operate on. */
+  readonly doc: string
+}
+
+/**
+ * The chain columns (`prev_hash`, `record_hash`) alongside `doc`, for every
+ * row in `sessionId` (or the whole journal when omitted), in `seq` order.
+ * Chain tests read through this rather than opening the database ad hoc, so
+ * a future column rename lands in one place. Returns `[]` when `journal.db`
+ * does not exist yet, matching `readJournalRecords`.
+ */
+export async function readJournalChainRows(
+  journalDir: string,
+  sessionId?: string,
+): Promise<JournalChainRow[]> {
+  const dbPath = journalDbPathFor(journalDir)
+  if (!existsSync(dbPath)) return []
+
+  const handle = await openJournalDbShared(dbPath)
+  const select = 'SELECT prev_hash AS prevHash, record_hash AS recordHash, doc FROM journal_records'
+  const rows =
+    sessionId === undefined
+      ? handle.db.prepare(`${select} ORDER BY seq`).all()
+      : handle.db.prepare(`${select} WHERE session_id = ? ORDER BY seq`).all(sessionId)
+  return rows.map((row) => ({
+    prevHash: nullableTextOf(row['prevHash']),
+    recordHash: nullableTextOf(row['recordHash']),
+    doc: textOf(row['doc']),
+  }))
+}
+
+/** A TEXT column's value, or `null` for a genuine SQL `NULL` (as opposed to `textOf`'s "absent reads as empty string"). */
+function nullableTextOf(value: unknown): string | null {
+  return typeof value === 'string' ? value : null
+}
+
 /**
  * Every distinct session id that has written at least one row into
  * `journalDir`'s `journal.db`, in the order each first appeared. Replaces

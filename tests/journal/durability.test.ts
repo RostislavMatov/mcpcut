@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { GENESIS_PREV_HASH, linkHashOf } from '../../src/journal/chain.js'
 import { journalDbPathFor, openJournalDbShared } from '../../src/journal/db.js'
 
 /**
@@ -24,6 +25,19 @@ import { journalDbPathFor, openJournalDbShared } from '../../src/journal/db.js'
  * Per the plan's GOTCHA, this asserts confirmed-is-a-subset, not
  * nothing-extra: records the child had buffered but never got to confirm may
  * legitimately die with it — that asymmetry IS the contract, not a gap.
+ *
+ * M5 wave 3, task 3.5: the same kill also proves the hash chain
+ * (`journal/chain.ts`) survives a mid-write death. `insertRecordRows` folds
+ * the chain across a whole batch inside ONE transaction, so a kill mid-batch
+ * must leave either the whole batch committed or none of it — there is no
+ * SQL-level way for a partial batch to land. This test re-derives
+ * `linkHashOf` itself across every surviving row in `seq` order, deliberately
+ * NOT calling `chain-verify.ts`'s walk (a concurrent M5 task): reusing the
+ * verifier under test to check the verifier would hide a bug in it. Asserting
+ * the STRONG property (every row's stored `prev_hash` matches the fold, not
+ * just "no crash") is the point — a real partial-batch bug should fail this,
+ * not be shrugged off as "acceptable data loss" the way the confirmed-subset
+ * assertion above is for buffered-but-unflushed writes.
  */
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -128,6 +142,26 @@ describe('journal durability: kill -9 after a confirmed flush loses nothing', ()
       expect(rows.length).toBeGreaterThanOrEqual(lastConfirmed)
       for (let seq = 0; seq < lastConfirmed; seq += 1) {
         expect(confirmedSeqs.has(seq)).toBe(true)
+      }
+
+      // Chain check: re-derive every link ourselves across the WHOLE
+      // database in `seq` order (the chain head query in `db.ts` is
+      // global, not per-session — this journalDir has exactly one writer,
+      // but the check still walks unscoped to match that invariant). A
+      // survived-but-broken batch (a real bug) fails here even though the
+      // confirmed-subset assertion above would have missed it entirely.
+      const chainRows = handle.db
+        .prepare(
+          'SELECT doc, prev_hash AS prevHash, record_hash AS recordHash FROM journal_records ORDER BY seq',
+        )
+        .all() as { doc: string; prevHash: string | null; recordHash: string | null }[]
+
+      let expectedPrev: string = GENESIS_PREV_HASH
+      for (const row of chainRows) {
+        expect(row.prevHash).toBe(expectedPrev)
+        const expectedRecordHash = linkHashOf(expectedPrev, row.doc)
+        expect(row.recordHash).toBe(expectedRecordHash)
+        expectedPrev = expectedRecordHash
       }
     },
     TEST_TIMEOUT_MS,
