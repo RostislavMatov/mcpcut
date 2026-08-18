@@ -56,10 +56,17 @@ export interface QuarantinedToolRecord {
   /** `true` when the stored `inputSchema` was replaced by a top-level summary. */
   readonly schemaTruncated?: boolean
   /**
-   * Direction of the schema-surface change vs the approved descriptor (M4
-   * signal; only on `state: 'changed'` records with an approved descriptor to
-   * diff against). Display/decision-record only -- it NEVER changes the
-   * tool's classification; escalation on a widened surface is an M5 rule.
+   * Direction of the schema-surface change vs the approved descriptor (only on
+   * `state: 'changed'` records with an approved descriptor to diff against).
+   *
+   * NOT display-only since M5 wave 6: this field decides whether an operator's
+   * explicit per-tool `allow` still covers the tool
+   * (`decide.ts`'s `withdrawnBySurfaceChange`, via `Inventory.surfaceDeltaOf`).
+   * Treat it as enforcement input -- it is absent whenever the direction could
+   * not be established HONESTLY (no approved descriptor, a stored schema
+   * summarized past the size cap, or a diff that hit its own depth/count cap),
+   * and every one of those absences escalates. Anything that makes this field
+   * present must be able to stand behind the direction it names.
    */
   readonly surfaceDelta?: SurfaceDelta
 }

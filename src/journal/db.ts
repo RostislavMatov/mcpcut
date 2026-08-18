@@ -88,6 +88,31 @@ const CREATE_SESSION_KIND_INDEX =
 const CREATE_IMPORTED_SESSIONS_TABLE =
   'CREATE TABLE IF NOT EXISTS imported_sessions (session_id TEXT PRIMARY KEY) STRICT'
 
+/**
+ * Retention markers (M5 wave 6): one row per `mcp-journal prune`, holding the
+ * `seq` boundary of the deleted prefix and the `record_hash` the surviving
+ * chain now hangs from. The semantics live in `prune.ts`; the DDL lives here
+ * because this is where the journal's schema is created, and both the writer
+ * (`prune.ts`) and the readers (`chain-verify.ts`, `insertRecordRows` below)
+ * must find the table present on every open, including a database that
+ * predates retention.
+ *
+ * Append-only by shape: `pruned_through_seq` is the primary key and `seq` is
+ * `AUTOINCREMENT`, so a second prune can only ever insert a HIGHER boundary --
+ * a marker cannot be silently rewritten to claim a smaller deletion than
+ * happened.
+ */
+const CREATE_PRUNE_MARKER_TABLE =
+  'CREATE TABLE IF NOT EXISTS journal_prune_marker (' +
+  'pruned_through_seq INTEGER PRIMARY KEY, ' +
+  'head_record_hash TEXT, ' +
+  'pruned_at TEXT NOT NULL, ' +
+  'deleted_count INTEGER NOT NULL, ' +
+  'signature_format_version INTEGER, ' +
+  'signed_at TEXT, ' +
+  'key_fingerprint TEXT, ' +
+  'signature TEXT) STRICT'
+
 const INSERT_RECORD_ROW =
   'INSERT INTO journal_records (session_id, record_id, ts, direction, kind, method, doc, ' +
   'prev_hash, record_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
@@ -227,6 +252,7 @@ async function openJournalDb(dbPath: string): Promise<CachedJournalDb> {
     handle.db.exec(CREATE_SESSION_SEQ_INDEX)
     handle.db.exec(CREATE_SESSION_KIND_INDEX)
     handle.db.exec(CREATE_IMPORTED_SESSIONS_TABLE)
+    handle.db.exec(CREATE_PRUNE_MARKER_TABLE)
     const identity = await stat(dbPath)
     return { handle, dev: identity.dev, ino: identity.ino }
   } catch (error: unknown) {
@@ -316,8 +342,34 @@ export function insertRecordRows(db: JournalDatabase, rows: readonly JournalReco
   }
 }
 
-/** The current chain head's `record_hash`, or `GENESIS_PREV_HASH` when there is none. See `insertRecordRows`. */
+/**
+ * The current chain head's `record_hash`: the last attested row's, or -- when
+ * no attested row is left -- the head recorded by the most recent prune, or
+ * `GENESIS_PREV_HASH` on a journal that never had either. See
+ * `insertRecordRows`.
+ *
+ * The prune fallback is not a nicety (M5 wave 6). Pruning every row leaves the
+ * table empty, and an empty table would restart the next write at genesis --
+ * producing a journal that verifies perfectly clean while silently claiming
+ * nothing was ever written before it. Chaining onto the marker instead keeps
+ * the deleted history's last link inside the chain that continues, so a
+ * pruned journal is visibly a CONTINUATION rather than a fresh one.
+ */
 function chainHeadOf(db: JournalDatabase): string {
   const head = db.prepare(SELECT_CHAIN_HEAD).get() as { recordHash: unknown } | undefined
-  return head === undefined || typeof head.recordHash !== 'string' ? GENESIS_PREV_HASH : head.recordHash
+  if (head !== undefined && typeof head.recordHash === 'string') return head.recordHash
+  const marker = db.prepare(SELECT_PRUNE_MARKER_HEAD).get() as { headRecordHash: unknown } | undefined
+  return marker !== undefined && typeof marker.headRecordHash === 'string'
+    ? marker.headRecordHash
+    : GENESIS_PREV_HASH
 }
+
+/**
+ * The head of the most recently pruned prefix, ignoring markers that recorded
+ * no hash (an all-pre-chain prefix, which leaves the chain starting at genesis
+ * exactly as before). Ordered by the boundary `seq`, the database's own
+ * monotonic counter, never by a wall-clock timestamp.
+ */
+const SELECT_PRUNE_MARKER_HEAD =
+  'SELECT head_record_hash AS headRecordHash FROM journal_prune_marker ' +
+  'WHERE head_record_hash IS NOT NULL ORDER BY pruned_through_seq DESC LIMIT 1'

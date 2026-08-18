@@ -9,6 +9,8 @@ import {
   type SessionChainSpan,
 } from '../journal/chain-verify.js'
 import { openJournalDbIfPresent } from '../journal/db.js'
+import { latestPruneMarker, type PruneMarker } from '../journal/prune.js'
+import { withConsistentReadView } from '../journal/report-stream.js'
 import { isValidSessionId } from '../journal/session-id.js'
 import { SIGNING_PUB_FILENAME } from '../journal/signing.js'
 import { runReportVerification } from './verify-report.js'
@@ -210,11 +212,23 @@ export async function runVerifyCommand(
     return EXIT_USAGE_ERROR
   }
 
-  const result = verifyChain(handle)
+  // One read view over the walk, the marker and (when asked) the session span:
+  // all three describe the SAME journal state or none of them do. As three
+  // autocommit reads, a prune committed by another process between them would
+  // print a retention banner for a marker the walk never anchored on -- each
+  // half true, the pair misleading (M5 wave-6 TS review). Same rationale, and
+  // the same helper, as the report builder's own snapshot.
+  const { result, marker, span } = await withConsistentReadView(handle, () =>
+    Promise.resolve({
+      result: verifyChain(handle),
+      marker: latestPruneMarker(handle),
+      span: sessionId === undefined ? null : sessionChainSpan(handle, sessionId),
+    }),
+  )
+  io.stdout.write(retentionLines(marker))
   io.stdout.write(summaryLines(result))
 
   if (sessionId !== undefined) {
-    const span = sessionChainSpan(handle, sessionId)
     if (span === null) {
       io.stderr.write(`No records found for session "${sessionId}".\n`)
       // The walk above already ran and already printed its own result: an
@@ -246,6 +260,34 @@ export async function runVerifyCommand(
   }
 
   return result.break === null ? EXIT_OK : EXIT_CHAIN_BROKEN
+}
+
+/**
+ * What a retention prune left behind (M5 wave 6). Printed BEFORE the walk's
+ * own result, because it changes what that result means: the walk starts from
+ * the marker's head rather than from genesis, so "chain intact" describes the
+ * SURVIVING suffix and says nothing at all about records that were deleted.
+ *
+ * A marker is this host's own statement, not evidence: the same uid that can
+ * rewrite the journal can write (or omit) a marker. So the disclosure names
+ * whether it was signed, and points at the only thing that makes it checkable
+ * -- an anchor recorded out of band BEFORE the prune. Silence here would let a
+ * clean "chain intact" stand in for "nothing was ever removed".
+ */
+function retentionLines(marker: PruneMarker | null): string {
+  if (marker === null) return ''
+  const attribution =
+    marker.signature === undefined
+      ? 'UNSIGNED -- nothing ties this marker to any key'
+      : `signed (ed25519) by key ${marker.signature.keyFingerprint}`
+  return (
+    `Retention: ${marker.deletedCount} record(s) were deleted through seq ${marker.prunedThroughSeq} ` +
+    `at ${marker.prunedAt}.\n` +
+    `  the chain below is checked from that marker's head, not from genesis: ` +
+    `${marker.headRecordHash ?? '(genesis -- the deleted records predated the chain)'}\n` +
+    `  marker: ${attribution}. It is this host's own claim about what it deleted; only an anchor\n` +
+    '  recorded out of band BEFORE the prune can corroborate it.\n\n'
+  )
 }
 
 function summaryLines(result: ChainVerifyResult): string {

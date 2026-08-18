@@ -54,6 +54,8 @@ const sha256HexSchema = z
 
 /** Counts and sequence numbers are non-negative integers; a float or a negative here is a corrupted manifest, not a small discrepancy. */
 const nonNegativeIntSchema = z.number().int().min(0)
+/** `seq` is `AUTOINCREMENT` from 1, so a prune boundary of 0 would name a row that cannot exist. */
+const positiveIntSchema = z.number().int().min(1)
 
 const chainBreakSchema = z.strictObject({
   seq: nonNegativeIntSchema,
@@ -117,6 +119,10 @@ const manifestSchema = z.strictObject({
     // every report from an unpruned installation unverifiable. Presence is
     // required only when `recomputable`; see `requireStartPrevHash`.
     startPrevHash: z.union([z.literal(''), sha256HexSchema]).optional(),
+    // Required, nullable: a manifest that simply omits it is a manifest whose
+    // producer never looked, and an auditor cannot tell that apart from "not
+    // pruned". A positive integer names the highest deleted `seq` (M5 wave 6).
+    prunedThroughSeq: positiveIntSchema.nullable(),
   }),
   keyFingerprint: sha256HexSchema.optional(),
   contract: z.string().min(1),
@@ -203,6 +209,7 @@ function manifestOf(data: z.infer<typeof manifestSchema>): ReportManifest {
       head: data.chain.head,
       recomputable: data.chain.recomputable,
       ...(startPrevHash === undefined ? {} : { startPrevHash }),
+      prunedThroughSeq: data.chain.prunedThroughSeq,
     },
     ...(data.keyFingerprint === undefined ? {} : { keyFingerprint: data.keyFingerprint }),
     contract: data.contract,

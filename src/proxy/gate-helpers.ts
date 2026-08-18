@@ -6,6 +6,7 @@ import type {
 } from '../journal/record.js'
 import type { JournalSink } from '../journal/sink.js'
 import { canonicalJson, sha256Hex } from '../policy/hash.js'
+import type { SurfaceDelta } from '../policy/schema-diff.js'
 import type { JsonRpcId } from '../protocol/classify.js'
 import { parseToolCallParams, type ParsedToolCall, type ToolDescriptor } from '../protocol/mcp.js'
 import type { Verdict } from './pipeline.js'
@@ -261,11 +262,12 @@ export interface GateObserveResult {
 /**
  * The inventory contract the gate consumes. Defined structurally (rather than
  * `Pick<Inventory>`) so the gate is decoupled from the concrete inventory
- * module: it depends only on these five methods, exactly as pinned by the
+ * module: it depends only on the methods below, exactly as pinned by the
  * cross-agent interface. `stateOf` is authoritative once `load()` has run;
  * `observeToolsList` never throws (it reports failure via `failed`);
  * `isCatalogTrusted()` goes false on an observe/load failure, at which point
  * every subsequent `tools/call` must fail closed at the call level.
+ * `surfaceDeltaOf` joined the contract in M5 wave 6 (six methods now).
  */
 export interface GateInventory {
   /** Hydrates the in-memory snapshot from the persisted store; call once at session start. */
@@ -274,6 +276,13 @@ export interface GateInventory {
   observeToolsList(tools: readonly ToolDescriptor[]): Promise<GateObserveResult>
   /** Synchronous, authoritative quarantine state; `'unknown'` only for never-seen names. */
   stateOf(toolName: string): QuarantineState
+  /**
+   * Synchronous direction of a `changed` tool's accepted-input surface versus
+   * the approved descriptor, or `undefined` when none is established (M5 wave
+   * 6, O4). `undefined` is a real state, not a gap to paper over: `decide()`
+   * reads it as "not provably narrower" and withdraws an explicit `allow`.
+   */
+  surfaceDeltaOf(toolName: string): SurfaceDelta | undefined
   /** True once ≥1 `observeToolsList` has been processed (even if it failed). */
   hasObservedCatalog(): boolean
   /** False if the latest observe returned `failed:true` or `load()` hit a corrupt/unavailable store. */

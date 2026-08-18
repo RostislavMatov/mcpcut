@@ -65,6 +65,13 @@ export function createDecideInputAssembler(deps: DecideInputAssemblerDeps) {
    * chain); without one, the key is absent and the M2 chain runs unchanged.
    */
   function decideInputOf(facts: CallFacts, hasActiveGrant: boolean): DecideInput {
+    // Read here rather than carried on `CallFacts`: the delta is an input to
+    // the decision, not a fact recorded about the call, and `factsOf` feeds
+    // the journal record. Only a `changed` tool can have one, and asking the
+    // inventory for anything else is answered with `undefined` anyway -- so
+    // the read is unconditional, and the meaning of an absent value stays one
+    // thing everywhere (`decide()`: "no direction established").
+    const surfaceDelta = inventory.surfaceDeltaOf(facts.toolName)
     return {
       policy,
       serverName,
@@ -74,6 +81,7 @@ export function createDecideInputAssembler(deps: DecideInputAssemblerDeps) {
       hasActiveGrant,
       catalogObserved: inventory.hasObservedCatalog(),
       catalogTrusted: inventory.isCatalogTrusted(),
+      ...(surfaceDelta !== undefined ? { surfaceDelta } : {}),
       ...(agentScope !== undefined
         ? { agentGrant: agentScope.isGranted(facts.toolName) ? ('granted' as const) : ('not-granted' as const) }
         : {}),

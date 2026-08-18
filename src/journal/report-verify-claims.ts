@@ -125,6 +125,16 @@ function seqRangeAgreement({ seqRange, counts, chain, scope }: ReportManifest): 
   if (scope.session === null && chain.head !== null && chain.head.seq > seqRange.lastSeq) {
     problems.push(`chain.head is at seq ${chain.head.seq}, past the exported seqRange.lastSeq (${seqRange.lastSeq}), in a whole-journal export.`)
   }
+  // A pruned prefix and the exported rows cannot overlap: pruning DELETED
+  // everything through that seq, so a report claiming both is describing two
+  // different databases (M5 wave 6). Checked in every scope -- a session's
+  // rows live in the same table the prune emptied.
+  if (chain.prunedThroughSeq !== null && seqRange.firstSeq <= chain.prunedThroughSeq) {
+    problems.push(
+      `chain.prunedThroughSeq (${chain.prunedThroughSeq}) claims every record through that seq was ` +
+        `deleted, yet the export starts at seq ${seqRange.firstSeq}.`,
+    )
+  }
   return problems.length === 0 ? null : problems.join(' ')
 }
 

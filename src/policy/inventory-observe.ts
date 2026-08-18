@@ -82,20 +82,33 @@ function safeToolName(name: unknown): string {
 }
 
 /**
- * M4 signal: direction of the schema-surface change vs the APPROVED stored
- * descriptor. Only computable for a changed tool whose approved record still
- * carries a descriptor (records approved before M4 stored none). Both sides
- * are the redacted, capped stored copies, so when either was summarized the
- * diff degrades to top-level properties -- structural either way (plan risk
- * fallback). Persist-only: it never feeds `classifyTool` (escalation is M5).
+ * Direction of the schema-surface change vs the APPROVED stored descriptor, or
+ * `undefined` when no direction can be honestly claimed. Only computable for a
+ * changed tool whose approved record still carries a descriptor (records
+ * approved before M4 stored none).
+ *
+ * A TRUNCATED DIFF YIELDS NO DIRECTION (M5 wave-6 review, found independently
+ * by both reviewers as the load-bearing hole in O4). `diffToolSchemas` stops
+ * the ENTIRE walk once it hits its depth or change-count cap -- including
+ * branches that are neither deep nor large, merely sorted after the one that
+ * tripped it. A hostile server pairs a deeply nested decoy under a
+ * low-sorting name with a genuinely new property under a higher-sorting one:
+ * the decoy exhausts the budget, the new property is never compared, and the
+ * visible changes aggregate to a confident `neutral` or `narrowed`. Since
+ * wave 6 that verdict decides whether an operator's explicit `allow` still
+ * covers the tool (`decide.ts`), so a direction derived from a partial walk is
+ * worse than no direction at all: no direction escalates, a manufactured
+ * `narrowed` silently does not. The M4 comment that lived here -- "under-
+ * reporting is fine, it never changes a tool's classification" -- was true
+ * exactly until this signal started changing outcomes.
  */
 function surfaceDeltaAgainstApproved(
   approvedRecord: ApprovedToolRecord | undefined,
   observedDescriptor: ToolDescriptor,
 ): SurfaceDelta | undefined {
   if (!approvedRecord?.descriptor) return undefined
-  return diffToolSchemas(approvedRecord.descriptor.inputSchema, observedDescriptor.inputSchema)
-    .surfaceDelta
+  const diff = diffToolSchemas(approvedRecord.descriptor.inputSchema, observedDescriptor.inputSchema)
+  return diff.truncated ? undefined : diff.surfaceDelta
 }
 
 /**
@@ -161,17 +174,62 @@ export function observeAgainst(
   }
 }
 
+/** The two synchronous lookups a decision needs from the inventory, built together. */
+export interface InventorySnapshots {
+  /** See `buildSnapshots`: the authoritative state map behind `stateOf`. */
+  readonly states: ReadonlyMap<string, QuarantineState>
+  /**
+   * Surface direction for `changed` tools whose diff can be trusted (M5 wave
+   * 6, O4). A tool ABSENT from this map has no established direction -- it is
+   * not quarantined as `changed`, or the diff ran on degraded input -- which
+   * `decide()` treats as "not provably narrower", never as "unchanged".
+   */
+  readonly deltas: ReadonlyMap<string, SurfaceDelta>
+}
+
 /**
  * Authoritative synchronous state map for `stateOf`: the UNION of the approved
  * catalog (`known`) overlaid by the persisted quarantine (`new`/`changed`), so
  * a quarantined tool stays quarantined even after a later `tools/list` omits
  * it (C4). Anything absent from both maps is `unknown`.
+ *
+ * Both maps are built in ONE pass over one `serverEntry`, and the caller
+ * assigns them as one value: the surface delta is only ever read alongside the
+ * state it belongs to, so a refresh that updated one and not the other would
+ * let a decision see a stale direction for a fresh state. Two separate
+ * builders would have made that a discipline; one return value makes it a
+ * type.
  */
-export function buildSnapshot(serverEntry: ServerInventory): Map<string, QuarantineState> {
-  const snapshot = new Map<string, QuarantineState>()
-  for (const name of Object.keys(serverEntry.approved)) snapshot.set(name, 'known')
-  for (const [name, record] of Object.entries(serverEntry.quarantined)) snapshot.set(name, record.state)
-  return snapshot
+export function buildSnapshots(serverEntry: ServerInventory): InventorySnapshots {
+  const states = new Map<string, QuarantineState>()
+  const deltas = new Map<string, SurfaceDelta>()
+  for (const name of Object.keys(serverEntry.approved)) states.set(name, 'known')
+  for (const [name, record] of Object.entries(serverEntry.quarantined)) {
+    states.set(name, record.state)
+    const delta = trustedSurfaceDelta(serverEntry, name, record)
+    if (delta !== undefined) deltas.set(name, delta)
+  }
+  return { states, deltas }
+}
+
+/**
+ * The stored direction, but only when it was derived from schemas that were
+ * stored WHOLE on both sides. A schema too large to persist is replaced by a
+ * top-level summary (`schemaTruncated`), and a diff of two summaries can report
+ * `neutral` for a change that widened something the summary dropped. Since
+ * `decide()` withdraws an explicit `allow` on this signal, a confident answer
+ * derived from degraded input is worse than no answer: no answer escalates,
+ * a wrong `neutral` silently does not.
+ */
+function trustedSurfaceDelta(
+  serverEntry: ServerInventory,
+  toolName: string,
+  record: QuarantinedToolRecord,
+): SurfaceDelta | undefined {
+  if (record.state !== 'changed' || record.surfaceDelta === undefined) return undefined
+  if (record.schemaTruncated === true) return undefined
+  if (serverEntry.approved[toolName]?.schemaTruncated === true) return undefined
+  return record.surfaceDelta
 }
 
 export function quarantinedEntriesOf(serverName: string, serverEntry: ServerInventory): QuarantinedEntry[] {

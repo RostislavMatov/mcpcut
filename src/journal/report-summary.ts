@@ -167,6 +167,14 @@ function chainLines(manifest: ReportManifest): readonly string[] {
   if (chain.break !== null) {
     lines.push(`- Break: seq ${chain.break.seq}, ${inlineValue(chain.break.reason)}`)
   }
+  // Stated even when null: "not pruned" is a fact a reader should be told,
+  // not one they have to infer from the absence of a line (M5 wave 6).
+  lines.push(
+    chain.prunedThroughSeq === null
+      ? '- Retention: no records have been pruned from this journal.'
+      : `- Retention: records through seq ${chain.prunedThroughSeq} were DELETED by a retention prune ` +
+        'before this export; they are not in this report and nothing here attests to what they held.',
+  )
   if (chain.recomputable && chain.startPrevHash !== undefined) {
     lines.push(
       `- Offline re-fold: possible, starting from prevHash ${startPrevHashText(chain.startPrevHash)} ` +

@@ -303,6 +303,26 @@ describe('dispatch: verify', () => {
   })
 })
 
+describe('dispatch: prune', () => {
+  test('routes to prune-cmd with an isolated journalDir', async () => {
+    const io = fakeIo()
+
+    const exitCode = await dispatch(['prune', '--older-than', '90d'], io, { prune: { journalDir: tempDir } })
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('No journal database found')
+  })
+
+  test('a prune with no --older-than never reaches the journal', async () => {
+    const io = fakeIo()
+
+    const exitCode = await dispatch(['prune'], io, { prune: { journalDir: tempDir } })
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('--older-than')
+  })
+})
+
 describe('dispatch: keygen', () => {
   test('routes to keygen-cmd with an isolated journalDir', async () => {
     const io = fakeIo()

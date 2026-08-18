@@ -4,7 +4,10 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { runExportCommand } from '../../src/cli/export-cmd.js'
 import { runKeygenCommand } from '../../src/cli/keygen-cmd.js'
+import { runPruneCommand } from '../../src/cli/prune-cmd.js'
 import { REDACTED_PLACEHOLDER } from '../../src/config.js'
+import { journalDbPathFor, openJournalDbShared } from '../../src/journal/db.js'
+import { latestPruneMarker } from '../../src/journal/prune.js'
 import { createRecordBuilder } from '../../src/journal/record.js'
 import {
   generateAndWriteSigningKeyPair,
@@ -154,6 +157,52 @@ describe('export --report: no secret reaches the artifacts that leave the host',
       expect(recordsJsonl).toContain(foreignPublicBody)
     } finally {
       await rm(foreignKeyDir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('prune: no secret reaches the retention marker or the command output', () => {
+  test('the marker row and both prune reports carry fingerprints and signatures, never key material', async () => {
+    // Retention is the other surface that touches the signing key (the marker
+    // is signed with it) and the other one an operator copies into a ticket.
+    // Swept for the same guarantee as the export artifacts, for the same
+    // reason: no leak exists today, and nothing would fail if a future change
+    // started printing the key or the pruned records' contents.
+    const bearerToken = 'sk-live-fedcba9876543210fedcba9876543210'
+    const rawLine = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 7,
+      method: 'tools/call',
+      params: { name: 'sync', arguments: { authorization: `Bearer ${bearerToken}` } },
+    })
+    const record = createRecordBuilder('session-prune-sweep').buildRecord(classify(rawLine), 'client→server')
+    const sink = createJournalSink('session-prune-sweep', { dir: journalDir })
+    sink.write(record)
+    await sink.close()
+
+    const io = capturingIo()
+    expect(await runKeygenCommand([], io, { journalDir })).toBe(0)
+    const ownPrivateBody = pemBodyLine(await readFile(join(journalDir, SIGNING_KEY_FILENAME), 'utf8'))
+
+    // A cutoff far in the future makes every record eligible, so the prune
+    // really runs (and really signs a marker) rather than reporting nothing.
+    const clock = () => Date.parse('2126-01-01T00:00:00.000Z')
+    expect(await runPruneCommand(['--older-than', '30d'], io, { journalDir, clock })).toBe(0)
+    expect(await runPruneCommand(['--older-than', '30d', '--yes'], io, { journalDir, clock })).toBe(0)
+
+    const handle = await openJournalDbShared(journalDbPathFor(journalDir))
+    const marker = latestPruneMarker(handle)
+    // Positive sentinel: the sweep looked at a real, signed marker.
+    expect(marker?.signature?.signatureBase64).toEqual(expect.any(String))
+
+    const swept: readonly (readonly [string, string])[] = [
+      ['prune stdout+stderr', io.text()],
+      ['prune marker row', JSON.stringify(marker)],
+    ]
+    for (const [name, text] of swept) {
+      expect(text, `${name} must not carry this installation's private key`).not.toContain(ownPrivateBody)
+      expect(text, `${name} must not carry a private-key PEM header`).not.toContain('-----BEGIN PRIVATE KEY-----')
+      expect(text, `${name} must not carry a bearer token from the pruned records`).not.toContain(bearerToken)
     }
   })
 })

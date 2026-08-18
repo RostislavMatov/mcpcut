@@ -308,6 +308,81 @@ both signers — the chain-head anchor and the report manifest — answer "which
 through the same one code path. Splitting WHERE signing happens did not split WHERE a key's
 identity is computed.
 
+### 14. Retention: an explicitly-run prune, anchored by a marker (wave 6, task 6.1, decision O6)
+
+*(English, like sections 11-13.)*
+
+Pruning is a command an operator runs (`mcp-journal prune --older-than <dur> --yes`), never a
+default, a timer or a configured period. The owner decision (O6) is that the first auditor who
+names a retention period is the earliest moment a default could be anything but this project
+guessing how long someone else's evidence is worth keeping. What ships is the mechanism plus the
+disclosure; the policy stays with the operator.
+
+Three design points are load-bearing:
+
+- **A prefix, not a predicate.** Rows are deleted as a contiguous `seq` prefix whose every row is
+  older than the cutoff, never as "every row whose `ts` is old". `ts` does not have to rise with
+  `seq` (imported legacy sessions, a clock step), and a timestamp predicate would delete a row from
+  the MIDDLE of the chain. A hole is unrepairable: no surviving row after it can be re-anchored to
+  anything, and `verify` would report a permanent break that no operator action can clear. So an
+  old row sitting behind a newer one survives its cutoff, and the CLI says so.
+- **The delete and the marker are one transaction.** A committed delete without its marker leaves a
+  journal whose surviving rows verify against nothing — and, worse, one that is indistinguishable
+  afterwards from tampering, because the head hash the marker would have carried died with the
+  deleted rows. One transaction makes "pruned" a state the journal can BE IN rather than a state it
+  can be caught halfway into.
+- **The marker feeds three readers, not one.** `verifyChain` starts its walk from it (otherwise
+  every prune would look exactly like a `gap`, teaching operators to ignore the one signal the
+  chain exists to give); `insertRecordRows` falls back to it when no attested row is left (otherwise
+  a journal pruned empty would restart at genesis and read as one that never held anything); and
+  the report manifest carries `chain.prunedThroughSeq` (otherwise an auditor gets a report starting
+  at seq 4001 with a non-genesis `startPrevHash` and nothing explaining either).
+
+The marker reuses the wave-4 chain-head anchor as its signed statement rather than inventing a
+second signed format: "at instant T the chain head at seq N was H" is exactly what a marker
+attests about the prefix it removed, and one format means one verification path for an auditor. A
+prefix that held no attested row at all (pre-chain rows only) is recorded UNSIGNED on purpose --
+signing would require either a placeholder hash, which is a statement about a chain position that
+never existed, or a second format for "nothing was attested".
+
+**What a marker is worth, stated plainly wherever it surfaces:** it is the host's own claim about
+what it deleted, written by the same uid that could have deleted rows and recorded nothing. The
+signature attributes the claim to this installation's key; it does not make the claim complete.
+Only an anchor taken out of band BEFORE the prune corroborates it. This is the same honest limit as
+everywhere else in M5, applied to the one operation that removes evidence rather than adding it.
+
+### 15. Surface-change escalation lives in the decision precedence, not in the classifier (wave 6, task 6.3, decision O4)
+
+The plan's candidate rule was "a `widened` surface raises an approved tool's CLASS". Two things
+killed it. The dogfood data: across ~2 weeks, 4 servers and 35 approved tools, exactly two
+`changed` events occurred, one of them synthetic, and the real one
+(`playwright/browser_take_screenshot`) carried no `inputSchema` at all, so no direction was
+computed -- the proposed rule would have fired zero times. And the precedence: a `changed` tool is
+already quarantined, quarantine already resolves ABOVE the class defaults, so raising the class
+changes an outcome only when `quarantine.enabled` is false, i.e. exactly where the operator opted
+out of drift gating.
+
+The path that was actually open is the opposite one. A per-tool rule outranks BOTH quarantine and
+the class defaults -- deliberately, since it is an operator's most specific instruction -- so an
+explicit `allow` written against one tool surface kept allowing calls after the server advertised a
+wider one. That is now withdrawn (`decide.ts`'s `withdrawnBySurfaceChange`): the call falls to
+`quarantine.onQuarantined` under the rule `surface-changed`, and the reason names the superseded
+config path so an auditor reading "policy says allow, outcome was require-approval" sees why.
+
+An UNCOMPUTABLE delta escalates, exactly like `widened` does. The absence of the signal is not
+evidence of safety, and all three ways it goes missing are real: an approval predating stored
+descriptors (the live dogfood installation holds one), a schema too large to store whole
+(persisted as a summary, so a diff over it can report `neutral` for a change it never saw), and a
+descriptor with no `inputSchema` on either side. `narrowed` and `neutral` leave the `allow`
+standing -- a smaller surface, or a wording-only edit, is still covered by what the operator
+approved.
+
+Escalation is gated on `quarantine.enabled` on purpose: that flag IS the operator's switch for
+gating known schema drift, and honouring an explicit `allow` while ignoring an explicit "do not
+gate drift" would be two answers to one question. State `new` is untouched for the mirror-image
+reason -- a rule written for a tool that was never approved was never written against an approved
+surface.
+
 ## Что отвергнуто и почему
 
 | Вариант | Почему нет |
