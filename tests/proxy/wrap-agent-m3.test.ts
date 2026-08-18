@@ -16,6 +16,7 @@ import {
   type ClientHarness,
   type SessionResult,
 } from './harness.js'
+import { grantsHashOf } from '../../src/policy/provenance.js'
 
 /**
  * M3 plumbing through the existing stdio wiring (`wrap` -> `relay` ->
@@ -38,7 +39,12 @@ function scopeOf(granted: readonly string[]): GateAgentScope {
     granted.some((pattern) =>
       pattern.endsWith('*') ? tool.startsWith(pattern.slice(0, -1)) : tool === pattern,
     )
-  return { agentName: 'research-bot', isGranted, filterVisible: (tools) => tools.filter(isGranted) }
+  return {
+    agentName: 'research-bot',
+    isGranted,
+    filterVisible: (tools) => tools.filter(isGranted),
+    grantsHash: () => grantsHashOf({ github: { tools: [...granted] } }),
+  }
 }
 
 interface RunArgs {

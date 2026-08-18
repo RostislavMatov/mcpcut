@@ -3,7 +3,12 @@ import type { GrantRegistry } from '../policy/approvals/grants.js'
 import type { Policy } from '../policy/schema.js'
 import type { MessageGate, MessageSink } from '../transport/message.js'
 import type { GateApprovalQueue } from './gate-approvals.js'
-import type { GateAgentScope, GateInventory, GateSink } from './gate-helpers.js'
+import type {
+  DecisionProvenance,
+  GateAgentScope,
+  GateInventory,
+  GateSink,
+} from './gate-helpers.js'
 
 /**
  * The message-level policy gate's public contract, split out of gate-core.ts
@@ -30,6 +35,15 @@ export interface MessagePolicyGateDeps {
    * ad-hoc `wrap` path — exactly the M2 behavior, byte for byte.
    */
   readonly agentScope?: GateAgentScope
+  /**
+   * The provenance every decision record this gate writes is stamped with
+   * (M5). Supplied by `session/core.ts`, which builds ONE per session and
+   * shares it with its own decision writer, so the session and its gate
+   * cannot fingerprint the same policy twice and disagree. Absent (the stdio
+   * `wrap` path and every test double) means the gate builds its own from
+   * `policy` and `agentScope`.
+   */
+  readonly provenance?: DecisionProvenance
   /**
    * Root of the approvals queue on disk, for the late-approval fallback.
    * Defaults to `JOURNAL_DIR/approvals`; must match `approvalQueue`'s own.

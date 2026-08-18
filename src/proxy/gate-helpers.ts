@@ -1,5 +1,9 @@
-import { buildDecisionRecord } from '../journal/decision.js'
-import type { DecisionInfo, PolicyOutcome, QuarantineState, ToolClass } from '../journal/record.js'
+import type {
+  DecisionInfoDraft,
+  PolicyOutcome,
+  QuarantineState,
+  ToolClass,
+} from '../journal/record.js'
 import type { JournalSink } from '../journal/sink.js'
 import { canonicalJson, sha256Hex } from '../policy/hash.js'
 import type { JsonRpcId } from '../protocol/classify.js'
@@ -22,6 +26,16 @@ export {
   type AnswerGuard,
   type BoundedIdSet,
 } from './id-tracking.js'
+
+export {
+  createDecisionProvenance,
+  createDecisionWriter,
+  type DecisionProvenance,
+  type DecisionWriter,
+  type DecisionWriterDeps,
+  type GrantsFingerprintSource,
+  type ProvenanceSnapshot,
+} from './gate-decision-writer.js'
 
 /** Shared, frozen verdicts: the gate returns these by identity, never a fresh object. */
 export const FORWARD: Verdict = Object.freeze({ action: 'forward' as const })
@@ -52,6 +66,27 @@ export interface GateAgentScope {
    * byte for byte.
    */
   readonly methodGrants?: GateMethodGrants
+  /**
+   * Fingerprint of the grant matrix the current scope was derived from
+   * (`policy/provenance.ts`'s `grantsHashOf`), for the decision record's
+   * provenance.
+   *
+   * A function rather than a plain readonly string on purpose:
+   * `session/agent-watch.ts` exposes a *stable frozen facade* over a scope it
+   * swaps on every poll, so a fixed string would freeze provenance at session
+   * start and a grant edit would never show up on any later record — the
+   * exact opposite of what the field is for.
+   *
+   * REQUIRED, unlike `methodGrants` (M5 review). An absent `grantsHash` on a
+   * decision record MEANS "this session had no agent" — the same "absent, not
+   * null" convention `DecisionInfo.agentName` follows. A scope that had an
+   * `agentName` but no fingerprint would therefore write a record claiming
+   * there was no agent: a silent evidence downgrade in the very layer waves
+   * 3-5 chain and sign, and one the compiler could never flag. Making it
+   * required costs the one production implementer nothing (it already
+   * provides it) and makes the two meanings unconfusable.
+   */
+  readonly grantsHash: () => string
 }
 
 /**
@@ -154,13 +189,13 @@ export interface DecisionExtras {
   readonly agentName?: string
 }
 
-/** Assembles the `DecisionInfo` for one decided call. */
+/** Assembles the decision draft for one decided call; the writer stamps provenance. */
 export function decisionInfoOf(
   facts: CallFacts,
   outcome: PolicyOutcome,
   rule: string,
   extras: DecisionExtras = {},
-): DecisionInfo {
+): DecisionInfoDraft {
   return { ...facts, outcome, rule, ...extras }
 }
 
@@ -176,7 +211,7 @@ export function bookkeepingDecisionInfo(
   rule: string,
   toolName: string,
   subject: unknown,
-): DecisionInfo {
+): DecisionInfoDraft {
   return {
     outcome: 'allow',
     rule,
@@ -264,7 +299,7 @@ export function parseCancelledRequestId(raw: string): JsonRpcId {
  * could not positively identify it as safe (C2). The most alarming
  * class/state values are stamped on it, and it always denies.
  */
-export function unsafeClientFrameDecision(serverName: string, rule: string): DecisionInfo {
+export function unsafeClientFrameDecision(serverName: string, rule: string): DecisionInfoDraft {
   return {
     outcome: 'deny',
     rule,
@@ -301,28 +336,6 @@ function tryParse(raw: string): unknown {
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-/** Writes one redacted decision record. Fire-and-forget, like every sink write. */
-export type DecisionWriter = (decision: DecisionInfo, args?: unknown) => void
-
-export interface DecisionWriterDeps {
-  readonly sink: GateSink
-  readonly sessionId: string
-  readonly clock: () => number
-}
-
-export function createDecisionWriter(deps: DecisionWriterDeps): DecisionWriter {
-  return (decision, args) => {
-    deps.sink.write(
-      buildDecisionRecord({
-        sessionId: deps.sessionId,
-        decision,
-        args: args ?? null,
-        clock: deps.clock,
-      }),
-    )
-  }
 }
 
 /**

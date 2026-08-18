@@ -1,4 +1,4 @@
-import type { DecisionInfo } from '../journal/record.js'
+import type { DecisionInfoDraft } from '../journal/record.js'
 import {
   AGENT_NON_GRANTABLE_METHODS,
   AGENT_NON_GRANTABLE_RULE_PREFIX,
@@ -357,7 +357,7 @@ export function createGateRouter(deps: GateRouterDeps): GateRouter {
  * most alarming class/state values are stamped on it, like every other
  * fail-closed refusal (`unsafeClientFrameDecision`).
  */
-function nonGrantableMethodDecision(serverName: string, rule: string, method: string): DecisionInfo {
+function nonGrantableMethodDecision(serverName: string, rule: string, method: string): DecisionInfoDraft {
   return {
     outcome: 'deny',
     rule,

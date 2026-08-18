@@ -20,6 +20,7 @@ import {
   QUARANTINE_RULE,
   argsHashOf,
   createAnswerGuard,
+  createDecisionProvenance,
   createDecisionWriter,
   decisionInfoOf,
   denialBytesFor,
@@ -27,6 +28,7 @@ import {
   isPromiseVerdict,
   trimTrailingNewline,
   type CallFacts,
+  type DecisionProvenance,
   type GateAgentScope,
   type GateInventory,
   type GateSink,
@@ -102,7 +104,19 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
   const approvalsBaseDir = deps.approvalsBaseDir ?? join(JOURNAL_DIR, APPROVALS_SUBDIR)
   const classOverrides = policy.servers?.[serverName]?.classOverrides
   const failClosed = policy.journal.failClosed
-  const writeDecision = createDecisionWriter({ sink: deps.sink, sessionId: deps.sessionId, clock })
+  // Provenance for every decision record this gate writes (M5). The session
+  // shares its own when it has one; otherwise it is built once here, which
+  // also covers `denyOnGateError`: a gate-internal failure has resolved
+  // nothing about the call, but the fingerprint of the rules in force
+  // already exists and still lands on the record.
+  const provenance: DecisionProvenance =
+    deps.provenance ?? createDecisionProvenance(policy, agentScope)
+  const writeDecision = createDecisionWriter({
+    sink: deps.sink,
+    sessionId: deps.sessionId,
+    clock,
+    provenance,
+  })
 
   // Hydrate the persisted inventory snapshot once at session start, so
   // `stateOf` is authoritative before the first gated call. A failure here is
@@ -228,6 +242,7 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     // The agent's name rides the pending file and the pending decision
     // record, so an operator can see who is asking (M4).
     ...(agentScope !== undefined ? { agentName: agentScope.agentName } : {}),
+    provenance,
     approvalQueue,
     approvalWaiter,
     grantRegistry,
