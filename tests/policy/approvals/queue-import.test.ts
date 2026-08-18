@@ -165,7 +165,7 @@ describe('importLegacyApprovals: a settled record that cannot be parsed', () => 
       clock: () => Date.now(),
     })
 
-    expect(granted).toBe(false)
+    expect(granted).toBeNull()
   })
 
   test('an unreadable settled record with NO twin is a lost record, not a resurrection', async () => {

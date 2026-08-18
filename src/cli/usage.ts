@@ -38,11 +38,13 @@ export const USAGE = `Usage:
                                          Approve quarantined tool(s)
   mcp-journal quarantine reject <server> <tool>
                                          Reject (discard) a quarantined tool
-  mcp-journal approvals list [--json]   List pending approval requests
+  mcp-journal approvals list [--json]   List pending approval requests (no token needed)
   mcp-journal approvals approve <id> [--reason TEXT]
-                                         Approve a pending request
+                                         Approve a pending request (personal admin token via
+                                         MCP_ADMIN_TOKEN, role operator or owner; the
+                                         resolution records which admin decided it)
   mcp-journal approvals deny <id> [--reason TEXT]
-                                         Deny a pending request
+                                         Deny a pending request (same token, same record)
   mcp-journal migrate                    Import legacy *.json state into state.db
   mcp-journal export [--session <id>]   Export journal records as JSONL to stdout
   mcp-journal backup <destDir>          Back up state.db and journal.db into <destDir>

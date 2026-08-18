@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { canonicalJson, sha256Hex } from '../../../src/policy/hash.js'
-import { createApprovalQueue } from '../../../src/policy/approvals/queue.js'
+import { MAX_APPROVAL_ACTOR_CHARS } from '../../../src/policy/constants.js'
+import { createApprovalQueue, type ApprovalQueue } from '../../../src/policy/approvals/queue.js'
 import { openApprovalsDb } from '../../../src/policy/approvals/queue-db.js'
 import { collectPersistedBytes } from '../../support/persisted-bytes.js'
 
@@ -704,6 +705,63 @@ describe('createApprovalQueue: readResolution', () => {
     await overwriteDoc(approvalId, 'not json')
 
     await expect(queue.readResolution(approvalId)).resolves.toBeNull()
+  })
+})
+
+describe('a resolution\'s actor is validated like every other stored field (M5 wave 2)', () => {
+  /**
+   * `actor` was the one field of a resolved record nobody checked: the
+   * validator looked at `resolution.outcome` and nothing else, while the
+   * record itself arrives as untrusted text (a hand-edited legacy file, a
+   * foreign row). It is about to become signed evidence of WHO authorized a
+   * destructive operation, so it is validated — and a record that fails is
+   * skipped WHOLE, never repaired by dropping the bad field.
+   */
+  /** Re-resolves a settled record with an arbitrary `actor`, the way a foreign writer could. */
+  async function resolveWithActor(actor: unknown): Promise<{ queue: ApprovalQueue; approvalId: string }> {
+    const queue = createApprovalQueue({ baseDir })
+    const { approvalId } = await queue.enqueue(baseRequest())
+    await queue.resolve(approvalId, { outcome: 'approved' })
+    const doc = await storedDoc(approvalId)
+    await overwriteDoc(
+      approvalId,
+      JSON.stringify({ ...doc, resolution: { outcome: 'approved', actor } }),
+    )
+    return { queue, approvalId }
+  }
+
+  test('a non-string actor skips the record whole', async () => {
+    const { queue, approvalId } = await resolveWithActor({ name: 'alice' })
+
+    await expect(queue.readResolution(approvalId)).resolves.toBeNull()
+  })
+
+  test('an actor past the cap skips the record whole', async () => {
+    // Not truncated to fit: a value this wrong makes the whole record
+    // untrustworthy, and a repaired record is a fabricated one.
+    const { queue, approvalId } = await resolveWithActor('a'.repeat(MAX_APPROVAL_ACTOR_CHARS + 1))
+
+    await expect(queue.readResolution(approvalId)).resolves.toBeNull()
+  })
+
+  test('an actor exactly at the cap still parses', async () => {
+    const actor = 'a'.repeat(MAX_APPROVAL_ACTOR_CHARS)
+    const { queue, approvalId } = await resolveWithActor(actor)
+
+    await expect(queue.readResolution(approvalId)).resolves.toMatchObject({ actor })
+  })
+
+  test('a pre-M5 resolved record with no actor still parses, with no actor key', async () => {
+    // Absence is legal forever: an `expired` resolution has none by design,
+    // and records written before attribution existed have none either.
+    const queue = createApprovalQueue({ baseDir })
+    const { approvalId } = await queue.enqueue(baseRequest())
+    await queue.resolve(approvalId, { outcome: 'approved' })
+
+    const resolution = await queue.readResolution(approvalId)
+
+    expect(resolution?.outcome).toBe('approved')
+    expect(Object.hasOwn(resolution!, 'actor')).toBe(false)
   })
 })
 

@@ -13,6 +13,7 @@ import {
   waitUntilAsync,
 } from '../proxy/harness.js'
 import {
+  createCliApprover,
   createGrantedAgent,
   createPlane,
   decisionsOf,
@@ -426,7 +427,11 @@ describe('e2e: the M2 policy chain applies on top of agent grants', () => {
       return approvalId !== ''
     })
 
-    const approved = await plane.run(['approvals', 'approve', approvalId])
+    // The resolution must name a human, so the operator onboards themselves
+    // first (M5 wave 2): `approvals approve` from the shell needs a personal
+    // admin token and records `actor: cli:<adminName>`.
+    const approver = await createCliApprover(plane, 'e2e-operator')
+    const approved = await plane.run(['approvals', 'approve', approvalId], approver)
     expect(approved.code).toBe(0)
     await waitUntil(() => live.stdio.lineCount() >= 2)
     live.stdio.clientOutbox.end()

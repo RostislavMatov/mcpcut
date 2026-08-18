@@ -132,6 +132,21 @@ export const MAX_STORED_DESCRIPTOR_CHARS = 8192
 export const GRANT_CLOCK_SKEW_MS = 5_000
 
 /**
+ * Max characters of an approval resolution's `actor` (`queue-file.ts`). The
+ * two producers are short and bounded by construction — `cli` and
+ * `ui:<adminName>`, where an admin name is at most 64 chars
+ * (`ADMIN_NAME_PATTERN`) — so 128 is ample headroom for a longer prefixed
+ * form while still bounding a value that arrives as untrusted text. A
+ * resolved record comes back from storage hand-editable (a legacy file, a
+ * foreign row), and this field is about to become signed evidence of WHO
+ * authorized a destructive operation: without a cap, a row written out of
+ * band could push megabytes of attacker-chosen text into the journal and
+ * into the hash chain. Over-cap does not truncate — the record is skipped
+ * whole, like every other failed field here.
+ */
+export const MAX_APPROVAL_ACTOR_CHARS = 128
+
+/**
  * Resolved-record retention: `checkRecentApproval` opportunistically deletes
  * resolved approvals settled longer ago than this (well past any grant TTL), so
  * the queue cannot grow without bound across a long-lived proxy session.

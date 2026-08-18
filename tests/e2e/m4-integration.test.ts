@@ -18,6 +18,7 @@ import {
   AGENT,
   ALLOW_ALL_POLICY,
   APPROVAL_TIMEOUT_MS,
+  cliAsAdmin,
   createM4Context,
   GATE_POLICY,
   messagesWithId,
@@ -262,11 +263,20 @@ describe('e2e: scenario 5 — the first resolve wins and the loser gets a clean 
     )
     const first = await waitForPending(operator)
 
-    expect((await plane.run(['approvals', 'approve', first.approvalId])).code).toBe(0)
+    // The CLI resolves AS a named admin — the same human the browser is logged
+    // in as. Before M5 wave 2 this path recorded a constant `cli`, so the
+    // record said an approval happened but never who made it.
+    const asOperator = cliAsAdmin(harness, OPERATOR)
+    expect((await plane.run(['approvals', 'approve', first.approvalId], asOperator)).code).toBe(0)
     const late = await operator.post(`/approvals/${first.approvalId}/deny`)
     expect(late.status).toBe(409)
     expect(JSON.parse(late.body)).toMatchObject({ status: 'already-resolved' })
-    expect((await readResolved(first.approvalId)).resolution).toMatchObject({ outcome: 'approved' })
+    // End to end, and attributed: the surface prefix differs from the UI's
+    // `ui:<name>` (scenario 4), the human named does not.
+    expect((await readResolved(first.approvalId)).resolution).toMatchObject({
+      outcome: 'approved',
+      actor: `cli:${OPERATOR}`,
+    })
 
     // And the genuinely concurrent form: still exactly one winner.
     await waitUntil(() => live.stdio.lineCount() >= 2)
@@ -275,13 +285,17 @@ describe('e2e: scenario 5 — the first resolve wins and the loser gets a clean 
     )
     const second = await waitForPending(operator)
     const [cli, uiDeny] = await Promise.all([
-      plane.run(['approvals', 'approve', second.approvalId]),
+      plane.run(['approvals', 'approve', second.approvalId], asOperator),
       operator.post(`/approvals/${second.approvalId}/deny`),
     ])
     // Exactly one winner, and the loser answered cleanly (409 / non-zero exit).
     expect([cli.code === 0, uiDeny.status === 200].filter(Boolean)).toHaveLength(1)
     expect([200, 409]).toContain(uiDeny.status)
     if (uiDeny.status === 200) expect(cli.code).not.toBe(0)
+    // Whichever surface won, the record names a human on that surface.
+    expect((await readResolved(second.approvalId)).resolution).toMatchObject({
+      actor: uiDeny.status === 200 ? `ui:${OPERATOR}` : `cli:${OPERATOR}`,
+    })
 
     live.stdio.clientOutbox.end()
     await live.done

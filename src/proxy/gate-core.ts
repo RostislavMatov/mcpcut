@@ -28,6 +28,7 @@ import {
   isPromiseVerdict,
   trimTrailingNewline,
   type CallFacts,
+  type DecisionExtras,
   type DecisionProvenance,
   type GateAgentScope,
   type GateInventory,
@@ -217,8 +218,11 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
   }
 
   /** Stays synchronous unless fail-closed forces a flush: an allowed call must not be reordered. */
-  function applyAllow(call: ParsedToolCall, facts: CallFacts, decision: PolicyDecision): Verdict | Promise<Verdict> {
-    writeDecision(decisionInfoOf(facts, 'allow', decision.rule), call.args)
+  /** `extras` is supplied only by the late-approval path (see `ApprovalFlowDeps`). */
+  function applyAllow(
+    call: ParsedToolCall, facts: CallFacts, decision: PolicyDecision, extras: DecisionExtras = {},
+  ): Verdict | Promise<Verdict> {
+    writeDecision(decisionInfoOf(facts, 'allow', decision.rule, extras), call.args)
     return failClosed ? deps.sink.flush().then(() => FORWARD) : FORWARD
   }
 

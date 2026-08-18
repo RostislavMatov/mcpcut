@@ -1,5 +1,5 @@
 import type { ApprovalQueue } from '../policy/approvals/queue.js'
-import type { ApprovalWaiter, WaitOutcome } from '../policy/approvals/waiter.js'
+import type { ApprovalWaiter, WaitResult } from '../policy/approvals/waiter.js'
 import { checkRecentApproval, type GrantKey, type GrantRegistry } from '../policy/approvals/grants.js'
 import type { PolicyDecision } from '../policy/decide.js'
 import type { Policy } from '../policy/schema.js'
@@ -11,6 +11,7 @@ import {
   ALREADY_ANSWERED_RULE,
   DROP,
   FORWARD,
+  actorExtra,
   decisionInfoOf,
   idKeyOf,
   type AnswerGuard,
@@ -40,7 +41,8 @@ interface ApprovalContext {
   readonly rule: string
   readonly approvalId: string
   readonly startedAtMs: number
-  readonly outcome: WaitOutcome
+  /** How the wait settled, and who settled it when a human did (M5 wave 2). */
+  readonly result: WaitResult
   /**
    * The provenance pair as of the instant this call was DECIDED, captured
    * before the enqueue and carried to whichever record ends the flow. The
@@ -89,11 +91,17 @@ export interface ApprovalFlowDeps {
   readonly enqueuedUnresolved: Set<string>
   /** Runs `decide()` with the gate's own input assembly (see `decideInputOf` in `gate.ts`). */
   readonly decideWithGrant: (facts: CallFacts, hasActiveGrant: boolean) => PolicyDecision
-  /** The gate's allow path: journal + (fail-closed) flush, preserving ordering. */
+  /**
+   * The gate's allow path: journal + (fail-closed) flush, preserving ordering.
+   * `extras` rides onto the decision record — the late-approval path uses it
+   * to name the approval and the operator that authorized the retry (M5 wave
+   * 2); every other caller omits it and records a plain policy allow.
+   */
   readonly applyAllow: (
     call: ParsedToolCall,
     facts: CallFacts,
     decision: PolicyDecision,
+    extras?: DecisionExtras,
   ) => Verdict | Promise<Verdict>
 }
 
@@ -173,7 +181,7 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
     const waitKey = call.id !== null ? idKeyOf(call.id) : null
     if (waitKey !== null) answerGuard.beginWait(waitKey)
     try {
-      const outcome = await approvalWaiter.wait(approvalQueue, approvalId, policy.approval.timeoutMs)
+      const result = await approvalWaiter.wait(approvalQueue, approvalId, policy.approval.timeoutMs)
       const ctx: ApprovalContext = {
         call,
         facts,
@@ -181,7 +189,7 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
         rule: decision.rule,
         approvalId,
         startedAtMs,
-        outcome,
+        result,
         captured,
       }
       return await finishApproval(ctx)
@@ -195,31 +203,49 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
    * wait already timed out: the retry passes on that approval instead of
    * prompting a second time. Only consulted on the require-approval path —
    * an allowed call never pays for this I/O.
+   *
+   * The record written here names the approval and the operator behind it.
+   * Without them the journal showed a destructive call simply succeeding
+   * under `rule: 'grant'`, with the human approval that authorized it
+   * recorded nowhere on the one record an auditor reads for that retry (M5
+   * wave 2).
    */
   async function resolveLateApproval(call: ParsedToolCall, facts: CallFacts, grantKey: GrantKey): Promise<Verdict | null> {
-    const approved = await checkRecentApproval(deps.approvalsBaseDir, {
+    const granted = await checkRecentApproval(deps.approvalsBaseDir, {
       ...grantKey,
       ttlMs: policy.approval.grantTtlMs,
       clock,
     })
-    if (!approved) return null
+    // Explicitly against `null`: the "no grant" answer is one value, never a
+    // falsy-but-present object, so a grant can never be lost to truthiness.
+    if (granted === null) return null
     grantRegistry.grant(grantKey, policy.approval.grantTtlMs)
     const decision = deps.decideWithGrant(facts, true)
-    return decision.outcome === 'allow' ? await deps.applyAllow(call, facts, decision) : null
+    if (decision.outcome !== 'allow') return null
+    const extras: DecisionExtras = { approvalId: granted.approvalId, ...actorExtra(granted.actor) }
+    return await deps.applyAllow(call, facts, decision, extras)
   }
 
   async function finishApproval(ctx: ApprovalContext): Promise<Verdict> {
     const extras: DecisionExtras = { approvalId: ctx.approvalId, latencyMs: clock() - ctx.startedAtMs }
-    if (ctx.outcome === 'approved') return await finishApproved(ctx, extras)
+    if (ctx.result.outcome === 'approved') return await finishApproved(ctx, extras)
 
-    const isDenied = ctx.outcome === 'denied'
+    const isDenied = ctx.result.outcome === 'denied'
     // An operator denial resolves the approval; a plain timeout does not (a
     // late approval may still land), so only the former stops it from being
     // marked expired at session teardown (H6).
     if (isDenied) enqueuedUnresolved.delete(ctx.approvalId)
     const toolName = ctx.facts.toolName
+    // A denial is an operator's decision and names them; a timeout is the
+    // ABSENCE of a decision, so it names nobody — the waiter surfaces no
+    // actor for it and none is invented here.
     writeDecision(
-      decisionInfoOf(ctx.facts, isDenied ? 'denied-by-operator' : 'timeout', ctx.rule, extras),
+      decisionInfoOf(
+        ctx.facts,
+        isDenied ? 'denied-by-operator' : 'timeout',
+        ctx.rule,
+        isDenied ? { ...extras, ...actorExtra(ctx.result.actor) } : extras,
+      ),
       ctx.call.args,
       ctx.captured,
     )
@@ -249,7 +275,7 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
     }
     grantRegistry.grant(ctx.grantKey, policy.approval.grantTtlMs)
     writeDecision(
-      decisionInfoOf(ctx.facts, 'approved', ctx.rule, extras),
+      decisionInfoOf(ctx.facts, 'approved', ctx.rule, { ...extras, ...actorExtra(ctx.result.actor) }),
       ctx.call.args,
       ctx.captured,
     )

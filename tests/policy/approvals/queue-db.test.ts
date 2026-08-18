@@ -322,7 +322,7 @@ describe('importLegacyApprovals: the file queue an M4 build left behind', () => 
     })
 
     expect(resolved.ok).toBe(true)
-    expect(granted).toBe(true)
+    expect(granted).not.toBeNull()
     await expect(queue.list()).resolves.toHaveLength(1) // the other legacy pending
   })
 

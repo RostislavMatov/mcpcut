@@ -1,4 +1,7 @@
 import { parseArgs } from 'node:util'
+import { APPROVAL_RESOLVE_MIN_ROLE, roleSatisfies } from '../admin/authz.js'
+import { ADMIN_TOKEN_ENV_VAR } from '../admin/constants.js'
+import { createAdminStore } from '../admin/store.js'
 import { APPROVALS_LIST_MAX_ROWS } from '../config.js'
 import { formatReadableField } from '../journal/format.js'
 import {
@@ -38,18 +41,65 @@ export interface ApprovalsCliOptions {
    * `baseDir`/`clock`.
    */
   readonly queue?: ApprovalQueue
+  /**
+   * Journal directory holding the admin store that resolves `MCP_ADMIN_TOKEN`
+   * to a named human. Defaults to `JOURNAL_DIR` (see `admin/store.ts`).
+   */
+  readonly journalDir?: string
+  /**
+   * Environment: the source of `MCP_ADMIN_TOKEN`. Injectable rather than read
+   * from `process.env` inside the command, following the `connect` seam, so a
+   * test never depends on the developer's own exported token.
+   */
+  readonly env?: NodeJS.ProcessEnv
 }
 
 const USAGE = `Usage:
   approvals list [--json]                  List pending approval requests
-  approvals approve <id> [--reason TEXT]   Approve a pending request
-  approvals deny <id> [--reason TEXT]      Deny a pending request
+  approvals approve <id> [--reason TEXT]   Approve a pending request (needs ${ADMIN_TOKEN_ENV_VAR})
+  approvals deny <id> [--reason TEXT]      Deny a pending request (needs ${ADMIN_TOKEN_ENV_VAR})
+
+${ADMIN_TOKEN_ENV_VAR} is your personal admin token ("mcp-journal admin add").
+It records WHICH admin resolved a request; listing needs no token.
 `
 
 const MS_PER_MINUTE = 60_000
 const MS_PER_SECOND = 1000
-/** Actor recorded on every resolution made through this CLI, distinct from an eventual admin-UI actor. */
-const CLI_ACTOR = 'cli'
+/** Prefix of the `actor` recorded by this CLI, mirroring the UI's `ui:<adminName>`. */
+const CLI_ACTOR_PREFIX = 'cli:'
+
+/**
+ * No token at all. Says what to do without echoing anything that was supplied
+ * (there was nothing) and without claiming the token is a barrier: it names
+ * the human, it does not keep anyone out.
+ */
+const MISSING_TOKEN_MESSAGE =
+  `Refusing to resolve: no admin token. Set ${ADMIN_TOKEN_ENV_VAR} to your personal admin token so ` +
+  `the resolution records which admin decided it.\n` +
+  `Get one with: mcp-journal admin add <name> --role operator   (existing admin: mcp-journal admin rotate <name>)\n`
+
+/**
+ * A token was supplied and matched no ACTIVE admin. Deliberately says nothing
+ * about the value: no length, no prefix, and no distinction between "malformed"
+ * and "well-formed but unknown" — the command never inspects the shape, so a
+ * caller cannot learn from the message whether a guess was even the right
+ * form. Revoked and never-existed collapse into this one message on purpose
+ * (`findAdminByToken` cannot tell them apart either).
+ */
+const UNKNOWN_TOKEN_MESSAGE =
+  `Refusing to resolve: ${ADMIN_TOKEN_ENV_VAR} does not match any active admin — it may have been ` +
+  `rotated, or the admin removed.\n` +
+  `Check "mcp-journal admin list", then: mcp-journal admin rotate <name>\n`
+
+/**
+ * A real, active admin whose role is below the resolve threshold. Names the
+ * requirement and nothing else about the account — no name, no current role,
+ * nothing derived from the token.
+ */
+const INSUFFICIENT_ROLE_MESSAGE =
+  `Refusing to resolve: this admin token's role may not resolve approvals ` +
+  `(role "${APPROVAL_RESOLVE_MIN_ROLE}" or higher is required, the same rule the admin UI applies).\n` +
+  `An owner can change it with: mcp-journal admin role <name> ${APPROVAL_RESOLVE_MIN_ROLE}\n`
 
 /** The operator sees an already-resolved-or-unknown id the same way in both subcommands. */
 const NOT_FOUND_MESSAGE = 'No pending approval with that id (already resolved or unknown id).'
@@ -69,13 +119,17 @@ export async function runApprovals(
   const clock = opts.clock ?? Date.now
 
   if (subcommand === 'list') {
+    // Deliberately token-free: reading the queue is not an authorization event.
     return runList(queue, args.slice(1), io, clock)
   }
-  if (subcommand === 'approve') {
-    return runResolve(queue, args.slice(1), io, 'approved')
-  }
-  if (subcommand === 'deny') {
-    return runResolve(queue, args.slice(1), io, 'denied')
+  if (subcommand === 'approve' || subcommand === 'deny') {
+    // Authorize BEFORE anything can be written. A run that cannot name the
+    // human must change nothing at all -- resolving first and failing to
+    // attribute afterwards would leave an anonymous record in the chain.
+    const actor = await resolveCliActor(io, opts)
+    if (actor === undefined) return 1
+    const outcome: ResolveOutcome = subcommand === 'approve' ? 'approved' : 'denied'
+    return runResolve(queue, args.slice(1), io, outcome, actor)
   }
 
   io.stderr.write(`Unknown approvals subcommand: ${subcommand ?? '(none)'}\n\n${USAGE}`)
@@ -162,12 +216,54 @@ function formatTimeRemaining(entry: PendingApproval, nowMs: number): string {
   return minutes > 0 ? `${minutes}m${seconds}s` : `${seconds}s`
 }
 
+/**
+ * The `actor` for a resolution made from this shell: `cli:<adminName>` for the
+ * named admin behind `MCP_ADMIN_TOKEN`, or `undefined` (with a diagnostic
+ * already written) when no resolution may happen.
+ *
+ * This buys ATTRIBUTION, not an access barrier — a process under the same uid
+ * can read the environment anyway (ADR-0004, "what we do not defend against").
+ * What it does buy is that the record names a human, and that the CLI cannot
+ * be used to step around the role the admin UI enforces on the same action.
+ */
+async function resolveCliActor(
+  io: ApprovalsCliIo,
+  opts: ApprovalsCliOptions,
+): Promise<string | undefined> {
+  const env = opts.env ?? process.env
+  const token = env[ADMIN_TOKEN_ENV_VAR]
+  if (token === undefined || token === '') {
+    io.stderr.write(MISSING_TOKEN_MESSAGE)
+    return undefined
+  }
+
+  const store = createAdminStore(
+    opts.journalDir !== undefined ? { journalDir: opts.journalDir } : {},
+  )
+  // The one comparison path: constant-work hash matching, revoked admins
+  // resolving exactly like a token that never existed (`admin/store.ts`).
+  const admin = await store.findAdminByToken(token)
+  if (admin === undefined) {
+    io.stderr.write(UNKNOWN_TOKEN_MESSAGE)
+    return undefined
+  }
+  if (!roleSatisfies(admin.role, APPROVAL_RESOLVE_MIN_ROLE)) {
+    io.stderr.write(INSUFFICIENT_ROLE_MESSAGE)
+    return undefined
+  }
+
+  // `admin.name` is schema-validated against ADMIN_NAME_PATTERN on read, so it
+  // is safe to compose into a stored field without further escaping.
+  return `${CLI_ACTOR_PREFIX}${admin.name}`
+}
+
 /** Shared body of `approve <id>` and `deny <id>`: parse, resolve, report. */
 async function runResolve(
   queue: ApprovalQueue,
   resolveArgs: readonly string[],
   io: ApprovalsCliIo,
   outcome: ResolveOutcome,
+  actor: string,
 ): Promise<number> {
   let approvalId: string | undefined
   let reason: string | undefined
@@ -191,7 +287,7 @@ async function runResolve(
 
   const result = await queue.resolve(approvalId, {
     outcome,
-    actor: CLI_ACTOR,
+    actor,
     ...(reason !== undefined ? { reason } : {}),
   })
 

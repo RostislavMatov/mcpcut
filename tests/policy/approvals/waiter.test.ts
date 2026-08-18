@@ -35,7 +35,7 @@ describe('createApprovalWaiter: wait', () => {
     await sleep(POLL_INTERVAL_MS * 2)
     queue.setResolution({ outcome: 'approved', resolvedAt: new Date().toISOString() })
 
-    await expect(waitPromise).resolves.toBe('approved')
+    await expect(waitPromise).resolves.toEqual({ outcome: 'approved' })
   })
 
   test('resolves "denied" once the queue reports a denied resolution', async () => {
@@ -45,7 +45,7 @@ describe('createApprovalWaiter: wait', () => {
     const waitPromise = waiter.wait(queue, 'approval-1', 5000)
     queue.setResolution({ outcome: 'denied', resolvedAt: new Date().toISOString() })
 
-    await expect(waitPromise).resolves.toBe('denied')
+    await expect(waitPromise).resolves.toEqual({ outcome: 'denied' })
   })
 
   test('resolves "timeout" when no resolution arrives before timeoutMs (per injected clock)', async () => {
@@ -60,10 +60,10 @@ describe('createApprovalWaiter: wait', () => {
       nowMs += POLL_INTERVAL_MS
     }, POLL_INTERVAL_MS)
 
-    const outcome = await waitPromise
+    const result = await waitPromise
     clearInterval(advance)
 
-    expect(outcome).toBe('timeout')
+    expect(result).toEqual({ outcome: 'timeout' })
   })
 
   test('a resolution that arrives after the timeout does not flip an already-settled "timeout" result', async () => {
@@ -77,9 +77,9 @@ describe('createApprovalWaiter: wait', () => {
       nowMs += POLL_INTERVAL_MS
     }, POLL_INTERVAL_MS)
 
-    const outcome = await waitPromise
+    const result = await waitPromise
     clearInterval(advance)
-    expect(outcome).toBe('timeout')
+    expect(result).toEqual({ outcome: 'timeout' })
 
     // Late resolution + more time passing must not change anything: the
     // promise already settled and polling already stopped.
@@ -88,7 +88,7 @@ describe('createApprovalWaiter: wait', () => {
     await sleep(POLL_INTERVAL_MS * 5)
 
     expect(queue.readCount).toBe(readCountAtSettle) // no further polling happened
-    await expect(waitPromise).resolves.toBe('timeout') // still the original result
+    await expect(waitPromise).resolves.toEqual({ outcome: 'timeout' }) // still the original result
   })
 
   test('cancelAll immediately settles every in-flight wait with "timeout"', async () => {
@@ -101,8 +101,8 @@ describe('createApprovalWaiter: wait', () => {
 
     waiter.cancelAll()
 
-    await expect(waitA).resolves.toBe('timeout')
-    await expect(waitB).resolves.toBe('timeout')
+    await expect(waitA).resolves.toEqual({ outcome: 'timeout' })
+    await expect(waitB).resolves.toEqual({ outcome: 'timeout' })
   })
 
   test('cancelAll stops further polling for the cancelled wait', async () => {
@@ -118,6 +118,59 @@ describe('createApprovalWaiter: wait', () => {
     await sleep(POLL_INTERVAL_MS * 5)
 
     expect(queue.readCount).toBe(readCountAtCancel)
+  })
+
+  test('an approved resolution surfaces the actor who recorded it', async () => {
+    // The gate's terminal record is the only place an auditor learns WHO
+    // approved a destructive call, and this is the one component that ever
+    // holds the resolution. Dropping the actor here is what made that record
+    // unattributable (M5 wave 2).
+    const waiter = createApprovalWaiter({ pollIntervalMs: POLL_INTERVAL_MS })
+    const queue = createFakeQueue()
+
+    const waitPromise = waiter.wait(queue, 'approval-1', 5000)
+    queue.setResolution({ outcome: 'approved', actor: 'ui:alice', resolvedAt: new Date().toISOString() })
+
+    await expect(waitPromise).resolves.toEqual({ outcome: 'approved', actor: 'ui:alice' })
+  })
+
+  test('a denial surfaces its actor too', async () => {
+    const waiter = createApprovalWaiter({ pollIntervalMs: POLL_INTERVAL_MS })
+    const queue = createFakeQueue()
+
+    const waitPromise = waiter.wait(queue, 'approval-1', 5000)
+    queue.setResolution({ outcome: 'denied', actor: 'cli', resolvedAt: new Date().toISOString() })
+
+    await expect(waitPromise).resolves.toEqual({ outcome: 'denied', actor: 'cli' })
+  })
+
+  test('a resolution with no actor settles with NO actor key, not an undefined one', async () => {
+    // Absence must stay expressible: `actor: undefined` and an absent key are
+    // indistinguishable after `JSON.stringify`, so only the key's absence can
+    // carry "no human is named here" into the journal.
+    const waiter = createApprovalWaiter({ pollIntervalMs: POLL_INTERVAL_MS })
+    const queue = createFakeQueue()
+
+    const waitPromise = waiter.wait(queue, 'approval-1', 5000)
+    queue.setResolution({ outcome: 'approved', resolvedAt: new Date().toISOString() })
+
+    expect(Object.hasOwn(await waitPromise, 'actor')).toBe(false)
+  })
+
+  test('an expired resolution never attributes its actor, even when it has one', async () => {
+    // `resolve()` downgrades a stale `approved` to `expired` while KEEPING the
+    // operator's name for the audit trail. Since every non-approved resolution
+    // is reported as a denial, carrying that name over would produce a record
+    // reading "alice denied this call" about somebody who approved it.
+    const waiter = createApprovalWaiter({ pollIntervalMs: POLL_INTERVAL_MS })
+    const queue = createFakeQueue()
+
+    const waitPromise = waiter.wait(queue, 'approval-1', 5000)
+    queue.setResolution({ outcome: 'expired', actor: 'ui:alice', resolvedAt: new Date().toISOString() })
+
+    const result = await waitPromise
+    expect(result.outcome).toBe('denied')
+    expect(Object.hasOwn(result, 'actor')).toBe(false)
   })
 
   test('a resolved wait does not leave a pending timer running', async () => {

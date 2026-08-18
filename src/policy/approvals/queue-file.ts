@@ -1,3 +1,4 @@
+import { MAX_APPROVAL_ACTOR_CHARS } from '../constants.js'
 import type { ToolClass } from '../schema.js'
 
 /**
@@ -69,7 +70,25 @@ export interface PendingApproval extends PendingApprovalFile {
   readonly expired: boolean
 }
 
-/** The resolution half of a resolved record: what `readResolution()` returns. */
+/**
+ * The resolution half of a resolved record: what `readResolution()` returns.
+ *
+ * `actor` names WHO recorded the resolution (`cli`, `ui:<adminName>`) and is
+ * ABSENT — not null, not empty — whenever no human made it. The `expired`
+ * paths (`queue.ts`'s `markExpired()` at session teardown and the lazy
+ * sweep's `markExpiredBatch()`) deliberately carry none: those resolutions
+ * are recorded by the process itself because a request outlived its window,
+ * and inventing an actor for them would put a person's name on a decision
+ * they never made. So "no actor" reads as a FACT ABOUT THE OUTCOME, not as
+ * missing data — which is what lets the journal (M5 wave 2) treat an
+ * attributed record and an unattributed one as two different claims rather
+ * than as one claim with a gap.
+ *
+ * The one `expired` resolution that CAN carry an actor is the downgrade in
+ * `resolve()`: an operator answered a request that had already passed its
+ * `expiresAt`, and their name is kept for the audit trail even though the
+ * answer no longer authorizes anything.
+ */
 export interface ApprovalResolution {
   readonly outcome: ResolutionOutcome
   readonly actor?: string
@@ -105,6 +124,21 @@ const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/
  */
 function isOptionalSha256Hex(value: unknown): boolean {
   return value === undefined || (typeof value === 'string' && SHA256_HEX_PATTERN.test(value))
+}
+
+/**
+ * `actor` is validated as an OPTIONAL, LENGTH-CAPPED string (M5 wave 2). It
+ * was previously not validated at all — `isResolvedApprovalFile` checked only
+ * the outcome — while being read straight out of untrusted stored text. It is
+ * about to become signed evidence of who authorized a destructive operation,
+ * so it gets the same treatment `isOptionalSha256Hex` gives the provenance
+ * digests: absent stays legal forever (an `expired` resolution has no actor,
+ * and pre-M5 records may have none either), present-and-wrong skips the
+ * record whole rather than reading past the bad value.
+ */
+export function isOptionalActor(value: unknown): boolean {
+  if (value === undefined) return true
+  return typeof value === 'string' && value.length <= MAX_APPROVAL_ACTOR_CHARS
 }
 
 /**
@@ -181,6 +215,7 @@ export function isResolvedApprovalFile(raw: unknown): raw is ResolvedApprovalFil
     isParseableTimestamp(value.resolvedAt) &&
     typeof resolution === 'object' &&
     resolution !== null &&
-    isResolutionOutcome((resolution as Record<string, unknown>).outcome)
+    isResolutionOutcome((resolution as Record<string, unknown>).outcome) &&
+    isOptionalActor((resolution as Record<string, unknown>).actor)
   )
 }

@@ -2,6 +2,10 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { APPROVAL_RESOLVE_MIN_ROLE, roleSatisfies } from '../../src/admin/authz.js'
+import { ADMIN_TOKEN_ENV_VAR, type AdminRole } from '../../src/admin/constants.js'
+import { createAdminStore } from '../../src/admin/store.js'
+import { ROUTE_TABLE } from '../../src/ui/authz.js'
 import { APPROVALS_LIST_MAX_ROWS } from '../../src/config.js'
 import { DEFAULT_GRANT_TTL_MS } from '../../src/policy/constants.js'
 import {
@@ -10,7 +14,7 @@ import {
   type EnqueueRequest,
   type PendingApproval,
 } from '../../src/policy/approvals/queue.js'
-import { runApprovals } from '../../src/cli/approvals-cmd.js'
+import { runApprovals, type ApprovalsCliOptions } from '../../src/cli/approvals-cmd.js'
 
 let tempDir: string
 let baseDir: string
@@ -48,6 +52,33 @@ function baseRequest(overrides: Partial<EnqueueRequest> = {}): EnqueueRequest {
     timeoutMs: 60_000,
     ...overrides,
   }
+}
+
+/**
+ * Options for a run that carries NO admin token. Every test builds its options
+ * with an explicit `env`, so the suite can never pass (or fail) because the
+ * developer running it happens to have `MCP_ADMIN_TOKEN` exported.
+ */
+function anonymousOpts(): ApprovalsCliOptions {
+  return { baseDir, journalDir: tempDir, env: {} }
+}
+
+/** Options for a run carrying `token` as the personal admin token. */
+function optsWithToken(token: string): ApprovalsCliOptions {
+  return { baseDir, journalDir: tempDir, env: { [ADMIN_TOKEN_ENV_VAR]: token } }
+}
+
+/**
+ * Creates a real admin in this test's journal directory (real store, real
+ * SQLite — the token hash comparison under test is the production one) and
+ * returns its one-time token together with ready-made CLI options.
+ */
+async function createAdminToken(
+  name: string,
+  role: AdminRole = 'operator',
+): Promise<{ readonly token: string; readonly opts: ApprovalsCliOptions }> {
+  const { token } = await createAdminStore({ journalDir: tempDir }).createAdmin(name, role)
+  return { token, opts: optsWithToken(token) }
 }
 
 /**
@@ -294,12 +325,20 @@ describe('runApprovals: list', () => {
 })
 
 describe('runApprovals: approve', () => {
-  test('approves a pending request and confirms the retry window', async () => {
+  test('approves a pending request, confirms the retry window and names the admin who did it', async () => {
+    // REWRITTEN (M5 wave 2, task 2.6). This test used to assert
+    // `resolution.actor === 'cli'` — a constant. That expectation was wrong,
+    // not merely outdated: it made every human who ever approved anything from
+    // a terminal indistinguishable from every other, so the queue recorded
+    // THAT a destructive call was approved with no answer to BY WHOM. Waves
+    // 3-4 hash-chain and sign these records and hand them to an auditor, which
+    // would have frozen that anonymity into the evidence permanently.
+    const { opts } = await createAdminToken('release-captain')
     const queue = createApprovalQueue({ baseDir })
     const { approvalId } = await queue.enqueue(baseRequest())
     const io = fakeIo()
 
-    const exitCode = await runApprovals(['approve', approvalId], io, { baseDir })
+    const exitCode = await runApprovals(['approve', approvalId], io, opts)
 
     expect(exitCode).toBe(0)
     expect(io.out()).toContain(approvalId)
@@ -308,15 +347,16 @@ describe('runApprovals: approve', () => {
 
     const resolution = await queue.readResolution(approvalId)
     expect(resolution?.outcome).toBe('approved')
-    expect(resolution?.actor).toBe('cli')
+    expect(resolution?.actor).toBe('cli:release-captain')
   })
 
   test('accepts --reason and persists it on the resolution', async () => {
+    const { opts } = await createAdminToken('release-captain')
     const queue = createApprovalQueue({ baseDir })
     const { approvalId } = await queue.enqueue(baseRequest())
     const io = fakeIo()
 
-    const exitCode = await runApprovals(['approve', approvalId, '--reason', 'looks fine'], io, { baseDir })
+    const exitCode = await runApprovals(['approve', approvalId, '--reason', 'looks fine'], io, opts)
 
     expect(exitCode).toBe(0)
     const resolution = await queue.readResolution(approvalId)
@@ -324,12 +364,13 @@ describe('runApprovals: approve', () => {
   })
 
   test('approving the same id twice fails the second time with exit code 1', async () => {
+    const { opts } = await createAdminToken('release-captain')
     const queue = createApprovalQueue({ baseDir })
     const { approvalId } = await queue.enqueue(baseRequest())
     const io = fakeIo()
 
-    const first = await runApprovals(['approve', approvalId], io, { baseDir })
-    const second = await runApprovals(['approve', approvalId], io, { baseDir })
+    const first = await runApprovals(['approve', approvalId], io, opts)
+    const second = await runApprovals(['approve', approvalId], io, opts)
 
     expect(first).toBe(0)
     expect(second).toBe(1)
@@ -337,18 +378,20 @@ describe('runApprovals: approve', () => {
   })
 
   test('approving an unknown id returns 1 with a clear message', async () => {
+    const { opts } = await createAdminToken('release-captain')
     const io = fakeIo()
 
-    const exitCode = await runApprovals(['approve', '01ARZ3NDEKTSV4RRFFQ69G5FAV'], io, { baseDir })
+    const exitCode = await runApprovals(['approve', '01ARZ3NDEKTSV4RRFFQ69G5FAV'], io, opts)
 
     expect(exitCode).toBe(1)
     expect(io.err()).toMatch(/already resolved or unknown id/)
   })
 
   test('missing <id> prints usage and returns 1', async () => {
+    const { opts } = await createAdminToken('release-captain')
     const io = fakeIo()
 
-    const exitCode = await runApprovals(['approve'], io, { baseDir })
+    const exitCode = await runApprovals(['approve'], io, opts)
 
     expect(exitCode).toBe(1)
     expect(io.err()).toContain('Usage')
@@ -357,24 +400,255 @@ describe('runApprovals: approve', () => {
 
 describe('runApprovals: deny', () => {
   test('denies a pending request', async () => {
+    const { opts } = await createAdminToken('release-captain')
     const queue = createApprovalQueue({ baseDir })
     const { approvalId } = await queue.enqueue(baseRequest())
     const io = fakeIo()
 
-    const exitCode = await runApprovals(['deny', approvalId, '--reason', 'not authorized'], io, { baseDir })
+    const exitCode = await runApprovals(['deny', approvalId, '--reason', 'not authorized'], io, opts)
 
     expect(exitCode).toBe(0)
     const resolution = await queue.readResolution(approvalId)
     expect(resolution?.outcome).toBe('denied')
     expect(resolution?.reason).toBe('not authorized')
+    expect(resolution?.actor).toBe('cli:release-captain')
   })
 
   test('denying an unknown id returns 1', async () => {
+    const { opts } = await createAdminToken('release-captain')
     const io = fakeIo()
 
-    const exitCode = await runApprovals(['deny', '01ARZ3NDEKTSV4RRFFQ69G5FAV'], io, { baseDir })
+    const exitCode = await runApprovals(['deny', '01ARZ3NDEKTSV4RRFFQ69G5FAV'], io, opts)
 
     expect(exitCode).toBe(1)
+  })
+})
+
+/**
+ * Owner decision O3 (M5 wave 2, task 2.3): resolving an approval from the
+ * shell requires a personal admin token, so the resolution can name the human.
+ *
+ * What this buys is ATTRIBUTION, not an access barrier — a process under the
+ * same uid can read the environment anyway (the project's stated, accepted
+ * threat model). These tests therefore pin WHO the record names and that a run
+ * that cannot name anyone changes nothing at all, not that the token keeps
+ * anybody out.
+ */
+describe('runApprovals: approve|deny require a personal admin token', () => {
+  test('no token in the environment: exit 1 and the request is STILL pending', async () => {
+    const queue = createApprovalQueue({ baseDir })
+    const { approvalId } = await queue.enqueue(baseRequest())
+    const io = fakeIo()
+
+    const exitCode = await runApprovals(['approve', approvalId], io, anonymousOpts())
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain(ADMIN_TOKEN_ENV_VAR)
+    // Fail CLOSED: not merely a non-zero exit, but nothing written at all.
+    // Resolving first and failing to attribute afterwards would be worse than
+    // refusing, because the anonymous record would already be in the chain.
+    expect(await queue.readResolution(approvalId)).toBeNull()
+    expect((await queue.list()).map((entry) => entry.approvalId)).toContain(approvalId)
+  })
+
+  test('deny is gated the same way as approve', async () => {
+    const queue = createApprovalQueue({ baseDir })
+    const { approvalId } = await queue.enqueue(baseRequest())
+    const io = fakeIo()
+
+    const exitCode = await runApprovals(['deny', approvalId], io, anonymousOpts())
+
+    expect(exitCode).toBe(1)
+    expect(await queue.readResolution(approvalId)).toBeNull()
+    expect((await queue.list()).map((entry) => entry.approvalId)).toContain(approvalId)
+  })
+
+  test('a token matching no admin: exit 1 and nothing is resolved', async () => {
+    await createAdminToken('release-captain')
+    const queue = createApprovalQueue({ baseDir })
+    const { approvalId } = await queue.enqueue(baseRequest())
+    const io = fakeIo()
+
+    const exitCode = await runApprovals(
+      ['approve', approvalId],
+      io,
+      optsWithToken('mcpa_this-token-was-never-issued'),
+    )
+
+    expect(exitCode).toBe(1)
+    expect(await queue.readResolution(approvalId)).toBeNull()
+    expect((await queue.list()).map((entry) => entry.approvalId)).toContain(approvalId)
+  })
+
+  test('a REVOKED admin’s token behaves exactly like one that never existed', async () => {
+    const store = createAdminStore({ journalDir: tempDir })
+    await store.createAdmin('still-here', 'owner')
+    const { token } = await store.createAdmin('gone-tomorrow', 'operator')
+    await store.removeAdmin('gone-tomorrow')
+    const queue = createApprovalQueue({ baseDir })
+    const { approvalId } = await queue.enqueue(baseRequest())
+    const io = fakeIo()
+
+    const exitCode = await runApprovals(['approve', approvalId], io, optsWithToken(token))
+
+    expect(exitCode).toBe(1)
+    expect(await queue.readResolution(approvalId)).toBeNull()
+    expect((await queue.list()).map((entry) => entry.approvalId)).toContain(approvalId)
+  })
+
+  test('an empty-string token is treated as no token, not as a token to look up', async () => {
+    const queue = createApprovalQueue({ baseDir })
+    const { approvalId } = await queue.enqueue(baseRequest())
+    const io = fakeIo()
+
+    const exitCode = await runApprovals(['approve', approvalId], io, optsWithToken(''))
+
+    expect(exitCode).toBe(1)
+    expect(await queue.readResolution(approvalId)).toBeNull()
+  })
+
+  test('two admins resolving two requests produce two distinguishable actors', async () => {
+    // The whole point of the change: the journal can tell one human from
+    // another, which a constant `actor` could never do.
+    const alice = await createAdminToken('alice')
+    const bob = await createAdminToken('bob')
+    const queue = createApprovalQueue({ baseDir })
+    const first = await queue.enqueue(baseRequest())
+    const second = await queue.enqueue(baseRequest({ sessionId: 'session-2' }))
+
+    expect(await runApprovals(['approve', first.approvalId], fakeIo(), alice.opts)).toBe(0)
+    expect(await runApprovals(['deny', second.approvalId], fakeIo(), bob.opts)).toBe(0)
+
+    expect((await queue.readResolution(first.approvalId))?.actor).toBe('cli:alice')
+    expect((await queue.readResolution(second.approvalId))?.actor).toBe('cli:bob')
+  })
+
+  test('the two failure modes are distinguishable for an operator', async () => {
+    const missingIo = fakeIo()
+    const unknownIo = fakeIo()
+
+    await runApprovals(['approve', '01ARZ3NDEKTSV4RRFFQ69G5FAV'], missingIo, anonymousOpts())
+    await runApprovals(
+      ['approve', '01ARZ3NDEKTSV4RRFFQ69G5FAV'],
+      unknownIo,
+      optsWithToken('mcpa_this-token-was-never-issued'),
+    )
+
+    expect(missingIo.err()).not.toBe(unknownIo.err())
+    expect(missingIo.err()).toContain(ADMIN_TOKEN_ENV_VAR)
+    expect(unknownIo.err()).toContain(ADMIN_TOKEN_ENV_VAR)
+  })
+
+  test('no output on any path echoes the token, a prefix of it, or its length', async () => {
+    const { token, opts } = await createAdminToken('release-captain')
+    const queue = createApprovalQueue({ baseDir })
+    const { approvalId } = await queue.enqueue(baseRequest())
+    const bogus = 'mcpa_never-issued-token-value'
+    const okIo = fakeIo()
+    const unknownIo = fakeIo()
+    const missingIo = fakeIo()
+
+    await runApprovals(['approve', approvalId], okIo, opts)
+    await runApprovals(['deny', approvalId], unknownIo, optsWithToken(bogus))
+    await runApprovals(['deny', approvalId], missingIo, anonymousOpts())
+
+    for (const io of [okIo, unknownIo, missingIo]) {
+      const written = io.out() + io.err()
+      expect(written).not.toContain(token)
+      expect(written).not.toContain(bogus)
+      // Not even a leading slice: a "token starts with…" hint is still a leak.
+      expect(written).not.toContain(token.slice(0, 12))
+      expect(written).not.toContain(String(token.length))
+    }
+  })
+
+  test('a viewer’s valid token cannot resolve: exit 1 and the request is still pending', async () => {
+    // ADR-0004 gives `viewer` not a single POST action, and the UI route
+    // `POST /approvals/:id/approve` requires `operator`. A CLI that only
+    // checked "is this a real admin" would be a privilege escalation across
+    // surfaces — and would let an audit report name a viewer as an approver.
+    const { opts } = await createAdminToken('read-only-auditor', 'viewer')
+    const queue = createApprovalQueue({ baseDir })
+    const { approvalId } = await queue.enqueue(baseRequest())
+    const io = fakeIo()
+
+    const exitCode = await runApprovals(['approve', approvalId], io, opts)
+
+    expect(exitCode).toBe(1)
+    expect(await queue.readResolution(approvalId)).toBeNull()
+    expect((await queue.list()).map((entry) => entry.approvalId)).toContain(approvalId)
+  })
+
+  test('a viewer cannot deny either', async () => {
+    const { opts } = await createAdminToken('read-only-auditor', 'viewer')
+    const queue = createApprovalQueue({ baseDir })
+    const { approvalId } = await queue.enqueue(baseRequest())
+    const io = fakeIo()
+
+    const exitCode = await runApprovals(['deny', approvalId], io, opts)
+
+    expect(exitCode).toBe(1)
+    expect(await queue.readResolution(approvalId)).toBeNull()
+  })
+
+  test('an owner outranks the operator minimum and may resolve', async () => {
+    // Not an assumption: `ROLE_RANK` is asserted to agree, below.
+    const { opts } = await createAdminToken('founder', 'owner')
+    const queue = createApprovalQueue({ baseDir })
+    const { approvalId } = await queue.enqueue(baseRequest())
+
+    const exitCode = await runApprovals(['approve', approvalId], fakeIo(), opts)
+
+    expect(exitCode).toBe(0)
+    expect((await queue.readResolution(approvalId))?.actor).toBe('cli:founder')
+  })
+
+  test('the CLI threshold IS the UI route’s threshold, from one definition', async () => {
+    // Two sources of truth for privilege ordering is the bug that outlives us:
+    // the UI route table and this command read the same constant.
+    const approveRoute = ROUTE_TABLE.find(
+      (entry) => entry.method === 'POST' && entry.pattern === '/approvals/:id/approve',
+    )
+    const denyRoute = ROUTE_TABLE.find(
+      (entry) => entry.method === 'POST' && entry.pattern === '/approvals/:id/deny',
+    )
+
+    expect(approveRoute?.minRole).toBe(APPROVAL_RESOLVE_MIN_ROLE)
+    expect(denyRoute?.minRole).toBe(APPROVAL_RESOLVE_MIN_ROLE)
+    // And the ordering the CLI relies on is the one the UI relies on.
+    expect(roleSatisfies('owner', APPROVAL_RESOLVE_MIN_ROLE)).toBe(true)
+    expect(roleSatisfies('operator', APPROVAL_RESOLVE_MIN_ROLE)).toBe(true)
+    expect(roleSatisfies('viewer', APPROVAL_RESOLVE_MIN_ROLE)).toBe(false)
+  })
+
+  test('the insufficient-role message names the requirement and nothing else about the account', async () => {
+    const { token, opts } = await createAdminToken('read-only-auditor', 'viewer')
+    const io = fakeIo()
+
+    await runApprovals(['approve', '01ARZ3NDEKTSV4RRFFQ69G5FAV'], io, opts)
+
+    const written = io.out() + io.err()
+    expect(written).toMatch(/operator/)
+    expect(written).not.toContain(token)
+    expect(written).not.toContain(token.slice(0, 12))
+  })
+
+  test('list stays token-free: reading the queue is not an authorization event', async () => {
+    // Even for a viewer, and even with no token exported at all: a regression
+    // here would take the read path away from everyone.
+    await createAdminToken('read-only-auditor', 'viewer')
+    const queue = createApprovalQueue({ baseDir })
+    const { approvalId } = await queue.enqueue(baseRequest())
+    const readableIo = fakeIo()
+    const jsonIo = fakeIo()
+
+    const readableExit = await runApprovals(['list'], readableIo, anonymousOpts())
+    const jsonExit = await runApprovals(['list', '--json'], jsonIo, anonymousOpts())
+
+    expect(readableExit).toBe(0)
+    expect(readableIo.out()).toContain(approvalId)
+    expect(jsonExit).toBe(0)
+    expect(JSON.parse(jsonIo.out()).approvals).toHaveLength(1)
   })
 })
 

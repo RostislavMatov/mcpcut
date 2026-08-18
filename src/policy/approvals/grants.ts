@@ -3,6 +3,7 @@ import {
   GRANT_CLOCK_SKEW_MS,
   RESOLVED_FILE_RETENTION_MS,
 } from '../constants.js'
+import { isOptionalActor } from './queue-file.js'
 import {
   deleteResolvedOlderThan,
   openApprovalsDb,
@@ -98,14 +99,21 @@ export function createGrantRegistry(opts: GrantRegistryOptions = {}): GrantRegis
   return { grant, isGranted }
 }
 
-/** Minimal shape `checkRecentApproval` needs from a resolved record; validated field-by-field so garbage stored content is skipped, never thrown. */
+/**
+ * Minimal shape `checkRecentApproval` needs from a resolved record; validated
+ * field-by-field so garbage stored content is skipped, never thrown.
+ *
+ * `resolution.actor` is part of that minimum since M5 wave 2: the retry this
+ * record admits writes a journal record naming the operator, so the name has
+ * to survive the same validation as everything else it is decided on.
+ */
 interface ResolvedFileForGrantCheck {
   readonly approvalId: string
   readonly serverName: string
   readonly toolName: string
   readonly argsHash: string
   readonly resolvedAt: string
-  readonly resolution: { readonly outcome: string }
+  readonly resolution: { readonly outcome: string; readonly actor?: string }
 }
 
 function isResolvedFileForGrantCheck(raw: unknown): raw is ResolvedFileForGrantCheck {
@@ -120,8 +128,29 @@ function isResolvedFileForGrantCheck(raw: unknown): raw is ResolvedFileForGrantC
     typeof value.resolvedAt === 'string' &&
     typeof resolution === 'object' &&
     resolution !== null &&
-    typeof (resolution as Record<string, unknown>).outcome === 'string'
+    typeof (resolution as Record<string, unknown>).outcome === 'string' &&
+    // The SAME optional-and-length-capped check the queue's own validator
+    // applies (`queue-file.ts`), not a looser local copy: this path never
+    // goes through `isResolvedApprovalFile`, so a second, weaker rule here
+    // would be the hole the cap exists to close.
+    isOptionalActor((resolution as Record<string, unknown>).actor)
   )
+}
+
+/**
+ * What a late approval grants: the identifying facts of the resolution that
+ * authorized it, so the record written for the retry can name them.
+ *
+ * An object rather than a boolean because the retry's journal record used to
+ * say only `allow` / `rule: grant` — a destructive call succeeding with the
+ * human approval behind it recorded nowhere, which is unreadable as evidence
+ * (M5 wave 2). `actor` is ABSENT when the resolution named nobody; the whole
+ * value is `null` — never a falsy-but-present object — when nothing grants,
+ * so "no grant" stays one unambiguous check at the call site.
+ */
+export interface RecentApprovalGrant {
+  readonly approvalId: string
+  readonly actor?: string
 }
 
 export interface CheckRecentApprovalInput extends GrantKey {
@@ -135,19 +164,20 @@ export interface CheckRecentApprovalInput extends GrantKey {
  * indexed lookup on `(serverName, toolName, argsHash)` over the resolved rows
  * of the queue (M4.5 wave 3; before that, a directory scan of up to two
  * thousand files that cost hundreds of ms on a never-pruned directory).
- * Returns `true` for the first record with `outcome === 'approved'` whose
- * `resolvedAt` is within `ttlMs` of now and not in the future (skew-guarded).
+ * Returns the identifying facts of the FIRST record with
+ * `outcome === 'approved'` whose `resolvedAt` is within `ttlMs` of now and not
+ * in the future (skew-guarded), and `null` when nothing matches.
  *
  * NEVER throws and NEVER blocks the decision on storage health: this sits on
  * the gate's hot path, where a failure to read must fall back to asking a human
- * (`false`), never to granting. Malformed records are skipped the same way.
+ * (`null`), never to granting. Malformed records are skipped the same way.
  * Opportunistically prunes a bounded batch of records settled longer ago than
  * `RESOLVED_FILE_RETENTION_MS`.
  */
 export async function checkRecentApproval(
   baseDir: string,
   input: CheckRecentApprovalInput,
-): Promise<boolean> {
+): Promise<RecentApprovalGrant | null> {
   const clock = input.clock ?? Date.now
   const nowMs = clock()
 
@@ -157,12 +187,30 @@ export async function checkRecentApproval(
     db = await openApprovalsDb(baseDir)
     docs = selectResolvedDocsForGrant(db.handle.db, input, MAX_GRANT_CANDIDATES)
   } catch {
-    return false // unopenable or unreadable storage: no grant, ask a human
+    return null // unopenable or unreadable storage: no grant, ask a human
   }
 
-  const matched = docs.some((doc) => matchesGrant(doc, input, nowMs))
+  const matched = firstGrant(docs, input, nowMs)
+  // Retention runs whether or not anything matched, exactly as before.
   pruneOldResolvedRows(db, nowMs)
   return matched
+}
+
+/** The first candidate document that grants, as its identifying facts; `null` if none does. */
+function firstGrant(
+  docs: readonly string[],
+  input: CheckRecentApprovalInput,
+  nowMs: number,
+): RecentApprovalGrant | null {
+  for (const doc of docs) {
+    const record = matchesGrant(doc, input, nowMs)
+    if (record !== null) {
+      return record.resolution.actor !== undefined
+        ? { approvalId: record.approvalId, actor: record.resolution.actor }
+        : { approvalId: record.approvalId }
+    }
+  }
+  return null
 }
 
 /**
@@ -171,26 +219,30 @@ export async function checkRecentApproval(
  * `doc` column is the source of truth, and a row whose flat columns disagree
  * with it must not be able to mint a grant its own record does not support.
  */
-function matchesGrant(doc: string, input: CheckRecentApprovalInput, nowMs: number): boolean {
+function matchesGrant(
+  doc: string,
+  input: CheckRecentApprovalInput,
+  nowMs: number,
+): ResolvedFileForGrantCheck | null {
   let raw: unknown
   try {
     raw = JSON.parse(doc)
   } catch {
-    return false // invalid JSON: skip
+    return null // invalid JSON: skip
   }
-  if (!isResolvedFileForGrantCheck(raw)) return false
+  if (!isResolvedFileForGrantCheck(raw)) return null
 
-  if (raw.resolution.outcome !== 'approved') return false
-  if (raw.serverName !== input.serverName) return false
-  if (raw.toolName !== input.toolName) return false
-  if (raw.argsHash !== input.argsHash) return false
+  if (raw.resolution.outcome !== 'approved') return null
+  if (raw.serverName !== input.serverName) return null
+  if (raw.toolName !== input.toolName) return null
+  if (raw.argsHash !== input.argsHash) return null
 
   const resolvedAtMs = Date.parse(raw.resolvedAt)
-  if (Number.isNaN(resolvedAtMs)) return false
+  if (Number.isNaN(resolvedAtMs)) return null
   // Reject a future-dated resolution (backdated/forged clock): a grant may only
   // come from an approval that already happened, within the TTL window.
-  if (resolvedAtMs > nowMs + GRANT_CLOCK_SKEW_MS) return false
-  return nowMs - resolvedAtMs <= input.ttlMs
+  if (resolvedAtMs > nowMs + GRANT_CLOCK_SKEW_MS) return null
+  return nowMs - resolvedAtMs <= input.ttlMs ? raw : null
 }
 
 /**
