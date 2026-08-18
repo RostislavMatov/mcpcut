@@ -1,7 +1,6 @@
 import { join } from 'node:path'
 import { JOURNAL_DIR } from '../config.js'
 import type { JsonRpcId } from '../protocol/classify.js'
-import { classifyTool } from '../policy/classify-tool.js'
 import { decide, type PolicyDecision } from '../policy/decide.js'
 import type { GrantKey } from '../policy/approvals/grants.js'
 import type { ParsedToolCall } from '../protocol/mcp.js'
@@ -9,16 +8,15 @@ import { serverMessage } from '../transport/message.js'
 import type { Verdict } from './pipeline.js'
 import type { SynthesizableId } from './synthesize.js'
 import { createApprovalFlow } from './gate-approvals.js'
+import { createDecideInputAssembler } from './gate-decide-input.js'
 import { createGateRouter } from './gate-router.js'
 import { createToolCatalog } from './tool-catalog.js'
 import {
-  CATALOG_UNTRUSTED_RULE,
   DROP,
   FORWARD,
   GATE_ERROR_RULE,
   IDLESS_APPROVAL_RULE,
   QUARANTINE_RULE,
-  argsHashOf,
   createAnswerGuard,
   createDecisionProvenance,
   createDecisionWriter,
@@ -30,9 +28,6 @@ import {
   type CallFacts,
   type DecisionExtras,
   type DecisionProvenance,
-  type GateAgentScope,
-  type GateInventory,
-  type GateSink,
 } from './gate-helpers.js'
 
 /**
@@ -184,38 +179,18 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     await deps.clientSink.write(serverMessage(trimTrailingNewline(build(id))))
   }
 
-  /**
-   * Return type inferred so the optional agent dimension can be spread in
-   * without an `exactOptionalPropertyTypes` clash: with an `agentScope`,
-   * `decide()` sees `'granted' | 'not-granted'` (step 0 of its chain);
-   * without one, the key is absent and the M2 chain runs unchanged.
-   */
-  function decideInputOf(facts: CallFacts, hasActiveGrant: boolean) {
-    return {
-      policy,
-      serverName,
-      toolName: facts.toolName,
-      toolClass: facts.toolClass,
-      quarantineState: facts.quarantineState,
-      hasActiveGrant,
-      catalogObserved: inventory.hasObservedCatalog(),
-      catalogTrusted: inventory.isCatalogTrusted(),
-      ...(agentScope !== undefined
-        ? { agentGrant: agentScope.isGranted(facts.toolName) ? ('granted' as const) : ('not-granted' as const) }
-        : {}),
-    }
-  }
-
-  /** Resolves class, quarantine state and args fingerprint for one call. Fails closed by throwing. */
-  function factsOf(call: ParsedToolCall): CallFacts {
-    return {
-      serverName,
-      toolName: call.toolName,
-      toolClass: classifyTool(catalog.descriptorOf(call.toolName), classOverrides),
-      quarantineState: inventory.stateOf(call.toolName),
-      argsHash: argsHashOf(call.args),
-    }
-  }
+  // Decide-input assembly (`gate-decide-input.ts`): pure functions of the
+  // policy, inventory and agent scope. Built after the catalog because it
+  // reads descriptors through it.
+  const { factsOf, decideInputOf, enforceCatalogTrust } = createDecideInputAssembler({
+    policy,
+    serverName,
+    inventory,
+    ...(agentScope !== undefined ? { agentScope } : {}),
+    ...(classOverrides !== undefined ? { classOverrides } : {}),
+    descriptorOf: (toolName: string) => catalog.descriptorOf(toolName),
+    hasInventoryLoadFailed: () => inventoryLoadFailed,
+  })
 
   /** Stays synchronous unless fail-closed forces a flush: an allowed call must not be reordered. */
   /** `extras` is supplied only by the late-approval path (see `ApprovalFlowDeps`). */
@@ -246,7 +221,6 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     // The agent's name rides the pending file and the pending decision
     // record, so an operator can see who is asking (M4).
     ...(agentScope !== undefined ? { agentName: agentScope.agentName } : {}),
-    provenance,
     approvalQueue,
     approvalWaiter,
     grantRegistry,
@@ -276,27 +250,18 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     return DROP
   }
 
-  /**
-   * Defense-in-depth fail-closed for an untrusted catalog (C3/C4). The pinned
-   * `decide()` already forces this from the `catalogTrusted` input; enforcing
-   * it here too means a failed/compromised inventory can never let a call
-   * through even if the policy layer regresses. A no-op once the decision is
-   * already non-allow for the untrusted state.
-   */
-  function enforceCatalogTrust(decision: PolicyDecision): PolicyDecision {
-    if (decision.outcome !== 'allow') return decision
-    if (inventory.isCatalogTrusted() && !inventoryLoadFailed) return decision
-    return {
-      outcome: 'deny',
-      rule: CATALOG_UNTRUSTED_RULE,
-      reason: 'tool catalog is untrusted (inventory observe/load failed); failing closed',
-    }
-  }
-
   function decideToolCall(call: ParsedToolCall): Verdict | Promise<Verdict> {
     const facts = factsOf(call)
     const grantKey: GrantKey = { serverName, toolName: facts.toolName, argsHash: facts.argsHash }
     const decision = enforceCatalogTrust(decide(decideInputOf(facts, grantRegistry.isGranted(grantKey))))
+    // Provenance is sampled HERE, in the same synchronous run as `decide()`,
+    // because this is the instant the rules produced the verdict. Only the
+    // deferred path needs it explicitly: `applyAllow`/`applyDeny` journal
+    // before they await anything, so the writer's own default snapshot is
+    // already this same instant, while `requestApproval` awaits a storage read
+    // before it writes and would otherwise sample a matrix an `agent-watch`
+    // poll had already replaced (M5 wave-2 review, finding 2).
+    const captured = provenance.snapshot()
 
     if (decision.outcome === 'allow') return applyAllow(call, facts, decision)
     if (decision.outcome === 'deny') return applyDeny(call, facts, decision)
@@ -311,7 +276,7 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
         reason: 'id-less tools/call cannot receive an approval result; denying instead of enqueuing',
       })
     }
-    return approvalFlow.requestApproval(call, facts, grantKey, decision)
+    return approvalFlow.requestApproval(call, facts, grantKey, decision, captured)
   }
 
   /**

@@ -60,6 +60,7 @@ export {
 } from './queue-file.js'
 import { sweepExpiredPending } from './queue-sweep.js'
 import {
+  assertStorableActor,
   isExpiredAt,
   isPendingApprovalFile,
   isResolvedApprovalFile,
@@ -376,7 +377,15 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
    * `approved` resolution is ever persisted past expiry. A `denied` on a stale
    * request is harmless and is recorded as-is.
    */
-  function resolve(approvalId: string, resolution: ResolveInput): Promise<ResolveResult> {
+  // `async` so the guard below REJECTS rather than throwing synchronously out
+  // of a `Promise`-returning function: every other failure of this API is
+  // asynchronous, and a caller written as `queue.resolve(...).catch(...)`
+  // would otherwise see this one escape uncaught.
+  async function resolve(approvalId: string, resolution: ResolveInput): Promise<ResolveResult> {
+    // Before ANY write: an actor the reader would reject must never become a
+    // stored record. Throwing here costs one refused call; storing it costs a
+    // resolution nothing can read back (see `assertStorableActor`).
+    assertStorableActor(resolution.actor)
     // `buildResolution` runs inside the write transaction, so this clock read
     // happens under the held lock, in the same instant as `resolvedAt`.
     return moveToResolved(approvalId, (pending) => {

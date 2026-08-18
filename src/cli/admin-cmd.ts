@@ -54,7 +54,13 @@ const EXPECTED_ERRORS = [
   StoreLockError,
 ] as const
 
-function isExpectedError(error: unknown): error is Error {
+/**
+ * Exported so every command that touches the admin store classifies its
+ * failures through ONE path: `approvals approve|deny` resolves the operator's
+ * token against the same store and must refuse the same way this command does,
+ * rather than carrying a second, drifting copy of the list.
+ */
+export function isExpectedAdminError(error: unknown): error is Error {
   return EXPECTED_ERRORS.some((kind) => error instanceof kind)
 }
 
@@ -92,7 +98,7 @@ export async function runAdminCommand(
         return usage(io)
     }
   } catch (error: unknown) {
-    if (isExpectedError(error)) {
+    if (isExpectedAdminError(error)) {
       io.stderr.write(`${formatReadableField(error.message)}\n`)
       return 1
     }

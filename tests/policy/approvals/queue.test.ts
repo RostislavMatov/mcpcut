@@ -763,6 +763,55 @@ describe('a resolution\'s actor is validated like every other stored field (M5 w
     expect(resolution?.outcome).toBe('approved')
     expect(Object.hasOwn(resolution!, 'actor')).toBe(false)
   })
+
+  /**
+   * The cap is enforced on the WRITE too (M5 wave-2 review, finding 3).
+   * Capping only on read means an over-cap actor is accepted, stored, and then
+   * rejected by every reader: `readResolution` returns `null`, so the waiting
+   * agent never sees the decision and times out, and `checkRecentApproval`
+   * skips the record — an approved request behaving as unresolved, with no
+   * diagnostic anywhere. Both of today's producers are bounded, so this is
+   * latent; a loud rejection at the boundary is what keeps it that way.
+   */
+  test('resolve() rejects an over-cap actor instead of storing an unreadable record', async () => {
+    const queue = createApprovalQueue({ baseDir })
+    const { approvalId } = await queue.enqueue(baseRequest())
+
+    await expect(
+      queue.resolve(approvalId, {
+        outcome: 'approved',
+        actor: 'a'.repeat(MAX_APPROVAL_ACTOR_CHARS + 1),
+      }),
+    ).rejects.toThrow(/actor/i)
+
+    // Nothing was written: the request is still pending and still resolvable.
+    await expect(queue.readResolution(approvalId)).resolves.toBeNull()
+    expect((await queue.list()).map((entry) => entry.approvalId)).toContain(approvalId)
+  })
+
+  test('resolve() accepts an actor exactly at the cap, and it reads back', async () => {
+    const actor = 'a'.repeat(MAX_APPROVAL_ACTOR_CHARS)
+    const queue = createApprovalQueue({ baseDir })
+    const { approvalId } = await queue.enqueue(baseRequest())
+
+    const result = await queue.resolve(approvalId, { outcome: 'approved', actor })
+
+    expect(result.ok).toBe(true)
+    await expect(queue.readResolution(approvalId)).resolves.toMatchObject({ actor })
+  })
+
+  test('a rejected over-cap actor leaves the request resolvable by a well-formed retry', async () => {
+    const queue = createApprovalQueue({ baseDir })
+    const { approvalId } = await queue.enqueue(baseRequest())
+
+    await expect(
+      queue.resolve(approvalId, { outcome: 'approved', actor: 'b'.repeat(MAX_APPROVAL_ACTOR_CHARS + 1) }),
+    ).rejects.toThrow()
+    const retry = await queue.resolve(approvalId, { outcome: 'approved', actor: 'cli:alice' })
+
+    expect(retry.ok).toBe(true)
+    await expect(queue.readResolution(approvalId)).resolves.toMatchObject({ actor: 'cli:alice' })
+  })
 })
 
 describe('bounded reads (availability: an unbounded pending set made every UI poll a full scan)', () => {

@@ -139,6 +139,8 @@ interface HarnessOptions {
   readonly inventory?: GateInventory
   readonly agentScope?: GateAgentScope
   readonly approvalWaiter?: ApprovalWaiter
+  /** Gate clock; also the clock `checkRecentApproval` reads during the late-approval lookup. */
+  readonly clock?: () => number
 }
 
 interface GateHarness {
@@ -183,6 +185,7 @@ function createHarness(opts: HarnessOptions = {}): GateHarness {
     clientWriter: writer,
     approvalsBaseDir: approvalsDir,
     onError: (error: unknown) => errors.push(error),
+    ...(opts.clock !== undefined ? { clock: opts.clock } : {}),
   })
   return { gate, written, captured }
 }
@@ -650,5 +653,68 @@ describe('a deferred decision names the rules it was DECIDED under, not written 
       .filter((record) => record.kind === 'decision')
       .map((record) => record.decision?.grantsHash)
     expect(stamped).toEqual(['c'.repeat(64), 'd'.repeat(64)])
+  })
+})
+
+describe('the snapshot is taken where the decision is MADE, not inside the approval flow', () => {
+  /**
+   * The residue of the wave-1 shear defect (M5 wave-2 review, finding 2).
+   * `requestApproval` used to snapshot provenance itself — but only AFTER
+   * awaiting `resolveLateApproval`, a storage read. An `agent-watch` poll
+   * landing in that window stamped the pending row and every record about the
+   * call with a matrix that did not produce the decision. The window was one
+   * read rather than the 60s wave 1 closed, but it is the same defect, and it
+   * left the invariant resting on statement order inside the approval flow.
+   *
+   * The seam is the gate clock, which `checkRecentApproval` reads as part of
+   * that very lookup (`grants.ts`: `const nowMs = clock()`), so flipping the
+   * fingerprint there IS "a grant edit landing during the late-approval read"
+   * — deterministically, with no sleeping or racing.
+   */
+  const DECISION_TIME_HASH = '7'.repeat(64)
+  const MID_READ_HASH = '8'.repeat(64)
+
+  test('a grant edit during the late-approval read reaches neither the pending row nor any record', async () => {
+    let currentHash = DECISION_TIME_HASH
+    let nowMs = Date.parse('2026-08-18T00:00:00.000Z')
+    let flipped = false
+    const clock = (): number => {
+      // The FIRST clock read on this path is the one inside
+      // `checkRecentApproval`, i.e. strictly after `decide()` and strictly
+      // before the approval flow used to sample provenance.
+      if (!flipped) {
+        flipped = true
+        currentHash = MID_READ_HASH
+      }
+      return nowMs
+    }
+    const policy = policyOf(APPROVAL_POLICY)
+    const { gate, captured } = createHarness({
+      policy,
+      agentScope: scopeWithProvenance(() => currentHash),
+      approvalWaiter: createApprovalWaiter({ pollIntervalMs: 5, clock: () => nowMs }),
+      clock,
+    })
+
+    const verdictPromise = gate.gateClientMessage(toolCall(1, 'delete_repo'))
+    const pending = await waitForPendingApproval()
+    await queue.resolve(pending.approvalId, { outcome: 'approved', actor: 'operator' })
+    await verdictPromise
+
+    // The read that flipped it really did run: otherwise this test proves
+    // nothing about the window it claims to close.
+    expect(flipped).toBe(true)
+    expect(currentHash).toBe(MID_READ_HASH)
+
+    expect(pending.grantsHash).toBe(DECISION_TIME_HASH)
+    const decisions = captured.filter((record) => record.kind === 'decision')
+    expect(decisions.map((record) => record.decision?.outcome)).toEqual([
+      'require-approval-pending',
+      'approved',
+    ])
+    for (const record of decisions) {
+      expect(record.decision?.grantsHash).toBe(DECISION_TIME_HASH)
+      expect(record.decision?.policyHash).toBe(policyHashOf(policy))
+    }
   })
 })
