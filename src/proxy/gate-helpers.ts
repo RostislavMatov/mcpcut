@@ -181,12 +181,26 @@ export interface CallFacts {
  * Optional per-outcome fields that only some decision records carry.
  * `agentName` is stamped on `require-approval-pending` records so an
  * operator UI can answer "who is asking" (M4); it rides the record through
- * `decisionInfoOf`'s spread.
+ * `decisionInfoOf`'s spread. `actor` answers the other half — who DECIDED —
+ * and is set only where a human resolution determined the outcome (M5 wave
+ * 2; see `DecisionInfo.actor`).
  */
 export interface DecisionExtras {
   readonly approvalId?: string
   readonly latencyMs?: number
   readonly agentName?: string
+  readonly actor?: string
+}
+
+/**
+ * The `actor` half of `DecisionExtras`, as a spreadable fragment: present
+ * only when a human resolution named one, so `exactOptionalPropertyTypes`
+ * keeps "no human decided this" expressible as an ABSENT key rather than an
+ * `undefined` one (the two are indistinguishable after `JSON.stringify`, and
+ * a record must not merely *look* unattributed).
+ */
+export function actorExtra(actor?: string): Pick<DecisionExtras, 'actor'> {
+  return actor !== undefined ? { actor } : {}
 }
 
 /** Assembles the decision draft for one decided call; the writer stamps provenance. */

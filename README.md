@@ -194,9 +194,24 @@ A `require-approval` tool call does not reach the server immediately:
 2. An operator reviews and resolves it in another terminal:
    ```
    mcp-journal approvals list
+   export MCP_ADMIN_TOKEN=<your personal admin token>
    mcp-journal approvals approve <id> [--reason TEXT]
    mcp-journal approvals deny <id> [--reason TEXT]
    ```
+   `approve` and `deny` require `MCP_ADMIN_TOKEN` — the personal token
+   `mcp-journal admin add` printed — and the admin behind it must hold the
+   `operator` or `owner` role, the same minimum the admin UI enforces on the
+   same action. The resolution is then stored as `cli:<adminName>`, so the
+   journal answers *who* approved a call and not only *that* someone did.
+   `approvals list` needs no token: reading the queue is not an authorization
+   event.
+
+   **What this does and does not buy.** It buys **attribution**, not an access
+   barrier. A process running as the same user can read your environment
+   anyway — that is this tool's stated threat model — so the token does not
+   stop anyone who already has shell access on the host. What it does is make
+   an approval name a human, so a later audit export has no anonymous entries
+   in it.
 3. If approved before the timeout, the original call is forwarded to the
    server and its response reaches the agent normally. If it times out (or is
    denied), the agent gets a synthetic JSON-RPC error instead — but the
@@ -302,8 +317,8 @@ mcp-journal quarantine show <server> <tool>
 mcp-journal quarantine approve <server> <tool> | --all --server <name>
 mcp-journal quarantine reject <server> <tool>
 mcp-journal approvals list [--json]
-mcp-journal approvals approve <id> [--reason TEXT]
-mcp-journal approvals deny <id> [--reason TEXT]
+mcp-journal approvals approve <id> [--reason TEXT]   # needs MCP_ADMIN_TOKEN
+mcp-journal approvals deny <id> [--reason TEXT]      # needs MCP_ADMIN_TOKEN
 mcp-journal admin add <name> --role owner|operator|viewer
 mcp-journal admin list | remove <name> | rotate <name> | role <name> owner|operator|viewer
 mcp-journal ui [--port 8091] [--host 127.0.0.1] [--behind-tls]

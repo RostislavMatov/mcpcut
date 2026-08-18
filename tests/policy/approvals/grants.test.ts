@@ -1,7 +1,8 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { MAX_APPROVAL_ACTOR_CHARS } from '../../../src/policy/constants.js'
 import { checkRecentApproval, createGrantRegistry } from '../../../src/policy/approvals/grants.js'
 import { openApprovalsDb } from '../../../src/policy/approvals/queue-db.js'
 import { createApprovalQueue } from '../../../src/policy/approvals/queue.js'
@@ -81,6 +82,7 @@ describe('checkRecentApproval', () => {
       toolName?: string
       argsHash?: string
       outcome?: string
+      actor?: unknown
       resolvedAt?: string
       doc?: string
     } = {},
@@ -101,7 +103,10 @@ describe('checkRecentApproval', () => {
         sessionId: 'session-1',
         requestedAt: new Date().toISOString(),
         expiresAt: new Date().toISOString(),
-        resolution: { outcome: fields.outcome ?? 'approved' },
+        resolution: {
+          outcome: fields.outcome ?? 'approved',
+          ...(fields.actor !== undefined ? { actor: fields.actor } : {}),
+        },
         resolvedAt,
       })
 
@@ -137,7 +142,7 @@ describe('checkRecentApproval', () => {
       clock: () => nowMs,
     })
 
-    expect(granted).toBe(true)
+    expect(granted).not.toBeNull()
   })
 
   test('ignores a resolution with a different argsHash', async () => {
@@ -152,7 +157,7 @@ describe('checkRecentApproval', () => {
       clock: () => nowMs,
     })
 
-    expect(granted).toBe(false)
+    expect(granted).toBeNull()
   })
 
   test('ignores a resolution that is expired-by-ttl', async () => {
@@ -167,7 +172,7 @@ describe('checkRecentApproval', () => {
       clock: () => nowMs,
     })
 
-    expect(granted).toBe(false)
+    expect(granted).toBeNull()
   })
 
   test('ignores a denied resolution', async () => {
@@ -182,7 +187,7 @@ describe('checkRecentApproval', () => {
       clock: () => nowMs,
     })
 
-    expect(granted).toBe(false)
+    expect(granted).toBeNull()
   })
 
   test('ignores an expired-outcome resolution (session teardown), not just denied', async () => {
@@ -197,7 +202,7 @@ describe('checkRecentApproval', () => {
       clock: () => nowMs,
     })
 
-    expect(granted).toBe(false)
+    expect(granted).toBeNull()
   })
 
   test('ignores a resolution for a different server or tool', async () => {
@@ -213,7 +218,7 @@ describe('checkRecentApproval', () => {
       clock: () => nowMs,
     })
 
-    expect(granted).toBe(false)
+    expect(granted).toBeNull()
   })
 
   test('skips a malformed record instead of throwing', async () => {
@@ -226,10 +231,10 @@ describe('checkRecentApproval', () => {
         argsHash: 'hash-1',
         ttlMs: 60_000,
       }),
-    ).resolves.toBe(false)
+    ).resolves.toBeNull()
   })
 
-  test('returns false when nothing has ever been queued', async () => {
+  test('returns null when nothing has ever been queued', async () => {
     await expect(
       checkRecentApproval(baseDir, {
         serverName: 'github',
@@ -237,7 +242,7 @@ describe('checkRecentApproval', () => {
         argsHash: 'hash-1',
         ttlMs: 60_000,
       }),
-    ).resolves.toBe(false)
+    ).resolves.toBeNull()
   })
 
   test('grants a late approval recorded through the queue itself', async () => {
@@ -261,7 +266,122 @@ describe('checkRecentApproval', () => {
       clock: () => nowMs,
     })
 
-    expect(granted).toBe(true)
+    expect(granted).not.toBeNull()
+  })
+
+  test('returns the approval id and the actor of the matching resolution', async () => {
+    // The identifying facts, not merely "yes": the retry this grant admits
+    // writes an `allow` record, and without them that record shows a
+    // destructive call simply succeeding, with the human approval that
+    // authorized it recorded nowhere (M5 wave 2).
+    const nowMs = Date.now()
+    await writeResolvedRecord('01AAA', {
+      actor: 'ui:alice',
+      resolvedAt: new Date(nowMs - 1000).toISOString(),
+    })
+
+    const granted = await checkRecentApproval(baseDir, {
+      serverName: 'github',
+      toolName: 'create_issue',
+      argsHash: 'hash-1',
+      ttlMs: 60_000,
+      clock: () => nowMs,
+    })
+
+    expect(granted).toEqual({ approvalId: '01AAA', actor: 'ui:alice' })
+  })
+
+  test('a matching resolution with no actor grants with NO actor key', async () => {
+    // Pre-M5 records (and every resolution recorded without one) carry no
+    // actor. Attribution is not a condition of the grant, and absence stays
+    // an absent key: `actor: undefined` would be indistinguishable from a
+    // named operator once the record is serialized.
+    const nowMs = Date.now()
+    await writeResolvedRecord('01AAA', { resolvedAt: new Date(nowMs - 1000).toISOString() })
+
+    const granted = await checkRecentApproval(baseDir, {
+      serverName: 'github',
+      toolName: 'create_issue',
+      argsHash: 'hash-1',
+      ttlMs: 60_000,
+      clock: () => nowMs,
+    })
+
+    expect(granted).toEqual({ approvalId: '01AAA' })
+    expect(Object.hasOwn(granted!, 'actor')).toBe(false)
+  })
+
+  test('a record whose actor is not a string is skipped whole, and grants nothing', async () => {
+    // Not "granted without an actor": the document failed validation, so
+    // nothing about it is trusted — the same skip-whole discipline every
+    // other field here follows.
+    const nowMs = Date.now()
+    await writeResolvedRecord('01AAA', {
+      actor: { name: 'alice' },
+      resolvedAt: new Date(nowMs - 1000).toISOString(),
+    })
+
+    const granted = await checkRecentApproval(baseDir, {
+      serverName: 'github',
+      toolName: 'create_issue',
+      argsHash: 'hash-1',
+      ttlMs: 60_000,
+      clock: () => nowMs,
+    })
+
+    expect(granted).toBeNull()
+  })
+
+  test('a record with an over-cap actor is skipped whole', async () => {
+    // A foreign row could otherwise push megabytes of attacker-chosen text
+    // onto a journal record that waves 3-4 chain and sign.
+    const nowMs = Date.now()
+    await writeResolvedRecord('01AAA', {
+      actor: 'a'.repeat(MAX_APPROVAL_ACTOR_CHARS + 1),
+      resolvedAt: new Date(nowMs - 1000).toISOString(),
+    })
+
+    const granted = await checkRecentApproval(baseDir, {
+      serverName: 'github',
+      toolName: 'create_issue',
+      argsHash: 'hash-1',
+      ttlMs: 60_000,
+      clock: () => nowMs,
+    })
+
+    expect(granted).toBeNull()
+  })
+
+  test('an actor exactly at the cap still grants (the bound is inclusive)', async () => {
+    const nowMs = Date.now()
+    const actor = 'a'.repeat(MAX_APPROVAL_ACTOR_CHARS)
+    await writeResolvedRecord('01AAA', { actor, resolvedAt: new Date(nowMs - 1000).toISOString() })
+
+    const granted = await checkRecentApproval(baseDir, {
+      serverName: 'github',
+      toolName: 'create_issue',
+      argsHash: 'hash-1',
+      ttlMs: 60_000,
+      clock: () => nowMs,
+    })
+
+    expect(granted).toEqual({ approvalId: '01AAA', actor })
+  })
+
+  test('unopenable storage yields no grant, and does not throw', async () => {
+    // The contract this function exists under: a failure to READ must fall
+    // back to asking a human, never to granting, and never to failing the
+    // decision. A directory where the database file belongs is unopenable.
+    await mkdir(join(journalDir, 'state.db'), { recursive: true })
+
+    await expect(
+      checkRecentApproval(baseDir, {
+        serverName: 'github',
+        toolName: 'create_issue',
+        argsHash: 'hash-1',
+        ttlMs: 60_000,
+      }),
+    ).resolves.toBeNull()
   })
 
   test('retention deletes a bounded batch of long-settled records and keeps fresh ones', async () => {
@@ -303,7 +423,7 @@ describe('checkRecentApproval', () => {
       clock: () => nowMs,
     })
 
-    expect(granted).toBe(false)
+    expect(granted).toBeNull()
   })
 
   // REMOVED (M4.5 wave 3): "a resolved file whose approvalId does not match its

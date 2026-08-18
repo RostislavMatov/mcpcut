@@ -1,8 +1,10 @@
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { ADMIN_TOKEN_ENV_VAR } from '../../src/admin/constants.js'
+import type { DispatchOptions } from '../../src/cli.js'
 import { createApprovalQueue } from '../../src/policy/approvals/queue.js'
 import { requestLine, waitUntil, waitUntilAsync } from '../proxy/harness.js'
-import type { UiClient } from '../ui/harness.js'
+import type { UiClient, UiTestHarness } from '../ui/harness.js'
 import {
   createPlane,
   runOnboarding,
@@ -165,6 +167,22 @@ export async function waitForPending(client: UiClient): Promise<PendingSeen> {
     return approvalId !== ''
   })
   return { approvalId, elapsedMs: Date.now() - startedAt }
+}
+
+/**
+ * The dispatch seam that runs `approvals approve|deny` AS one of the harness's
+ * named admins — the same human the browser logs in as.
+ *
+ * Since M5 wave 2 (owner decision O3) a resolution made from the shell carries
+ * `actor: cli:<adminName>`, read from a personal token in `MCP_ADMIN_TOKEN`.
+ * Reusing the UI's admins here is deliberate: it lets one scenario show the
+ * same person attributed as `ui:<name>` through the browser and `cli:<name>`
+ * through the terminal, rather than as an anonymous `cli`.
+ */
+export function cliAsAdmin(harness: UiTestHarness, adminName: string): DispatchOptions {
+  const token = harness.tokens[adminName]
+  if (token === undefined) throw new Error(`no admin token for "${adminName}"`)
+  return { approvals: { env: { [ADMIN_TOKEN_ENV_VAR]: token } } }
 }
 
 /** Every message the agent received under one JSON-RPC id (usually expected: one). */

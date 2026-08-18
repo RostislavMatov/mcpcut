@@ -49,6 +49,23 @@ export interface DecisionInfo {
   readonly agentName?: string
   readonly latencyMs?: number
   /**
+   * WHO determined this outcome, when a human did: the `actor` of the
+   * approval resolution the outcome came from (`ui:<adminName>`, `cli`, …).
+   * Present on exactly the records a person decided — `approved`,
+   * `denied-by-operator`, and the `allow` of a retry admitted by a LATE
+   * approval — and ABSENT everywhere else, following the same "absent, not
+   * null" convention as `agentName`/`grantsHash`.
+   *
+   * Absence is therefore a FACT, not missing data: a `timeout` is the absence
+   * of a decision, an `expired` resolution is one session teardown or the
+   * sweep made rather than an operator, and a policy `allow`/`deny` had no
+   * human in the loop at all. Stamping an actor on any of those would put a
+   * false statement into the evidence waves 3-4 chain and sign, so the field
+   * is populated only where an `ApprovalResolution` actually carried one
+   * (M5 wave 2).
+   */
+  readonly actor?: string
+  /**
    * Fingerprint of the *effective* policy this call was decided under
    * (`policy/provenance.ts`). Required: every decision record carries it, so
    * an auditor can tell which ruleset produced the outcome instead of having
@@ -94,7 +111,14 @@ export type DecisionInfoDraft = Omit<DecisionInfo, 'policyHash' | 'grantsHash'>
  * records: a record with no `policyHash` is *unprovenanced*, and must be
  * reported as such rather than silently presented as provenanced.
  *
- * Only provenance is weakened here. The fields `isDecisionShape` does
+ * Only provenance is weakened here. `actor` (M5 wave 2) needs no weakening
+ * and gets none: it is optional on the WRITE side too — most outcomes have
+ * no human behind them — so the read type inherited from `DecisionInfo`
+ * already says exactly what a reader can promise, and every consumer is
+ * already forced to handle its absence. Re-declaring it would only create a
+ * second place to keep in sync.
+ *
+ * The fields `isDecisionShape` does
  * validate stay required; the ones it does not (`serverName`, `toolClass`,
  * `quarantineState`, `argsHash`) are a pre-existing gap, unchanged by M5 and
  * deliberately not widened here — that would be a separate correction with

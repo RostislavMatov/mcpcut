@@ -24,6 +24,23 @@ export const ADMINS_FILE_PATH = join(JOURNAL_DIR, ADMINS_FILE_NAME)
  */
 export const ADMIN_TOKEN_PREFIX = 'mcpa_'
 
+/**
+ * Environment variable carrying a personal admin token to CLI commands that
+ * RESOLVE an approval (`approvals approve|deny`). Deliberately separate from
+ * the agent variable (`MCP_AGENT_TOKEN`, `src/cli/connect-constants.ts`) and
+ * owned here rather than in `src/cli/`: admins are a distinct trust domain (a
+ * named human) from agents (a machine identity), and the two credentials must
+ * never be interchangeable in a journal whose job is to name who approved
+ * what.
+ *
+ * What requiring it buys is ATTRIBUTION, not an access barrier: a process
+ * running under the same uid can read this variable anyway, which is the
+ * project's stated and accepted threat model (ADR-0004). It makes the stored
+ * resolution say WHICH named admin approved; it does not stop anyone who
+ * already has shell access.
+ */
+export const ADMIN_TOKEN_ENV_VAR = 'MCP_ADMIN_TOKEN'
+
 /** Random entropy per admin token: 32 bytes ≈ 256 bits, base64url-encoded. */
 export const ADMIN_TOKEN_RANDOM_BYTES = 32
 

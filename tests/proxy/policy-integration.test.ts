@@ -2,7 +2,9 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
-import { runApprovals } from '../../src/cli/approvals-cmd.js'
+import { ADMIN_TOKEN_ENV_VAR } from '../../src/admin/constants.js'
+import { createAdminStore } from '../../src/admin/store.js'
+import { runApprovals, type ApprovalsCliOptions } from '../../src/cli/approvals-cmd.js'
 import { runQuarantine } from '../../src/cli/quarantine-cmd.js'
 import type { JournalRecord } from '../../src/journal/record.js'
 import { INVENTORY_FILE_NAME } from '../../src/policy/inventory.js'
@@ -79,6 +81,24 @@ function useJournalDir(prefix: string): () => string {
     await rm(journalDir, { recursive: true, force: true })
   })
   return () => journalDir
+}
+
+/** The admin these scenarios approve as; its name shows up as `cli:<name>`. */
+const CLI_OPERATOR = 'e2e-operator'
+
+/**
+ * Mints a real admin in `journalDir` and returns the CLI options that resolve
+ * an approval AS that admin. Since M5 wave 2 (owner decision O3) a resolution
+ * from the shell must name the human who made it, so a test driving the real
+ * CLI has to carry a real personal token.
+ */
+async function approveAsAdminOpts(journalDir: string): Promise<ApprovalsCliOptions> {
+  const { token } = await createAdminStore({ journalDir }).createAdmin(CLI_OPERATOR, 'operator')
+  return {
+    baseDir: join(journalDir, 'approvals'),
+    journalDir,
+    env: { [ADMIN_TOKEN_ENV_VAR]: token },
+  }
 }
 
 /**
@@ -292,9 +312,11 @@ describe('runWrap: require-approval forwards the call once the real CLI approves
     expect(approvalId).not.toBe('')
 
     const approveIo = createCliCapture()
-    const approveExit = await runApprovals(['approve', approvalId], approveIo, {
-      baseDir: approvalsBaseDir(),
-    })
+    const approveExit = await runApprovals(
+      ['approve', approvalId],
+      approveIo,
+      await approveAsAdminOpts(journalDir()),
+    )
     expect(approveExit).toBe(0)
     expect(approveIo.out()).toContain('Approved')
 
@@ -349,9 +371,11 @@ describe('runWrap: a late CLI approval after a timeout grants the identical retr
     firstApprovalId = ((timedOut?.error as { data: { approvalId: string } }).data).approvalId
 
     const approveIo = createCliCapture()
-    const approveExit = await runApprovals(['approve', firstApprovalId], approveIo, {
-      baseDir: approvalsBaseDir(),
-    })
+    const approveExit = await runApprovals(
+      ['approve', firstApprovalId],
+      approveIo,
+      await approveAsAdminOpts(journalDir()),
+    )
     expect(approveExit).toBe(0)
 
     // Same tool, same (empty) arguments: the retry the on-disk grant must match.

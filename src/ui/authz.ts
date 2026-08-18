@@ -1,4 +1,4 @@
-import type { AdminRole } from '../admin/constants.js'
+import { APPROVAL_RESOLVE_MIN_ROLE, roleSatisfies, type Role } from '../admin/authz.js'
 
 /**
  * Deny-by-default authorization for the admin UI (ADR-0004, Decision 4).
@@ -12,23 +12,13 @@ import type { AdminRole } from '../admin/constants.js'
  * (`tests/ui/ui-hardening.test.ts`) enumerates this table against every role.
  */
 
-/** A UI role is exactly an admin role (the two vocabularies are one). */
-export type Role = AdminRole
-
 /**
- * Privilege ordering. Higher rank strictly includes every lower one:
- * `owner` ⊇ `operator` ⊇ `viewer`. The only ordering that matters lives here.
+ * The role vocabulary and its privilege ordering now live in
+ * `src/admin/authz.ts` — the CLI enforces the same thresholds and must not
+ * carry a second copy of the ordering. Re-exported here so the UI's own
+ * surface is unchanged.
  */
-export const ROLE_RANK: Readonly<Record<Role, number>> = {
-  viewer: 1,
-  operator: 2,
-  owner: 3,
-}
-
-/** True when a session's `role` meets or exceeds the route's `minRole`. */
-export function roleSatisfies(role: Role, minRole: Role): boolean {
-  return ROLE_RANK[role] >= ROLE_RANK[minRole]
-}
+export { ROLE_RANK, roleSatisfies, type Role } from '../admin/authz.js'
 
 /** HTTP methods the UI routes cover. */
 export type UiMethod = 'GET' | 'POST'
@@ -69,8 +59,10 @@ export const ROUTE_TABLE: readonly RouteEntry[] = [
   { method: 'GET', pattern: '/events', minRole: 'viewer', handler: 'events' },
 
   // --- operator: approvals, quarantine, agent grant matrix ---
-  { method: 'POST', pattern: '/approvals/:id/approve', minRole: 'operator', handler: 'approvalsApprove' },
-  { method: 'POST', pattern: '/approvals/:id/deny', minRole: 'operator', handler: 'approvalsDeny' },
+  // The threshold is shared with `mcp-journal approvals approve|deny`: one
+  // constant, so the CLI can never become a way around this row.
+  { method: 'POST', pattern: '/approvals/:id/approve', minRole: APPROVAL_RESOLVE_MIN_ROLE, handler: 'approvalsApprove' },
+  { method: 'POST', pattern: '/approvals/:id/deny', minRole: APPROVAL_RESOLVE_MIN_ROLE, handler: 'approvalsDeny' },
   { method: 'POST', pattern: '/quarantine/approve', minRole: 'operator', handler: 'quarantineApprove' },
   { method: 'POST', pattern: '/quarantine/reject', minRole: 'operator', handler: 'quarantineReject' },
   { method: 'POST', pattern: '/agents/create', minRole: 'operator', handler: 'agentsCreate' },

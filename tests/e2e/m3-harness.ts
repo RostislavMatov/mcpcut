@@ -1,6 +1,7 @@
 import { writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { ADMIN_TOKEN_ENV_VAR, type AdminRole } from '../../src/admin/constants.js'
 import { dispatch, type CliIo, type DispatchOptions } from '../../src/cli.js'
 import type { ConnectDeps } from '../../src/cli/connect-cmd.js'
 import type { ServeCommandOptions, ServeHandle } from '../../src/cli/serve-cmd.js'
@@ -73,7 +74,11 @@ function seamsFor(journalDir: string): DispatchOptions {
     server: { journalDir },
     vault: { journalDir },
     agent: { journalDir },
-    approvals: { baseDir: join(journalDir, 'approvals') },
+    admin: { journalDir },
+    // `journalDir` here is where `approvals approve|deny` looks up the admin
+    // behind `MCP_ADMIN_TOKEN`; `env: {}` keeps a token exported in the
+    // developer's own shell from reaching the command under test.
+    approvals: { baseDir: join(journalDir, 'approvals'), journalDir, env: {} },
     quarantine: { storePath: join(journalDir, INVENTORY_FILE_NAME) },
     connect: { journalDir, env: {}, loadPolicy },
     serve: { journalDir, signals: [], loadPolicy, revocationPollIntervalMs: POLL_INTERVAL_MS },
@@ -138,13 +143,32 @@ export function decisionsOf(records: readonly JournalRecord[]): JournalRecord[] 
   return records.filter((record) => record.kind === 'decision')
 }
 
-/** The token `agent create` printed, or a loud failure if it printed none. */
-function tokenFrom(result: CliRun): string {
+/** The token a `create`/`add` command printed, or a loud failure if it printed none. */
+function tokenFrom(result: CliRun, command = 'agent create'): string {
   const token = /^token: (\S+)$/m.exec(result.out)?.[1]
   if (token === undefined) {
-    throw new Error(`"agent create" printed no token: ${result.out}`)
+    throw new Error(`"${command}" printed no token: ${result.out}`)
   }
   return token
+}
+
+/**
+ * Onboards a named admin through `admin add` and returns the seam that makes a
+ * later `approvals approve|deny` run AS that admin.
+ *
+ * Since M5 wave 2 (owner decision O3) a resolution made from the shell carries
+ * `actor: cli:<adminName>`, read from a personal token in `MCP_ADMIN_TOKEN` —
+ * so an e2e that resolves an approval must onboard an admin exactly the way an
+ * operator would, through the CLI, not by seeding the store.
+ */
+export async function createCliApprover(
+  plane: Plane,
+  name: string,
+  role: AdminRole = 'operator',
+): Promise<DispatchOptions> {
+  const argv = ['admin', 'add', name, '--role', role]
+  const token = tokenFrom(expectOk(argv, await plane.run(argv)), 'admin add')
+  return { approvals: { env: { [ADMIN_TOKEN_ENV_VAR]: token } } }
 }
 
 /** `agent create` + `agent grant` for a server that is already registered. */
