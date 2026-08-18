@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { GENESIS_PREV_HASH, linkHashOf } from '../../src/journal/chain.js'
 import {
+  latestAttestedChainHead,
   resolveChainStartPrevHash,
   sessionChainSpan,
   verifyChain,
@@ -231,6 +232,77 @@ describe('verifyChain: tamper detection', () => {
     // Recomputed independently via the exported primitive, not reaching into
     // the walk's internals -- this is what "re-derives from linkHashOf" means.
     expect(linkHashOf(GENESIS_PREV_HASH, '{"n":1}')).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  // Pin, not a bug: a CAREFUL tamper (edit a row's `doc` AND recompute that
+  // SAME row's `record_hash` from its own stored `prev_hash`, exactly as
+  // `insertRecordRows` itself would) leaves the edited row internally
+  // self-consistent. The two stored columns are all `verifyChain` has --
+  // there is nothing in them to tell this apart from a genuine deletion,
+  // insertion, or reorder at the NEXT row, and there is no fix for that
+  // (see chain-verify.ts's module doc). This test exists so nobody later
+  // "fixes" the classification into a false claim of finer-grained
+  // distinction than the stored columns can actually support.
+  test('a forged edit that also recomputes its own record_hash from its own prev_hash reports as a "gap" one seq later, not "modified" at the edited row', async () => {
+    const handle = await openHandle()
+    handle.transaction((db) =>
+      insertRecordRows(db, [
+        makeRow({ recordId: 'a', doc: '{"n":1}' }),
+        makeRow({ recordId: 'b', doc: '{"n":2}' }),
+        makeRow({ recordId: 'c', doc: '{"n":3}' }),
+      ]),
+    )
+    const rowTwo = handle.db
+      .prepare('SELECT prev_hash AS prevHash FROM journal_records WHERE seq = 2')
+      .get() as { prevHash: string }
+    const forgedDoc = '{"n":"forged"}'
+    const forgedHash = linkHashOf(rowTwo.prevHash, forgedDoc)
+    handle.db
+      .prepare('UPDATE journal_records SET doc = ?, record_hash = ? WHERE seq = 2')
+      .run(forgedDoc, forgedHash)
+
+    const result = verifyChain(handle)
+
+    // Row 2 passes -- it is internally consistent with its OWN prev_hash,
+    // which the forger left untouched. Row 3's prev_hash still names row 2's
+    // ORIGINAL (pre-forgery) hash, so the disagreement only becomes visible
+    // there, mislabeled by seq (3, not 2) even though the edit happened at 2.
+    expect(result.break).toEqual({ seq: 3, reason: 'gap' })
+    expect(result.intactThroughSeq).toBe(2)
+  })
+})
+
+describe('latestAttestedChainHead', () => {
+  test('null on an empty journal -- nothing to sign', async () => {
+    const handle = await openHandle()
+
+    expect(latestAttestedChainHead(handle)).toBeNull()
+  })
+
+  test('null when every row predates the chain (all NULL hashes) -- not treated as attested', async () => {
+    const handle = await openHandle()
+    insertLegacyRow(handle, makeRow({ recordId: 'legacy-1', doc: '{"n":1}' }))
+    insertLegacyRow(handle, makeRow({ recordId: 'legacy-2', doc: '{"n":2}' }))
+
+    expect(latestAttestedChainHead(handle)).toBeNull()
+  })
+
+  test('the highest-seq chained row once the chain has started', async () => {
+    const handle = await openHandle()
+    insertLegacyRow(handle, makeRow({ recordId: 'legacy-1', doc: '{"n":1}' }))
+    handle.transaction((db) =>
+      insertRecordRows(db, [
+        makeRow({ recordId: 'a', doc: '{"n":2}' }),
+        makeRow({ recordId: 'b', doc: '{"n":3}' }),
+      ]),
+    )
+
+    const head = latestAttestedChainHead(handle)
+
+    expect(head).not.toBeNull()
+    expect(head?.seq).toBe(3)
+    const expectedHash = linkHashOf(linkHashOf(GENESIS_PREV_HASH, '{"n":2}'), '{"n":3}')
+    expect(head?.recordHash).toBe(expectedHash)
   })
 })
 

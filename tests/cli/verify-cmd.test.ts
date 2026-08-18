@@ -197,6 +197,35 @@ describe('verify: tamper detection', () => {
     expect(io.out()).toMatch(/BROKEN at seq 3:.*deleted, inserted, or reordered/)
   })
 
+  // Regression: a "gap" report must not claim more precision than the stored
+  // columns can support -- see chain-verify.ts's module doc and the
+  // dedicated forged-self-consistent-edit test in chain-verify.test.ts. A
+  // careful edit of seq 2 that also recomputes seq 2's own record_hash from
+  // its own stored prev_hash produces THE SAME "gap at seq 3" report as a
+  // genuine deletion/insertion/reorder -- the two are indistinguishable from
+  // what verifyChain has to look at, so the message must say both are
+  // possible and must point the operator at seq 2 as well as seq 3, not name
+  // only the deletion/insertion/reorder story.
+  test('a gap break message states both possible causes and points at the preceding record too', async () => {
+    await writeRecordsViaSink('session-a', [
+      recordOf('session-a', '01AAAAAAAAAAAAAAAAAAAAAAA0', 'tools/list'),
+      recordOf('session-a', '01AAAAAAAAAAAAAAAAAAAAAAA1', 'tools/call'),
+      recordOf('session-a', '01AAAAAAAAAAAAAAAAAAAAAAA2', 'ping'),
+    ])
+    const handle = await rawHandle()
+    handle.db.prepare('DELETE FROM journal_records WHERE seq = 2').run()
+    const io = fakeIo()
+
+    const exitCode = await run([], io)
+
+    expect(exitCode).toBe(2)
+    const out = io.out()
+    expect(out).toMatch(/BROKEN at seq 3:/)
+    expect(out).toMatch(/deleted, inserted, or reordered/)
+    expect(out).toMatch(/edited/i)
+    expect(out).toMatch(/seq 2/)
+  })
+
   test('two rows with swapped doc values are detected, exit 2', async () => {
     await writeRecordsViaSink('session-a', [
       recordOf('session-a', '01AAAAAAAAAAAAAAAAAAAAAAA0', 'tools/list'),
@@ -244,5 +273,28 @@ describe('verify: tamper detection', () => {
 
     expect(exitCode).toBe(0)
     expect(io.out()).not.toMatch(/BROKEN/)
+  })
+
+  // Regression: a real chain break must always escalate to exit 2, even when
+  // the command ALSO could not do some other, separately-requested thing
+  // (sign with a key that does not exist yet, or resolve an unknown
+  // --session). Before this fix, either of those "the extra thing failed"
+  // paths returned exit 1 and masked a break the walk had already found and
+  // already printed to stdout -- exactly the case an auditor's script (which
+  // treats 1 as "low priority" and 2 as "alert") must never see.
+  test('a broken chain with an unknown --session still exits 2, not 1 -- the break is not masked by the session lookup failing', async () => {
+    await writeRecordsViaSink('session-a', [
+      recordOf('session-a', '01AAAAAAAAAAAAAAAAAAAAAAA0', 'tools/list'),
+      recordOf('session-a', '01AAAAAAAAAAAAAAAAAAAAAAA1', 'tools/call'),
+    ])
+    const handle = await rawHandle()
+    handle.db.prepare('UPDATE journal_records SET doc = ? WHERE seq = 2').run('{"tampered":true}')
+    const io = fakeIo()
+
+    const exitCode = await run(['--session', 'no-such-session'], io)
+
+    expect(exitCode).toBe(2)
+    expect(io.out()).toMatch(/BROKEN at seq 2/)
+    expect(io.err()).toMatch(/No records found for session "no-such-session"/)
   })
 })

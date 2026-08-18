@@ -48,7 +48,11 @@ export const USAGE = `Usage:
   mcp-journal migrate                    Import legacy *.json state into state.db
   mcp-journal export [--session <id>]   Export journal records as JSONL to stdout
   mcp-journal backup <destDir>          Back up state.db and journal.db into <destDir>
-  mcp-journal verify [--session <id>]   Recompute the record hash chain and report where it
-                                         stays consistent (exit 0 ok, 1 could not run, 2 broken)
+  mcp-journal verify [--session <id>] [--sign]
+                                         Recompute the record hash chain and report where it
+                                         stays consistent (exit 0 ok, 1 could not run, 2 broken);
+                                         --sign additionally signs the current chain head
+  mcp-journal keygen                     Generate this installation's Ed25519 signing key
+                                         (prints the public key once; needed for "verify --sign")
   mcp-journal --help                    Show this message
 `

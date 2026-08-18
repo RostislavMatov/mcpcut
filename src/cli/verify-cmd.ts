@@ -3,12 +3,13 @@ import { JOURNAL_DIR } from '../config.js'
 import {
   sessionChainSpan,
   verifyChain,
-  type ChainBreakReason,
+  type ChainBreak,
   type ChainVerifyResult,
   type SessionChainSpan,
 } from '../journal/chain-verify.js'
 import { openJournalDbIfPresent } from '../journal/db.js'
 import { isValidSessionId } from '../journal/session-id.js'
+import { attemptSignChainHead } from './verify-sign.js'
 
 /**
  * `mcp-journal verify [--session <id>]` -- the operator/auditor-facing half
@@ -46,23 +47,35 @@ export interface VerifyCommandOptions {
  * - 0: the command ran and found no break (includes the "nothing to verify
  *   yet" cases: an empty journal, or a journal that is entirely pre-chain).
  * - 1: the command could not answer the question as asked -- a bad
- *   argument, no database at all, or (with `--session`) no records for the
- *   named session. Not a finding about the chain, a failure to run.
+ *   argument, no database at all, an unknown `--session`, or (with `--sign`)
+ *   no key or nothing to sign -- AND the chain walk itself found no break.
+ *   Not a finding about the chain, a failure to run.
  * - 2: the walk found a break -- a record's own hash disagreed with its
  *   content, or a record's recorded predecessor disagreed with what
- *   actually precedes it.
+ *   actually precedes it. This WINS over 1 whenever both apply: an
+ *   unresolvable `--session` or a failed `--sign` are both "could not do the
+ *   EXTRA thing also asked for", never a reason to hide that the walk
+ *   (which already ran and already printed its result) found real tampering.
+ *   An auditor's script treats 2 as "alert" and 1 as "low priority, retry
+ *   later" -- letting an ordinary pre-`keygen` host or a typo'd session id
+ *   downgrade a real break to 1 would mean the alert never fires. See the
+ *   `--sign` block below for where this is enforced.
  */
 const EXIT_OK = 0
 const EXIT_USAGE_ERROR = 1
 const EXIT_CHAIN_BROKEN = 2
 
 const USAGE =
-  'Usage: mcp-journal verify [--session <id>]\n' +
+  'Usage: mcp-journal verify [--session <id>] [--sign]\n' +
   'Recomputes the record hash chain (seq order) and reports where it stays\n' +
   'consistent with what is stored, and where it does not.\n' +
+  '--sign additionally signs the current chain HEAD (not every record) with\n' +
+  'this installation\'s Ed25519 key ("mcp-journal keygen"); see its own output\n' +
+  'for what that anchor does and does not prove.\n' +
   'Exit codes: 0 = no break found (including an empty or fully pre-chain\n' +
   'journal), 1 = could not run (bad argument, missing database, unknown\n' +
-  'session), 2 = a break was found.\n'
+  'session, or -- with --sign -- no key or nothing to sign) and no break was\n' +
+  'found either; 2 = a break was found (wins over 1 whenever both apply).\n'
 
 export async function runVerifyCommand(
   args: readonly string[],
@@ -71,7 +84,7 @@ export async function runVerifyCommand(
 ): Promise<number> {
   const { values, positionals } = parseArgs({
     args: [...args],
-    options: { session: { type: 'string' } },
+    options: { session: { type: 'string' }, sign: { type: 'boolean', default: false } },
     allowPositionals: true,
   })
   if (positionals.length > 0) {
@@ -105,9 +118,32 @@ export async function runVerifyCommand(
     const span = sessionChainSpan(handle, sessionId)
     if (span === null) {
       io.stderr.write(`No records found for session "${sessionId}".\n`)
-      return EXIT_USAGE_ERROR
+      // The walk above already ran and already printed its own result: an
+      // unresolvable session name is "could not do the EXTRA thing asked
+      // for", not a reason to hide a break the walk already found. See the
+      // exit-code doc above.
+      return result.break === null ? EXIT_USAGE_ERROR : EXIT_CHAIN_BROKEN
     }
     io.stdout.write(sessionLines(span, result))
+  }
+
+  if (values.sign === true) {
+    // A sign-specific failure (no key, nothing attested yet to sign) is "the
+    // command could not do the EXTRA thing also asked for" -- it must be
+    // reported (stderr, below) but must NEVER downgrade a break the walk
+    // already found and already printed: "no signing key yet" is an
+    // ordinary state on a fresh install before `keygen` has run, and an
+    // auditor's script escalates only on exit 2. A SUCCESSFUL sign falls
+    // through to the same break-based exit code: the anchor is appended to
+    // stdout either way (including when a break was also found), never
+    // silently swapped in for a break report.
+    const signOutcome = await attemptSignChainHead(handle, journalDir, result)
+    if (!signOutcome.ok) {
+      io.stderr.write(signOutcome.message)
+      if (result.break !== null) return EXIT_CHAIN_BROKEN
+      return EXIT_USAGE_ERROR
+    }
+    io.stdout.write(signOutcome.message)
   }
 
   return result.break === null ? EXIT_OK : EXIT_CHAIN_BROKEN
@@ -137,16 +173,36 @@ function summaryLines(result: ChainVerifyResult): string {
       : `Chain intact through seq ${result.intactThroughSeq} (${result.attestedCount} record(s) checked).\n`,
   )
   if (result.break !== null) {
-    lines.push(`BROKEN at seq ${result.break.seq}: ${breakDescription(result.break.reason)}\n`)
+    lines.push(`BROKEN at seq ${result.break.seq}: ${breakDescription(result.break)}\n`)
   }
   return lines.join('')
 }
 
-function breakDescription(reason: ChainBreakReason): string {
-  return reason === 'modified'
-    ? "this record's content does not match its recorded hash -- it was changed after being written."
-    : "this record's recorded predecessor hash does not match the record actually before it -- " +
-        'a record was deleted, inserted, or reordered.'
+/**
+ * `'modified'` and `'gap'` are labels for which stored-column check failed,
+ * not a claim that the underlying tamper action is identifiable from that
+ * label alone -- see `chain-verify.ts`'s module doc. A `'gap'` in
+ * particular has TWO indistinguishable real-world causes (a genuine
+ * deletion/insertion/reorder, or a careful edit of the PRECEDING record that
+ * also recomputed that record's own hash to match), so its wording says
+ * both rather than naming only the first -- naming only one would be a
+ * false claim of precision the stored columns cannot back up. `'modified'`
+ * has no such ambiguity: it names a row whose `doc` was changed WITHOUT
+ * also recomputing its own hash, which is exactly what it says.
+ */
+function breakDescription(chainBreak: ChainBreak): string {
+  if (chainBreak.reason === 'modified') {
+    return "this record's content does not match its recorded hash -- it was changed after being written."
+  }
+  const precedingSeq = chainBreak.seq - 1
+  return (
+    "this record's recorded predecessor hash does not match the record actually before it. " +
+    'Two things produce this, indistinguishable from what is stored: a record was deleted, ' +
+    `inserted, or reordered near this point, OR the record immediately before it (seq ${precedingSeq}) ` +
+    'was edited and had its own hash recomputed from its own stored predecessor to match -- a careful ' +
+    `tamper that leaves seq ${precedingSeq} looking intact and only surfaces here. Inspect both seq ` +
+    `${chainBreak.seq} and seq ${precedingSeq}.`
+  )
 }
 
 /**

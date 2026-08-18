@@ -93,6 +93,59 @@ describe('redact', () => {
     })
   })
 
+  describe('private key PEM material never survives redaction', () => {
+    // Mirrors the Authorization/Bearer guarantee above (M5 wave 4, task 4.4):
+    // the exact PKCS8 shape `generateKeyPairSync('ed25519', { privateKeyEncoding:
+    // { type: 'pkcs8', format: 'pem' } })` produces (journal/signing.ts) --
+    // defence in depth for the case a private key's text ends up in MCP
+    // traffic through some path other than `signing.ts` itself, which
+    // `tests/architecture/imports.test.ts` separately confines to the one module.
+    const PRIVATE_KEY_PEM =
+      '-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIHh1U0GDKsUfNhVFt/z6figuxT7Ao8qwP6kPzk+bXkHG\n-----END PRIVATE KEY-----\n'
+    const KEY_BODY = 'MC4CAQAwBQYDK2VwBCIEIHh1U0GDKsUfNhVFt/z6figuxT7Ao8qwP6kPzk+bXkHG'
+
+    test('a PKCS8 private key PEM embedded in a string value under a non-sensitive key is fully removed', () => {
+      const input = { note: `signing key contents:\n${PRIVATE_KEY_PEM}\nend of file` }
+
+      const result = redact(input) as Record<string, unknown>
+
+      expect(result.note).not.toContain(KEY_BODY)
+      expect(result.note).not.toContain('-----BEGIN PRIVATE KEY-----')
+      expect(result.note).toContain(REDACTED_PLACEHOLDER)
+    })
+
+    test('a PKCS8 private key PEM as a bare (top-level) string value is fully removed', () => {
+      const result = redact(PRIVATE_KEY_PEM) as string
+
+      expect(result).not.toContain(KEY_BODY)
+      expect(result).toContain(REDACTED_PLACEHOLDER)
+    })
+
+    test('value-pattern redaction fires even under a key name the key-policy list does not recognise', () => {
+      // 'signingKey' is deliberately NOT in REDACT_KEY_PATTERNS/REDACT_KEY_TOKENS
+      // (config.ts's doc: bare 'key' is excluded to avoid swallowing 'keyword'
+      // etc.) -- so this is the value-pattern layer, not the key-name layer,
+      // catching the PEM. Defence in depth: the guarantee does not depend on
+      // guessing every field name an agent or server might use.
+      const input = { signingKey: PRIVATE_KEY_PEM }
+
+      const result = redact(input) as Record<string, unknown>
+
+      expect(result.signingKey).not.toContain(KEY_BODY)
+      expect(result.signingKey).toContain(REDACTED_PLACEHOLDER)
+      expect(JSON.stringify(result)).not.toContain(KEY_BODY)
+    })
+
+    test('a legacy PKCS1/SEC1 shape ("RSA PRIVATE KEY" / "EC PRIVATE KEY") is still redacted (no regression)', () => {
+      const rsaPem = '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA1\n-----END RSA PRIVATE KEY-----'
+
+      const result = redact({ note: rsaPem }) as Record<string, unknown>
+
+      expect(result.note).not.toContain('MIIEowIBAAKCAQEA1')
+      expect(result.note).toContain(REDACTED_PLACEHOLDER)
+    })
+  })
+
   describe('value-pattern redaction (non-sensitive keys carrying inline tokens)', () => {
     test('redacts a Bearer token embedded in a string value under a non-sensitive key', () => {
       const input = { message: 'call with Bearer sk-abc.def-123 please' }

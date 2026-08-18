@@ -132,7 +132,13 @@ export const REDACT_KEY_TOKENS: readonly string[] = [
  * All patterns are linear (no nested quantifiers) to stay ReDoS-free.
  */
 export const REDACT_VALUE_PATTERNS: readonly RegExp[] = [
-  /-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+PRIVATE KEY-----/g,
+  // `[A-Z ]*` (zero-or-more), not `+`: PKCS8 ("-----BEGIN PRIVATE KEY-----",
+  // what `generateKeyPairSync(..., { privateKeyEncoding: { type: 'pkcs8' } })`
+  // emits -- see journal/signing.ts) carries no algorithm qualifier, unlike
+  // the legacy PKCS1/SEC1 shapes ("RSA PRIVATE KEY", "EC PRIVATE KEY"). A
+  // `+` here would require a qualifier word and silently let the unqualified,
+  // now-standard form through unredacted.
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
   /\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi,
   /\bBasic\s+[A-Za-z0-9+/]+=*/gi,
   /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g,

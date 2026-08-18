@@ -48,6 +48,23 @@ describe('value-pattern scrubbing of raw strings', () => {
     expect(result).toContain('done')
   })
 
+  test('redacts a PKCS8 PEM private key block with no algorithm qualifier (Ed25519 keygen shape)', () => {
+    // `generateKeyPairSync('ed25519', { privateKeyEncoding: { type: 'pkcs8', format: 'pem' } })`
+    // (journal/signing.ts) labels the block plain "PRIVATE KEY" -- PKCS8
+    // encodes the algorithm inside the DER body, not in the PEM header, unlike
+    // the legacy PKCS1 "RSA PRIVATE KEY" / SEC1 "EC PRIVATE KEY" shapes above.
+    // A pattern that requires a qualifier word before "PRIVATE KEY" silently
+    // lets this exact, real shape through.
+    const pem =
+      '-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIHh1U0GDKsUfNhVFt/z6figuxT7Ao8qwP6kPzk+bXkHG\n-----END PRIVATE KEY-----'
+
+    const result = scrub(`signing.key:\n${pem}\ndone`)
+
+    expect(result).not.toContain('MC4CAQAwBQYDK2VwBCIEIHh1U0GDKsUfNhVFt/z6figuxT7Ao8qwP6kPzk+bXkHG')
+    expect(result).toContain(REDACTED_PLACEHOLDER)
+    expect(result).toContain('done')
+  })
+
   test('redacts only the userinfo segment of a URL, preserving scheme and host', () => {
     const result = scrub('dsn is postgres://admin:hunter2@db.internal:5432/app')
 

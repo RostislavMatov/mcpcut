@@ -410,3 +410,112 @@ describe('node:sqlite is reached through the store adapter alone', () => {
     expect(importSpecifiersOf('/** never imports node:sqlite directly */')).toEqual([])
   })
 })
+
+// ---------------------------------------------------------------------------
+// The signing boundary (M5 wave 4, task 4.4). `src/journal/signing.ts` is the
+// single point of contact with Ed25519/keypair primitives: the installation's
+// private key is generated, loaded and used to sign/verify ONLY there. Unlike
+// the `node:sqlite` rule above, banning the whole `node:crypto` module would
+// be wrong -- `node:crypto` is used legitimately all over this codebase for
+// unrelated primitives (`policy/hash.ts`'s `createHash`, `vault/crypto.ts`'s
+// AES-GCM, `security/token.ts`'s `timingSafeEqual`). What must stay confined
+// is specifically the asymmetric signing/keypair surface.
+// ---------------------------------------------------------------------------
+
+const SIGNING_ADAPTER = 'src/journal/signing.ts'
+
+/**
+ * The exact `node:crypto` names that create or operate on an asymmetric
+ * keypair or a signature: minting a key (`generateKeyPair`/`Sync`), signing
+ * or verifying (`sign`/`verify`), and importing key material from PEM/DER
+ * (`createPrivateKey`/`createPublicKey`) or the streaming Sign/Verify
+ * classes. Deliberately NOT included: `randomBytes`, `createHash`,
+ * `createHmac`, `createCipheriv`/`createDecipheriv`, `timingSafeEqual` --
+ * all genuinely used elsewhere (vault, tokens, hashing) and none of them
+ * touch a private signing key.
+ */
+const SIGNING_CRYPTO_API_NAMES: ReadonlySet<string> = new Set([
+  'generateKeyPair',
+  'generateKeyPairSync',
+  'sign',
+  'verify',
+  'createPrivateKey',
+  'createPublicKey',
+  'createSign',
+  'createVerify',
+])
+
+/**
+ * The ORIGINAL (pre-`as`) names imported from `node:crypto` in `source`.
+ * `signing.ts` itself aliases `sign`/`verify` to `cryptoSign`/`cryptoVerify`
+ * (to avoid clashing with its own same-named exports) -- reading only the
+ * alias would let that exact file's own imports evade a naive check, and a
+ * future imitator could rename its way past a check that did the same.
+ */
+function cryptoNamedImportsOf(source: string): string[] {
+  const names: string[] = []
+  const pattern = /import\s*\{([^}]*)\}\s*from\s*['"]node:crypto['"]/g
+  for (const match of source.matchAll(pattern)) {
+    const body = match[1]
+    if (body === undefined) continue
+    for (const part of body.split(',')) {
+      const name = part.trim().split(/\s+as\s+/)[0]?.trim()
+      if (name !== undefined && name.length > 0) names.push(name)
+    }
+  }
+  return names
+}
+
+/** Every `.ts` under `src` except the signing adapter -- the whole set the rule covers. */
+function nonSigningAdapterFiles(): string[] {
+  return collectTransportFiles(PROJECT_ROOT, ['src'], new Set([SIGNING_ADAPTER]))
+}
+
+describe('Ed25519/signing crypto primitives are reached through journal/signing.ts alone', () => {
+  test('nothing outside the signing module imports a signing/keypair API from node:crypto', () => {
+    const offenders = nonSigningAdapterFiles().filter((relativePath) =>
+      cryptoNamedImportsOf(readFileSync(join(PROJECT_ROOT, relativePath), 'utf8')).some((name) =>
+        SIGNING_CRYPTO_API_NAMES.has(name),
+      ),
+    )
+
+    expect(offenders).toEqual([])
+  })
+
+  test('the signing module itself does import the signing API, so the rule is not vacuous', () => {
+    const source = readFileSync(join(PROJECT_ROOT, SIGNING_ADAPTER), 'utf8')
+
+    const names = cryptoNamedImportsOf(source)
+    expect(names).toContain('generateKeyPairSync')
+    expect(names).toContain('sign')
+    expect(names).toContain('verify')
+  })
+
+  test('node:crypto stays usable elsewhere for the non-signing primitives it is meant for', () => {
+    // Sampled from the modules the task brief names by name: hashing, the
+    // vault's AES-GCM, and the token module's constant-time compare. None of
+    // these import a name from SIGNING_CRYPTO_API_NAMES.
+    for (const relativePath of ['src/policy/hash.ts', 'src/vault/crypto.ts', 'src/security/token.ts']) {
+      const source = readFileSync(join(PROJECT_ROOT, relativePath), 'utf8')
+      expect(cryptoNamedImportsOf(source).some((name) => SIGNING_CRYPTO_API_NAMES.has(name))).toBe(false)
+    }
+  })
+
+  test('the covered set is the whole of src minus the signing adapter', () => {
+    const covered = nonSigningAdapterFiles()
+
+    expect(covered).not.toContain(SIGNING_ADAPTER)
+    for (const expected of ['src/cli/keygen-cmd.ts', 'src/cli/verify-sign.ts']) {
+      expect(covered).toContain(expected)
+    }
+  })
+
+  test('the matcher extracts pre-alias names, so an aliased import cannot evade detection', () => {
+    expect(cryptoNamedImportsOf("import { sign as cryptoSign } from 'node:crypto'")).toContain('sign')
+    expect(cryptoNamedImportsOf("import { verify as cryptoVerify } from 'node:crypto'")).toContain(
+      'verify',
+    )
+    expect(cryptoNamedImportsOf("import { randomBytes } from 'node:crypto'")).toEqual(['randomBytes'])
+    expect(cryptoNamedImportsOf('/** never imports node:crypto directly */')).toEqual([])
+  })
+})

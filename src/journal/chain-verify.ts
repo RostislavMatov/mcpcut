@@ -1,6 +1,6 @@
 import type { SqliteHandle } from '../store/sqlite.js'
 import { GENESIS_PREV_HASH, linkHashOf } from './chain.js'
-import { numberOf } from './db-row.js'
+import { numberOf, textOf } from './db-row.js'
 
 /**
  * `mcp-journal verify`'s reusable core (M5 wave 3, task 3.3): walks
@@ -17,16 +17,32 @@ import { numberOf } from './db-row.js'
  * alongside `doc`, which `iterateAllDocs` does not select -- hence a
  * dedicated query here rather than reusing that generator.
  *
- * Two, and only two, failure modes are distinguishable from stored columns
- * alone (plan design decision 4, "honest threat model"):
+ * Two DISAGREEMENT PATTERNS are distinguishable from stored columns alone
+ * (plan design decision 4, "honest threat model") -- but they are labels for
+ * which column check failed, NOT a claim that the underlying tamper action
+ * is identifiable from that label. That claim would overstate what two
+ * columns per row can prove:
  * - a row's `record_hash` does not match `linkHashOf` of its OWN recorded
- *   `prev_hash` and CURRENT `doc` -- that row's `doc` was edited in place
- *   ("modified");
+ *   `prev_hash` and CURRENT `doc` -- that row's `doc` was changed WITHOUT
+ *   also recomputing its own hash to match ("modified"). This is what a
+ *   NAIVE edit, or plain corruption, looks like, and it is unambiguous: no
+ *   other real-world event produces this exact pattern.
  * - a row's `prev_hash` does not match the `record_hash` actually produced
- *   by the row before it in the walk -- a row was deleted, inserted, or
- *   reordered between them ("gap"). Reported at the `seq` of the SURVIVING
- *   row immediately after the break, since a deleted row has no `seq` left
- *   to name.
+ *   by the row before it in the walk ("gap"). Reported at the `seq` of the
+ *   SURVIVING row immediately after the break, since a deleted row has no
+ *   `seq` left to name. A genuine deletion, insertion, or reorder produces
+ *   this pattern -- but so does a CAREFUL edit of the PRECEDING row that
+ *   also recomputes THAT row's own `record_hash` from its own stored
+ *   `prev_hash`, exactly as a legitimate write would: the edited row is then
+ *   internally self-consistent (the "modified" check at ITS OWN seq finds
+ *   nothing wrong), and the disagreement only becomes visible one row later,
+ *   reported as a "gap" that never actually happened there. The two stored
+ *   columns per row cannot tell a careful single-row edit apart from a
+ *   genuine deletion/insertion/reorder -- there is no fix for that within
+ *   this data shape, only honest reporting of it (`verify-cmd.ts`'s
+ *   `breakDescription` states both causes for a "gap"; a dedicated test in
+ *   `chain-verify.test.ts` forges exactly this case and pins the result, so
+ *   this is not later "fixed" into a false claim of finer distinction).
  *
  * A chain (and, later, its signature) proves tamper-EVIDENCE, not
  * tamper-PROOF: a process running under the same uid that wrote the database
@@ -168,6 +184,44 @@ function chainRowOf(row: Record<string, unknown>): ChainRow {
  */
 function nullableTextOf(value: unknown): string | null {
   return typeof value === 'string' ? value : null
+}
+
+/** The chain's current, most-recent attested position: what `verify --sign` (M5 wave 4) signs. */
+export interface ChainHead {
+  readonly seq: number
+  readonly recordHash: string
+}
+
+const SELECT_LATEST_ATTESTED_HEAD =
+  'SELECT seq, record_hash AS recordHash FROM journal_records ' +
+  'WHERE record_hash IS NOT NULL ORDER BY seq DESC LIMIT 1'
+
+/**
+ * The chain head available to be SIGNED (`verify --sign`, M5 wave 4, task
+ * 4.3): the highest-`seq` row that actually carries a `record_hash`, i.e.
+ * was written after the chain existed. `null` covers BOTH traps a signer
+ * must not paper over (plan wave 4: "signing a head that does not exist, or
+ * signing an all-unattested journal as though it were attested, are both
+ * traps"):
+ * - an empty journal -- there is no row at all;
+ * - a journal that predates the chain entirely -- every row's hash columns
+ *   are `NULL` (see `ChainVerifyResult`'s doc), so none of them may be
+ *   presented as attested.
+ *
+ * This does not need to walk the whole table or reason about breaks: a
+ * chained row can never be followed by a `NULL` one (`verifyChain`'s
+ * `chainStarted` only advances one way, matching how `insertRecordRows`
+ * only ever appends chained rows once the chain has begun), so the
+ * highest `seq` with a non-`NULL` hash is simply the highest `seq` whenever
+ * ANY chained row exists. A signed head is not a claim that everything
+ * before it is intact -- see this module's top-of-file threat-model note and
+ * `verify-cmd.ts`'s `--sign` output, which says so explicitly when a break
+ * was also found in the same run.
+ */
+export function latestAttestedChainHead(handle: SqliteHandle): ChainHead | null {
+  const row = handle.db.prepare(SELECT_LATEST_ATTESTED_HEAD).get()
+  if (row === undefined) return null
+  return { seq: numberOf(row['seq']), recordHash: textOf(row['recordHash']) }
 }
 
 /** One session's footprint in the chain: how many of its rows exist and the `seq` range they span. */
