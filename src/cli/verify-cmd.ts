@@ -1,3 +1,4 @@
+import { join } from 'node:path'
 import { parseArgs } from 'node:util'
 import { JOURNAL_DIR } from '../config.js'
 import {
@@ -9,6 +10,8 @@ import {
 } from '../journal/chain-verify.js'
 import { openJournalDbIfPresent } from '../journal/db.js'
 import { isValidSessionId } from '../journal/session-id.js'
+import { SIGNING_PUB_FILENAME } from '../journal/signing.js'
+import { runReportVerification } from './verify-report.js'
 import { attemptSignChainHead } from './verify-sign.js'
 
 /**
@@ -67,30 +70,127 @@ const EXIT_CHAIN_BROKEN = 2
 
 const USAGE =
   'Usage: mcp-journal verify [--session <id>] [--sign]\n' +
+  '       mcp-journal verify --report <dir> [--pub <path>] [--require-signature]\n' +
   'Recomputes the record hash chain (seq order) and reports where it stays\n' +
   'consistent with what is stored, and where it does not.\n' +
   '--sign additionally signs the current chain HEAD (not every record) with\n' +
   'this installation\'s Ed25519 key ("mcp-journal keygen"); see its own output\n' +
   'for what that anchor does and does not prove.\n' +
+  '--report verifies an EXPORTED report directory offline instead: no database\n' +
+  'is opened at all, so it runs on a machine that has only the export and a\n' +
+  'public key. --pub defaults to the local <journal dir>/' +
+  SIGNING_PUB_FILENAME +
+  '.\n' +
+  '--require-signature makes an unsigned (or unattributable) export a FAILED\n' +
+  'check instead of a clean UNSIGNED pass -- for a scripted "verify && accept"\n' +
+  'pipeline, which cannot see the UNSIGNED banner.\n' +
   'Exit codes: 0 = no break found (including an empty or fully pre-chain\n' +
   'journal), 1 = could not run (bad argument, missing database, unknown\n' +
   'session, or -- with --sign -- no key or nothing to sign) and no break was\n' +
-  'found either; 2 = a break was found (wins over 1 whenever both apply).\n'
+  'found either; 2 = a break was found (wins over 1 whenever both apply).\n' +
+  'With --report: 1 = could not run (no export directory, no readable\n' +
+  'report.json, no public key for a signed export), 2 = a check failed --\n' +
+  'including a records.jsonl or summary.md that the manifest attests but that\n' +
+  'is not in the directory.\n'
+
+/**
+ * `--report` is a different command wearing the same name: it answers "does
+ * this exported directory hold together" with NO database, where the other
+ * modes answer "does the stored chain hold together" and need one. Combining
+ * them is rejected rather than silently ignored -- an auditor who typed
+ * `--report ... --sign` believes something was signed, and `--report
+ * ... --session x` believes the export was narrowed, and neither happened.
+ * Saying so is the only outcome that leaves them with a true picture.
+ */
+function reportModeConflict(values: {
+  session?: string | undefined
+  sign?: boolean | undefined
+}): string | null {
+  if (values.sign === true) {
+    return (
+      '--report cannot be combined with --sign: --sign signs this host\'s chain head and needs the ' +
+      'journal database, while --report verifies an exported directory with no database at all.'
+    )
+  }
+  if (values.session !== undefined) {
+    return (
+      '--report cannot be combined with --session: --session narrows a walk over the journal database, ' +
+      'while --report verifies an already-exported directory whose scope was fixed at export time ' +
+      '(scope the export instead: mcp-journal export --report --session <id>).'
+    )
+  }
+  return null
+}
 
 export async function runVerifyCommand(
   args: readonly string[],
   io: VerifyCliIo,
   opts: VerifyCommandOptions = {},
 ): Promise<number> {
-  const { values, positionals } = parseArgs({
-    args: [...args],
-    options: { session: { type: 'string' }, sign: { type: 'boolean', default: false } },
-    allowPositionals: true,
-  })
+  // Wrapped, because `parseArgs` THROWS on a flag whose value is missing
+  // (`verify --report` with nothing after it) and on an unknown flag. That
+  // exception used to escape `runVerifyCommand` and reach the operator as a
+  // stack trace with no usage text -- unlike every other argument error in
+  // this file, and unlike `policy-cmd.ts`, whose shape this now matches
+  // (M5 wave-5 review, finding V13).
+  let parsed
+  try {
+    parsed = parseArgs({
+      args: [...args],
+      options: {
+        session: { type: 'string' },
+        sign: { type: 'boolean', default: false },
+        report: { type: 'string' },
+        pub: { type: 'string' },
+        'require-signature': { type: 'boolean', default: false },
+      },
+      allowPositionals: true,
+      strict: true,
+    })
+  } catch (error) {
+    io.stderr.write(`${error instanceof Error ? error.message : String(error)}\n\n${USAGE}`)
+    return EXIT_USAGE_ERROR
+  }
+  const { values, positionals } = parsed
   if (positionals.length > 0) {
     io.stderr.write(`verify takes no positional arguments (got: ${positionals.join(' ')})\n\n${USAGE}`)
     return EXIT_USAGE_ERROR
   }
+
+  const journalDir = opts.journalDir ?? JOURNAL_DIR
+  const reportDir = values.report
+  if (reportDir !== undefined) {
+    const conflict = reportModeConflict(values)
+    if (conflict !== null) {
+      io.stderr.write(`${conflict}\n\n${USAGE}`)
+      return EXIT_USAGE_ERROR
+    }
+    return runReportVerification(
+      {
+        reportDir,
+        pubPath: values.pub ?? join(journalDir, SIGNING_PUB_FILENAME),
+        pubExplicit: values.pub !== undefined,
+        requireSignature: values['require-signature'] === true,
+      },
+      io,
+    )
+  }
+  if (values.pub !== undefined) {
+    io.stderr.write(`--pub only applies to --report (it names the public key an export is checked against)\n\n${USAGE}`)
+    return EXIT_USAGE_ERROR
+  }
+  if (values['require-signature'] === true) {
+    // Same rule as --pub: a flag that did nothing would leave the operator
+    // believing this run demanded a signature when it never could. The
+    // database modes verify a stored chain, which carries no export
+    // signature to require.
+    io.stderr.write(
+      '--require-signature only applies to --report (it demands that an EXPORT be signed and ' +
+        `attributable)\n\n${USAGE}`,
+    )
+    return EXIT_USAGE_ERROR
+  }
+
   const sessionId = values.session
   if (sessionId !== undefined && !isValidSessionId(sessionId)) {
     io.stderr.write(
@@ -99,7 +199,6 @@ export async function runVerifyCommand(
     return EXIT_USAGE_ERROR
   }
 
-  const journalDir = opts.journalDir ?? JOURNAL_DIR
   // Probe-only: a read command must never bring a database into existence
   // (see `openJournalDbIfPresent`'s own doc) -- verifying is not a reason to
   // create the thing being verified.

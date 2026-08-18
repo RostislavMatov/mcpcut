@@ -4,6 +4,7 @@ import { openJournalDbIfPresent } from '../journal/db.js'
 import { iterateAllDocs, iterateSessionDocs } from '../journal/db-read.js'
 import { listUnimportedLegacySessions } from '../journal/import.js'
 import { assertValidSessionId } from '../journal/session-id.js'
+import { runExportReportCommand } from './report-cmd.js'
 
 /**
  * `mcp-journal export` — streams the journal's records as JSONL to stdout,
@@ -43,7 +44,14 @@ export interface ExportCommandOptions {
   readonly journalDir?: string
 }
 
-const USAGE = 'Usage: mcp-journal export [--session <id>]\n' + 'Export journal records as JSONL to stdout\n'
+const USAGE =
+  'Usage: mcp-journal export [--session <id>]\n' +
+  '       mcp-journal export --report [--session <id>] [--out <dir>]\n' +
+  'Export journal records as JSONL to stdout, or (--report) as an\n' +
+  'evidentiary report directory -- report.json, records.jsonl, summary.md,\n' +
+  'and signature.json when a signing key exists ("mcp-journal keygen").\n' +
+  '--out defaults to "mcp-journal-report" under the current directory and\n' +
+  'must be an empty or nonexistent directory.\n'
 
 /**
  * Dispatches `export`. Probes `journal.db` (never creates it): a fresh
@@ -51,6 +59,11 @@ const USAGE = 'Usage: mcp-journal export [--session <id>]\n' + 'Export journal r
  * matching rows. The un-imported-legacy hint (`journal-cmds.ts`'s wording)
  * is printed on stderr after the data, unconditionally attempted, same
  * best-effort contract as `sessions`/`show`.
+ *
+ * `--report` (M5 wave 5, task 5.1) delegates to `report-cmd.ts` entirely --
+ * it is a different output shape (a directory of files, not a stdout
+ * stream) with its own refusal and exit-code rules, so this function's only
+ * job for that branch is argv parsing shared with plain `export`.
  */
 export async function runExportCommand(
   args: readonly string[],
@@ -59,7 +72,11 @@ export async function runExportCommand(
 ): Promise<number> {
   const { values, positionals } = parseArgs({
     args: [...args],
-    options: { session: { type: 'string' } },
+    options: {
+      session: { type: 'string' },
+      report: { type: 'boolean', default: false },
+      out: { type: 'string' },
+    },
     allowPositionals: true,
   })
   if (positionals.length > 0) {
@@ -67,7 +84,29 @@ export async function runExportCommand(
     return 1
   }
 
+  if (values.out !== undefined && values.report !== true) {
+    // A flag the operator actually typed must never be silently dropped --
+    // especially one that names WHERE evidence lands. Swallowing `--out`
+    // here would mean a mistyped invocation prints JSONL to stdout with no
+    // directory and no word of explanation, discovered only once the
+    // missing evidence is actually needed.
+    io.stderr.write(
+      `--out only applies together with --report (got: --out ${values.out} without --report)\n` +
+        `Did you mean: mcp-journal export --report --out ${values.out}\n\n${USAGE}`,
+    )
+    return 1
+  }
+
   const journalDir = opts.journalDir ?? JOURNAL_DIR
+
+  if (values.report === true) {
+    return runExportReportCommand(io, {
+      journalDir,
+      ...(values.session === undefined ? {} : { session: values.session }),
+      ...(values.out === undefined ? {} : { outDir: values.out }),
+    })
+  }
+
   const handle = await openJournalDbIfPresent(journalDir)
   if (handle !== null) {
     await writeDocs(io, docsToExport(handle, values.session))

@@ -79,6 +79,61 @@ export function sha256Hex(text: string): string {
 }
 
 /**
+ * A SHA-256 digest fed in pieces. Exists for exactly one reason (M5 wave 5):
+ * the audit report's `records.sha256` must be the digest of the whole
+ * `records.jsonl` file, and that file can be gigabytes -- concatenating it
+ * into one string to hand `sha256Hex` would materialize the entire journal
+ * in memory, which the export path streams specifically to avoid.
+ *
+ * Deliberately NOT a general-purpose re-export of `node:crypto`'s `Hash`:
+ * this codebase reaches `createHash` through this module alone, and a
+ * two-method surface (`update`/`digestHex`) is everything the streaming
+ * caller needs. `digestHex` may be called only once -- the underlying
+ * `Hash` is finalized by `digest()` and throws if updated or digested
+ * again; that is Node's contract, surfaced rather than papered over, since
+ * a second digest of a "still open" hash would otherwise silently look like
+ * a legitimate result.
+ */
+export interface IncrementalSha256 {
+  /**
+   * Feeds one more chunk into the digest: a string is encoded as UTF-8, a
+   * byte array is digested AS THOSE BYTES.
+   *
+   * The byte form exists because of a real defect (M5 wave-5 review, finding
+   * V2): the offline verifier opened `records.jsonl` with `{ encoding:
+   * 'utf8' }` and hashed the DECODED text, which is lossy -- every invalid
+   * byte decodes to U+FFFD, so two files differing at one byte (0x80 vs
+   * 0xff) collapsed onto one digest and both passed against one signature.
+   * That voids "sha256 hex over the EXACT bytes", the claim the manifest,
+   * the CLI output and the README all make. A consumer that must digest a
+   * file byte-for-byte therefore feeds bytes here and never decodes first.
+   * The string form is unchanged, because the EXPORTING side builds each
+   * line as a UTF-8 string and must keep producing the identical digest.
+   */
+  update(chunk: string | Uint8Array): void
+  /** Finalizes and returns the lowercase hex digest. Call exactly once. */
+  digestHex(): string
+}
+
+/** Creates an {@link IncrementalSha256}. `createIncrementalSha256().digestHex()` equals `sha256Hex('')`. */
+export function createIncrementalSha256(): IncrementalSha256 {
+  const hash = createHash('sha256')
+  return {
+    update(chunk: string | Uint8Array): void {
+      // Two calls, not one with a conditional encoding argument: Node ignores
+      // the encoding when handed a view, and spelling the two paths out keeps
+      // "bytes are never re-encoded" visible at the call site rather than
+      // resting on that leniency.
+      if (typeof chunk === 'string') hash.update(chunk, 'utf8')
+      else hash.update(chunk)
+    },
+    digestHex(): string {
+      return hash.digest('hex')
+    },
+  }
+}
+
+/**
  * The subset of an MCP tool descriptor that determines its behavior. Kept
  * intentionally minimal and independent of any SDK type so this module has
  * no dependency on `src/policy/schema.ts` (owned by a parallel task).

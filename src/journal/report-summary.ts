@@ -1,0 +1,331 @@
+import { formatReadableField } from './format.js'
+import type { ReportManifest } from './report.js'
+
+/**
+ * `summary.md` -- the half of the audit report a human actually reads (M5
+ * wave 5, task 5.1). Split out of `report.ts` for the 400-line cap, and
+ * because rendering is a genuinely separate concern from deriving: the
+ * manifest is the machine-checkable claim, this is the prose beside it, and
+ * a v2 of the prose must not be able to disturb the digested bytes.
+ *
+ * EVERYTHING RENDERED HERE IS UNTRUSTED. Every string below was read back
+ * out of the journal, which means it came from a proxied MCP server, an
+ * approval an operator typed, or a hand-edited/forged row on disk. Two
+ * separate escapes are therefore applied to every value, in order:
+ * - `formatReadableField` (`format.ts`) -- the same pass the CLI's readable
+ *   view uses: C0/DEL control characters become `?` and the field is length
+ *   capped. A `doc` can carry a raw ESC, and `summary.md` gets `cat`ed on a
+ *   terminal by the first auditor who opens it.
+ * - `escapeMarkdown` -- the markup channels. A `|` inside a value would end
+ *   its table cell early and let one journal string forge extra columns; and
+ *   `summary.md` is not a plain-text file in practice -- it is handed to a
+ *   third party who opens it in GitHub, VS Code, pandoc or a GRC portal,
+ *   every one of which renders raw HTML and links from Markdown. The wave-5
+ *   review confirmed a tool name of
+ *   `<img src=x onerror=alert(1)> [click](javascript:alert(2))` rendering
+ *   LIVE in the delivered document, because only `|` was escaped.
+ *
+ * Neither escape is optional and neither substitutes for the other; the
+ * helpers below apply both so no call site can pick just one. The ONLY
+ * unescaped text in this file is `AS_OF_CONTRACT`, which this codebase wrote.
+ */
+
+/**
+ * How many decision rows `summary.md` renders before it stops and says how
+ * many it left out.
+ *
+ * A cap exists because the rest of the export streams: a multi-gigabyte
+ * journal is walked one row at a time and never materialized, and collecting
+ * an unbounded list of decision rows to render would reintroduce exactly the
+ * memory ceiling the streaming design removes. Decisions are a small
+ * fraction of journal traffic, so in practice this never trips -- but "in
+ * practice" is not a memory bound.
+ *
+ * Nothing is silently dropped: the omitted count is printed, the manifest's
+ * `counts` remain authoritative over the WHOLE export, and every omitted
+ * decision is still present verbatim in `records.jsonl`. `summary.md` is a
+ * reading aid; `records.jsonl` plus `report.json` are the evidence.
+ */
+export const MAX_SUMMARY_DECISION_ROWS = 2000
+
+/**
+ * One decision as the summary renders it. A subset of
+ * `PersistedDecisionInfo` plus the record's own `sessionId`/`ts`, following
+ * the codebase's "absent, not null" convention: a missing `actor` means no
+ * human decided this outcome, a missing `policyHash` means the row predates
+ * provenance, and neither is the same as an empty string.
+ */
+export interface ReportDecisionRow {
+  readonly sessionId: string
+  readonly ts: string
+  readonly outcome: string
+  readonly rule: string
+  readonly toolName: string
+  /**
+   * Absent on any row `line-source.ts` did not validate it on:
+   * `isDecisionShape` checks outcome/rule/toolName ONLY, so
+   * argsHash/serverName/toolClass/quarantineState can legitimately be missing
+   * from a record read back from disk. Before the wave-5 review this was
+   * typed as present and the renderer threw mid-write on the first such row,
+   * taking the whole export down with it.
+   */
+  readonly argsHash?: string
+  readonly actor?: string
+  readonly policyHash?: string
+  readonly grantsHash?: string
+}
+
+export interface ReportSummaryInput {
+  readonly manifest: ReportManifest
+  /** Already capped at {@link MAX_SUMMARY_DECISION_ROWS} by the builder. */
+  readonly decisions: readonly ReportDecisionRow[]
+  readonly omittedDecisionCount: number
+}
+
+/** What an absent optional field prints as, so an empty cell can never be mistaken for an empty value. */
+const ABSENT_ACTOR = '(no human actor)'
+const ABSENT_POLICY_HASH = '(unprovenanced)'
+const ABSENT_GRANTS_HASH = '(no agent)'
+/**
+ * The fallback for a field whose absence carries no meaning of its own --
+ * it simply was not there. Every value this renderer did not personally
+ * validate is treated as possibly absent and rendered with a marker: a
+ * summary that crashes on a field the READER never required is a journal
+ * that cannot be exported at all (wave-5 review, HIGH).
+ */
+const ABSENT_VALUE = '(absent)'
+
+const TABLE_HEADER =
+  '| ts | outcome | rule | tool | actor | policyHash | grantsHash | argsHash |\n' +
+  '| --- | --- | --- | --- | --- | --- | --- | --- |'
+
+/** Renders the whole of `summary.md`. */
+export function renderReportSummary(input: ReportSummaryInput): string {
+  return [
+    ...headerSection(input.manifest),
+    ...countsSection(input.manifest),
+    ...decisionsSection(input),
+    ...contractSection(input.manifest),
+  ].join('\n')
+}
+
+function headerSection(manifest: ReportManifest): readonly string[] {
+  const scope =
+    manifest.scope.session === null
+      ? 'whole journal'
+      : `session ${inlineValue(manifest.scope.session)}`
+  return [
+    '# Journal audit report',
+    '',
+    `- Format version: ${manifest.formatVersion}`,
+    `- As of: ${inlineValue(manifest.asOf)}`,
+    `- Scope: ${scope}`,
+    `- Records file: ${manifest.records.file} (${manifest.records.lineCount} line(s))`,
+    `- Records sha256: ${inlineValue(manifest.records.sha256)}`,
+    `- Seq range: ${seqRangeText(manifest)}`,
+    `- Sessions: ${sessionsText(manifest)}`,
+    '',
+    // Amendment A1: report.json digests THIS file, so this file cannot
+    // contain that digest. Said out loud, rather than leaving a reader to
+    // wonder why re-serializing what they see does not reproduce report.json.
+    'This summary shows every field of report.json except `summary.sha256` -- the digest of ' +
+      'this file, which a file cannot contain about itself. Everything else below is that ' +
+      'manifest in prose.',
+    '',
+    ...chainLines(manifest),
+    '',
+  ]
+}
+
+function seqRangeText(manifest: ReportManifest): string {
+  const range = manifest.seqRange
+  return range === null ? '(empty export)' : `${range.firstSeq}..${range.lastSeq}`
+}
+
+function sessionsText(manifest: ReportManifest): string {
+  const ids = manifest.sessionIds
+  return ids.length === 0 ? '(none)' : ids.map((id) => inlineValue(id)).join(', ')
+}
+
+/**
+ * The chain block, stated in the terms the frozen contract requires: whether
+ * the chain verified at export time, and -- separately -- whether an auditor
+ * holding only this directory can re-derive the head from it. The two are
+ * not the same claim, and a summary that blurred them would be the exact
+ * over-reading `AS_OF_CONTRACT` exists to prevent.
+ */
+function chainLines(manifest: ReportManifest): readonly string[] {
+  const chain = manifest.chain
+  const head = chain.head
+  const lines = [
+    '## Chain',
+    '',
+    `- Verified at export: ${chain.verifiedAtExport ? 'yes, no break found' : 'NO -- a break was found'}`,
+    `- Unattested (pre-chain) rows: ${chain.unattestedCount}`,
+    `- Head: ${head === null ? '(none -- nothing attested)' : `seq ${head.seq}, ${inlineValue(head.recordHash)}`}`,
+  ]
+  if (chain.break !== null) {
+    lines.push(`- Break: seq ${chain.break.seq}, ${inlineValue(chain.break.reason)}`)
+  }
+  if (chain.recomputable && chain.startPrevHash !== undefined) {
+    lines.push(
+      `- Offline re-fold: possible, starting from prevHash ${startPrevHashText(chain.startPrevHash)} ` +
+        `and folding over every line of ${manifest.records.file}, in order.`,
+    )
+    return lines
+  }
+  lines.push(
+    '- Offline re-fold: NOT possible from this export. The record digest and the signature ' +
+      'still hold, but the hash chain itself cannot be re-derived from these files alone ' +
+      `(${nonRecomputableReason(manifest)}).`,
+  )
+  return lines
+}
+
+/**
+ * The genesis `prevHash` is the empty string (`chain.ts`'s
+ * `GENESIS_PREV_HASH`), which would render as a blank gap an auditor could
+ * only read as "a value went missing here". Named instead, so the starting
+ * point is unambiguous.
+ */
+function startPrevHashText(startPrevHash: string): string {
+  return startPrevHash === '' ? '(genesis: the empty string)' : inlineValue(startPrevHash)
+}
+
+/** Names the FIRST condition that made the chain non-recomputable, in the order `isChainRecomputable` checks them. */
+function nonRecomputableReason(manifest: ReportManifest): string {
+  const chain = manifest.chain
+  if (manifest.scope.session !== null) return 'the export is scoped to a single session'
+  if (chain.unattestedCount > 0) return 'the journal holds rows written before the chain existed'
+  if (chain.break !== null) return 'the chain is broken'
+  return 'the journal has no attested chain head'
+}
+
+function countsSection(manifest: ReportManifest): readonly string[] {
+  const counts = manifest.counts
+  const outcomes = Object.entries(counts.byOutcome)
+  return [
+    '## Counts',
+    '',
+    `- Records exported: ${counts.records}`,
+    `- Decision records: ${counts.decisions}`,
+    `- Rows that do not parse as a record (exported verbatim anyway): ${counts.unparsableRows}`,
+    `- Decision records with no policy provenance: ${counts.unprovenanced}`,
+    '- By outcome:',
+    ...(outcomes.length === 0
+      ? ['  - (none)']
+      : outcomes.map(([outcome, count]) => `  - ${inlineValue(outcome)}: ${count}`)),
+    '',
+  ]
+}
+
+function decisionsSection(input: ReportSummaryInput): readonly string[] {
+  if (input.decisions.length === 0) {
+    return ['## Decisions', '', 'This export holds no decision records.', '']
+  }
+  const lines = ['## Decisions', '']
+  for (const [sessionId, rows] of groupBySession(input.decisions)) {
+    lines.push(`### Session ${inlineValue(sessionId)}`, '', TABLE_HEADER)
+    for (const row of rows) {
+      lines.push(decisionTableRow(row))
+    }
+    lines.push('')
+  }
+  if (input.omittedDecisionCount > 0) {
+    lines.push(
+      `${input.omittedDecisionCount} further decision record(s) are not listed here (this summary ` +
+        `renders at most ${MAX_SUMMARY_DECISION_ROWS}). They are present in full in ` +
+        `${input.manifest.records.file}, and the counts above cover all of them.`,
+      '',
+    )
+  }
+  return lines
+}
+
+/**
+ * Decision rows grouped by session in ONE pass, keyed in first-appearance
+ * order -- which, for a `seq`-ordered walk, is first-write order. A `Map`
+ * rather than a filter per session: the cap allows thousands of rows across
+ * as many sessions, and re-scanning the list once per session would be
+ * quadratic in exactly the case the cap exists to bound.
+ */
+function groupBySession(decisions: readonly ReportDecisionRow[]): ReadonlyMap<string, ReportDecisionRow[]> {
+  const grouped = new Map<string, ReportDecisionRow[]>()
+  for (const decision of decisions) {
+    const existing = grouped.get(decision.sessionId)
+    if (existing === undefined) {
+      grouped.set(decision.sessionId, [decision])
+      continue
+    }
+    existing.push(decision)
+  }
+  return grouped
+}
+
+/**
+ * Every cell is passed through `markdownCell` with the marker its absence
+ * means. `ts`/`outcome`/`rule`/`toolName` are validated non-empty strings by
+ * the time a record parses, but they are rendered through the same helper
+ * anyway: this module cannot see WHICH checks ran, and a renderer that trusts
+ * a field it did not validate itself is precisely what took the export down.
+ */
+function decisionTableRow(row: ReportDecisionRow): string {
+  const cells: readonly (readonly [string | undefined, string])[] = [
+    [row.ts, ABSENT_VALUE],
+    [row.outcome, ABSENT_VALUE],
+    [row.rule, ABSENT_VALUE],
+    [row.toolName, ABSENT_VALUE],
+    [row.actor, ABSENT_ACTOR],
+    [row.policyHash, ABSENT_POLICY_HASH],
+    [row.grantsHash, ABSENT_GRANTS_HASH],
+    [row.argsHash, ABSENT_VALUE],
+  ]
+  return `| ${cells.map(([value, absent]) => markdownCell(value, absent)).join(' | ')} |`
+}
+
+/**
+ * One table cell: the absent marker when there is no value, otherwise control
+ * characters neutralized first (`formatReadableField`), then the markup
+ * escaped. Order matters -- escaping first and sanitizing after would let the
+ * sanitizer's own replacement character run back over an escape.
+ *
+ * The marker is NOT escaped: it is this module's own text, and escaping it
+ * would print `\(absent\)` to an auditor.
+ */
+function markdownCell(value: string | undefined, absent: string): string {
+  return typeof value === 'string' ? escapeMarkdown(formatReadableField(value)) : absent
+}
+
+/** An inline (non-table) value: untrusted like every other, so sanitized and escaped the same way. */
+function inlineValue(value: string): string {
+  return typeof value === 'string' ? escapeMarkdown(formatReadableField(value)) : ABSENT_VALUE
+}
+
+/**
+ * Every character that opens a markup channel in the renderers this document
+ * is actually read in, backslash-escaped in ONE pass (a per-character chain
+ * would have to get its own ordering right, and would double-escape the
+ * escapes it just added):
+ * - `\\` itself, first by being in the class rather than by being applied
+ *   first, so an escape cannot be forged out of a journal string;
+ * - `<` `>` `&` -- raw HTML and entities. GitHub, VS Code and pandoc all
+ *   render these, which is how `<img src=x onerror=...>` reached a delivered
+ *   report in the review;
+ * - `[` `]` `!` -- links and images, including `javascript:` targets;
+ * - `` ` `` `*` `_` -- code spans and emphasis, which can hide or restyle
+ *   text an auditor is reading as evidence;
+ * - `|` -- the table delimiter: a cell that ends early forges extra columns,
+ *   i.e. puts words in the report that the journal never held.
+ *
+ * All of these are ASCII punctuation, which CommonMark defines as
+ * backslash-escapable, so the rendered text is the original string exactly.
+ */
+const MARKDOWN_SPECIAL_PATTERN = /[\\`*_[\]<>&|!]/g
+
+function escapeMarkdown(value: string): string {
+  return value.replace(MARKDOWN_SPECIAL_PATTERN, '\\$&')
+}
+
+function contractSection(manifest: ReportManifest): readonly string[] {
+  return ['## What this report does and does not say', '', manifest.contract, '']
+}
