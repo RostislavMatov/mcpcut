@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import { formatDecisionSummary, formatReadableField, MAX_READABLE_FIELD_CHARS } from '../../src/journal/format.js'
+import type { DecisionInfo } from '../../src/journal/record.js'
 
 /**
  * `formatReadableField` is the only thing standing between untrusted journal
@@ -93,5 +94,55 @@ describe('formatDecisionSummary', () => {
 
     expect(result).not.toMatch(/[\x00-\x1f\x7f]/)
     expect(result).toBe('outcome=allow?[31m tool=tool?name rule=rule?name')
+  })
+})
+
+/**
+ * Provenance rendering (M5 wave 1) is deliberately NOT part of the readable
+ * view. `policyHash`/`grantsHash` are 64 hex characters each; against this
+ * view's 200-character-per-field cap they would be pure noise for a human
+ * scanning a log line, and neither is answerable by eye anyway. The machine
+ * views already carry them: `--json` and the UI journal pass the decision
+ * object through as-is, so they get the fields for free.
+ *
+ * These tests exist so a future reader finds a recorded decision rather than
+ * what looks like an oversight, and so "add the hashes to the summary" is a
+ * conscious change with a failing test attached.
+ */
+describe('formatDecisionSummary: provenance is intentionally not rendered', () => {
+  const POLICY_HASH = 'a'.repeat(64)
+  const GRANTS_HASH = 'b'.repeat(64)
+
+  const provenanced: DecisionInfo = {
+    outcome: 'deny',
+    rule: 'servers.github.tools.delete_*',
+    serverName: 'github',
+    toolName: 'delete_repo',
+    toolClass: 'destructive',
+    quarantineState: 'known',
+    argsHash: 'sha256:abc123',
+    policyHash: POLICY_HASH,
+    grantsHash: GRANTS_HASH,
+  }
+
+  test('the summary omits both hashes entirely', () => {
+    const result = formatDecisionSummary(provenanced)
+
+    expect(result).not.toContain(POLICY_HASH)
+    expect(result).not.toContain(GRANTS_HASH)
+    expect(result).not.toContain('policyHash')
+    expect(result).not.toContain('grantsHash')
+  })
+
+  test('the summary is byte-identical to the one for the same decision without provenance', () => {
+    const withProvenance = formatDecisionSummary(provenanced)
+    const withoutProvenance = formatDecisionSummary({
+      outcome: provenanced.outcome,
+      toolName: provenanced.toolName,
+      rule: provenanced.rule,
+    })
+
+    expect(withProvenance).toBe(withoutProvenance)
+    expect(withProvenance).toBe('outcome=deny tool=delete_repo rule=servers.github.tools.delete_*')
   })
 })

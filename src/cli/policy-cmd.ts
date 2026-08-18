@@ -3,6 +3,7 @@ import { parseArgs } from 'node:util'
 import { JOURNAL_DIR } from '../config.js'
 import { formatReadableField } from '../journal/format.js'
 import { POLICY_ENV_VAR, POLICY_FILE_NAME } from '../policy/constants.js'
+import { policyHashOf } from '../policy/provenance.js'
 import { loadPolicy, PROJECT_POLICY_SUBDIR, type LoadPolicyOptions, type PolicyLoadResult } from '../policy/load.js'
 import type { Policy } from '../policy/schema.js'
 import {
@@ -300,7 +301,7 @@ function reportLoadedShow(
       : { trustClass: BARE_SHOW_TRUST_CLASS }
 
   if (view.json) {
-    io.stdout.write(`${JSON.stringify({ ...entry, sourcePath, policy })}\n`)
+    io.stdout.write(`${JSON.stringify({ ...entry, sourcePath, policyHash: policyHashOf(policy), policy })}\n`)
     return 0
   }
 
@@ -331,6 +332,13 @@ function formatReadableShow(
       ? [`entry point: ${resolution.entryPoint} (${resolution.trustClass})`]
       : BARE_SHOW_VIEW_LINES),
     `source: ${sourcePath}`,
+    // Next to `source:` on purpose: the path and the fingerprint answer the
+    // same question ("which rules are these"), and the fingerprint is what
+    // ties a `decision` record's `policyHash` back to a file. No
+    // `formatReadableField` here -- that guard is for operator-edited
+    // strings read out of the policy file; this is a hex digest we just
+    // computed and its alphabet cannot carry anything to escape.
+    `policyHash: ${policyHashOf(policy)}`,
     `defaultDecision: ${policy.defaultDecision}`,
     `classDefaults: ${JSON.stringify(policy.classDefaults ?? {})}`,
     `quarantine: ${JSON.stringify(policy.quarantine)}`,

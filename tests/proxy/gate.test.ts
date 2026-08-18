@@ -26,6 +26,7 @@ import type { Verdict } from '../../src/proxy/pipeline.js'
 import type { Frame } from '../../src/protocol/split.js'
 import type { OrderedWriter } from '../../src/proxy/writer.js'
 import { readJournalRecords } from '../support/journal-rows.js'
+import { grantsHashOf } from '../../src/policy/provenance.js'
 
 const SERVER_NAME = 'testsrv'
 const SESSION_ID = 'session-gate-1'
@@ -169,7 +170,12 @@ interface HarnessOptions {
 
 /** An agent scope whose grant matrix covers everything: isolates the M4 metadata plumbing. */
 function grantAllScope(agentName: string): GateAgentScope {
-  return { agentName, isGranted: () => true, filterVisible: (tools) => [...tools] }
+  return {
+    agentName,
+    isGranted: () => true,
+    filterVisible: (tools) => [...tools],
+    grantsHash: () => grantsHashOf({ [SERVER_NAME]: { tools: '*' } }),
+  }
 }
 
 function createHarness(opts: HarnessOptions = {}): GateHarness {

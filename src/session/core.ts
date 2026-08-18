@@ -16,6 +16,7 @@ import type { AgentRecord } from '../agents/schema.js'
 import type { GateApprovalQueue } from '../proxy/gate-approvals.js'
 import { createMessagePolicyGate, type MessagePolicyGate } from '../proxy/gate-core.js'
 import {
+  createDecisionProvenance,
   createDecisionWriter,
   isPromiseVerdict,
   type GateInventory,
@@ -181,6 +182,21 @@ export function createSession(deps: CreateSessionDeps): SessionHandle {
         })
       : null
 
+  /**
+   * ONE provenance object for the whole session (M5). Both the gate's
+   * decision writer and this module's own writer are handed it, so the two
+   * cannot fingerprint the same policy from two independently-passed
+   * references and disagree — they agreed before only because the caller
+   * happened to pass the same object.
+   *
+   * The agent dimension comes from the same `watch` the gate decides
+   * against, which is what gives the revocation record a real `grantsHash`:
+   * the revoking poll stops the watch WITHOUT touching the fingerprint, so
+   * the last known-good matrix — precisely the one the agent held when it was
+   * cut off — is still there to be stamped.
+   */
+  const provenance = createDecisionProvenance(deps.policy, watch?.scope)
+
   const gate: MessagePolicyGate = createMessagePolicyGate({
     policy: deps.policy,
     serverName,
@@ -191,6 +207,7 @@ export function createSession(deps: CreateSessionDeps): SessionHandle {
     grantRegistry: deps.grants,
     sink: journal.sink,
     clientSink: client.sink,
+    provenance,
     ...(watch !== null ? { agentScope: watch.scope } : {}),
     ...(deps.approvals.baseDir !== undefined ? { approvalsBaseDir: deps.approvals.baseDir } : {}),
     clock,
@@ -273,7 +290,17 @@ export function createSession(deps: CreateSessionDeps): SessionHandle {
     trackPending(applyVerdict(outcome, message, sink))
   }
 
-  const writeDecision = createDecisionWriter({ sink: journal.sink, sessionId, clock })
+  // Same provenance discipline as the gate's own writer (`gate-core.ts`):
+  // the policy is loaded once per process and immutable, so its fingerprint
+  // is computed once here and stamped on every decision record this module
+  // writes. The revocation record has no agent scope to consult — the agent
+  // has just lost the session — so it carries `policyHash` only.
+  const writeDecision = createDecisionWriter({
+    sink: journal.sink,
+    sessionId,
+    clock,
+    provenance,
+  })
 
   /** The final journal record a revocation leaves behind. */
   function journalRevoked(agentName: string): void {

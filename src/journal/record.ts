@@ -11,6 +11,7 @@ import { normalizeKnownSecrets } from '../redact/known-secrets.js'
 import { sealUnterminatedKeyBlock } from '../redact/patterns.js'
 import { redact, redactString } from '../redact/redact.js'
 import type { ClassifiedMessage, JsonRpcId } from '../protocol/classify.js'
+import type { PersistedDecisionInfo } from './decision-info.js'
 
 /**
  * Builds tamper-evident journal records from classified JSON-RPC traffic.
@@ -27,47 +28,14 @@ export type JournalDirection = ClientServerDirection | 'server-stderr'
 /** Journal-specific kind: classify()'s kinds plus synthetic 'stderr' and 'decision' kinds. */
 export type JournalKind = ClassifiedMessage['kind'] | 'stderr' | 'decision'
 
-/** Final disposition of one policy decision on a gated tool call. */
-export type PolicyOutcome =
-  | 'allow'
-  | 'deny'
-  | 'require-approval-pending'
-  | 'approved'
-  | 'denied-by-operator'
-  | 'timeout'
-  | 'quarantined'
-
-/** Risk class a tool was resolved to at decision time. */
-export type ToolClass = 'read' | 'write' | 'destructive'
-
-/** Quarantine status of a tool's schema at decision time. */
-export type QuarantineState = 'known' | 'new' | 'changed' | 'unknown'
-
-/**
- * Everything a `decision`-kind record needs to explain why a tool call was
- * allowed, denied, quarantined or sent to approval. Carried on
- * `JournalRecord.decision`; the call's arguments (if any) go through
- * `redact()` like any other payload and land in `JournalRecord.payload`
- * instead, so this shape only ever holds short, structured fields.
- */
-export interface DecisionInfo {
-  readonly outcome: PolicyOutcome
-  readonly rule: string
-  readonly serverName: string
-  readonly toolName: string
-  readonly toolClass: ToolClass
-  readonly quarantineState: QuarantineState
-  readonly argsHash: string
-  readonly approvalId?: string
-  /**
-   * Which agent identity asked (serve sessions; absent for `wrap`/`connect`
-   * runs without one). Was already written by `gate-approvals.ts` via spread —
-   * declared here so the field is part of the record's contract, not a leak
-   * past it (M4 Wave 1).
-   */
-  readonly agentName?: string
-  readonly latencyMs?: number
-}
+export type {
+  DecisionInfo,
+  DecisionInfoDraft,
+  PersistedDecisionInfo,
+  PolicyOutcome,
+  QuarantineState,
+  ToolClass,
+} from './decision-info.js'
 
 export interface JournalRecord {
   readonly id: string
@@ -79,7 +47,13 @@ export interface JournalRecord {
   readonly rpcId?: JsonRpcId
   readonly payload: unknown
   readonly durationMs?: number
-  readonly decision?: DecisionInfo
+  /**
+   * Read-side shape (`PersistedDecisionInfo`): a `JournalRecord` is what
+   * comes BACK from storage as much as what goes in, and pre-M5 records
+   * carry no provenance. The write path still assembles a full
+   * `DecisionInfo` (`journal/decision.ts`), which is assignable here.
+   */
+  readonly decision?: PersistedDecisionInfo
 }
 
 export interface RecordBuilderOptions {

@@ -33,11 +33,19 @@ export type ResolutionOutcome = (typeof RESOLUTION_OUTCOME_VALUES)[number]
 
 /**
  * Shape of a request awaiting a decision. `expiresAt` is the end of
- * the GRANT window (`grantTtlMs`); the three optional fields are M4 additions
+ * the GRANT window (`grantTtlMs`); the three optional M4 fields are additions
  * for the admin UI — records written before them still parse (`list()` reads
  * both generations), and `waitExpiresAt` (end of the agent's own wait,
  * `timeoutMs`) tells an operator whether an approval delivers the call now
  * or only grants a retry.
+ *
+ * `policyHash`/`grantsHash` are the M5 pair: the fingerprint of the rules in
+ * force WHEN THE REQUEST WAS MADE (`policy/provenance.ts`), so a resolution
+ * recorded minutes later can be traced to the revision it was requested
+ * under rather than to whatever is in force at resolution time. Optional for
+ * the same reason as the M4 fields: pre-M5 records must keep parsing.
+ * `grantsHash` is absent — not null — when no agent was behind the request
+ * (the `wrap` path), the convention `agentName` already follows.
  */
 export interface PendingApprovalFile {
   readonly approvalId: string
@@ -52,6 +60,8 @@ export interface PendingApprovalFile {
   readonly agentName?: string
   readonly waitExpiresAt?: string
   readonly decisionRule?: string
+  readonly policyHash?: string
+  readonly grantsHash?: string
 }
 
 /** `list()` entry: a pending record plus a derived, not-persisted `expired` flag. */
@@ -81,6 +91,22 @@ function isOptionalString(value: unknown): boolean {
   return value === undefined || typeof value === 'string'
 }
 
+/** A lowercase hex SHA-256 digest — the same shape `agents/schema.ts` pins `tokenHash` to. */
+const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/
+
+/**
+ * A digest field is validated as a DIGEST, not merely as a string (SEC-L2).
+ * Every other digest in the codebase is regex-pinned, and these two are what
+ * waves 3-5 will chain and sign: a row written out of band could otherwise
+ * carry a 10 MB string or markup and have `list()` accept it as evidence.
+ * Absent stays legal — pre-M5 records must keep parsing forever — but
+ * present-and-not-a-digest is rejected like any other malformed field, which
+ * skips the record whole rather than reading past the bad value.
+ */
+function isOptionalSha256Hex(value: unknown): boolean {
+  return value === undefined || (typeof value === 'string' && SHA256_HEX_PATTERN.test(value))
+}
+
 /**
  * A timestamp field must actually PARSE (review H2): these records are
  * hand-editable (a legacy file, a foreign row), `Date.parse(garbage)` is
@@ -97,7 +123,7 @@ function isOptionalTimestamp(value: unknown): boolean {
   return value === undefined || isParseableTimestamp(value)
 }
 
-/** Hand-written shape check: the M4 fields are optional, so pre-M4 records still pass. */
+/** Hand-written shape check: the M4/M5 fields are optional, so older records still pass. */
 export function isPendingApprovalFile(raw: unknown): raw is PendingApprovalFile {
   if (typeof raw !== 'object' || raw === null) return false
   const value = raw as Record<string, unknown>
@@ -112,7 +138,9 @@ export function isPendingApprovalFile(raw: unknown): raw is PendingApprovalFile 
     isParseableTimestamp(value.expiresAt) &&
     isOptionalString(value.agentName) &&
     isOptionalTimestamp(value.waitExpiresAt) &&
-    isOptionalString(value.decisionRule)
+    isOptionalString(value.decisionRule) &&
+    isOptionalSha256Hex(value.policyHash) &&
+    isOptionalSha256Hex(value.grantsHash)
   )
 }
 

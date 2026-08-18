@@ -8,6 +8,7 @@ import type { JournalRecord } from '../../src/journal/record.js'
 import { createGrantRegistry } from '../../src/policy/approvals/grants.js'
 import { createApprovalQueue, type ApprovalQueue, type PendingApproval } from '../../src/policy/approvals/queue.js'
 import { createApprovalWaiter } from '../../src/policy/approvals/waiter.js'
+import { grantsHashOf, policyHashOf } from '../../src/policy/provenance.js'
 import { parsePolicy, type Policy } from '../../src/policy/schema.js'
 import type { GateInventory } from '../../src/proxy/gate-helpers.js'
 import {
@@ -422,6 +423,47 @@ describe('createSession: revocation and live grant changes', () => {
     })
     expect(harness.clientSource.isDisposed()).toBe(true)
     expect(harness.serverSource.isDisposed()).toBe(true)
+  })
+
+  test('the revocation record names the matrix the agent held when it was cut off', async () => {
+    // "What could this agent do at that moment" is exactly the question a
+    // revocation record exists to answer, so it is the last record that may
+    // have a provenance hole. The revoking poll calls `stop()` WITHOUT
+    // touching the fingerprint, so the last known-good matrix -- the one the
+    // agent held while it still had the session -- is intact and is what
+    // gets stamped. (Review finding 3: the session built its own
+    // `{ policyHash }` literal here and dropped `grantsHash` entirely.)
+    const record = agentRecordOf()
+    const store = mutableAgentStore(record)
+    const policy = policyOf({ defaultDecision: 'allow' })
+    const harness = createSessionHarness({ policy, agent: { record, store } })
+
+    store.set(agentRecordOf({ revokedAt: '2026-08-06T00:00:00.000Z' }))
+    expect(await harness.session.ended).toBe('revoked')
+
+    const last = decisionsOf(harness.records).at(-1)
+    expect(last?.decision?.rule).toBe(AGENT_REVOKED_RULE)
+    expect(last?.decision?.grantsHash).toBe(grantsHashOf(record.grants))
+    expect(last?.decision?.policyHash).toBe(policyHashOf(policy))
+  })
+
+  test('the session and its gate stamp one and the same policy fingerprint', async () => {
+    // Two independent `policyHashOf` calls off two independently-passed
+    // references agreed only because the caller happened to pass the same
+    // object. One provenance object per session makes that structural.
+    const record = agentRecordOf()
+    const store = mutableAgentStore(record)
+    const harness = createSessionHarness({ agent: { record, store } })
+
+    harness.clientSource.emit(toolCallMessage(1, 'read_file'))
+    await waitUntil(() => decisionsOf(harness.records).length > 0)
+    store.set(agentRecordOf({ revokedAt: '2026-08-06T00:00:00.000Z' }))
+    expect(await harness.session.ended).toBe('revoked')
+
+    const decisions = decisionsOf(harness.records)
+    const fingerprints = new Set(decisions.map((entry) => entry.decision?.policyHash))
+    expect(decisions.length).toBeGreaterThan(1)
+    expect(fingerprints.size).toBe(1)
   })
 
   test('removing the server grant entirely ends the session like a revocation', async () => {

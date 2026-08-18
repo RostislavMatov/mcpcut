@@ -95,6 +95,10 @@ export interface EnqueueRequest {
   readonly waitTimeoutMs?: number
   /** The policy rule that resolved to require-approval (M4). */
   readonly decisionRule?: string
+  /** Fingerprint of the effective policy in force when the request was made (M5). */
+  readonly policyHash?: string
+  /** Fingerprint of the requesting agent's grant matrix at request time; absent without an agent (M5). */
+  readonly grantsHash?: string
 }
 
 export interface EnqueueResult {
@@ -249,6 +253,8 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
         ? { waitExpiresAt: new Date(nowMs + req.waitTimeoutMs).toISOString() }
         : {}),
       ...(req.decisionRule !== undefined ? { decisionRule: req.decisionRule } : {}),
+      ...(req.policyHash !== undefined ? { policyHash: req.policyHash } : {}),
+      ...(req.grantsHash !== undefined ? { grantsHash: req.grantsHash } : {}),
     }
     const doc = JSON.stringify(record)
 

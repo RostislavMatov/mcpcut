@@ -28,6 +28,7 @@ import type { Frame } from '../../src/protocol/split.js'
 import { clientMessage, serverMessage, type McpMessage, type MessageVerdict } from '../../src/transport/message.js'
 import { frameToMessage, messageToChunk } from '../../src/transport/stdio-adapter.js'
 import { readJournalRecords } from '../support/journal-rows.js'
+import { grantsHashOf } from '../../src/policy/provenance.js'
 
 /**
  * M3 gate tests: the message-level core (`createMessagePolicyGate`), its
@@ -85,6 +86,9 @@ function scopeOf(granted: readonly string[]): GateAgentScope {
     agentName: 'research-bot',
     isGranted,
     filterVisible: (tools) => tools.filter(isGranted),
+    // Required since the M5 review: a scope with an `agentName` and no
+    // fingerprint would write records indistinguishable from agentless ones.
+    grantsHash: () => grantsHashOf({ [SERVER_NAME]: { tools: [...granted] } }),
   }
 }
 
@@ -579,6 +583,7 @@ function methodScopeOf(grant: Partial<AgentGrant>): GateAgentScope {
     isGranted: scope.isGranted,
     filterVisible: scope.filterVisible,
     methodGrants: scope.methodGrants,
+    grantsHash: () => grantsHashOf(record.grants),
   }
 }
 

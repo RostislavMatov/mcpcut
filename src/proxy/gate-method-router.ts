@@ -6,7 +6,7 @@ import {
   type MethodGrantOutcome,
   type MethodListKind,
 } from '../agents/method-grants.js'
-import type { DecisionInfo } from '../journal/record.js'
+import type { DecisionInfoDraft } from '../journal/record.js'
 import type { Verdict } from './pipeline.js'
 import {
   DROP,
@@ -240,7 +240,7 @@ function methodDecisionInfo(
   method: string,
   outcome: 'allow' | 'deny',
   decided: Extract<MethodGrantOutcome, { action: 'deny' | 'forward' }>,
-): DecisionInfo {
+): DecisionInfoDraft {
   return {
     outcome,
     rule: decided.rule,

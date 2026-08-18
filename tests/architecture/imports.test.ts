@@ -36,6 +36,9 @@ const SEMANTIC_ALLOWLIST: ReadonlySet<string> = new Set([
   'src/proxy/gate-core.ts',
   'src/proxy/gate-types.ts',
   'src/proxy/gate-helpers.ts',
+  // The decision-record choke point: it fingerprints the effective policy, so
+  // it is semantic by construction (extracted from `gate-helpers.ts`, M5).
+  'src/proxy/gate-decision-writer.ts',
   'src/proxy/gate-approvals.ts',
   'src/proxy/gate-router.ts',
   'src/proxy/tool-catalog.ts',

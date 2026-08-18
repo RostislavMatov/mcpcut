@@ -1,5 +1,6 @@
 import type { AgentRecord } from '../agents/schema.js'
 import { agentScope, type AgentScope } from '../agents/scope.js'
+import { grantsHashOf, type GrantMatrix } from '../policy/provenance.js'
 import type { GateAgentScope } from '../proxy/gate-helpers.js'
 
 /**
@@ -65,26 +66,78 @@ export function isRevokedFor(record: AgentRecord | undefined, serverName: string
   )
 }
 
+/**
+ * What one poll resolved: the scope the gate decides against and the exact
+ * matrix it was derived from.
+ *
+ * One immutable object rather than two variables, so a poll swaps both in a
+ * SINGLE assignment. Two assignments left a window — however narrow — in
+ * which the new scope decided calls while the old fingerprint was stamped on
+ * their records, which is the precise opposite of the lockstep this module
+ * promises (review L3).
+ */
+interface WatchState {
+  readonly scope: AgentScope
+  /** The WHOLE `record.grants`, not just this server's slice (see `grantsHash`). */
+  readonly grants: GrantMatrix
+}
+
+/** A fingerprint together with the state it describes; never one without the other. */
+interface FingerprintMemo {
+  readonly state: WatchState
+  readonly hash: string
+}
+
 export function startAgentWatch(deps: AgentWatchDeps): AgentWatch {
   const { record, serverName, store, pollIntervalMs } = deps
-  let currentScope: AgentScope = agentScope(record, serverName)
+  let state: WatchState = { scope: agentScope(record, serverName), grants: record.grants }
+  /**
+   * Provenance for the gate's decision records (M5): whatever matrix the
+   * current scope was derived from is what this fingerprint describes. The
+   * WHOLE grant matrix is hashed, not just this server's slice — the record
+   * then identifies one version of the agent's authorization as a whole,
+   * which is the question an auditor actually asks ("what could this agent do
+   * at that moment").
+   *
+   * Computed LAZILY and memoized against the state it describes (review
+   * finding 6). Hashing on every poll canonicalized and hashed the entire
+   * matrix — synchronously, on the event loop that gates live traffic, every
+   * few seconds per session — whether or not any decision record was going to
+   * be written, and most polls write none. The schema permits a matrix that
+   * serializes to ~100 MB, so that is a real stall on a real ceiling. Keying
+   * the memo on the state OBJECT (not on a boolean) is what makes a stale
+   * hash unrepresentable: a swap replaces the state, and the next read misses.
+   */
+  let memo: FingerprintMemo | null = null
   let timer: NodeJS.Timeout | null = null
   let isStopped = false
   let isPolling = false
 
+  /** The fingerprint of the CURRENT state, computed at most once per state. */
+  function grantsHashOfCurrentState(): string {
+    if (memo === null || memo.state !== state) {
+      memo = { state, hash: grantsHashOf(state.grants) }
+    }
+    return memo.hash
+  }
+
   const scope: GateAgentScope = Object.freeze({
     agentName: record.name,
-    isGranted: (tool: string) => currentScope.isGranted(tool),
-    filterVisible: (tools: readonly string[]) => currentScope.filterVisible(tools),
+    isGranted: (tool: string) => state.scope.isGranted(tool),
+    filterVisible: (tools: readonly string[]) => state.scope.filterVisible(tools),
     // The method-grant dimension (M4 Task 6) delegates the same way, so a
     // resources/prompts grant edit takes effect on the next poll, exactly
     // like a tools edit.
     methodGrants: Object.freeze({
-      isResourceGranted: (uri: string) => currentScope.methodGrants.isResourceGranted(uri),
-      isPromptGranted: (name: string) => currentScope.methodGrants.isPromptGranted(name),
-      hasResourcesGrant: () => currentScope.methodGrants.hasResourcesGrant(),
-      hasPromptsGrant: () => currentScope.methodGrants.hasPromptsGrant(),
+      isResourceGranted: (uri: string) => state.scope.methodGrants.isResourceGranted(uri),
+      isPromptGranted: (name: string) => state.scope.methodGrants.isPromptGranted(name),
+      hasResourcesGrant: () => state.scope.methodGrants.hasResourcesGrant(),
+      hasPromptsGrant: () => state.scope.methodGrants.hasPromptsGrant(),
     }),
+    // Delegates like everything else on this facade: the gate reads it once
+    // per decision record, so an edit picked up by a poll is stamped on the
+    // very next record instead of being frozen at session start.
+    grantsHash: grantsHashOfCurrentState,
   })
 
   async function poll(): Promise<void> {
@@ -100,7 +153,11 @@ export function startAgentWatch(deps: AgentWatchDeps): AgentWatch {
       }
       // Grant edits without a revocation: rebuild the scope so new denials
       // apply from the very next call (and new grants open up likewise).
-      currentScope = agentScope(fresh, serverName)
+      // Built first, published second — a throw while deriving the scope
+      // leaves the last known-good state whole, and there is no instant at
+      // which the new scope is live under the old fingerprint.
+      const next: WatchState = { scope: agentScope(fresh, serverName), grants: fresh.grants }
+      state = next
     } catch (error: unknown) {
       deps.onError(error)
     } finally {

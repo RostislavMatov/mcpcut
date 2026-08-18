@@ -257,6 +257,113 @@ describe('createApprovalQueue: M4 UI metadata (agentName, waitExpiresAt, decisio
   })
 })
 
+describe('createApprovalQueue: M5 rule provenance (policyHash, grantsHash)', () => {
+  const POLICY_HASH = 'a'.repeat(64)
+  const GRANTS_HASH = 'b'.repeat(64)
+
+  /** A record exactly as a pre-M5 writer produced it: neither provenance field. */
+  const PRE_M5_RECORD = {
+    approvalId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    serverName: 'github',
+    toolName: 'legacy_tool',
+    toolClass: 'write',
+    argsRedacted: null,
+    argsHash: 'abc',
+    sessionId: 'session-pre-m5',
+    requestedAt: new Date(Date.UTC(2025, 0, 1)).toISOString(),
+    expiresAt: new Date(Date.UTC(2027, 0, 1)).toISOString(),
+  } as const
+
+  test('persists both fingerprints, pinning the rules the request was made under', async () => {
+    const queue = createApprovalQueue({ baseDir })
+
+    const { approvalId } = await queue.enqueue(
+      baseRequest({ policyHash: POLICY_HASH, grantsHash: GRANTS_HASH }),
+    )
+
+    const parsed = await storedDoc(approvalId)
+    expect(parsed['policyHash']).toBe(POLICY_HASH)
+    expect(parsed['grantsHash']).toBe(GRANTS_HASH)
+  })
+
+  test('a request with no agent persists policyHash and no grantsHash key at all', async () => {
+    // The `wrap` path: absent, not null and not undefined -- the same
+    // "absent means there was no agent" convention `agentName` follows.
+    const queue = createApprovalQueue({ baseDir })
+
+    const { approvalId } = await queue.enqueue(baseRequest({ policyHash: POLICY_HASH }))
+
+    const parsed = await storedDoc(approvalId)
+    expect(parsed['policyHash']).toBe(POLICY_HASH)
+    expect(Object.hasOwn(parsed, 'grantsHash')).toBe(false)
+  })
+
+  test('a pre-M5 record with neither field still lists and still resolves', async () => {
+    // Why both fields are optional: a request enqueued by an older version
+    // must keep parsing forever, so an operator can still settle it.
+    const queue = createApprovalQueue({ baseDir })
+    await insertRawRow({ ...PRE_M5_RECORD })
+
+    const listed = await queue.list()
+    expect(listed.map((entry) => entry.approvalId)).toEqual([PRE_M5_RECORD.approvalId])
+    expect(Object.hasOwn(listed[0]!, 'policyHash')).toBe(false)
+    expect(Object.hasOwn(listed[0]!, 'grantsHash')).toBe(false)
+
+    const result = await queue.resolve(PRE_M5_RECORD.approvalId, {
+      outcome: 'approved',
+      actor: 'operator',
+    })
+    expect(result.ok).toBe(true)
+  })
+
+  test.each(['policyHash', 'grantsHash'])(
+    'a pending record whose %s is not a string is skipped as malformed',
+    async (field) => {
+      // Consistent with every other malformed field: a hand-edited row is
+      // rejected whole rather than read past.
+      const queue = createApprovalQueue({ baseDir })
+      const { approvalId } = await queue.enqueue(baseRequest())
+      const parsed = await storedDoc(approvalId)
+      await overwriteDoc(approvalId, JSON.stringify({ ...parsed, [field]: 42 }))
+
+      await expect(queue.list()).resolves.toEqual([])
+    },
+  )
+
+  test.each([
+    ['a 10 MB string', 'x'.repeat(10 * 1024 * 1024)],
+    ['markup', '<script>alert(1)</script>'],
+    ['an uppercase digest', 'A'.repeat(64)],
+    ['a truncated digest', 'a'.repeat(63)],
+    ['an over-long digest', 'a'.repeat(65)],
+    ['an empty string', ''],
+  ])(
+    'a pending record whose policyHash is %s is skipped as malformed',
+    async (_label, value) => {
+      // "Any string is a valid fingerprint" is the wrong default for a field
+      // waves 3-5 will chain and sign: every other digest in the codebase is
+      // regex-pinned (`TOKEN_HASH_PATTERN`), and a row written out of band
+      // must not be able to smuggle arbitrary text in as evidence (SEC-L2).
+      const queue = createApprovalQueue({ baseDir })
+      const { approvalId } = await queue.enqueue(baseRequest())
+      const parsed = await storedDoc(approvalId)
+      await overwriteDoc(approvalId, JSON.stringify({ ...parsed, policyHash: value }))
+
+      await expect(queue.list()).resolves.toEqual([])
+    },
+  )
+
+  test('a well-formed lowercase sha256 digest is still accepted', async () => {
+    const queue = createApprovalQueue({ baseDir })
+    const { approvalId } = await queue.enqueue(baseRequest())
+    const parsed = await storedDoc(approvalId)
+    await overwriteDoc(approvalId, JSON.stringify({ ...parsed, grantsHash: GRANTS_HASH }))
+
+    const listed = await queue.list()
+    expect(listed[0]?.grantsHash).toBe(GRANTS_HASH)
+  })
+})
+
 describe('createApprovalQueue: listResolved', () => {
   async function seedResolved(queue: ReturnType<typeof createApprovalQueue>, count: number): Promise<string[]> {
     const ids: string[] = []
