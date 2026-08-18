@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { APPROVAL_RESOLVE_MIN_ROLE, roleSatisfies } from '../../src/admin/authz.js'
-import { ADMIN_TOKEN_ENV_VAR, type AdminRole } from '../../src/admin/constants.js'
+import { ADMIN_TOKEN_ENV_VAR, ADMINS_FILE_NAME, type AdminRole } from '../../src/admin/constants.js'
 import { createAdminStore } from '../../src/admin/store.js'
 import { ROUTE_TABLE } from '../../src/ui/authz.js'
 import { APPROVALS_LIST_MAX_ROWS } from '../../src/config.js'
@@ -494,6 +494,48 @@ describe('runApprovals: approve|deny require a personal admin token', () => {
     expect(exitCode).toBe(1)
     expect(await queue.readResolution(approvalId)).toBeNull()
     expect((await queue.list()).map((entry) => entry.approvalId)).toContain(approvalId)
+  })
+
+  test('a corrupt admins file fails loudly with exit 1, and the request is STILL pending', async () => {
+    // A hand-edited or truncated `admins.json` makes the admin store throw on
+    // read. The operator must get the same exit-1 diagnostic the three other
+    // refusal paths give, not a raw stack trace / unhandled rejection — and,
+    // fail-closed, nothing may be resolved on the way out.
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(join(tempDir, ADMINS_FILE_NAME), '{ not json', 'utf8')
+    const queue = createApprovalQueue({ baseDir })
+    const { approvalId } = await queue.enqueue(baseRequest())
+    const io = fakeIo()
+
+    const exitCode = await runApprovals(
+      ['approve', approvalId],
+      io,
+      optsWithToken('mcpa_a-syntactically-plausible-token'),
+    )
+
+    expect(exitCode).toBe(1)
+    expect(io.err().length).toBeGreaterThan(0)
+    // A message, not a crash dump: no stack frames leaking internals.
+    expect(io.err()).not.toContain('    at ')
+    expect(await queue.readResolution(approvalId)).toBeNull()
+    expect((await queue.list()).map((entry) => entry.approvalId)).toContain(approvalId)
+  })
+
+  test('deny is refused the same way when the admin store cannot be read', async () => {
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(join(tempDir, ADMINS_FILE_NAME), '{ not json', 'utf8')
+    const queue = createApprovalQueue({ baseDir })
+    const { approvalId } = await queue.enqueue(baseRequest())
+    const io = fakeIo()
+
+    const exitCode = await runApprovals(
+      ['deny', approvalId],
+      io,
+      optsWithToken('mcpa_a-syntactically-plausible-token'),
+    )
+
+    expect(exitCode).toBe(1)
+    expect(await queue.readResolution(approvalId)).toBeNull()
   })
 
   test('an empty-string token is treated as no token, not as a token to look up', async () => {

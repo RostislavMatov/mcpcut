@@ -164,6 +164,59 @@ describe('buildDecisionRecord', () => {
     })
   })
 
+  describe('actor redaction', () => {
+    /**
+     * `actor` is the other externally-sourced string on a decision record
+     * (M5 wave-2 review, finding 4). On the late-approval path it comes from a
+     * STORED resolved record — hand-editable text, as `grants.ts` says of its
+     * own inputs — and was validated for type and length but never for
+     * content, making it the one decision field reaching the journal without
+     * passing `redactString`. Redaction is the only path into the journal, and
+     * wave 4 folds this field into a signed chain, so it is redacted at the
+     * same choke point `toolName` already uses: every producer is covered, not
+     * just the call site that surfaced it.
+     */
+    test('redacts a secret embedded in a stored actor before it reaches the record', () => {
+      const record = buildDecisionRecord({
+        sessionId: 'session-1',
+        decision: decisionInfo({ actor: 'cli:Bearer sk-live-abc123' }),
+        clock: stubClock(1_000),
+      })
+
+      expect(record.decision?.actor).not.toContain('sk-live-abc123')
+      expect(record.decision?.actor).toContain(REDACTED_PLACEHOLDER)
+    })
+
+    test.each(['cli:alice', 'ui:alice', 'cli:release-captain', 'ui:ops-team-1'])(
+      'leaves the legitimate actor %s byte-identical',
+      (actor) => {
+        // `ADMIN_NAME_PATTERN` is `^[a-z0-9][a-z0-9-]{0,63}$`, so a real
+        // `cli:`/`ui:` actor has nothing a value pattern can match. Redaction
+        // must not be bought at the price of mangling real attribution.
+        const record = buildDecisionRecord({
+          sessionId: 'session-1',
+          decision: decisionInfo({ actor }),
+          clock: stubClock(1_000),
+        })
+
+        expect(record.decision?.actor).toBe(actor)
+      },
+    )
+
+    test('a record with no actor gains no actor key', () => {
+      // Absence must stay absence: `grantsHash` absence already MEANS
+      // something on these records, and an invented `actor: undefined` would
+      // be a new key on every pre-attribution decision.
+      const record = buildDecisionRecord({
+        sessionId: 'session-1',
+        decision: decisionInfo(),
+        clock: stubClock(1_000),
+      })
+
+      expect(Object.hasOwn(record.decision as object, 'actor')).toBe(false)
+    })
+  })
+
   describe('args redaction into payload', () => {
     test('redacts a secret found in tool-call args before it reaches payload', () => {
       const record = buildDecisionRecord({

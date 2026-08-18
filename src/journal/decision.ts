@@ -41,6 +41,16 @@ export function buildDecisionRecord(input: BuildDecisionRecordInput): JournalRec
   const decision: DecisionInfo = Object.freeze({
     ...input.decision,
     toolName: redactString(input.decision.toolName),
+    // `actor` is the other externally-sourced string here: on the
+    // late-approval path it is read back out of a STORED resolved record,
+    // which is hand-editable text. Redacted at this choke point rather than at
+    // the one call site that produces it, so every present and future producer
+    // of `actor` is covered — redaction is the only path into the journal, and
+    // wave 4 signs this field. Spread conditionally so an absent actor stays
+    // absent instead of gaining an `actor: undefined` key.
+    ...(input.decision.actor !== undefined
+      ? { actor: redactString(input.decision.actor) }
+      : {}),
   })
 
   const record: JournalRecord = {

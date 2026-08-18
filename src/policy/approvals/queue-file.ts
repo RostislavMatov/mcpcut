@@ -142,6 +142,43 @@ export function isOptionalActor(value: unknown): boolean {
 }
 
 /**
+ * Thrown when a caller tries to STORE an actor the reader above would reject.
+ * A programming error in a producer, not an operator mistake, so it is an
+ * exception rather than a `ResolveResult` — the only two `ResolveResult`
+ * failures mean "not found or already resolved", and reporting this as one of
+ * those would send an operator hunting for a request that is sitting right
+ * there.
+ */
+export class ApprovalActorTooLongError extends Error {
+  constructor(length: number) {
+    super(
+      `approval actor is ${length} characters, exceeding the ${MAX_APPROVAL_ACTOR_CHARS}-character cap; ` +
+        `a resolution stored with it could not be read back`,
+    )
+    this.name = 'ApprovalActorTooLongError'
+  }
+}
+
+/**
+ * The WRITE-side half of the actor contract, deliberately adjacent to the
+ * read-side `isOptionalActor` so the two caps come from one constant and
+ * cannot drift apart (M5 wave-2 review, finding 3).
+ *
+ * Validating on read alone let an over-cap actor be accepted and persisted,
+ * after which every reader rejected the whole record: the waiting agent never
+ * saw the decision and timed out, and `checkRecentApproval` skipped the
+ * record, so an APPROVED request behaved as unresolved with no diagnostic
+ * anywhere. Failing loudly at the boundary turns that silent evidence loss
+ * into a stack trace at the call site that caused it. Deliberately not a
+ * truncation: a repaired attribution is a fabricated one, and this field is
+ * about to be signed.
+ */
+export function assertStorableActor(actor: string | undefined): void {
+  if (actor === undefined) return
+  if (!isOptionalActor(actor)) throw new ApprovalActorTooLongError(actor.length)
+}
+
+/**
  * A timestamp field must actually PARSE (review H2): these records are
  * hand-editable (a legacy file, a foreign row), `Date.parse(garbage)` is
  * `NaN`, and every comparison against `NaN` is `false` — which made a garbage

@@ -11,6 +11,7 @@ import {
   type ResolveOutcome,
 } from '../policy/approvals/queue.js'
 import { DEFAULT_GRANT_TTL_MS } from '../policy/constants.js'
+import { isExpectedAdminError } from './admin-cmd.js'
 
 /**
  * `approvals list|approve|deny`: the operator-facing half of the approvals
@@ -100,6 +101,20 @@ const INSUFFICIENT_ROLE_MESSAGE =
   `Refusing to resolve: this admin token's role may not resolve approvals ` +
   `(role "${APPROVAL_RESOLVE_MIN_ROLE}" or higher is required, the same rule the admin UI applies).\n` +
   `An owner can change it with: mcp-journal admin role <name> ${APPROVAL_RESOLVE_MIN_ROLE}\n`
+
+/**
+ * The admin store could not be read at all, so no token can be resolved to a
+ * human. Names the failure (the store error text is operator-facing: a path
+ * and a parse/lock reason) and routes it through `formatReadableField` like
+ * every other string this CLI prints from disk.
+ */
+function storeUnreadableMessage(detail: string): string {
+  return (
+    `Refusing to resolve: the admin store could not be read, so this resolution could not be ` +
+    `attributed to a human.\n${formatReadableField(detail)}\n` +
+    `Check the file named above, then: mcp-journal admin list\n`
+  )
+}
 
 /** The operator sees an already-resolved-or-unknown id the same way in both subcommands. */
 const NOT_FOUND_MESSAGE = 'No pending approval with that id (already resolved or unknown id).'
@@ -242,7 +257,20 @@ async function resolveCliActor(
   )
   // The one comparison path: constant-work hash matching, revoked admins
   // resolving exactly like a token that never existed (`admin/store.ts`).
-  const admin = await store.findAdminByToken(token)
+  //
+  // A store that cannot be READ (hand-edited or truncated `admins.json`, a
+  // locked or corrupt state db) is a refusal, not a crash: the operator gets
+  // the same exit-1 diagnostic as the three token failures above. Fail closed
+  // — returning `undefined` here means nothing is resolved, so an unreadable
+  // admin store can never produce an unattributed resolution.
+  let admin: Awaited<ReturnType<typeof store.findAdminByToken>>
+  try {
+    admin = await store.findAdminByToken(token)
+  } catch (error: unknown) {
+    if (!isExpectedAdminError(error)) throw error
+    io.stderr.write(storeUnreadableMessage(error.message))
+    return undefined
+  }
   if (admin === undefined) {
     io.stderr.write(UNKNOWN_TOKEN_MESSAGE)
     return undefined

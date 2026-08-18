@@ -17,7 +17,6 @@ import {
   type AnswerGuard,
   type CallFacts,
   type DecisionExtras,
-  type DecisionProvenance,
   type DecisionWriter,
   type ProvenanceSnapshot,
 } from './gate-helpers.js'
@@ -62,18 +61,6 @@ export interface ApprovalFlowDeps {
   readonly sessionId: string
   /** Name of the authenticated agent (M3 scope); absent on the ad-hoc `wrap` path. */
   readonly agentName?: string
-  /**
-   * The SAME provenance every other decision record of this session is
-   * stamped with — one object per session (`session/core.ts` builds it and
-   * hands it to the gate; the stdio `wrap` path lets `gate-core.ts` build its
-   * own). Nothing is re-hashed here: ONE `snapshot()` is taken before the
-   * enqueue and that frozen pair is used for the pending file, the
-   * `require-approval-pending`
-   * decision record and every record that ends the flow — which is what
-   * makes the three name the same rules, rather than three separate reads of
-   * a cell that changes under them (M5).
-   */
-  readonly provenance: DecisionProvenance
   readonly approvalQueue: GateApprovalQueue
   readonly approvalWaiter: ApprovalWaiter
   readonly grantRegistry: GrantRegistry
@@ -106,12 +93,23 @@ export interface ApprovalFlowDeps {
 }
 
 export interface ApprovalFlow {
-  /** Runs one require-approval decision to its verdict. */
+  /**
+   * Runs one require-approval decision to its verdict.
+   *
+   * `captured` is the provenance pair as of the instant `decide()` produced
+   * `decision`, taken by the caller (`gate-core.ts`) in that same synchronous
+   * run. This flow deliberately has NO access to a `DecisionProvenance` of its
+   * own: it awaits storage before it writes anything, so any snapshot it could
+   * take would be a later instant than the decision it describes. Passing the
+   * pair in makes "the snapshot names the rules that produced this decision"
+   * a property of the type, not of statement order (M5 wave-2 review).
+   */
   requestApproval(
     call: ParsedToolCall,
     facts: CallFacts,
     grantKey: GrantKey,
     decision: PolicyDecision,
+    captured: ProvenanceSnapshot,
   ): Promise<Verdict>
 }
 
@@ -129,6 +127,7 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
     facts: CallFacts,
     grantKey: GrantKey,
     decision: PolicyDecision,
+    captured: ProvenanceSnapshot,
   ): Promise<Verdict> {
     const lateGrant = await resolveLateApproval(call, facts, grantKey)
     if (lateGrant !== null) return lateGrant
@@ -147,10 +146,12 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
     // rules the request was made UNDER, so the operator's answer minutes
     // later resolves against a known revision (M5).
     //
-    // Captured BEFORE the enqueue and reused for every artefact below: the
-    // enqueue is an awaited SQLite write, so a second read after it is a
-    // different instant, not the same one.
-    const captured = deps.provenance.snapshot()
+    // `captured` was taken by the CALLER at decision time and is reused for
+    // every artefact below — the pending row, the `require-approval-pending`
+    // record and whichever record ends the flow. It is never re-sampled here:
+    // by this line the flow has already awaited a storage read
+    // (`resolveLateApproval`) and is about to await an SQLite write, so any
+    // fresh read would be a later instant than the decision it describes.
     const { approvalId } = await approvalQueue.enqueue({
       serverName,
       toolName: facts.toolName,
@@ -220,6 +221,15 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
     // falsy-but-present object, so a grant can never be lost to truthiness.
     if (granted === null) return null
     grantRegistry.grant(grantKey, policy.approval.grantTtlMs)
+    // DELIBERATELY not `requestApproval`'s captured pair, and deliberately not
+    // passed one. This is a SECOND, genuinely later decision: the retry is
+    // re-decided here, after the storage read, with the grant now in hand —
+    // so the rules that produce THIS verdict are the ones in force at THIS
+    // instant, and the record below must name them. `applyAllow` journals
+    // synchronously from here, so the writer's own default snapshot is that
+    // same instant. Do not "fix" this into reusing the caller's snapshot: the
+    // two are different decisions about different moments, and collapsing
+    // them would backdate this one's provenance (M5 wave-2 review).
     const decision = deps.decideWithGrant(facts, true)
     if (decision.outcome !== 'allow') return null
     const extras: DecisionExtras = { approvalId: granted.approvalId, ...actorExtra(granted.actor) }
