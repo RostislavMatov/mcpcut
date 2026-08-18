@@ -8,6 +8,7 @@ import { runBackupCommand, type BackupCommandOptions } from './cli/backup-cmd.js
 import { runConnect, type ConnectDeps } from './cli/connect-cmd.js'
 import { runExportCommand, type ExportCommandOptions } from './cli/export-cmd.js'
 import { runJournalCommandGroup } from './cli/journal-cmds.js'
+import { runKeygenCommand, type KeygenCommandOptions } from './cli/keygen-cmd.js'
 import { runMigrateCommand, type MigrateCommandOptions } from './cli/migrate-cmd.js'
 import { runPolicyShow, runPolicyValidate, type PolicyCliOptions } from './cli/policy-cmd.js'
 import { runQuarantine, type RunQuarantineOptions } from './cli/quarantine-cmd.js'
@@ -64,6 +65,7 @@ export interface DispatchOptions {
   readonly export?: ExportCommandOptions
   readonly backup?: BackupCommandOptions
   readonly verify?: VerifyCommandOptions
+  readonly keygen?: KeygenCommandOptions
 }
 
 const DEFAULT_IO: CliIo = { stdout: process.stdout, stderr: process.stderr }
@@ -92,6 +94,7 @@ export async function dispatch(
   if (command === 'export') return runExportCommand(rest, io, opts.export)
   if (command === 'backup') return runBackupCommand(rest, io, opts.backup)
   if (command === 'verify') return runVerifyCommand(rest, io, opts.verify)
+  if (command === 'keygen') return runKeygenCommand(rest, io, opts.keygen)
   if (command === 'sessions' || command === 'show') {
     return runJournalCommandGroup(command, rest, io, opts.journalDir, USAGE)
   }

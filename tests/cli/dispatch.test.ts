@@ -302,3 +302,14 @@ describe('dispatch: verify', () => {
     expect(io.err()).toContain('No journal database found')
   })
 })
+
+describe('dispatch: keygen', () => {
+  test('routes to keygen-cmd with an isolated journalDir', async () => {
+    const io = fakeIo()
+
+    const exitCode = await dispatch(['keygen'], io, { keygen: { journalDir: join(tempDir, 'keygen') } })
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain('-----BEGIN PUBLIC KEY-----')
+  })
+})

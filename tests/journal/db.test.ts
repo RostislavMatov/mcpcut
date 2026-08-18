@@ -2,6 +2,7 @@ import { copyFile, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { getBatchWriter, type SettleResult } from '../../src/journal/batch-writer.js'
 import { GENESIS_PREV_HASH, linkHashOf } from '../../src/journal/chain.js'
 import {
   insertRecordRows,
@@ -407,8 +408,19 @@ describe('insertRecordRows: hash chain', () => {
     // concurrent sinks (two processes) rather than two callers sharing one
     // process-cached handle. `BEGIN IMMEDIATE` serializes them at the SQLite
     // level; what this test checks is that the RESULT is one unbroken chain
-    // regardless of which writer committed which row — the plan's highest-
-    // risk scenario (busy-retry between concurrent sinks forking the chain).
+    // regardless of which writer committed which row.
+    //
+    // CORRECTION (review finding, M5 waves 3-4 review round): the five
+    // `handle.transaction(...)` calls below run strictly SEQUENTIALLY — each
+    // one returns before the next starts, so no two of them ever actually
+    // contend for the write lock, and `SQLITE_BUSY` never fires here. This
+    // test therefore does NOT exercise the plan's actual highest-risk
+    // scenario (a busy-retried write replaying `insertRecordRows` and
+    // needing to re-read the chain head under the NEW lock, or forking the
+    // chain). It still earns its keep as a "two connections, no accidental
+    // cross-talk" sanity check; the real contention case is the dedicated
+    // test below this one, which forces a genuine `SQLITE_BUSY`
+    // deterministically.
     // Bootstraps the schema first (mirrors what a real first-ever writer's
     // process does before either sink touches the file): raw `openSqlite`
     // below is the storage primitive alone and runs no DDL of its own.
@@ -441,6 +453,72 @@ describe('insertRecordRows: hash chain', () => {
       expect(seenHashes.has(row.recordHash as string)).toBe(false) // no duplicate recordHash = no fork
       seenHashes.add(row.recordHash as string)
       expectedPrev = row.recordHash as string
+    }
+  })
+
+  test('a busy-retried write via the batch writer re-reads the chain head on retry, so a genuinely contended commit still produces one unbroken chain', async () => {
+    const dbPath = journalDbPathFor(journalDir)
+    // Bootstraps the schema AND becomes the connection `getBatchWriter`'s
+    // production commit path (`batch-writer.ts`'s `commitToDatabase`) will
+    // reuse via the process-wide shared-handle cache (`openJournalDbShared`).
+    await openJournalDbShared(dbPath)
+
+    // A second, independent connection (models a concurrent second process,
+    // same as the test above) that takes and HOLDS the write lock across a
+    // real async delay -- something `handle.transaction()` cannot do itself
+    // (its callback must be synchronous, see `store/sqlite.ts`), so this
+    // goes around it directly: `BEGIN IMMEDIATE` + the real `insertRecordRows`
+    // + a deliberately delayed `COMMIT`.
+    const holder = await openSqlite(dbPath, { synchronous: 'full' })
+    try {
+      holder.db.exec('BEGIN IMMEDIATE')
+      insertRecordRows(holder.db, [makeRow({ recordId: 'holder-1', doc: '{"w":"holder"}' })])
+
+      // The journal connection's OWN sqlite `busy_timeout` is 50ms
+      // (`JOURNAL_STATEMENT_BUSY_TIMEOUT_MS`, db.ts) -- holding the lock for
+      // 300ms is well over 5x that, so this GUARANTEES a real `SQLITE_BUSY`
+      // is thrown at the sqlite level and caught by `batch-writer.ts`'s
+      // `withBusyRetries` at least once before we release below. That
+      // guarantee comes from sqlite's own fixed timeout, not from timing
+      // luck, so it is not flaky.
+      const writer = getBatchWriter(dbPath)
+      const settled: SettleResult[] = []
+      writer.enqueue(makeRow({ recordId: 'contender-1', doc: '{"w":"contender"}' }), (result) => {
+        settled.push(result)
+      })
+      let hasFlushed = false
+      const flushPromise = writer.flushNow()
+      void flushPromise.then(() => {
+        hasFlushed = true
+      })
+
+      const holdMs = 300
+      await new Promise((resolve) => setTimeout(resolve, holdMs))
+      // Direct evidence of real contention, not an assumption: the writer's
+      // flush is still pending after `holdMs` while the lock is held. A
+      // fast/no-op path (or a bug that gave up after the first busy failure
+      // instead of retrying) would have already resolved by now.
+      expect(hasFlushed).toBe(false)
+
+      holder.db.exec('COMMIT')
+      await flushPromise
+
+      expect(settled).toEqual([{ ok: true }])
+
+      // Correctness: the retried attempt must have read the chain head AFTER
+      // the holder's commit landed, not the stale (genesis) head captured
+      // before contention began -- otherwise this is exactly the fork the
+      // plan calls its highest-risk scenario. `insertRecordRows`'s head read
+      // happens inside the transaction callback, re-run on every retry
+      // (see its own doc in db.ts); this is what proves that in practice,
+      // not just by inspection.
+      const rows = await readJournalChainRows(journalDir)
+      expect(rows).toHaveLength(2)
+      expect(rows[0]?.recordHash).toBe(linkHashOf(GENESIS_PREV_HASH, rows[0]?.doc ?? ''))
+      expect(rows[1]?.prevHash).toBe(rows[0]?.recordHash) // fresh head, not a stale/forked one
+      expect(rows[1]?.recordHash).toBe(linkHashOf(rows[1]?.prevHash ?? '', rows[1]?.doc ?? ''))
+    } finally {
+      holder.close()
     }
   })
 })
