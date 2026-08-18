@@ -21,6 +21,7 @@ import {
 } from './cli/server-cmd.js'
 import { runUi, type UiCommandOptions } from './cli/ui-cmd.js'
 import { runVault, type VaultCmdDeps } from './cli/vault-cmd.js'
+import { runVerifyCommand, type VerifyCommandOptions } from './cli/verify-cmd.js'
 import { runWrapCommand, type WrapCommandOptions } from './cli/wrap-cmd.js'
 import { USAGE } from './cli/usage.js'
 
@@ -62,6 +63,7 @@ export interface DispatchOptions {
   readonly migrate?: MigrateCommandOptions
   readonly export?: ExportCommandOptions
   readonly backup?: BackupCommandOptions
+  readonly verify?: VerifyCommandOptions
 }
 
 const DEFAULT_IO: CliIo = { stdout: process.stdout, stderr: process.stderr }
@@ -89,6 +91,7 @@ export async function dispatch(
   if (command === 'migrate') return runMigrateCommand(rest, io, opts.migrate)
   if (command === 'export') return runExportCommand(rest, io, opts.export)
   if (command === 'backup') return runBackupCommand(rest, io, opts.backup)
+  if (command === 'verify') return runVerifyCommand(rest, io, opts.verify)
   if (command === 'sessions' || command === 'show') {
     return runJournalCommandGroup(command, rest, io, opts.journalDir, USAGE)
   }

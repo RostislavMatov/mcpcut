@@ -1,6 +1,7 @@
 import { stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { openSqlite, type SqliteHandle } from '../store/sqlite.js'
+import { GENESIS_PREV_HASH, linkHashOf } from './chain.js'
 
 /**
  * The single point of contact with `journal.db`'s schema and connection
@@ -24,6 +25,16 @@ import { openSqlite, type SqliteHandle } from '../store/sqlite.js'
  * grant that a vanished row could silently resurrect, so the loud
  * `assertNotPreviouslyMigrated`-style refusal the document stores use would
  * be alarming the operator over a normal outcome.
+ *
+ * `prev_hash`/`record_hash` (M5 wave 3) are the hash chain: `insertRecordRows`
+ * is the ONLY place a row is ever written, so it is the one and only place
+ * the chain is computed — there is no unchained insert path, including the
+ * bulk importer (`import.ts`), which calls this same function. Rows written
+ * before the chain existed keep both columns `NULL`: that is deliberate, not
+ * a gap to fill in later. `NULL` means "written before the chain was
+ * enabled, not attested" — there is no retroactive signing of old rows (the
+ * plan rejects it explicitly: a fabricated retro-chain would claim integrity
+ * the pre-M5 journal never actually had).
  */
 
 /** The database handed to a transaction callback, named without importing `node:sqlite` here. */
@@ -41,6 +52,13 @@ export const JOURNAL_DB_FILE_NAME = 'journal.db'
  * shape); the other columns are denormalized copies that exist only to keep
  * indexed scans narrow, exactly like the approvals queue's columns beside
  * its own `doc`.
+ *
+ * `prev_hash`/`record_hash` are nullable TEXT — valid under STRICT, which
+ * only forbids storing a value of the WRONG type in a typed column, not
+ * storing no value at all in a column with no `NOT NULL`. A fresh database
+ * gets them from this DDL; an existing one gets them via the `ALTER TABLE`
+ * below, applied unconditionally (idempotently) on every open. See the
+ * module doc for what `NULL` in these columns means.
  */
 const CREATE_JOURNAL_RECORDS_TABLE =
   'CREATE TABLE IF NOT EXISTS journal_records (' +
@@ -51,7 +69,13 @@ const CREATE_JOURNAL_RECORDS_TABLE =
   'direction TEXT NOT NULL, ' +
   'kind TEXT NOT NULL, ' +
   'method TEXT, ' +
-  'doc TEXT NOT NULL) STRICT'
+  'doc TEXT NOT NULL, ' +
+  'prev_hash TEXT, ' +
+  'record_hash TEXT) STRICT'
+
+/** Column names `ensureChainColumns` adds to a database that predates the chain. */
+const PREV_HASH_COLUMN = 'prev_hash'
+const RECORD_HASH_COLUMN = 'record_hash'
 
 /** Session-scoped reads in `seq` order: paging through one session's records. */
 const CREATE_SESSION_SEQ_INDEX =
@@ -65,8 +89,22 @@ const CREATE_IMPORTED_SESSIONS_TABLE =
   'CREATE TABLE IF NOT EXISTS imported_sessions (session_id TEXT PRIMARY KEY) STRICT'
 
 const INSERT_RECORD_ROW =
-  'INSERT INTO journal_records (session_id, record_id, ts, direction, kind, method, doc) ' +
-  'VALUES (?, ?, ?, ?, ?, ?, ?)'
+  'INSERT INTO journal_records (session_id, record_id, ts, direction, kind, method, doc, ' +
+  'prev_hash, record_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+
+/**
+ * The chain head: the `record_hash` of the most recently inserted CHAINED
+ * row, or `undefined` when there is none yet. `WHERE record_hash IS NOT
+ * NULL` is load-bearing, not defensive: a database that already holds
+ * pre-chain rows (see the module doc) must start its chain from
+ * `GENESIS_PREV_HASH` at the first chained row, never inherit a `NULL` as
+ * if it were a real head — concatenating a literal "NULL" into a hash would
+ * both be wrong and silently "attest" rows that came before attestation
+ * existed.
+ */
+const SELECT_CHAIN_HEAD =
+  'SELECT record_hash AS recordHash FROM journal_records ' +
+  'WHERE record_hash IS NOT NULL ORDER BY seq DESC LIMIT 1'
 
 /**
  * Deliberately small, mirroring `STATEMENT_BUSY_TIMEOUT_MS`
@@ -181,6 +219,11 @@ async function openJournalDb(dbPath: string): Promise<CachedJournalDb> {
   try {
     // Idempotent and outside any transaction, same as state.db's tables.
     handle.db.exec(CREATE_JOURNAL_RECORDS_TABLE)
+    // Migrates a database created before the chain existed: on a fresh
+    // database the columns are already there via the DDL above, so this is
+    // a no-op (guarded by the table_info check below) — safe to run on
+    // every open, not just the first one ever.
+    ensureChainColumns(handle)
     handle.db.exec(CREATE_SESSION_SEQ_INDEX)
     handle.db.exec(CREATE_SESSION_KIND_INDEX)
     handle.db.exec(CREATE_IMPORTED_SESSIONS_TABLE)
@@ -190,6 +233,29 @@ async function openJournalDb(dbPath: string): Promise<CachedJournalDb> {
     handle.close()
     throw error
   }
+}
+
+/**
+ * Adds `prev_hash`/`record_hash` to a `journal_records` table that predates
+ * the chain (M5 wave 3). `ALTER TABLE ADD COLUMN` errors if the column
+ * already exists, so each column is guarded by its own `PRAGMA table_info`
+ * check rather than run unconditionally — that guard is what makes this
+ * function safe to call on EVERY open, including a fresh database whose
+ * `CREATE TABLE` already added both columns.
+ */
+function ensureChainColumns(handle: SqliteHandle): void {
+  if (!hasColumn(handle, PREV_HASH_COLUMN)) {
+    handle.db.exec(`ALTER TABLE journal_records ADD COLUMN ${PREV_HASH_COLUMN} TEXT`)
+  }
+  if (!hasColumn(handle, RECORD_HASH_COLUMN)) {
+    handle.db.exec(`ALTER TABLE journal_records ADD COLUMN ${RECORD_HASH_COLUMN} TEXT`)
+  }
+}
+
+/** True when `journal_records` already has `column`. `column` is always one of this module's own constants, never external input. */
+function hasColumn(handle: SqliteHandle, column: string): boolean {
+  const rows = handle.db.prepare('PRAGMA table_info(journal_records)').all()
+  return rows.some((row) => row['name'] === column)
 }
 
 /** One journal record's columns as a row; `doc` is the whole `JournalRecord` as JSON text. */
@@ -204,14 +270,54 @@ export interface JournalRecordRow {
 }
 
 /**
- * Inserts `rows` via a prepared statement, one `INSERT` per row. Callers wrap
- * this in `handle.transaction(...)` so a batch commits atomically; this
- * function itself runs no transaction so it composes with the batch writer's
- * own retry-the-whole-batch semantics.
+ * Inserts `rows` via a prepared statement, one `INSERT` per row, CHAINING
+ * them as it goes (M5 wave 3) — this is the one and only row-insert path in
+ * the whole journal (`batch-writer.ts` and the bulk importer both call
+ * nothing else), so there is no way to append a row without a chain link.
+ *
+ * Callers wrap this in `handle.transaction(...)` so a batch commits
+ * atomically; this function itself runs no transaction so it composes with
+ * the batch writer's own retry-the-whole-batch semantics. That composition
+ * is exactly what makes the chain safe under concurrency: the ONE head
+ * read below (`SELECT_CHAIN_HEAD`) happens on `db`, the connection handed
+ * to us BY the transaction callback — i.e. strictly AFTER `BEGIN IMMEDIATE`
+ * has taken the write lock. `withBusyRetries` (`batch-writer.ts`) replays
+ * this WHOLE function on a busy lock, and another process's sink may have
+ * appended between attempts, so a head read taken before the lock (e.g.
+ * hoisted out to the caller) could hand every retry the SAME stale
+ * `prevHash` and fork the chain. Do not hoist this read — it must stay
+ * inside the function that runs inside the transaction.
+ *
+ * The head is read ONCE per batch, then folded across `rows` in memory
+ * (`prev` reassigned per row): one `SELECT` for up to
+ * `JOURNAL_BATCH_MAX_RECORDS` rows, not one per row, is what keeps chaining
+ * from costing the batch its throughput (plan risk: chain SELECT vs. the
+ * ≥100k rec/s gate).
  */
 export function insertRecordRows(db: JournalDatabase, rows: readonly JournalRecordRow[]): void {
+  if (rows.length === 0) return
+
   const insert = db.prepare(INSERT_RECORD_ROW)
+  let prev = chainHeadOf(db)
   for (const row of rows) {
-    insert.run(row.sessionId, row.recordId, row.ts, row.direction, row.kind, row.method, row.doc)
+    const recordHash = linkHashOf(prev, row.doc)
+    insert.run(
+      row.sessionId,
+      row.recordId,
+      row.ts,
+      row.direction,
+      row.kind,
+      row.method,
+      row.doc,
+      prev,
+      recordHash,
+    )
+    prev = recordHash
   }
+}
+
+/** The current chain head's `record_hash`, or `GENESIS_PREV_HASH` when there is none. See `insertRecordRows`. */
+function chainHeadOf(db: JournalDatabase): string {
+  const head = db.prepare(SELECT_CHAIN_HEAD).get() as { recordHash: unknown } | undefined
+  return head === undefined || typeof head.recordHash !== 'string' ? GENESIS_PREV_HASH : head.recordHash
 }
