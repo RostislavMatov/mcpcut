@@ -61,6 +61,11 @@ export const USAGE = `Usage:
                                          opened); --pub defaults to <journal dir>/signing.pub;
                                          --require-signature fails an unsigned or unattributable
                                          export (same exit codes: 0 ok, 1 could not run, 2 failed)
+  mcp-journal prune --older-than <dur> [--yes]
+                                         Delete journal records older than <dur> (e.g. 90d, 36h) and
+                                         record a retention marker the chain continues from; prints
+                                         what it would delete unless --yes is given. No automatic
+                                         retention exists -- this is the only thing that deletes
   mcp-journal keygen                     Generate this installation's Ed25519 signing key
                                          (prints the public key once; needed for "verify --sign")
   mcp-journal --help                    Show this message

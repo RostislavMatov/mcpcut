@@ -109,6 +109,7 @@ function trustedInventory(): GateInventory {
     observeToolsList: (tools) =>
       Promise.resolve({ known: tools.map((tool) => tool.name), new: [], changed: [], failed: false }),
     stateOf: () => 'known',
+    surfaceDeltaOf: () => undefined,
     hasObservedCatalog: () => true,
     isCatalogTrusted: () => true,
   }

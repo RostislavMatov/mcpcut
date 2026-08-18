@@ -22,6 +22,7 @@ import {
   signReportManifest,
   verifyReportManifestSignature,
 } from '../../src/journal/report-signing.js'
+import { pruneRecordsOlderThan } from '../../src/journal/prune.js'
 import { generateAndWriteSigningKeyPair } from '../../src/journal/signing.js'
 import { sha256Hex } from '../../src/policy/hash.js'
 import { openSqlite, type SqliteHandle } from '../../src/store/sqlite.js'
@@ -391,6 +392,46 @@ describe('buildJournalReport: chain block', () => {
 
     expect(report.manifest.chain.head).toBeNull()
     expect(report.manifest.chain.recomputable).toBe(false)
+  })
+})
+
+describe('buildJournalReport: a pruned journal says so (M5 wave 6)', () => {
+  test('the manifest discloses the retention prune and still re-folds from the marker head', async () => {
+    // Without this disclosure an auditor sees a report whose records start at
+    // seq 3 and whose fold starts from a hash that is not genesis, with
+    // nothing in the manifest explaining either -- a report that is true but
+    // reads as if the journal had always been this short.
+    const handle = await openHandle()
+    insertChained(handle, [rowOf(trafficDoc()), rowOf(trafficDoc()), rowOf(decisionDoc(), { kind: 'decision' })])
+    pruneRecordsOlderThan(handle, {
+      cutoffIso: '2100-01-01T00:00:00.000Z',
+      nowIso: '2026-08-18T12:00:00.000Z',
+      signingKey: { present: false },
+    })
+    insertChained(handle, [rowOf(trafficDoc())])
+    const sink = collectingSink()
+
+    const report = await buildJournalReport(handle, { now: () => AS_OF }, sink)
+
+    expect(report.manifest.chain.prunedThroughSeq).toBe(3)
+    expect(report.manifest.chain.recomputable).toBe(true)
+    expect(report.manifest.chain.startPrevHash).not.toBe(GENESIS_PREV_HASH)
+
+    let folded = report.manifest.chain.startPrevHash as string
+    for (const doc of sink.lines.join('').split('\n').slice(0, -1)) {
+      folded = linkHashOf(folded, doc)
+    }
+    expect(folded).toBe(report.manifest.chain.head?.recordHash)
+  })
+
+  test('an unpruned journal carries a null boundary, not an absent key', async () => {
+    // Absent would be indistinguishable from "this build did not look".
+    const handle = await openHandle()
+    insertChained(handle, [rowOf(trafficDoc())])
+
+    const report = await buildJournalReport(handle, { now: () => AS_OF }, collectingSink())
+
+    expect(report.manifest.chain.prunedThroughSeq).toBeNull()
   })
 })
 

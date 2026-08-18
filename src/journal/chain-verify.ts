@@ -1,6 +1,7 @@
 import type { SqliteHandle } from '../store/sqlite.js'
 import { GENESIS_PREV_HASH, linkHashOf } from './chain.js'
 import { numberOf, textOf } from './db-row.js'
+import { latestPruneMarker } from './prune.js'
 
 /**
  * `mcp-journal verify`'s reusable core (M5 wave 3, task 3.3): walks
@@ -89,18 +90,33 @@ export interface ChainVerifyResult {
 }
 
 /**
- * Resolves the `prevHash` the walk starts its attested rows from. Today this
- * is always `GENESIS_PREV_HASH`: there is no prune-marker table yet.
- * Retention pruning (a later wave) will delete an old prefix of
- * `journal_records` and record a marker holding the head of the deleted
- * prefix; THAT wave fills this function in to read the marker, so a pruned
- * database's remaining suffix still verifies from a trusted starting point
- * instead of every walk failing against a genesis whose row 1 no longer
- * exists. Callers must call this function rather than hardcode
- * `GENESIS_PREV_HASH`, so the later wave has exactly one place to change.
+ * Resolves the `prevHash` the walk starts its attested rows from: the head
+ * recorded by the most recent prune (M5 wave 6), or `GENESIS_PREV_HASH` on a
+ * journal that was never pruned -- or whose pruned prefix held no attested row
+ * at all, which leaves the chain starting where it always did.
+ *
+ * Anchoring here is what keeps pruning distinguishable from tampering. A
+ * deleted prefix leaves the oldest survivor pointing at a row that is gone; a
+ * walk from genesis would call that a `gap` at the first surviving row, i.e.
+ * report the operator's own retention run as evidence of an attack. Starting
+ * from the marker verifies the surviving suffix on its own terms -- and the
+ * marker itself is reported to the operator (`verify-cmd.ts`) rather than
+ * silently consumed, because a marker is a CLAIM about what was deleted, made
+ * by the same host that could instead have deleted rows without recording it.
+ *
+ * WHY THE UNFILTERED "LATEST MARKER" IS SAFE HERE. `latestPruneMarker` takes
+ * the highest `pruned_through_seq` WITHOUT filtering out a null head, while
+ * `db.ts`'s write-side `chainHeadOf` fallback filters null heads out. Those
+ * two can only ever disagree if a null-head marker outranked a real-head one
+ * -- which the chain's own shape forbids: a null head means the deleted prefix
+ * held no attested row, and once the chain has started no later row is
+ * unattested, so any later marker necessarily carries a real head. Stated
+ * rather than left implicit (M5 wave-6 TS review): a future prune path, or a
+ * hand-written marker repair, that broke this invariant would otherwise make
+ * these two functions silently anchor on different hashes.
  */
-export function resolveChainStartPrevHash(_handle: SqliteHandle): string {
-  return GENESIS_PREV_HASH
+export function resolveChainStartPrevHash(handle: SqliteHandle): string {
+  return latestPruneMarker(handle)?.headRecordHash ?? GENESIS_PREV_HASH
 }
 
 /** One row as the walk needs it; nullable hash columns keep pre-chain rows distinguishable from tampered ones. */

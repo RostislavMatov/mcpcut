@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { runVerifyCommand } from '../../src/cli/verify-cmd.js'
 import { journalDbPathFor, openJournalDbShared } from '../../src/journal/db.js'
+import { pruneRecordsOlderThan } from '../../src/journal/prune.js'
 import type { JournalRecord } from '../../src/journal/record.js'
 import { createJournalSink } from '../../src/journal/sink.js'
 
@@ -95,6 +96,53 @@ describe('verify: empty journal', () => {
 
     expect(exitCode).toBe(0)
     expect(io.out()).toMatch(/Journal is empty; nothing to verify/)
+  })
+})
+
+describe('verify: after a retention prune', () => {
+  test('says a prefix was pruned, from where the chain now starts, and that the marker is a claim', async () => {
+    await writeRecordsViaSink('session-a', [
+      recordOf('session-a', '01AAAAAAAAAAAAAAAAAAAAAAA0', 'tools/list'),
+      recordOf('session-a', '01AAAAAAAAAAAAAAAAAAAAAAA1', 'tools/call'),
+      recordOf('session-a', '01AAAAAAAAAAAAAAAAAAAAAAA2', 'ping'),
+    ])
+    const handle = await rawHandle()
+    pruneRecordsOlderThan(handle, {
+      // A cutoff after every record's `ts`: prunes the first two by seq order.
+      cutoffIso: new Date(Date.now() + 60_000).toISOString(),
+      nowIso: new Date().toISOString(),
+      signingKey: { present: false },
+    })
+    const io = fakeIo()
+
+    const exitCode = await run([], io)
+
+    // The suffix has to verify: a pruned journal that reported BROKEN would
+    // teach an operator to ignore the one signal the chain exists to give.
+    expect(exitCode).toBe(0)
+    expect(io.out()).toMatch(/prune/i)
+    expect(io.out()).toContain('UNSIGNED')
+    // And it must not be reported as if the deleted records were verified.
+    expect(io.out().toLowerCase()).toContain('deleted')
+  })
+
+  test('a pruned journal with nothing left still exits 0 and still discloses the prune', async () => {
+    await writeRecordsViaSink('session-a', [recordOf('session-a', '01AAAAAAAAAAAAAAAAAAAAAAA0', 'ping')])
+    const handle = await rawHandle()
+    pruneRecordsOlderThan(handle, {
+      cutoffIso: new Date(Date.now() + 60_000).toISOString(),
+      nowIso: new Date().toISOString(),
+      signingKey: { present: false },
+    })
+    const io = fakeIo()
+
+    const exitCode = await run([], io)
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toMatch(/prune/i)
+    // "Journal is empty" alone would be a lie by omission here: it is empty
+    // BECAUSE someone deleted it, and the marker says so.
+    expect(io.out()).toContain('1 record(s)')
   })
 })
 

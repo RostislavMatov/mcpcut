@@ -153,6 +153,7 @@ function asGateInventory(real: Inventory, controls: InventoryControls = {}): Gat
       }
     },
     stateOf: (name) => real.stateOf(name),
+    surfaceDeltaOf: (name) => real.surfaceDeltaOf(name),
     hasObservedCatalog: () => observed,
     // Delegates to the real inventory's own trust signal too, so a corrupt
     // store discovered by `load()` is visible through the adapter (re-review M1).

@@ -13,10 +13,19 @@ import { SCHEMA_DIFF_MAX_CHANGES, SCHEMA_DIFF_MAX_DEPTH } from './constants.js'
  * total: it never throws, never mutates its inputs, performs no I/O, and caps
  * its own recursion depth and output size (`truncated: true` past a cap).
  *
- * `surfaceDelta` summarizes the direction of the change for display and for
- * the decision record. In M4 it is computed and persisted but NEVER changes a
- * tool's classification -- escalation on a widened surface is an M5 rule
- * (needs decision provenance; see plan, backlog line 46).
+ * `surfaceDelta` summarizes the direction of the change for display -- and,
+ * since M5 wave 6, for ENFORCEMENT: it decides whether an operator's explicit
+ * per-tool `allow` still covers a tool whose surface changed
+ * (`decide.ts`'s `withdrawnBySurfaceChange`).
+ *
+ * That makes `truncated` part of the security contract, not a display detail.
+ * The caps below bound WORK, not just output: once one is hit the walk stops
+ * entirely, so branches sorted after the offending one are never compared and
+ * their changes never recorded. A caller must therefore treat a truncated
+ * result as "no direction established" rather than as the direction the
+ * visible changes happen to aggregate to -- `inventory-observe.ts`'s
+ * `surfaceDeltaAgainstApproved` is where that rule is enforced, and its doc
+ * carries the attack this prevents.
  */
 
 /** Direction of a schema's accepted-input surface after the change. */

@@ -2,7 +2,7 @@ import type { QuarantineState } from '../journal/record.js'
 import type { ToolDescriptor } from '../protocol/mcp.js'
 import { MAX_QUARANTINED_TOOLS_PER_SERVER } from './constants.js'
 import {
-  buildSnapshot,
+  buildSnapshots,
   observeAgainst,
   quarantinedEntriesOf,
   type ObserveResult,
@@ -17,6 +17,7 @@ import {
   type ApprovedToolRecord,
   type ServerInventory,
 } from './inventory-store.js'
+import type { SurfaceDelta } from './schema-diff.js'
 import { StoreCorruptError, StoreLockError, type JsonStore } from './store.js'
 import type { InventoryStoreData } from './inventory-store.js'
 
@@ -71,6 +72,14 @@ export interface Inventory {
   observeToolsList(tools: readonly ToolDescriptor[]): Promise<ObserveResult>
   /** Synchronous authoritative state: persisted quarantine unioned with every observed list. */
   stateOf(toolName: string): QuarantineState
+  /**
+   * Direction of a `changed` tool's accepted-input surface versus the approved
+   * descriptor, or `undefined` when no direction is established (the tool is
+   * not `changed`, the approval predates descriptor storage, or a stored
+   * schema was truncated). Synchronous for the same reason `stateOf` is: it is
+   * read on the decision path, where O4 withdraws an explicit `allow` on it.
+   */
+  surfaceDeltaOf(toolName: string): SurfaceDelta | undefined
   /** True once at least one `observeToolsList` has been processed (even if it failed). */
   hasObservedCatalog(): boolean
   /** False after a failed persist or a corrupt/unavailable store; resets to true on a clean observe. */
@@ -89,7 +98,7 @@ export function createInventory(serverName: string, opts: CreateInventoryOptions
   const onError = opts.onError ?? defaultOnError
   const store = openInventoryStore(opts.storePath)
 
-  let snapshot: ReadonlyMap<string, QuarantineState> = new Map()
+  let snapshots = buildSnapshots(EMPTY_SERVER_INVENTORY)
   let observed = false
   let trusted = true
 
@@ -100,7 +109,7 @@ export function createInventory(serverName: string, opts: CreateInventoryOptions
   async function load(): Promise<void> {
     try {
       const current = await store.read()
-      snapshot = buildSnapshot(serverEntryOf(current))
+      snapshots = buildSnapshots(serverEntryOf(current))
       trusted = true
     } catch (error: unknown) {
       if (error instanceof StoreCorruptError || error instanceof StoreLockError) {
@@ -127,7 +136,7 @@ export function createInventory(serverName: string, opts: CreateInventoryOptions
         return { ...current, servers: withKey(current.servers, serverName, observation.nextServerEntry) }
       })
 
-      snapshot = buildSnapshot(observation.nextServerEntry)
+      snapshots = buildSnapshots(observation.nextServerEntry)
       trusted = !observation.capExceeded
       return { ...observation.buckets, failed: false }
     } catch (error: unknown) {
@@ -140,7 +149,11 @@ export function createInventory(serverName: string, opts: CreateInventoryOptions
   }
 
   function stateOf(toolName: string): QuarantineState {
-    return snapshot.get(toolName) ?? 'unknown'
+    return snapshots.states.get(toolName) ?? 'unknown'
+  }
+
+  function surfaceDeltaOf(toolName: string): SurfaceDelta | undefined {
+    return snapshots.deltas.get(toolName)
   }
 
   function hasObservedCatalog(): boolean {
@@ -171,7 +184,7 @@ export function createInventory(serverName: string, opts: CreateInventoryOptions
       if (!outcome.changed) return current
       return { ...current, servers: withKey(current.servers, serverName, outcome.serverEntry) }
     })
-    if (changed) snapshot = buildSnapshot(nextEntry)
+    if (changed) snapshots = buildSnapshots(nextEntry)
     return changed
   }
 
@@ -184,6 +197,7 @@ export function createInventory(serverName: string, opts: CreateInventoryOptions
     load,
     observeToolsList,
     stateOf,
+    surfaceDeltaOf,
     hasObservedCatalog,
     isCatalogTrusted,
     approve,

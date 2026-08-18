@@ -595,7 +595,13 @@ describe('runApprovals: approve|deny require a personal admin token', () => {
     await runApprovals(['deny', approvalId], missingIo, anonymousOpts())
 
     for (const io of [okIo, unknownIo, missingIo]) {
-      const written = io.out() + io.err()
+      // The approval id is echoed back on purpose (the operator needs to know
+      // WHICH request was resolved), and it is a random ULID -- so the raw
+      // `String(token.length)` check below hit it by chance whenever those two
+      // digits happened to appear inside the id, failing a run that leaked
+      // nothing. Masking the id keeps the assertion about the TOKEN, which is
+      // what it was always meant to be about.
+      const written = (io.out() + io.err()).replaceAll(approvalId, '<approval-id>')
       expect(written).not.toContain(token)
       expect(written).not.toContain(bogus)
       // Not even a leading slice: a "token starts with…" hint is still a leak.

@@ -25,16 +25,29 @@ pitch and landing material must not claim more than it does.
 | credential vault (AES-256-GCM) | shipped | vault tests, `docs/adr/0003-vault-crypto.md` |
 | agent identities + grant matrix | shipped | grant/revoke tests |
 | streamable HTTP front (`serve`) | shipped, both session models | `docs/adr/0002-http-dual-version.md` |
-| tamper-evident journal storage | **not shipped** | roadmap (M5) |
-| exportable audit report | **not shipped** | roadmap (M5) |
+| tamper-evident journal storage (hash chain + signed head) | shipped, **with an external anchor** | chain/verify tests, `docs/adr/0007-evidentiary-journal.md` |
+| exportable audit report, offline-verifiable | shipped | `export --report` / `verify --report` tests, `docs/smoke-m5.md` |
+| explicit retention pruning (`prune`) | shipped, **no defaults** | prune + marker tests |
 | admin UI / approval queue | shipped | e2e + UI test suites, TS + security reviews, manual browser smoke (`docs/smoke-m4.md`), `docs/adr/0004-admin-ui-architecture.md` |
 | named admin accounts (owner/operator/viewer) | shipped | admin CLI + role-enforcement tests |
 
-Today the journal is a persistent, append-oriented, secret-redacted SQLite
-database (`journal.db`; JSONL is the export format — `mcp-journal export` —
-and the format legacy pre-M4.5 installs used on disk before `migrate`). It is
-**not** tamper-evident and there is **no** audit-report export yet; see the
-trust-boundary note below.
+The journal is a persistent, append-oriented, secret-redacted SQLite database
+(`journal.db`; JSONL is the export format — `mcp-journal export` — and the
+format legacy pre-M4.5 installs used on disk before `migrate`). Since M5 every
+record is linked into a sha256 hash chain, the chain head can be signed with
+this installation's Ed25519 key, and an exported report verifies offline
+against a public key alone.
+
+That makes the journal **tamper-evident with an external anchor** — a precise
+claim, and the qualifier is not decoration. Tampering is detectable *because*
+the chain and a signed head disagree with an anchor recorded somewhere this
+host cannot rewrite. A process running as the same OS user can rewrite the
+journal end to end, recompute every hash and re-sign it with the same key; the
+result passes every check made against the host alone. Take anchors out of
+band ([The out-of-band anchor](#the-out-of-band-anchor)), or the word
+"tamper-evident" is doing work nothing behind it supports. It is not
+tamper-*proof*, and this project does not call itself "audit-ready" — whether
+a report satisfies an audit is the auditor's judgement, not ours.
 
 ## Install
 
@@ -248,10 +261,38 @@ summarizing the direction of the change. This is the same diff the admin UI's
 quarantine card renders (`src/ui/pages/quarantine.ts`); the CLI is not a
 second-class view of it. A brand-new tool has no approved baseline to diff
 against, so `show` prints the observed descriptor instead, with an explicit
-"no approved baseline" note. `surfaceDelta` is informational only in this
-release — it is shown and journaled, but it never changes a tool's
-`read`/`write`/`destructive` classification on its own; that escalation rule
-is future work.
+"no approved baseline" note. `surfaceDelta` never changes a tool's `read`/`write`/`destructive`
+classification. It does one specific thing, described next.
+
+#### An explicit `allow` stops covering a widened tool
+
+A per-tool rule (`servers.<name>.tools.<tool>: allow`) normally outranks
+quarantine — that is the point of writing one. But such a rule is a statement
+about a tool surface an operator *looked at*. If the server later advertises a
+wider surface for that tool, the rule no longer describes what the tool can now
+be asked to do, so it stops applying and the call falls to
+`quarantine.onQuarantined` (`require-approval` by default) under the rule name
+`surface-changed`. Approving the tool again in quarantine restores the rule.
+
+The withdrawal fires when a tool that was approved has since `changed` and its
+`surfaceDelta` is `widened`, the ambiguous `changed` — or could not be computed
+at all. That last case matters more than it sounds: an approval made before
+descriptors were stored, or a schema too large to store whole, leaves no
+direction to compute, and "no signal" is not evidence of safety. A `narrowed`
+or `neutral` (wording-only) change leaves the `allow` standing.
+
+Two deliberate non-behaviours. It does nothing when `quarantine.enabled` is
+`false` — that flag *is* the operator's switch for gating schema drift, and
+honouring an explicit `allow` while ignoring an explicit "don't gate drift"
+would be two answers to one question. And a tool in state `new` is untouched:
+a rule written for a tool that was never approved was never written against an
+approved surface.
+
+Every such call is journaled like any other decision, with `rule:
+surface-changed` and the `policyHash`/`grantsHash` the call was decided under
+— so an auditor reading "the policy says allow, the outcome was
+require-approval" can see exactly why, rather than concluding the rules changed
+by themselves.
 
 ### `tools/list` filtering
 
@@ -325,7 +366,12 @@ mcp-journal ui [--port 8091] [--host 127.0.0.1] [--behind-tls]
                [--allowed-host <host[:port]>]... [--allowed-origin <origin>]... [--trusted-proxy-header <name>]
 mcp-journal migrate
 mcp-journal export [--session <id>]
+mcp-journal export --report [--session <id>] [--out <dir>]
 mcp-journal backup <destDir>
+mcp-journal keygen
+mcp-journal verify [--session <id>] [--sign]
+mcp-journal verify --report <dir> [--pub <path>] [--require-signature]
+mcp-journal prune --older-than <duration> [--yes]
 ```
 
 `serve`, `ui`, `connect` and `wrap` — the four long-lived entry points — run
@@ -354,12 +400,17 @@ The wrapped MCP server runs as a child process under the *same OS user* as
 approval queue, or quarantine store files on disk — nothing currently stops
 a malicious or compromised server from tampering with its own audit trail or
 self-approving a quarantined tool. The journal is an **append-oriented**
-SQLite database (`journal.db`): nothing in the current implementation makes
-it append-*only*. Making the
-journal and policy stores tamper-evident (e.g. append-only signing, a separate
-privileged writer) is tracked for a later milestone; today this is a known,
-accepted gap, not an oversight. Do not describe the current journal as
-tamper-evident or audit-ready.
+SQLite database (`journal.db`): nothing in the current implementation makes it
+append-*only*.
+
+M5's hash chain and signed chain head make such tampering **detectable** —
+they do not prevent it. A rewrite by a process under this uid can recompute
+the whole chain and re-sign it, and only comparison against an anchor recorded
+out of band exposes that. A separate privileged writer, an append-only
+attribute, or off-box shipping of the journal would raise the bar further and
+are tracked as post-MVP work; today this is a known, accepted gap, stated
+rather than papered over. Describe the journal as *tamper-evident with an
+external anchor*, never as tamper-proof and never as "audit-ready".
 
 ### Known limitation: redaction is not anonymization
 
@@ -695,8 +746,9 @@ true.
 
 None of this changes what the journal itself is: a persistent,
 append-oriented, secret-redacted SQLite database. The UI gives you a faster
-way to read and act on it; it does not make the journal tamper-evident or
-turn it into an audit-ready export — that is `M5`, not `M4.5` (see Status,
+way to read and act on it; the journal's tamper-evidence comes from M5's hash
+chain, signed head and exported report, not from anything the UI does (see
+Status,
 above).
 
 ## Upgrade to M4.5 storage
@@ -985,6 +1037,58 @@ consistent as exported" — never "was never rewritten."
   otherwise sensitive data is not (see "redaction is not anonymization,"
   above). Handle an exported report directory with the same care as the
   journal itself.
+
+## Retention
+
+Nothing deletes journal records on its own. There is no default retention
+period, no timer, and no configuration that enables one — the only thing that
+removes a record is an operator running:
+
+```
+mcp-journal prune --older-than <duration>          # says what it would delete
+mcp-journal prune --older-than <duration> --yes    # actually deletes it
+```
+
+`<duration>` is a whole number of hours or days (`36h`, `90d`). Without
+`--yes` the command prints the record count, the `seq` range and the chain
+head of the prefix it would remove, and stops. There is no undo, and the
+deleted records exist nowhere else unless you exported them first
+(`export --report`).
+
+**Why deleting is a prefix, not a filter.** A record's `ts` is its own
+timestamp and does not have to rise with its `seq` — an imported legacy
+session or a clock step can put an old record behind a newer one. Deleting
+"every record older than X" would then punch a hole in the middle of the hash
+chain, and a hole is unrepairable: nothing after it can be re-anchored to
+anything. So `prune` removes only the contiguous *leading run* of records that
+are all older than the cutoff, and an old record sitting behind a newer one
+survives. (The cutoff itself is exclusive: a record stamped exactly at the
+boundary is not older than it, and stays.)
+
+**The retention marker.** The delete and the marker are one transaction. The
+marker records the `seq` it pruned through, the `record_hash` of the last
+deleted record, when it happened, and — if a signing key exists — an ed25519
+signature over that head. Everything afterwards hangs off it:
+
+- `verify` starts its walk from the marker's head instead of from genesis, so
+  the surviving records still verify. Without the marker, pruning would look
+  exactly like tampering, and an operator who prunes would learn to ignore the
+  one signal the chain exists to give.
+- the next record written chains onto the marker's head, so a journal that was
+  pruned empty continues the old chain rather than silently restarting a fresh
+  one.
+- `verify` prints the marker before its own result, and `export --report`
+  carries it as `chain.prunedThroughSeq` in the manifest and a line in
+  `summary.md` — an auditor is told that records were deleted, rather than
+  being handed a report that starts at seq 4,001 with no explanation.
+
+**What a marker is worth.** It is this host's own statement about what it
+deleted, written by the same OS user that could instead have deleted records
+and recorded nothing at all. A signature proves the statement came from the
+holder of this installation's key — not that the statement is complete. The
+thing that makes it checkable is an anchor recorded **out of band before the
+prune** (`verify --sign`, or a previous report's `chain.head`): compare it
+against what the journal claims afterwards. Take one before you prune.
 
 ## Wiring into `.mcp.json`
 

@@ -6,6 +6,7 @@ import {
   verifyChain,
   type ChainBreak,
 } from './chain-verify.js'
+import { latestPruneMarker } from './prune.js'
 import { renderReportSummary } from './report-summary.js'
 import {
   streamRecords,
@@ -164,6 +165,16 @@ export interface ReportChainInfo {
   readonly recomputable: boolean
   /** Present iff `recomputable`; where an offline re-fold starts. */
   readonly startPrevHash?: string
+  /**
+   * Highest `seq` a retention prune deleted (M5 wave 6), or `null` on a
+   * journal that was never pruned. Always PRESENT, never merely absent: an
+   * absent key would be indistinguishable from a build that did not look, and
+   * "records before seq N were deleted" is exactly the fact an auditor cannot
+   * infer from anything else in the report. It explains both halves of what
+   * they would otherwise see unexplained -- a `seqRange` that does not start
+   * at 1, and a `startPrevHash` that is not genesis.
+   */
+  readonly prunedThroughSeq: number | null
 }
 
 export interface ReportBuildOptions {
@@ -315,6 +326,7 @@ function chainInfoOf(handle: SqliteHandle, session: string | null): ReportChainI
     head,
     recomputable,
     ...(recomputable ? { startPrevHash: resolveChainStartPrevHash(handle) } : {}),
+    prunedThroughSeq: latestPruneMarker(handle)?.prunedThroughSeq ?? null,
   }
 }
 

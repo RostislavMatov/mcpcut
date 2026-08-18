@@ -22,6 +22,7 @@ import {
 } from './cli/server-cmd.js'
 import { runUi, type UiCommandOptions } from './cli/ui-cmd.js'
 import { runVault, type VaultCmdDeps } from './cli/vault-cmd.js'
+import { runPruneCommand, type PruneCommandOptions } from './cli/prune-cmd.js'
 import { runVerifyCommand, type VerifyCommandOptions } from './cli/verify-cmd.js'
 import { runWrapCommand, type WrapCommandOptions } from './cli/wrap-cmd.js'
 import { USAGE } from './cli/usage.js'
@@ -65,6 +66,7 @@ export interface DispatchOptions {
   readonly export?: ExportCommandOptions
   readonly backup?: BackupCommandOptions
   readonly verify?: VerifyCommandOptions
+  readonly prune?: PruneCommandOptions
   readonly keygen?: KeygenCommandOptions
 }
 
@@ -94,6 +96,7 @@ export async function dispatch(
   if (command === 'export') return runExportCommand(rest, io, opts.export)
   if (command === 'backup') return runBackupCommand(rest, io, opts.backup)
   if (command === 'verify') return runVerifyCommand(rest, io, opts.verify)
+  if (command === 'prune') return runPruneCommand(rest, io, opts.prune)
   if (command === 'keygen') return runKeygenCommand(rest, io, opts.keygen)
   if (command === 'sessions' || command === 'show') {
     return runJournalCommandGroup(command, rest, io, opts.journalDir, USAGE)
