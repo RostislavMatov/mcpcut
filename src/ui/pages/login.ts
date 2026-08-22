@@ -1,5 +1,5 @@
 import { BRAND_NAME, INSTANCE_LABEL } from '../constants.js'
-import { html, safeUrl } from '../html.js'
+import { html, join, safeUrl, type Html } from '../html.js'
 import { renderLayout } from './layout.js'
 
 /**
@@ -12,17 +12,36 @@ import { renderLayout } from './layout.js'
  * shape matches every other page and the no-JS fallback posts an identical
  * body.
  *
- * Two deliberate departures from the prototype: there is no "Admin" field,
+ * One deliberate departure from the prototype: there is no "Admin" field,
  * because the personal token IS the identity (`admin add` mints one token per
  * person and the server resolves the name from it — a name field would be
- * decorative and misleading); and there is no "keep this session" toggle,
- * because the session lifetime is fixed by `SESSION_TTL_MS`/idle timeout and a
- * control with no effect would be a lie.
+ * decorative and misleading). The "keep this session" toggle is kept as in the
+ * design but is honest about what it can promise: the label states the real
+ * absolute lifetime (`SESSION_TTL_MS`) and the control carries no `name`, so
+ * nothing is posted — it does not pretend to change a lifetime the server
+ * fixes. Everything else — Show/Hide, the decor layer, the sign-in
+ * choreography — lives in `/assets/login.js` and degrades to this plain form.
  *
  * Rendered exclusively through the escaping `html` template + `renderLayout`
  * (the single sanctioned path to markup); the optional `error` is untrusted
  * (e.g. an echoed status) and is escaped like any other interpolation.
  */
+
+/** The page script (`/assets/login.js`): decor + sign-in choreography, optional by construction. */
+const LOGIN_SCRIPT_ASSET = 'login.js'
+
+/** Blocks on the left of the prototype's decor layer (positions live in CSS). */
+const DECOR_BLOCK_COUNT = 6
+
+/**
+ * The decorative layer the page script animates — six empty pixel blocks and
+ * the "console" box. Pure ornament: `aria-hidden`, no data, invisible without
+ * the script (every piece starts at opacity 0) and hidden under 900px.
+ */
+function renderDecorLayer(): Html {
+  const blocks = join(Array.from({ length: DECOR_BLOCK_COUNT }, () => html`<div class="decor-block"></div>`))
+  return html`<div class="login-decor" aria-hidden="true" data-decor>${blocks}<div class="decor-target" data-target></div></div>`
+}
 
 export interface LoginPageOptions {
   /** Optional human-readable error to surface above the form (escaped). */
@@ -45,7 +64,7 @@ export function renderLoginPage(options: LoginPageOptions = {}): string {
       <input type="hidden" name="csrf_token" value="" />
       ${banner}
       <label>
-        <span>Access token</span>
+        <span class="login-field-hd"><span>Access token</span><button type="button" class="ghost" data-reveal="token" aria-pressed="false">Show</button></span>
         <input
           id="token"
           name="token"
@@ -57,6 +76,11 @@ export function renderLoginPage(options: LoginPageOptions = {}): string {
           required
         />
       </label>
+      <label class="login-remember is-on">
+        <input type="checkbox" data-remember checked />
+        <span class="box" aria-hidden="true"></span>
+        <span>Keep this session for 8 hours</span>
+      </label>
       <button type="submit">Enter console</button>
     </form>
     </div>
@@ -64,7 +88,8 @@ export function renderLoginPage(options: LoginPageOptions = {}): string {
       <p class="hint">One personal token per admin, issued with <code>mcp-journal admin add</code>. Lost it? The instance owner rotates it under Admins — there is no email recovery.</p>
       <div class="status"><span class="dot blink"></span><span>ready · ${INSTANCE_LABEL}</span></div>
     </section>
-    <footer class="login-footer">
+    ${renderDecorLayer()}
+    <footer class="login-footer" data-footer>
       <div class="col">
         <div class="brand">${BRAND_NAME}</div>
         <p class="pretty">Self-hosted control plane for MCP servers. Every call, approval and quarantine decision is journalled locally and never leaves your instance.</p>
@@ -85,5 +110,11 @@ export function renderLoginPage(options: LoginPageOptions = {}): string {
       </div>
     </footer>
   `
-  return renderLayout({ title: 'Sign in', content, csrfToken: '', bodyClass: 'page-login' })
+  return renderLayout({
+    title: 'Sign in',
+    content,
+    csrfToken: '',
+    bodyClass: 'page-login',
+    scripts: [LOGIN_SCRIPT_ASSET],
+  })
 }

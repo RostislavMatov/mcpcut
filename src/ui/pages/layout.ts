@@ -1,5 +1,5 @@
 import { BRAND_NAME, INSTANCE_LABEL } from '../constants.js'
-import { html, type Html, render, safeUrl } from '../html.js'
+import { html, type Html, join, render, safeUrl } from '../html.js'
 import { csrfField } from './csrf-field.js'
 
 /**
@@ -78,6 +78,12 @@ export interface LayoutOptions {
   readonly navMeta?: string
   /** `body` class hook for page-level layout (e.g. `page-login`). */
   readonly bodyClass?: string
+  /**
+   * Extra same-origin scripts (asset names under `/assets/`, e.g. `login.js`)
+   * loaded after `app.js`. Names only — never a URL — so a page cannot point
+   * the shell at anything the asset allowlist does not serve.
+   */
+  readonly scripts?: readonly string[]
 }
 
 /** Primary nav entries: [href, key, label, minRole]. */
@@ -206,6 +212,15 @@ function bodyAttributes(options: LayoutOptions): Html {
   return html`${cls}${events}`
 }
 
+/** Only a plain asset NAME is accepted (`[a-z0-9-]+\.js`); anything else is dropped. */
+const ASSET_NAME_PATTERN = /^[a-z0-9-]+\.js$/
+
+function renderExtraScripts(options: LayoutOptions): Html {
+  const names = (options.scripts ?? []).filter((name) => ASSET_NAME_PATTERN.test(name))
+  return join(names.map((name) => html`<script src="${safeUrl(`/assets/${name}`)}" defer></script>
+`))
+}
+
 /**
  * Renders a complete HTML document string ready for the HTTP body. Returns a
  * `string` (not `Html`) because it is the terminal render step; internally it
@@ -230,7 +245,7 @@ ${options.content}
 </main>
 <div class="toast-region" aria-live="polite"></div>
 <script src="/assets/app.js" defer></script>
-</body>
+${renderExtraScripts(options)}</body>
 </html>`
   return render(doc)
 }
