@@ -1,7 +1,8 @@
 import { APP_CSS } from '../assets/app-css.js'
 import { APP_JS } from '../assets/app-js.js'
+import type { Asset } from '../assets/asset.js'
 import { FAVICON } from '../assets/favicon.js'
-import type { Asset } from '../assets/app-css.js'
+import { SILKSCREEN_400, SILKSCREEN_700 } from '../assets/fonts.js'
 import {
   HTTP_STATUS_NOT_FOUND,
   HTTP_STATUS_NOT_MODIFIED,
@@ -10,15 +11,16 @@ import {
 import { headerValue, type UiHandler, type UiRequestContext, type UiResult } from '../routes.js'
 
 /**
- * `GET /assets/*` handler (M4 Task 13). Serves the two inlined static assets —
- * the stylesheet and the client script — by an ALLOWLIST of known names, never
- * by a filesystem path derived from user input (sec-LOW-2, Wave-2 review).
+ * `GET /assets/*` handler (M4 Task 13). Serves the inlined static assets —
+ * the stylesheet, the client script, the icon and the two embedded pixel-font
+ * faces — by an ALLOWLIST of known names, never by a filesystem path derived
+ * from user input (sec-LOW-2, Wave-2 review).
  *
  * The route matcher (`authz.ts`) already rejects a `..` or empty segment in the
  * wildcard, but this handler is fail-closed on its own: it resolves the request
- * to one of exactly two constant `Asset` objects and answers 404 for anything
+ * to one of a handful of constant `Asset` objects and answers 404 for anything
  * else. There is no `join(dir, rest)`, no `fs` read, and no way for a crafted
- * path to escape the two-entry map — the guarantee survives even if the matcher
+ * path to escape the fixed map — the guarantee survives even if the matcher
  * were ever loosened.
  *
  * Freshness: a strong `ETag` (the asset's sha256) plus `If-None-Match` yields a
@@ -38,6 +40,8 @@ const ASSETS: Readonly<Record<string, Asset>> = Object.freeze(
     'app.css': APP_CSS,
     'app.js': APP_JS,
     'favicon.svg': FAVICON,
+    'silkscreen-400.woff2': SILKSCREEN_400,
+    'silkscreen-700.woff2': SILKSCREEN_700,
   }),
 )
 

@@ -309,7 +309,23 @@ export const BODY_NOT_IMPLEMENTED = Buffer.from('{"error":"not-implemented"}', '
  */
 export const CONTENT_SECURITY_POLICY =
   "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
-  "connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+  "font-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+
+// --- Branding -------------------------------------------------------------
+
+/**
+ * The product name shown in the page shell (`<title>` suffix, header brand) —
+ * the McpCut console design (2026-08-22). One constant, so a rename is one
+ * edit and the tests that pin the title format follow it automatically.
+ */
+export const BRAND_NAME = 'McpCut'
+
+/**
+ * The status-line suffix in the header ("journal · local instance"). The UI
+ * binds to loopback by default (ADR-0004) and has no notion of a remote
+ * deployment name, so "local instance" is a statement of fact, not a label.
+ */
+export const INSTANCE_LABEL = 'local instance'
 
 /** Warning printed to stderr when the UI binds a non-localhost host. */
 export const NON_LOCALHOST_BIND_WARNING =
