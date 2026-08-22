@@ -183,7 +183,7 @@ button.icon:hover, .btn-icon:hover { border-color: var(--fg); background: var(--
 button[disabled], .btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
 .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .actions form { margin: 0; }
-form.inline { display: inline-flex; gap: 6px; align-items: center; margin: 0; }
+form.inline { display: inline-flex; flex-direction: row; gap: 6px; align-items: center; margin: 0; }
 
 /* --- Tables --------------------------------------------------------------- */
 table {

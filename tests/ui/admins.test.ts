@@ -227,3 +227,55 @@ describe('store failures are classified, not flattened to 400 (T-2)', () => {
     expect(bodyOf(lastOwner)).toMatch(/owner/i)
   })
 })
+
+describe('McpCut admins page structure', () => {
+  const admin = (name: string, role: AdminRecord['role'], extra: Partial<AdminRecord> = {}): AdminRecord =>
+    ({ name, role, tokenHash: 'a'.repeat(64), createdAt: '2026-08-11T00:00:00.000Z', ...extra }) as AdminRecord
+
+  test('the add form is a drawer above the roster, opened by the nav "+"', () => {
+    const html = renderAdminsPage({ admins: [], session: session() })
+    expect(html).toContain('<details class="drawer" id="add-admin">')
+    expect(html).toContain('data-open-details="add-admin"')
+    expect(html).toContain('action="/admins/add"')
+    expect(html).toContain('0 admins')
+    expect(html).toContain('no admins')
+  })
+
+  test('the roster is a table with pill roles, dates and the three per-admin actions', () => {
+    const html = renderAdminsPage({
+      admins: [admin('root', 'owner', { rotatedAt: '2026-08-12T00:00:00.000Z' }), admin('bob', 'viewer')],
+      session: session(),
+    })
+    expect(html).toContain('2 admins')
+    expect(html).toContain('<table class="admin-roster ad-roster">')
+    expect(html).toMatch(/<tr data-admin="root">/)
+    expect(html).toMatch(/<span class="pill pill-on ad-role">owner<\/span>/)
+    expect(html).toMatch(/<span class="pill ad-role">viewer<\/span>/)
+    expect(html).toContain('2026-08-12')
+    expect(html).toMatch(/<span class="faint">—<\/span>/)
+    expect(html).toContain('action="/admins/role"')
+    expect(html).toContain('action="/admins/rotate"')
+    expect(html).toContain('action="/admins/remove"')
+    expect(html).toMatch(/<button type="submit" class="danger">Remove<\/button>/)
+    expect(html).toMatch(/<option value="owner" selected>owner<\/option>/)
+  })
+
+  test('the add form offers the role vocabulary as pill radios, operator preselected', () => {
+    const html = renderAdminsPage({ admins: [], session: session() })
+    expect(html).toMatch(/<input type="radio" name="role" value="operator" checked>/)
+    expect(html).toMatch(/<input type="radio" name="role" value="owner">/)
+    expect(html).toMatch(/<input type="radio" name="role" value="viewer">/)
+  })
+
+  test('the token-once page keeps the data-token box and the warning callout', async () => {
+    const added = bodyOf(await handlers.adminsAdd(postCtx({ name: 'dora', role: 'viewer' }, session())))
+    expect(added).toMatch(/<pre class="token" data-token>mcpa_[^<]+<\/pre>/)
+    expect(added).toContain('class="callout"')
+    expect(added).toContain('class="panel panel-strong')
+  })
+
+  test('notices keep the ok / error semantics', async () => {
+    const bad = bodyOf(await handlers.adminsRemove(postCtx({ name: 'ghost' }, session())))
+    expect(bad).toContain('class="notice error')
+  })
+})

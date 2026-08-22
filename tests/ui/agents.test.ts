@@ -296,3 +296,70 @@ describe('store failures are classified, not flattened to 400 (T-2)', () => {
     expect(bodyOf(missing)).toMatch(/ghost|not/i)
   })
 })
+
+describe('McpCut agents page structure', () => {
+  const bot = (name: string, extra: Partial<AgentRecord> = {}): AgentRecord =>
+    ({
+      name,
+      tokenHash: 'a'.repeat(64),
+      createdAt: '2026-08-11T00:00:00.000Z',
+      grants: {},
+      ...extra,
+    }) as AgentRecord
+
+  test('the create and grant forms are drawers above the list, opened by the nav "+"', () => {
+    const html = renderAgentsPage({ agents: [], session: session('operator') })
+    expect(html).toContain('<details class="drawer" id="create-agent">')
+    expect(html).toContain('<details class="drawer" id="grant-server">')
+    expect(html).toContain('data-open-details="create-agent"')
+    expect(html).toMatch(/<a class="tab" href="\/agents" aria-current="page">Agents<\/a>/)
+    expect(html).toContain('action="/agents/create"')
+    expect(html).toContain('action="/agents/grant"')
+    expect(html).toContain('no agents yet')
+  })
+
+  test('the tab-bar meta counts agents and active agents', () => {
+    const html = renderAgentsPage({
+      agents: [bot('a'), bot('b', { revokedAt: '2026-08-12T00:00:00.000Z' })],
+      session: session('operator'),
+    })
+    expect(html).toContain('2 agents · 1 active')
+  })
+
+  test('each agent is a card; "all" is an on-pill, an absent dimension is faint, revoked agents lose the revoke form', () => {
+    const html = renderAgentsPage({
+      agents: [
+        bot('live', { grants: { gh: { tools: '*' } } }),
+        bot('dead', { revokedAt: '2026-08-12T00:00:00.000Z', grants: { gh: { tools: ['x'] } } }),
+      ],
+      session: session('operator'),
+    })
+    expect(html).toMatch(/<section class="card agent ag-card" data-agent="live">/)
+    expect(html).toMatch(/<span class="pill pill-on">all<\/span>/)
+    expect(html).toMatch(/<span class="faint">—<\/span>/)
+    expect(html).toMatch(/<span class="badge revoked">revoked<\/span>/)
+    expect(html.match(/action="\/agents\/revoke"/g)).toHaveLength(1)
+    expect(html).toMatch(/<tr data-server="gh">/)
+    expect(html).toContain('action="/agents/ungrant"')
+  })
+
+  test('the owner-only Manage admins link sits in the panel header as a ghost link', () => {
+    const html = renderAgentsPage({ agents: [], session: session('owner') })
+    expect(html).toMatch(/<a class="btn-ghost" href="\/admins">Manage admins<\/a>/)
+  })
+
+  test('the token-once page keeps the data-token box and the warning callout', async () => {
+    const created = bodyOf(await handlers.agentsCreate(postCtx({ name: 'tok-bot' }, session('operator'))))
+    expect(created).toMatch(/<pre class="token" data-token>[^<]+<\/pre>/)
+    expect(created).toContain('class="callout"')
+    expect(created).toContain('class="panel panel-strong')
+  })
+
+  test('notices keep the ok / error semantics', async () => {
+    const bad = bodyOf(await handlers.agentsRevoke(postCtx({ agent: 'ghost' }, session('operator'))))
+    expect(bad).toContain('class="notice error')
+    await store.createAgent('n-bot')
+    const good = bodyOf(await handlers.agentsRevoke(postCtx({ agent: 'n-bot' }, session('operator'))))
+    expect(good).toContain('class="notice ok')
+  })
+})

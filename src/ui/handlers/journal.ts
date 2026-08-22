@@ -1,4 +1,4 @@
-import { renderLayout } from '../pages/layout.js'
+import { renderLayout, type SearchBox } from '../pages/layout.js'
 import type { Html } from '../html.js'
 import {
   renderCrossSessionSearch,
@@ -83,7 +83,8 @@ async function renderList(
   const pageCount = Math.max(1, Math.ceil(sessions.length / JOURNAL_SESSIONS_PER_PAGE))
   const start = (page - 1) * JOURNAL_SESSIONS_PER_PAGE
   const slice = sessions.slice(start, start + JOURNAL_SESSIONS_PER_PAGE)
-  return ok(ctx, renderSessionList(slice, page, pageCount))
+  const content = renderSessionList(slice, page, pageCount, sessions.length)
+  return ok(ctx, content, { search: searchBox(undefined), navMeta: `${sessions.length} sessions` })
 }
 
 async function renderSingleSession(
@@ -97,7 +98,9 @@ async function renderSingleSession(
   // read layer. Screen it with the journal's own validator and refuse cleanly
   // BEFORE any read — never build a path here.
   if (!isValidSessionId(sessionId)) {
-    return htmlResponse(ctx, HTTP_STATUS_BAD_REQUEST, renderInvalidSession())
+    return htmlResponse(ctx, HTTP_STATUS_BAD_REQUEST, renderInvalidSession(), {
+      search: searchBox(undefined),
+    })
   }
   const options: SessionPageOptions = {
     ...filters,
@@ -107,7 +110,10 @@ async function renderSingleSession(
   }
   const pageData = await deps.read.searchSession(sessionId, options)
   const state: JournalViewState = { sessionId, filters, page }
-  return ok(ctx, renderSessionView(sessionId, pageData, state))
+  return ok(ctx, renderSessionView(sessionId, pageData, state), {
+    search: searchBox(filters.text),
+    navMeta: `page ${page}`,
+  })
 }
 
 async function renderSearch(
@@ -122,7 +128,11 @@ async function renderSearch(
   }
   const result = await deps.read.searchAllSessions(options)
   const state: JournalViewState = { filters, page }
-  return ok(ctx, renderCrossSessionSearch(result, state))
+  const hits = result.hits.length
+  return ok(ctx, renderCrossSessionSearch(result, state), {
+    search: searchBox(filters.text),
+    navMeta: `${hits} ${hits === 1 ? 'hit' : 'hits'}`,
+  })
 }
 
 /** Reads the recognised filter fields from the query into a `JournalFilters`. */
@@ -155,11 +165,36 @@ function firstNonEmpty(value: string | null): string | undefined {
   return trimmed === '' ? undefined : trimmed
 }
 
-function ok(ctx: UiRequestContext, content: Html): UiResult {
-  return htmlResponse(ctx, HTTP_STATUS_OK, content)
+/** Shell extras per view: the top-bar search box and the tab-bar meta text. */
+interface ShellOptions {
+  readonly search: SearchBox
+  readonly navMeta?: string
 }
 
-function htmlResponse(ctx: UiRequestContext, status: number, content: Html): UiResult {
+/**
+ * The top-bar search box IS the journal's text search: a real GET form to
+ * `/journal` carrying only `q` (so it starts a fresh cross-session search and
+ * drops any other filter — refinement is the in-panel filter form's job).
+ */
+function searchBox(text: string | undefined): SearchBox {
+  return {
+    action: '/journal',
+    name: 'q',
+    placeholder: 'search journal — server, tool, status',
+    ...(text !== undefined ? { value: text } : {}),
+  }
+}
+
+function ok(ctx: UiRequestContext, content: Html, shell: ShellOptions): UiResult {
+  return htmlResponse(ctx, HTTP_STATUS_OK, content, shell)
+}
+
+function htmlResponse(
+  ctx: UiRequestContext,
+  status: number,
+  content: Html,
+  shell: ShellOptions,
+): UiResult {
   const session = ctx.session
   const admin = currentAdmin(session)
   const body = renderLayout({
@@ -170,6 +205,8 @@ function htmlResponse(ctx: UiRequestContext, status: number, content: Html): UiR
     csrfToken: session?.csrfToken ?? '',
     ...(admin !== undefined ? { currentAdmin: admin } : {}),
     activeNav: 'journal',
+    search: shell.search,
+    ...(shell.navMeta !== undefined ? { navMeta: shell.navMeta } : {}),
   })
   return {
     kind: 'response',

@@ -32,6 +32,7 @@ export const CSS_LAYOUT = `
 }
 .search {
   flex: 1;
+  flex-direction: row;
   min-width: 180px;
   max-width: 380px;
   display: flex;

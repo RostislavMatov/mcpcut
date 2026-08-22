@@ -166,6 +166,7 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
       listSecrets: () => deps.vault.listSecrets(),
     },
     audit,
+    readInventory: () => inventory.read(),
   })
   const agents = createAgentsHandlers({ agentsStore: deps.agents, audit })
   const admins = createAdminsHandlers({ adminStore: deps.adminStore, audit })

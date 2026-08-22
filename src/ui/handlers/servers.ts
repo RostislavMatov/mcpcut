@@ -3,6 +3,7 @@ import { parseServerRecord } from '../../registry/schema.js'
 import type { RegistryStore } from '../../registry/store.js'
 import type { AgentsStore } from '../../agents/store.js'
 import type { VaultStore } from '../../vault/store.js'
+import type { InventoryStoreData } from '../../policy/inventory-store.js'
 import {
   HTTP_STATUS_BAD_REQUEST,
   HTTP_STATUS_NOT_FOUND,
@@ -17,6 +18,8 @@ import {
   renderRemoveWarning,
   renderServersPage,
   renderVaultPage,
+  toServerToolsByName,
+  type ServersView,
   type VaultView,
 } from '../pages/servers.js'
 
@@ -52,6 +55,14 @@ export interface ServersHandlersDeps {
   readonly vault: Pick<VaultStore, 'listSecrets'>
   /** Receives an attributed record of each successful mutation. Optional. */
   readonly audit?: (event: UiAuditEvent) => void
+  /**
+   * Read port for the tool inventory (approved + quarantined tools per
+   * server). Optional and read-only: with it the servers page lists each
+   * server's tools and counts; without it the page renders the registry alone.
+   * A read failure is the caller's (it surfaces as a 500 through the server
+   * core, as on the dashboard), never a page that silently shows no tools.
+   */
+  readonly readInventory?: () => Promise<InventoryStoreData>
 }
 
 export interface ServersHandlers {
@@ -110,14 +121,28 @@ function buildCandidate(fields: Readonly<Record<string, string>>): Record<string
 }
 
 export function createServersHandlers(deps: ServersHandlersDeps): ServersHandlers {
-  async function serversPage(ctx: UiRequestContext): Promise<UiResult> {
-    const servers = await deps.registry.listServers()
-    const body = renderServersPage({
+  /**
+   * The page's base view: registry + session + (when the port is wired) the
+   * per-server tools. Reads run concurrently; either failing fails the page.
+   */
+  async function baseView(ctx: UiRequestContext): Promise<ServersView> {
+    const [servers, inventory] = await Promise.all([
+      deps.registry.listServers(),
+      deps.readInventory?.() ?? Promise.resolve(undefined),
+    ])
+    const query = ctx.query.get('q') ?? ''
+    return {
       servers,
       canManage: ctx.session?.role === 'owner',
       csrfToken: csrfTokenOf(ctx),
       currentAdmin: currentAdminOf(ctx),
-    })
+      ...(inventory !== undefined ? { tools: toServerToolsByName(inventory) } : {}),
+      ...(query !== '' ? { query } : {}),
+    }
+  }
+
+  async function serversPage(ctx: UiRequestContext): Promise<UiResult> {
+    const body = renderServersPage(await baseView(ctx))
     return { kind: 'response', status: HTTP_STATUS_OK, body }
   }
 
@@ -132,10 +157,7 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
     error: string,
   ): Promise<UiResult> {
     const body = renderServersPage({
-      servers: await deps.registry.listServers(),
-      canManage: ctx.session?.role === 'owner',
-      csrfToken: csrfTokenOf(ctx),
-      currentAdmin: currentAdminOf(ctx),
+      ...(await baseView(ctx)),
       error,
       form: echoableServerForm(fields),
     })
