@@ -3,13 +3,15 @@ import { diffToolSchemas, type SchemaChange, type SurfaceDelta } from '../../pol
 import type { ToolDescriptor } from '../../protocol/mcp.js'
 import { html, join, type Html } from '../html.js'
 import { renderLayout, type CurrentAdmin } from './layout.js'
+import { renderQuarantineCard } from './quarantine-parts.js'
 
 /**
- * Quarantine review page (M4 Task 12). Instead of "hashes diverged", each card
- * shows a STRUCTURAL diff of the tool's `inputSchema` (added/removed
- * properties, widened/narrowed enums, …) plus a `surfaceDelta` verdict — the
- * closure of backlog line 45. Every tool name/description/path is untrusted
- * server content and is escaped by the `html` template.
+ * Quarantine review page (M4 Task 12; McpCut front 2026-08-22). Instead of
+ * "hashes diverged", each card shows a STRUCTURAL diff of the tool's
+ * `inputSchema` (added/removed properties, widened/narrowed enums, …) plus a
+ * `surfaceDelta` verdict — the closure of backlog line 45. Every tool
+ * name/description/path is untrusted server content and is escaped by the
+ * `html` template; the card markup itself lives in `quarantine-parts.ts`.
  *
  * A `changed` tool is diffed against its still-present approved descriptor; a
  * `new` tool has nothing to compare against, so it shows no diff.
@@ -69,59 +71,6 @@ export function toQuarantineCards(store: InventoryStoreData): QuarantineCardView
   return cards
 }
 
-function renderChanges(card: QuarantineCardView): Html {
-  if (card.changes.length === 0) {
-    const note = card.state === 'new' ? 'New tool — no prior schema to diff.' : 'No structural change detected.'
-    return html`<p class="no-diff">${note}</p>`
-  }
-  const items = card.changes.map(
-    (change) => html`<li class="change change-${change.kind}"><code>${change.path}</code> — ${change.kind}</li>`,
-  )
-  const truncatedNote = card.truncated
-    ? html`<li class="change-truncated">diff truncated (schema too deep/large)</li>`
-    : html``
-  return html`<ul class="schema-diff">
-    ${join(items)}${truncatedNote}
-  </ul>`
-}
-
-/**
- * One approve/reject control. `action=` and `data-action=` carry the SAME full
- * path — see the note in `pages/approvals.ts`: the client script fetches the
- * `data-action` value verbatim, so a bare verb is a dead button. Pinned by
- * `tests/ui/page-contracts.test.ts`.
- */
-function renderActionForm(card: QuarantineCardView, action: string, label: string, csrfToken: string): Html {
-  const target = `/quarantine/${action}`
-  return html`<form method="post" action="${target}" data-action="${target}">
-    <input type="hidden" name="csrf_token" value="${csrfToken}" />
-    <input type="hidden" name="server" value="${card.serverName}" />
-    <input type="hidden" name="tool" value="${card.toolName}" />
-    <button type="submit">${label}</button>
-  </form>`
-}
-
-function renderCard(card: QuarantineCardView, csrfToken: string): Html {
-  const deltaBadge =
-    card.surfaceDelta !== undefined
-      ? html`<span class="surface-delta surface-delta-${card.surfaceDelta}">surfaceDelta: ${card.surfaceDelta}</span>`
-      : html``
-  return html`<article class="quarantine-card" data-server="${card.serverName}" data-tool="${card.toolName}">
-    <div class="quarantine-head">
-      <span class="server">${card.serverName}</span>
-      <span class="tool">${card.toolName}</span>
-      <span class="state state-${card.state}">${card.state}</span>
-      ${deltaBadge}
-    </div>
-    ${card.description !== undefined ? html`<p class="description">${card.description}</p>` : html``}
-    ${renderChanges(card)}
-    <div class="actions">
-      ${renderActionForm(card, 'approve', 'Approve', csrfToken)}
-      ${renderActionForm(card, 'reject', 'Reject', csrfToken)}
-    </div>
-  </article>`
-}
-
 export interface QuarantinePageInput {
   readonly cards: readonly QuarantineCardView[]
   readonly csrfToken: string
@@ -134,19 +83,30 @@ const QUARANTINE_LIVE_TOPICS = 'quarantine-changed'
 /** Where the client refetches this region from (`GET /quarantine`). */
 const QUARANTINE_LIVE_SRC = '/quarantine'
 
-/** Renders the full quarantine document (string ready for the HTTP body). */
-export function renderQuarantinePage(input: QuarantinePageInput): string {
+/**
+ * The live region: the node `assets/app-js.ts` re-fetches and swaps on
+ * `quarantine-changed`, so its `data-live-region` value and `data-live-src`
+ * must stay exactly what the script looks up (`tests/ui/page-contracts.test.ts`).
+ */
+function renderLiveRegion(input: QuarantinePageInput): Html {
   const body =
     input.cards.length === 0
       ? html`<p class="empty">No quarantined tools.</p>`
-      : join(input.cards.map((card) => renderCard(card, input.csrfToken)))
-  const content = html`<section
+      : html`<div class="qr-cards">${join(input.cards.map((card) => renderQuarantineCard(card, input.csrfToken)))}</div>`
+  return html`<section
     class="quarantine"
     data-live-region="${QUARANTINE_LIVE_TOPICS}"
     data-live-src="${QUARANTINE_LIVE_SRC}"
   >
-    <h1>Quarantine</h1>
     ${body}
+  </section>`
+}
+
+/** Renders the full quarantine document (string ready for the HTTP body). */
+export function renderQuarantinePage(input: QuarantinePageInput): string {
+  const content = html`<section class="panel panel-strong qr-panel" aria-label="Quarantine">
+    <div class="panel-hd"><h1>Quarantine</h1><span class="small dim num">${String(input.cards.length)} held</span></div>
+    ${renderLiveRegion(input)}
   </section>`
   return renderLayout({
     title: 'Quarantine',
@@ -154,5 +114,6 @@ export function renderQuarantinePage(input: QuarantinePageInput): string {
     csrfToken: input.csrfToken,
     ...(input.currentAdmin !== undefined ? { currentAdmin: input.currentAdmin } : {}),
     activeNav: 'quarantine',
+    navMeta: `${String(input.cards.length)} held`,
   })
 }

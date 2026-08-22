@@ -1,109 +1,19 @@
 import { describe, expect, test, vi } from 'vitest'
-import type { UiRequestContext, UiResult } from '../../src/ui/routes.js'
-import type { UiSession } from '../../src/ui/auth.js'
 import {
   createJournalHandler,
   JOURNAL_RECORDS_PER_PAGE,
   JOURNAL_SESSIONS_PER_PAGE,
-  type JournalReadPort,
 } from '../../src/ui/handlers/journal.js'
-import type { CrossSessionSearchResult, SessionPage } from '../../src/journal/search.js'
-import type { SessionSummaryEntry } from '../../src/journal/index-cache.js'
-import type { JournalRecord } from '../../src/journal/record.js'
+import { bodyOf, ctx, emptyCross, emptyPage, fakePort, record, summary } from './journal-fixtures.js'
 
 /**
  * Task 15 — journal browser handler. Exercised through the injectable
  * `UiHandler` factory with a fake read port (search + index-cache seam), so
  * these tests touch no disk and assert only the handler's contract: how query
  * params become filters/pagination, honest truncation marking, escaping of
- * hostile payloads, and fail-closed session-id validation.
+ * hostile payloads, and fail-closed session-id validation. The McpCut front's
+ * structure is asserted in `journal-mcpcut.test.ts`.
  */
-
-const VIEWER: UiSession = { adminName: 'alice', role: 'viewer', csrfToken: 'csrf-xyz' }
-
-function ctx(queryString: string, session: UiSession | undefined = VIEWER): UiRequestContext {
-  return {
-    method: 'GET',
-    path: '/journal',
-    params: {},
-    query: new URLSearchParams(queryString),
-    session,
-    body: Buffer.alloc(0),
-    headers: {},
-  }
-}
-
-function summary(sessionId: string, extra: Partial<SessionSummaryEntry> = {}): SessionSummaryEntry {
-  return {
-    sessionId,
-    firstTs: '2026-08-11T00:00:00.000Z',
-    lastTs: '2026-08-11T01:00:00.000Z',
-    count: 3,
-    skippedLineCount: 0,
-    size: 100,
-    mtimeMs: 1,
-    ...extra,
-  }
-}
-
-function record(extra: Partial<JournalRecord> = {}): JournalRecord {
-  return {
-    id: 'rec-1',
-    ts: '2026-08-11T00:00:00.000Z',
-    sessionId: 'S1',
-    direction: 'client→server',
-    kind: 'request',
-    method: 'tools/call',
-    payload: {},
-    ...extra,
-  }
-}
-
-function emptyPage(extra: Partial<SessionPage> = {}): SessionPage {
-  return {
-    records: [],
-    offset: 0,
-    limit: JOURNAL_RECORDS_PER_PAGE,
-    scannedLineCount: 0,
-    skippedLineCount: 0,
-    hasMore: false,
-    truncated: false,
-    ...extra,
-  }
-}
-
-function emptyCross(extra: Partial<CrossSessionSearchResult> = {}): CrossSessionSearchResult {
-  return {
-    hits: [],
-    truncated: false,
-    stoppedBy: null,
-    filesScanned: 0,
-    filesTotal: 0,
-    bytesRead: 0,
-    skippedLineCount: 0,
-    ...extra,
-  }
-}
-
-interface FakePort extends JournalReadPort {
-  readonly listSessions: ReturnType<typeof vi.fn>
-  readonly searchSession: ReturnType<typeof vi.fn>
-  readonly searchAllSessions: ReturnType<typeof vi.fn>
-}
-
-function fakePort(overrides: Partial<Record<keyof JournalReadPort, unknown>> = {}): FakePort {
-  return {
-    listSessions: vi.fn(async () => []),
-    searchSession: vi.fn(async () => emptyPage()),
-    searchAllSessions: vi.fn(async () => emptyCross()),
-    ...overrides,
-  } as FakePort
-}
-
-async function bodyOf(result: UiResult): Promise<string> {
-  if (result.kind !== 'response') throw new Error('expected a buffered response')
-  return typeof result.body === 'string' ? result.body : (result.body?.toString('utf8') ?? '')
-}
 
 describe('journal handler — session list', () => {
   test('lists sessions in the order the index-cache returns (descending activity), paginated', async () => {

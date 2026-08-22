@@ -64,6 +64,7 @@ label.check { flex-direction: row; align-items: center; gap: 10px; color: var(--
 .choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
 .choice {
   display: flex;
+  flex-direction: row;
   align-items: center;
   gap: 9px;
   padding: 10px 11px;

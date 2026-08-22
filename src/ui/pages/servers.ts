@@ -1,12 +1,24 @@
 import type { ServerRecord } from '../../registry/schema.js'
 import type { SecretInfo } from '../../vault/store.js'
-import { html, join, type Html } from '../html.js'
+import { html, join, safeUrl, type Html } from '../html.js'
 import { EMPTY_SERVER_FORM, type ServerFormValues } from '../server-form.js'
 import { csrfField } from './csrf-field.js'
 import { renderLayout, type CurrentAdmin } from './layout.js'
+import { renderAddDrawer } from './servers-form.js'
+import { renderServerCard, renderServerDetails, type ServerToolsByName } from './servers-parts.js'
+
+export {
+  toServerToolsByName,
+  TOOL_DESCRIPTION_MAX_CHARS,
+  type ServerToolsByName,
+  type ServerToolsView,
+  type ServerToolView,
+} from './servers-parts.js'
 
 /**
- * Server-registry and vault pages (M4 Task 13), both read-first and rendered
+ * Server-registry and vault pages in the McpCut console (Servers screen of
+ * the design): a grid of disclosure cards, the owner's register drawer, the
+ * two confirmation interstitials and the read-only vault table. All rendered
  * only through the escaping `html` template + `renderLayout`.
  *
  * Two hard invariants live here:
@@ -18,127 +30,8 @@ import { renderLayout, type CurrentAdmin } from './layout.js'
  *    of it is untrusted-for-render, so each value is escaped.
  */
 
-/** A hidden CSRF field for a real `<form>` POST (server enforces the check). */
-/** Renders one env/header value: a `vault:` reference is badged, else a literal. */
-function renderValue(value: string): Html {
-  return value.startsWith('vault:')
-    ? html`<code class="badge">${value}</code>`
-    : html`<code>${value}</code>`
-}
-
-/** A `label` section with one `key → value` row per entry; empty maps render nothing. */
-function renderValueMap(label: string, map: Record<string, string> | undefined): Html {
-  const entries = Object.entries(map ?? {})
-  if (entries.length === 0) return html``
-  const rows = entries.map(
-    ([key, value]) => html`<tr><td><code>${key}</code></td><td>${renderValue(value)}</td></tr>`,
-  )
-  return html`<h4>${label}</h4><table>${join(rows)}</table>`
-}
-
-/**
- * The argument vector, one argument per item. Deliberately NOT joined with
- * spaces: an argument that itself contains a space would then be
- * indistinguishable from two arguments, and this markup is reused by the
- * confirmation interstitial — the one screen whose whole purpose is letting a
- * human see the exact command line that will be spawned on their host. Each
- * argument still goes through the escaping `html` tag, like every other
- * untrusted value here.
- */
-function renderArgs(args: readonly string[] | undefined): Html {
-  if (args === undefined || args.length === 0) return html``
-  const items = join(args.map((arg) => html`<li><code>${arg}</code></li>`))
-  return html`<p class="muted">args:</p><ul>${items}</ul>`
-}
-
-/** The transport-specific target line and env/header block of one server. */
-function renderServerDetails(record: ServerRecord): Html {
-  if (record.transport === 'stdio') {
-    return html`
-      <p>command: <code>${record.command}</code></p>
-      ${renderArgs(record.args)}
-      ${renderValueMap('env', record.env)}
-    `
-  }
-  return html`
-    <p>url: <code>${record.url}</code></p>
-    <p class="muted">protocol: ${record.protocol}</p>
-    ${renderValueMap('headers', record.headers)}
-  `
-}
-
-/** A remove form, shown only to a manager (owner); it posts the server name. */
-function renderRemoveForm(name: string, csrfToken: string): Html {
-  return html`
-    <form method="post" action="/servers/remove">
-      ${csrfField(csrfToken)}
-      <input type="hidden" name="name" value="${name}" />
-      <button type="submit" class="danger">Remove</button>
-    </form>
-  `
-}
-
-/** One server card. `canManage` gates the remove control (owner-only route). */
-function renderServerCard(record: ServerRecord, canManage: boolean, csrfToken: string): Html {
-  return html`
-    <div class="card">
-      <h3>${record.name} <span class="badge">${record.transport}</span></h3>
-      ${renderServerDetails(record)}
-      ${canManage ? renderRemoveForm(record.name, csrfToken) : html``}
-    </div>
-  `
-}
-
-/** One transport choice, pre-selected when it is the submitted one. */
-function transportOption(value: string, chosen: string): Html {
-  return value === chosen
-    ? html`<option value="${value}" selected>${value}</option>`
-    : html`<option value="${value}">${value}</option>`
-}
-
-/**
- * The owner-only "register a server" form. Env/headers are one `K=V` per line.
- *
- * `form` carries back what a rejected submission contained, so correcting one
- * field does not mean retyping the other seven. It has already passed through
- * `echoableServerForm`, which strips the parts the validator called secrets —
- * this template must never be handed raw submitted fields.
- */
-function renderAddForm(csrfToken: string, form: ServerFormValues): Html {
-  return html`
-    <div class="card">
-      <h2>Register a server</h2>
-      <form method="post" action="/servers/add">
-        ${csrfField(csrfToken)}
-        <p><label>name <input name="name" value="${form.name}" required /></label></p>
-        <p>
-          <label>transport
-            <select name="transport">
-              ${transportOption('stdio', form.transport)}
-              ${transportOption('http', form.transport)}
-            </select>
-          </label>
-        </p>
-        <p><label>command (stdio) <input name="command" value="${form.command}" /></label></p>
-        <p><label>args (comma-separated) <input name="args" value="${form.args}" /></label></p>
-        <p><label>url (http) <input name="url" value="${form.url}" /></label></p>
-        <p>
-          <label>protocol (http)
-            <input name="protocol" value="${form.protocol}" placeholder="auto" />
-          </label>
-        </p>
-        <p><label>env — one K=V per line<br /><textarea name="env" rows="3">${form.env}</textarea></label></p>
-        <p>
-          <label>headers — one K=V per line<br />
-            <textarea name="headers" rows="3">${form.headers}</textarea>
-          </label>
-        </p>
-        <p class="muted">Secrets never live here: use <code>vault:&lt;name&gt;</code> references, not literals.</p>
-        <button type="submit">Register</button>
-      </form>
-    </div>
-  `
-}
+/** Longest search query echoed back into the top-bar box. */
+const MAX_ECHOED_QUERY_CHARS = 200
 
 /** View model for the servers page (built by the handler from the stores). */
 export interface ServersView {
@@ -152,29 +45,100 @@ export interface ServersView {
    * `echoableServerForm`. Absent on a plain page load (blank form).
    */
   readonly form?: ServerFormValues
+  /**
+   * Per-server tools from the inventory store. Absent when the handler has no
+   * inventory port — the page then renders no tools panels and no counts.
+   */
+  readonly tools?: ServerToolsByName
+  /** The `q` query, echoed into the search box (the client filter applies it on load). */
+  readonly query?: string
 }
 
-/** Renders the `/servers` document: the registry list plus, for owners, an add form. */
+function navMetaOf(view: ServersView): string {
+  const n = view.servers.length
+  const servers = `${n} ${n === 1 ? 'server' : 'servers'}`
+  if (view.tools === undefined) return servers
+  let quarantined = 0
+  for (const record of view.servers) quarantined += view.tools.get(record.name)?.quarantinedCount ?? 0
+  return quarantined > 0 ? `${servers} · ${quarantined} quarantined` : servers
+}
+
+function renderGrid(view: ServersView): Html {
+  if (view.servers.length === 0) {
+    return html`<p class="empty">No servers registered.</p>`
+  }
+  const cards = view.servers.map((record) => {
+    const tools = view.tools?.get(record.name)
+    return renderServerCard({
+      record,
+      ...(tools !== undefined ? { tools } : {}),
+      hasInventory: view.tools !== undefined,
+      canManage: view.canManage,
+      csrfToken: view.csrfToken,
+    })
+  })
+  return html`<section class="grid grid-cards srv-grid" aria-label="Servers">
+    ${join(cards)}
+    <p class="empty srv-no-match" data-filter-empty hidden>No server matches this search.</p>
+  </section>`
+}
+
+/**
+ * The owner's controls: the register drawer, forced open (with the error
+ * inside it) when the handler is re-rendering a rejected submission.
+ */
+function renderManage(view: ServersView): Html {
+  if (!view.canManage) {
+    return view.error !== undefined ? html`<p role="alert">${view.error}</p>` : html``
+  }
+  const open = view.error !== undefined || view.form !== undefined
+  return renderAddDrawer(view.csrfToken, view.form ?? EMPTY_SERVER_FORM, {
+    open,
+    ...(view.error !== undefined ? { error: view.error } : {}),
+  })
+}
+
+/** Renders the `/servers` document: the registry grid plus, for owners, the register drawer. */
 export function renderServersPage(view: ServersView): string {
-  const banner =
-    view.error !== undefined ? html`<p class="muted" role="alert">${view.error}</p>` : html``
-  const list =
-    view.servers.length === 0
-      ? html`<p class="muted">No servers registered.</p>`
-      : join(view.servers.map((record) => renderServerCard(record, view.canManage, view.csrfToken)))
   const content = html`
-    <h1>Servers</h1>
-    ${banner}
-    ${list}
-    ${view.canManage ? renderAddForm(view.csrfToken, view.form ?? EMPTY_SERVER_FORM) : html``}
+    ${renderManage(view)}
+    ${renderGrid(view)}
   `
+  const query = (view.query ?? '').slice(0, MAX_ECHOED_QUERY_CHARS)
   return renderLayout({
     title: 'Servers',
     content,
     csrfToken: view.csrfToken,
     currentAdmin: view.currentAdmin,
     activeNav: 'servers',
+    search: {
+      action: '/servers',
+      name: 'q',
+      placeholder: 'search servers — name, command, url',
+      clientFilter: true,
+      ...(query !== '' ? { value: query } : {}),
+    },
+    ...(view.canManage ? { navAction: { title: 'Register a server', targetId: 'add-server' } } : {}),
+    navMeta: navMetaOf(view),
   })
+}
+
+/** A confirmation interstitial: one strong panel with warning, details, confirm form and a way back. */
+function renderInterstitial(options: {
+  readonly heading: Html
+  readonly warning: Html
+  readonly details: Html
+  readonly form: Html
+}): Html {
+  return html`<section class="panel panel-strong srv-confirm">
+    <div class="panel-hd"><h1>${options.heading}</h1></div>
+    <div class="panel-bd">
+      <div class="callout">${options.warning}</div>
+      ${options.details}
+      ${options.form}
+      <p><a href="${safeUrl('/servers')}">Cancel</a></p>
+    </div>
+  </section>`
 }
 
 /** View model for the add-server confirmation interstitial. */
@@ -204,24 +168,21 @@ export function renderAddConfirm(view: AddConfirmView): string {
       .filter(([key]) => key !== 'csrf_token' && key !== 'confirm')
       .map(([key, value]) => html`<input type="hidden" name="${key}" value="${value}" />`),
   )
-  const content = html`
-    <h1>Register server “${view.record.name}”?</h1>
-    <div class="card">
-      <p class="muted" role="alert">
+  const content = renderInterstitial({
+    heading: html`Register server “${view.record.name}”?`,
+    warning: html`<p role="alert">
         The control plane will use this definition to reach the server. A
         <code>stdio</code> server means the plane spawns this exact command on this host.
         Confirm that it is what you intend to run.
-      </p>
-      ${renderServerDetails(view.record)}
-      <form method="post" action="/servers/add">
+      </p>`,
+    details: html`<div class="srv-bd srv-confirm-details">${renderServerDetails(view.record)}</div>`,
+    form: html`<form method="post" action="/servers/add">
         ${csrfField(view.csrfToken)}
         ${replay}
         <input type="hidden" name="confirm" value="true" />
-        <button type="submit" class="danger">Register it</button>
-      </form>
-      <p><a href="/servers">Cancel</a></p>
-    </div>
-  `
+        <div class="actions"><button type="submit" class="danger">Register it</button></div>
+      </form>`,
+  })
   return renderLayout({
     title: 'Register server',
     content,
@@ -246,23 +207,20 @@ export interface RemoveWarningView {
  */
 export function renderRemoveWarning(view: RemoveWarningView): string {
   const items = join(view.agents.map((name) => html`<li><code>${name}</code></li>`))
-  const content = html`
-    <h1>Remove server “${view.serverName}”?</h1>
-    <div class="card">
-      <p class="muted" role="alert">
+  const content = renderInterstitial({
+    heading: html`Remove server “${view.serverName}”?`,
+    warning: html`<p role="alert">
         ${view.agents.length} agent(s) still hold grants for this server. Removing it leaves
         those grants pointing at a server that no longer exists:
-      </p>
-      <ul>${items}</ul>
-      <form method="post" action="/servers/remove">
+      </p>`,
+    details: html`<ul class="rows srv-holders">${items}</ul>`,
+    form: html`<form method="post" action="/servers/remove">
         ${csrfField(view.csrfToken)}
         <input type="hidden" name="name" value="${view.serverName}" />
         <input type="hidden" name="confirm" value="true" />
-        <button type="submit" class="danger">Remove anyway</button>
-      </form>
-      <p><a href="/servers">Cancel</a></p>
-    </div>
-  `
+        <div class="actions"><button type="submit" class="danger">Remove anyway</button></div>
+      </form>`,
+  })
   return renderLayout({
     title: 'Remove server',
     content,
@@ -283,38 +241,44 @@ export interface VaultView {
 
 /** Renders the `/vault` document: secret names and dates only — no values, ever. */
 export function renderVaultPage(view: VaultView): string {
-  const content =
+  const body =
     view.secrets === undefined
-      ? html`<h1>Vault</h1><p class="muted" role="alert">${view.notice ?? 'Vault unavailable.'}</p>`
+      ? html`<p role="alert">${view.notice ?? 'Vault unavailable.'}</p>`
       : renderVaultTable(view.secrets)
+  const meta = view.secrets === undefined ? html`` : html`<span class="small muted num">${String(view.secrets.length)} stored</span>`
+  const content = html`<section class="panel">
+    <div class="panel-hd"><h1>Vault</h1>${meta}</div>
+    <div class="panel-bd">${body}</div>
+  </section>`
   return renderLayout({
     title: 'Vault',
     content,
     csrfToken: view.csrfToken,
     currentAdmin: view.currentAdmin,
+    activeNav: 'vault',
   })
 }
 
 /** The names+dates table. Deliberately has no cell that could hold a value. */
 function renderVaultTable(secrets: readonly SecretInfo[]): Html {
+  const note = html`<p class="muted small">Names and dates only — secret values never leave the vault.</p>`
   if (secrets.length === 0) {
-    return html`<h1>Vault</h1><p class="muted">No secrets stored.</p>`
+    return html`${note}<p class="empty">No secrets stored.</p>`
   }
   const rows = secrets.map(
     (secret) => html`
       <tr>
         <td><code>${secret.name}</code></td>
-        <td>${secret.createdAt}</td>
-        <td>${secret.updatedAt}</td>
+        <td class="num">${secret.createdAt}</td>
+        <td class="num">${secret.updatedAt}</td>
       </tr>
     `,
   )
   return html`
-    <h1>Vault</h1>
-    <p class="muted">Names and dates only — secret values never leave the vault.</p>
-    <table>
+    ${note}
+    <div class="table-wrap"><table>
       <thead><tr><th>Name</th><th>Created</th><th>Updated</th></tr></thead>
       <tbody>${join(rows)}</tbody>
-    </table>
+    </table></div>
   `
 }

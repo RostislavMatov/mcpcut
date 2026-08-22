@@ -107,7 +107,7 @@ code {
   padding: 1px 6px;
   border: 1px dashed var(--line);
   border-radius: var(--radius-s);
-  word-break: break-all;
+  overflow-wrap: anywhere;
 }
 pre {
   margin: 0;

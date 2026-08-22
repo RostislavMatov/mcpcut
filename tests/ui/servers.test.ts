@@ -5,6 +5,7 @@ import { afterEach, describe, expect, test } from 'vitest'
 import { createAgentsStore } from '../../src/agents/store.js'
 import { createRegistryStore } from '../../src/registry/store.js'
 import { createVaultStore } from '../../src/vault/store.js'
+import type { InventoryStoreData } from '../../src/policy/inventory-store.js'
 import {
   createServersHandlers,
   type ServersHandlers,
@@ -29,7 +30,11 @@ interface Harness {
   dispose(): void
 }
 
-function makeHarness(): Harness {
+/**
+ * `inventory` wires the OPTIONAL read port: with it the page lists each
+ * server's tools; without it (the default) the page renders as before.
+ */
+function makeHarness(inventory?: InventoryStoreData): Harness {
   const dir = mkdtempSync(join(tmpdir(), 'mcp-ui-servers-'))
   const registry = createRegistryStore(dir)
   const agents = createAgentsStore({ journalDir: dir })
@@ -40,6 +45,7 @@ function makeHarness(): Harness {
     agents,
     vault,
     audit: (event) => audit.push(event),
+    ...(inventory !== undefined ? { readInventory: async () => inventory } : {}),
   })
   return {
     dir,
@@ -142,6 +148,134 @@ describe('serversPage', () => {
   })
 })
 
+/** A hostile description: must reach the document escaped, never as markup. */
+const HOSTILE_DESCRIPTION = '<img src=x onerror=alert(1)>'
+
+/** An inventory with one approved and one quarantined tool on `github`. */
+function githubInventory(overrides: { longDescription?: boolean } = {}): InventoryStoreData {
+  const description = overrides.longDescription === true ? 'x'.repeat(1000) : 'Lists repositories'
+  return {
+    version: 1,
+    servers: {
+      github: {
+        approved: {
+          list_repos: {
+            schemaHash: 'h-list',
+            approvedAt: '2026-08-01T00:00:00.000Z',
+            descriptor: { name: 'list_repos', description },
+          },
+        },
+        quarantined: {
+          create_issue: {
+            schemaHash: 'h-create',
+            firstSeenAt: '2026-08-02T00:00:00.000Z',
+            state: 'new',
+            descriptor: { name: 'create_issue', description: HOSTILE_DESCRIPTION },
+          },
+        },
+      },
+    },
+  }
+}
+
+describe('serversPage — McpCut structure', () => {
+  test('renders each server as a filterable disclosure card with its transport pill', async () => {
+    h = makeHarness()
+    await h.registry.addServer({
+      name: 'github',
+      transport: 'http',
+      url: 'https://api.github.com',
+      protocol: 'auto',
+    })
+    const body = String(asResponse(await h.handlers.serversPage(getCtx())).body)
+    expect(body).toContain('<details class="disclosure card srv-card" data-filter-item')
+    expect(body).toContain('data-filter-text="github https://api.github.com http"')
+    expect(body).toContain('data-filter-empty')
+    expect(body).toContain('No server matches this search.')
+    expect(body).toContain('placeholder="search servers — name, command, url"')
+    expect(body).toContain('data-client-filter="1"')
+  })
+
+  test('lists tools from the inventory, marks quarantined ones and links them to /quarantine', async () => {
+    h = makeHarness(githubInventory())
+    await h.registry.addServer({ name: 'github', transport: 'stdio', command: 'gh-mcp' })
+    const body = String(asResponse(await h.handlers.serversPage(getCtx())).body)
+    expect(body).toContain('list_repos')
+    expect(body).toContain('create_issue')
+    expect(body).toContain('Lists repositories')
+    expect(body).toContain('quarantined · new')
+    expect(body).toContain('href="/quarantine"')
+    expect(body).toContain('2 tools · 1 quarantined')
+    // The card-level marker for a server holding quarantined tools.
+    expect(body).toContain('shimmer')
+  })
+
+  test('escapes a hostile tool description instead of emitting it as markup', async () => {
+    h = makeHarness(githubInventory())
+    await h.registry.addServer({ name: 'github', transport: 'stdio', command: 'gh-mcp' })
+    const body = String(asResponse(await h.handlers.serversPage(getCtx())).body)
+    expect(body).not.toContain(HOSTILE_DESCRIPTION)
+    expect(body).toContain('&lt;img src=x onerror=alert(1)&gt;')
+  })
+
+  test('truncates a long tool description with a visible marker, never silently', async () => {
+    h = makeHarness(githubInventory({ longDescription: true }))
+    await h.registry.addServer({ name: 'github', transport: 'stdio', command: 'gh-mcp' })
+    const body = String(asResponse(await h.handlers.serversPage(getCtx())).body)
+    expect(body).not.toContain('x'.repeat(1000))
+    expect(body).toContain('… (truncated)')
+  })
+
+  test('renders no tools panel and no counts when the inventory port is absent', async () => {
+    h = makeHarness()
+    await h.registry.addServer({ name: 'github', transport: 'stdio', command: 'gh-mcp' })
+    const body = String(asResponse(await h.handlers.serversPage(getCtx())).body)
+    expect(body).not.toContain('srv-tools')
+    expect(body).not.toContain('tools ·')
+  })
+
+  test('an owner gets the register drawer, the nav + action and the server count', async () => {
+    h = makeHarness()
+    await h.registry.addServer({ name: 'a', transport: 'stdio', command: 'node' })
+    await h.registry.addServer({ name: 'b', transport: 'stdio', command: 'node' })
+    const body = String(asResponse(await h.handlers.serversPage(getCtx())).body)
+    expect(body).toContain('<details class="drawer" id="add-server">')
+    expect(body).toContain('data-open-details="add-server"')
+    expect(body).toContain('2 servers')
+    expect(body).toContain('action="/servers/add"')
+    // Fixed vocabularies are pill radios, same names/values the handler parses.
+    expect(body).toContain('<input type="radio" name="transport" value="stdio" checked>')
+    expect(body).toContain('<input type="radio" name="transport" value="http">')
+    expect(body).toContain('<input type="radio" name="protocol" value="auto" checked>')
+  })
+
+  test('a non-owner sees neither the drawer nor the nav + action nor a remove button', async () => {
+    h = makeHarness()
+    await h.registry.addServer({ name: 'a', transport: 'stdio', command: 'node' })
+    const viewer = getCtx({ session: { adminName: 'val', role: 'viewer', csrfToken: 'c' } })
+    const body = String(asResponse(await h.handlers.serversPage(viewer)).body)
+    expect(body).not.toContain('id="add-server"')
+    expect(body).not.toContain('data-open-details')
+    expect(body).not.toContain('>Remove<')
+  })
+
+  test('a rejected registration re-renders with the drawer OPEN and the error as an alert inside it', async () => {
+    h = makeHarness()
+    const res = asResponse(
+      await h.handlers.serversAdd(
+        formPost({ csrf_token: OWNER.csrfToken, name: 'bad name!', transport: 'stdio', command: 'node' }),
+      ),
+    )
+    expect(res.status).toBe(400)
+    const body = String(res.body)
+    const drawerStart = body.indexOf('<details class="drawer" id="add-server" open>')
+    expect(drawerStart).toBeGreaterThan(-1)
+    const alertAt = body.indexOf('role="alert"')
+    expect(alertAt).toBeGreaterThan(drawerStart)
+    expect(alertAt).toBeLessThan(body.indexOf('</details>', drawerStart))
+  })
+})
+
 describe('serversAdd', () => {
   test('rejects a secret-looking literal with the same hint as the CLI', async () => {
     h = makeHarness()
@@ -213,9 +347,9 @@ describe('serversAdd', () => {
 
     expect(res.status).toBe(400)
     const body = String(res.body)
-    expect(body).toContain('<option value="http" selected>')
+    expect(body).toContain('<input type="radio" name="transport" value="http" checked>')
     expect(body).toContain('<input name="url" value="https://api.github.com"')
-    expect(body).toContain('<input name="protocol" value="auto"')
+    expect(body).toContain('<input type="radio" name="protocol" value="auto" checked>')
     expect(textareaValue(body, 'headers')).toBe('')
     expect(body).not.toContain(SECRET_LITERAL)
   })

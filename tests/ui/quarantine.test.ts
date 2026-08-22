@@ -7,7 +7,7 @@ import {
   type QuarantineAuditEvent,
   type QuarantineHandlerDeps,
 } from '../../src/ui/handlers/quarantine.js'
-import { toQuarantineCards } from '../../src/ui/pages/quarantine.js'
+import { renderQuarantinePage, toQuarantineCards, type QuarantineCardView } from '../../src/ui/pages/quarantine.js'
 
 /** Task 12 — quarantine page (structural diff) + approve/reject actions. */
 
@@ -195,5 +195,78 @@ describe('quarantineApprove / quarantineReject actions', () => {
     if (result.kind !== 'response') throw new Error('expected response')
     expect(result.status).toBe(403)
     expect(calls).toEqual([])
+  })
+})
+
+describe('McpCut quarantine page structure', () => {
+  const CSRF = 'csrf-abcdef-1234567890'
+  const changedCard: QuarantineCardView = {
+    serverName: 'github',
+    toolName: 'create_issue',
+    state: 'changed',
+    firstSeenAt: '2026-08-11T12:34:56.000Z',
+    surfaceDelta: 'widened',
+    changes: [{ kind: 'property-added', path: 'properties.force' }],
+    truncated: false,
+  }
+
+  test('wraps the live region in a strong panel with the held count', () => {
+    const doc = renderQuarantinePage({ cards: [changedCard], csrfToken: CSRF })
+    expect(doc).toContain('class="panel panel-strong')
+    expect(doc).toContain('1 held')
+    expect(doc).toMatch(/<section[^>]*class="quarantine"[^>]*data-live-region="quarantine-changed"[^>]*data-live-src="\/quarantine"/)
+    expect(doc).toContain('data-server="github"')
+    expect(doc).toContain('data-tool="create_issue"')
+    expect(doc).toContain('surfaceDelta: widened')
+    // the widened delta is alert-styled, never a quiet note
+    expect(doc).toMatch(/class="pill[^"]*pill-alert[^"]*surface-delta-widened"/)
+  })
+
+  test('the empty state text is unchanged', () => {
+    expect(renderQuarantinePage({ cards: [], csrfToken: CSRF })).toContain('No quarantined tools.')
+    expect(renderQuarantinePage({ cards: [], csrfToken: CSRF })).toContain('0 held')
+  })
+
+  test('a truncated diff shows the explicit, alert-styled marker (M5 lesson)', () => {
+    const doc = renderQuarantinePage({ cards: [{ ...changedCard, truncated: true }], csrfToken: CSRF })
+    expect(doc).toMatch(/class="pill pill-alert[^"]*">diff truncated</)
+    expect(doc).toContain('incomplete')
+  })
+
+  test('a new tool blinks; a changed tool does not', () => {
+    const fresh = renderQuarantinePage({
+      cards: [{ serverName: 's', toolName: 't', state: 'new', firstSeenAt: '2026-08-11T00:00:00.000Z', changes: [], truncated: false }],
+      csrfToken: CSRF,
+    })
+    expect(fresh).toMatch(/qr-state-new[^>]*>[^<]*<span class="dot dot-s dot-blink"/)
+    expect(fresh).toContain('New tool — no prior schema to diff.')
+    const changed = renderQuarantinePage({ cards: [changedCard], csrfToken: CSRF })
+    expect(changed).not.toContain('dot-blink')
+  })
+
+  test('a hostile, over-long description is escaped and truncated with a visible marker', () => {
+    const hostile = '<b>bad</b>' + 'x'.repeat(600)
+    const doc = renderQuarantinePage({ cards: [{ ...changedCard, description: hostile }], csrfToken: CSRF })
+    expect(doc).not.toContain('<b>bad</b>')
+    expect(doc).toContain('&lt;b&gt;bad&lt;/b&gt;')
+    expect(doc).not.toContain('x'.repeat(600))
+    expect(doc).toContain('… (truncated)')
+    expect(doc).toMatch(/class="pill pill-alert qr-trunc">… \(truncated\)</)
+  })
+
+  test('a short description is shown whole, without a marker', () => {
+    const doc = renderQuarantinePage({ cards: [{ ...changedCard, description: 'Creates an issue.' }], csrfToken: CSRF })
+    expect(doc).toContain('Creates an issue.')
+    expect(doc).not.toContain('(truncated)')
+  })
+
+  test('approve is primary, reject is secondary; both carry server/tool/csrf', () => {
+    const doc = renderQuarantinePage({ cards: [changedCard], csrfToken: CSRF })
+    expect(doc).toMatch(/action="\/quarantine\/approve" data-action="\/quarantine\/approve"/)
+    expect(doc).toMatch(/action="\/quarantine\/reject" data-action="\/quarantine\/reject"/)
+    expect(doc).toMatch(/<button type="submit" class="secondary">Reject</)
+    expect(doc).toContain('name="server" value="github"')
+    expect(doc).toContain('name="tool" value="create_issue"')
+    expect(doc).toContain(`name="csrf_token" value="${CSRF}"`)
   })
 })
