@@ -165,11 +165,11 @@ export function renderPager(baseHref: string, page: number, pageCount: number): 
   const sep = baseHref.includes('?') ? '&' : '?'
   const prev =
     page > 1
-      ? html`<a class="prev" href="${baseHref}${sep}page=${page - 1}">Prev</a>`
+      ? html`<a class="prev" href="${safeUrl(`${baseHref}${sep}page=${page - 1}`)}">Prev</a>`
       : html`<span class="prev disabled">Prev</span>`
   const next =
     page < pageCount
-      ? html`<a class="next" href="${baseHref}${sep}page=${page + 1}">Next</a>`
+      ? html`<a class="next" href="${safeUrl(`${baseHref}${sep}page=${page + 1}`)}">Next</a>`
       : html`<span class="next disabled">Next</span>`
   return html`<nav class="pager">${prev}<span class="page">Page ${page}</span>${next}</nav>`
 }

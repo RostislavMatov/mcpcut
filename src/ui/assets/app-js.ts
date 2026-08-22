@@ -218,7 +218,7 @@ const APP_JS_SOURCE = `"use strict";
   }
 
   function normalize(text) {
-    return String(text || "").toLowerCase().replace(/\s+/g, " ").trim();
+    return String(text || "").toLowerCase().replace(/\\s+/g, " ").trim();
   }
 
   function applyClientFilter(input) {

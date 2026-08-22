@@ -88,7 +88,7 @@ function tile(label: string, value: string, unit: string, href: string, strong: 
 function renderTiles(input: DashboardPageInput): Html {
   const held = pendingTotalOf(input)
   const s = input.summary
-  const heldTile = tile('Held', String(held), held === 1 ? 'awaiting approval' : 'awaiting approval', '/', held > 0)
+  const heldTile = tile('Held', String(held), 'awaiting approval', '/', held > 0)
   if (s === undefined) return html`<section class="tiles dash-tiles">${heldTile}</section>`
   return html`<section class="tiles dash-tiles">
     ${heldTile}
