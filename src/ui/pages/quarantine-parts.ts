@@ -41,10 +41,13 @@ function renderDeltaPill(card: QuarantineCardView): Html {
 /** The description, cut with an explicit marker when over the bound. */
 function renderDescription(card: QuarantineCardView): Html {
   if (card.description === undefined) return html``
-  if (card.description.length <= DESCRIPTION_MAX_CHARS) {
+  // Cut by code point, not UTF-16 unit, so the marker never lands inside a
+  // surrogate pair (same rule as `servers-parts.ts`).
+  const points = Array.from(card.description)
+  if (points.length <= DESCRIPTION_MAX_CHARS) {
     return html`<p class="qr-desc description pretty">${card.description}</p>`
   }
-  const cut = card.description.slice(0, DESCRIPTION_MAX_CHARS)
+  const cut = points.slice(0, DESCRIPTION_MAX_CHARS).join('')
   return html`<p class="qr-desc description pretty">${cut} <span class="pill pill-alert qr-trunc">… (truncated)</span></p>`
 }
 

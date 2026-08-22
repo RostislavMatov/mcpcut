@@ -1,3 +1,4 @@
+import vm from 'node:vm'
 import { describe, expect, test } from 'vitest'
 import { APP_CSS } from '../../src/ui/assets/app-css.js'
 import { APP_JS } from '../../src/ui/assets/app-js.js'
@@ -148,5 +149,31 @@ describe('login document — pre-auth chrome', () => {
     const doc = renderLoginPage()
     const hrefs = [...doc.matchAll(/href="([^"]*)"/g)].map((m) => m[1] ?? '')
     for (const href of hrefs) expect(href.startsWith('/')).toBe(true)
+  })
+})
+
+describe('client script — the filter helpers really run (not just markup markers)', () => {
+  /**
+   * `APP_JS_SOURCE` is a non-raw template literal, so a regex escape written
+   * as `\s` silently becomes `s` in the shipped asset (TS review of the McpCut
+   * wave found `normalize()` shipped with `/s+/`). Substring checks on
+   * attribute names cannot catch that; evaluating the helper can.
+   */
+  function helper(name: string): (...args: unknown[]) => unknown {
+    const match = new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n  \\}`).exec(JS)
+    if (match === null) throw new Error(`helper ${name} not found in app.js`)
+    return vm.runInNewContext(`(${match[0].replace(`function ${name}`, 'function')})`) as (...args: unknown[]) => unknown
+  }
+
+  test('normalize() collapses real whitespace and lowercases', () => {
+    const normalize = helper('normalize')
+    expect(normalize('  Search \t SERVERS\nnow ')).toBe('search servers now')
+    // the bug: `s` characters must survive (the regex must be \s, not s)
+    expect(normalize('status')).toBe('status')
+  })
+
+  test('the shipped regex literally contains a backslash-s', () => {
+    expect(JS).toContain('replace(/\\s+/g, " ")')
+    expect(JS).not.toContain('replace(/s+/g')
   })
 })
