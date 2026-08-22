@@ -6,7 +6,8 @@
  */
 export const CSS_PAGE_LOGIN = `
 body.page-login { justify-content: center; align-items: center; padding: 48px 24px; }
-body.page-login main { width: 100%; max-width: 380px; gap: 28px; }
+body.page-login main { width: 100%; max-width: none; align-items: center; gap: 28px; }
+.login-brand, .login-form, .login-foot { width: 100%; max-width: 380px; }
 .login-brand { display: flex; flex-direction: column; align-items: center; gap: 14px; text-align: center; }
 .login-brand .brand { font-size: 30px; }
 .login-brand .tagline { font-size: 13px; line-height: 1.6; color: var(--fg-dim); max-width: 30ch; text-wrap: pretty; }
@@ -27,9 +28,9 @@ body.page-login main { width: 100%; max-width: 380px; gap: 28px; }
 .login-foot .status { font-size: 11px; letter-spacing: var(--track-s); }
 .login-foot .status .dot { border-radius: 2px; }
 .login-footer {
-  width: 100%;
-  max-width: 960px;
-  margin-top: 48px;
+  align-self: stretch;
+  width: auto;
+  margin: 64px 0 0 20px;
   border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.06);
