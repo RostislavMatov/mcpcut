@@ -11,7 +11,7 @@ import type { VaultStore } from '../vault/store.js'
 import type { EventHub } from '../ui/events.js'
 import { createAdminsHandlers } from '../ui/handlers/admins.js'
 import { createAgentsHandlers, type UiAuditEvent } from '../ui/handlers/agents.js'
-import { createApprovalsHandlers } from '../ui/handlers/approvals.js'
+import { createApprovalsHandlers, DASHBOARD_RECENT_DECISIONS } from '../ui/handlers/approvals.js'
 import { createAssetsHandler } from '../ui/handlers/assets.js'
 import { createEventsHandler } from '../ui/handlers/events.js'
 import { createJournalHandler, type JournalReadPort } from '../ui/handlers/journal.js'
@@ -86,6 +86,12 @@ async function quarantineSignatureOf(storePath: string): Promise<string> {
   return entries.sort().join('\n')
 }
 
+/** Sessions the dashboard's recent-decisions walk may touch before it stops. */
+const DASHBOARD_DECISIONS_MAX_SESSIONS = 5
+
+/** Wall-clock cap on that walk; the dashboard must stay quick to re-render. */
+const DASHBOARD_DECISIONS_TIME_BUDGET_MS = 300
+
 /** The journal read port: the real search + summary-cache layer, no disk logic here. */
 function journalReadPort(): JournalReadPort {
   const cache = createSessionIndexCache()
@@ -112,9 +118,26 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
     )
   }
 
+  // Dashboard summary ports: reads only, each narrowed to the one method the
+  // panel needs (same adapter-literal discipline as the servers handlers
+  // below). The decisions walk is bounded tightly — it runs on every render
+  // of `/`, which the client re-fetches on each queue event.
   const approvals = createApprovalsHandlers({
     queue,
     ...(deps.clock !== undefined ? { clock: deps.clock } : {}),
+    summary: {
+      listServers: () => deps.registry.listServers(),
+      readInventory: () => inventory.read(),
+      listAgents: () => deps.agents.listAgents(),
+      recentDecisions: () =>
+        searchAllSessions({
+          dir: deps.journalDir,
+          kind: 'decision',
+          limit: DASHBOARD_RECENT_DECISIONS,
+          maxFiles: DASHBOARD_DECISIONS_MAX_SESSIONS,
+          timeBudgetMs: DASHBOARD_DECISIONS_TIME_BUDGET_MS,
+        }),
+    },
   })
   const quarantine = createQuarantineHandlers({
     readStore: () => inventory.read(),
