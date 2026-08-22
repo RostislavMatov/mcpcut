@@ -13,7 +13,12 @@ import {
 import { parseBodyFields, type UiHandler, type UiRequestContext, type UiResult } from '../routes.js'
 import { headerValue } from '../routes.js'
 import { renderApprovalsPage, toApprovalCard, type ApprovalCardView } from '../pages/approvals.js'
+import { toRecentDecisions, type DashboardSummary } from '../pages/dashboard.js'
 import type { UiSession } from '../auth.js'
+import type { ServerRecord } from '../../registry/schema.js'
+import type { InventoryStoreData } from '../../policy/inventory-store.js'
+import type { AgentRecord } from '../../agents/schema.js'
+import type { CrossSessionSearchResult } from '../../journal/search.js'
 
 /**
  * Approvals action + page handlers (M4 Task 12). The page and JSON feed are
@@ -27,10 +32,28 @@ import type { UiSession } from '../auth.js'
 /** The queue surface these handlers need (a subset of `ApprovalQueue`). */
 export type ApprovalsQueue = Pick<ApprovalQueue, 'list' | 'resolve' | 'countPending'>
 
+/**
+ * The READ ports behind the dashboard's summary panels (McpCut redesign).
+ * Every one is a read: the dashboard never mutates through them, and a
+ * deployment that omits `summary` gets the queue alone (the M4 page).
+ */
+export interface DashboardSummaryPorts {
+  readonly listServers: () => Promise<readonly ServerRecord[]>
+  readonly readInventory: () => Promise<InventoryStoreData>
+  readonly listAgents: () => Promise<readonly AgentRecord[]>
+  /** Newest-first walk over decision records, bounded by the caller. */
+  readonly recentDecisions: () => Promise<CrossSessionSearchResult>
+}
+
+/** Decisions shown on the dashboard; the journal page is the place for more. */
+export const DASHBOARD_RECENT_DECISIONS = 12
+
 export interface ApprovalsHandlerDeps {
   readonly queue: ApprovalsQueue
   /** Clock (ms epoch) for computing remaining wait/grant seconds. Defaults to `Date.now`. */
   readonly clock?: () => number
+  /** Optional read ports for the dashboard panels beside the queue. */
+  readonly summary?: DashboardSummaryPorts
 }
 
 export interface ApprovalsHandlers {
@@ -94,8 +117,42 @@ function currentAdminOf(session: UiSession | undefined): { name: string; role: s
   return session === undefined ? undefined : { name: session.adminName, role: session.role }
 }
 
+/**
+ * Builds the summary panels from the read ports. Each source is read once;
+ * a failure in any of them is the caller's (it surfaces as a 500 through the
+ * server core, never as a half-rendered dashboard that looks whole).
+ */
+async function loadSummary(ports: DashboardSummaryPorts): Promise<DashboardSummary> {
+  const [servers, inventory, agents, decisions] = await Promise.all([
+    ports.listServers(),
+    ports.readInventory(),
+    ports.listAgents(),
+    ports.recentDecisions(),
+  ])
+  let quarantinedCount = 0
+  let approvedToolCount = 0
+  const quarantinedServers = new Set<string>()
+  for (const [serverName, inv] of Object.entries(inventory.servers)) {
+    const q = Object.keys(inv.quarantined).length
+    quarantinedCount += q
+    approvedToolCount += Object.keys(inv.approved).length
+    if (q > 0) quarantinedServers.add(serverName)
+  }
+  return {
+    servers,
+    quarantinedCount,
+    quarantinedServers,
+    approvedToolCount,
+    agentsActive: agents.filter((a) => a.revokedAt === undefined).length,
+    agentsTotal: agents.length,
+    recentDecisions: toRecentDecisions(decisions.hits, DASHBOARD_RECENT_DECISIONS),
+    recentTruncated: decisions.truncated,
+  }
+}
+
 async function renderPage(deps: ApprovalsHandlerDeps, ctx: UiRequestContext): Promise<UiResult> {
   const view = await loadCards(deps)
+  const summary = deps.summary !== undefined ? await loadSummary(deps.summary) : undefined
   const csrfToken = ctx.session?.csrfToken ?? ''
   const currentAdmin = currentAdminOf(ctx.session)
   const html = renderApprovalsPage({
@@ -104,6 +161,7 @@ async function renderPage(deps: ApprovalsHandlerDeps, ctx: UiRequestContext): Pr
     truncated: view.truncated,
     csrfToken,
     ...(currentAdmin !== undefined ? { currentAdmin } : {}),
+    ...(summary !== undefined ? { summary } : {}),
   })
   return { kind: 'response', status: HTTP_STATUS_OK, body: html }
 }
