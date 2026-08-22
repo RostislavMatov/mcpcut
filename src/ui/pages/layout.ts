@@ -1,22 +1,31 @@
+import { BRAND_NAME, INSTANCE_LABEL } from '../constants.js'
 import { html, type Html, render, safeUrl } from '../html.js'
 import { csrfField } from './csrf-field.js'
 
 /**
- * The shared page shell. Every server-rendered UI page is wrapped by this so
- * the security-relevant head (charset, viewport, CSRF meta, same-origin
- * stylesheet/script) is written in exactly one place and cannot drift per
- * page.
+ * The shared page shell — the McpCut console (Claude Design, 2026-08-22).
+ * Every server-rendered UI page is wrapped by this so the security-relevant
+ * head (charset, viewport, CSRF meta, same-origin stylesheet/script) is
+ * written in exactly one place and cannot drift per page.
  *
- * CSP posture (the actual header is set by Task 9's `security-headers.ts`;
- * this shell is built to satisfy it): `default-src 'none'; script-src 'self';
- * style-src 'self'`. Therefore the shell emits NO inline `<script>` code and
- * NO inline styles — the stylesheet and client script are referenced by
- * same-origin path (`/assets/app.css`, `/assets/app.js`). The CSRF token is
+ * CSP posture (the actual header is set by `security-headers.ts`; this shell
+ * is built to satisfy it): `default-src 'none'; script-src 'self'; style-src
+ * 'self'; font-src 'self'`. Therefore the shell emits NO inline `<script>`
+ * code and NO inline styles — the stylesheet, the client script and the
+ * embedded pixel font are referenced by same-origin path. The CSRF token is
  * carried in a `<meta>` tag for `app-js` to read; pages using real form POSTs
- * additionally embed it as a hidden field (their concern, Wave 3).
+ * additionally embed it as a hidden field.
  *
- * `content` is pre-built `Html` (already escaped by the page); `title`,
- * `csrfToken` and `currentAdmin` are plain values and are escaped here.
+ * Shell anatomy (class names are the contract with `assets/css/layout.ts`):
+ *  - `.topbar`: brand · live status line · optional search box · whoami ·
+ *    sign-out;
+ *  - `.tabs`: the primary navigation as pixel-font tabs, the active one
+ *    optionally paired with a `+` action (e.g. "register a server");
+ *  - `<main>`: the page body;
+ *  - `.toast-region`: the client script's announcements.
+ *
+ * `content` is pre-built `Html` (already escaped by the page); every other
+ * option is a plain value and is escaped here.
  */
 
 /** The signed-in admin, shown in the nav. Both fields are untrusted-for-render. */
@@ -25,8 +34,33 @@ export interface CurrentAdmin {
   readonly role: string
 }
 
+/**
+ * A search box in the top bar. It is a real `GET` form so it works without
+ * JavaScript; a page that filters client-side instead sets `clientFilter`
+ * (the client script then narrows `[data-filter-item]` nodes as you type and
+ * the form's submit is a no-op reload).
+ */
+export interface SearchBox {
+  /** Form action, a same-origin path (e.g. `/journal`). */
+  readonly action: string
+  /** Query parameter name (e.g. `q`). */
+  readonly name: string
+  readonly placeholder: string
+  /** Current value echoed into the field (escaped). */
+  readonly value?: string
+  /** When true, the client script filters `[data-filter-item]` nodes live. */
+  readonly clientFilter?: boolean
+}
+
+/** The `+` control paired with the active tab; opens a `<details id=…>` on the page. */
+export interface NavAction {
+  readonly title: string
+  /** Id of the `<details>` the control opens (also the no-JS anchor target). */
+  readonly targetId: string
+}
+
 export interface LayoutOptions {
-  /** Page title; escaped into `<title>` and mirrored in the header. */
+  /** Page title; escaped into `<title>` and used for the status line. */
   readonly title: string
   /** Pre-rendered page body, inserted verbatim (already escaped). */
   readonly content: Html
@@ -36,26 +70,72 @@ export interface LayoutOptions {
   readonly currentAdmin?: CurrentAdmin
   /** Nav key of the active page, e.g. `'approvals'`, for `aria-current`. */
   readonly activeNav?: string
+  /** Optional search box in the top bar. */
+  readonly search?: SearchBox
+  /** Optional `+` action paired with the active tab. */
+  readonly navAction?: NavAction
+  /** Optional right-aligned meta text in the tab bar (e.g. "4 / 50 servers"). */
+  readonly navMeta?: string
+  /** `body` class hook for page-level layout (e.g. `page-login`). */
+  readonly bodyClass?: string
 }
 
-/** Primary nav entries: [href, key, label]. Owner-only pages are gated by Task 9. */
-const NAV_ITEMS: readonly (readonly [string, string, string])[] = [
-  // Hrefs must match a real GET route in `ROUTE_TABLE`: the approvals page is
-  // served at `/` (not `/approvals`), the rest map one-to-one.
-  ['/', 'approvals', 'Approvals'],
-  ['/quarantine', 'quarantine', 'Quarantine'],
-  ['/servers', 'servers', 'Servers'],
-  ['/agents', 'agents', 'Agents'],
-  ['/journal', 'journal', 'Journal'],
+/** Primary nav entries: [href, key, label, minRole]. */
+interface NavItem {
+  readonly href: string
+  readonly key: string
+  readonly label: string
+  /** Roles that see the entry; absent = everyone signed in. */
+  readonly roles?: readonly string[]
+}
+
+/**
+ * Hrefs must match a real GET route in `ROUTE_TABLE`: the dashboard (approval
+ * queue + journal summary) is served at `/`, the rest map one-to-one. Owner-only
+ * pages are listed by role here AND gated by `ROUTE_TABLE` — the link is a
+ * convenience, the table is the check.
+ */
+const NAV_ITEMS: readonly NavItem[] = [
+  { href: '/', key: 'approvals', label: 'Dashboard' },
+  { href: '/journal', key: 'journal', label: 'Journal' },
+  { href: '/quarantine', key: 'quarantine', label: 'Quarantine' },
+  { href: '/servers', key: 'servers', label: 'Servers' },
+  { href: '/agents', key: 'agents', label: 'Agents' },
+  { href: '/vault', key: 'vault', label: 'Vault', roles: ['owner'] },
+  { href: '/admins', key: 'admins', label: 'Admins', roles: ['owner'] },
 ]
 
-function renderNavLink([href, key, label]: readonly [string, string, string], activeNav?: string): Html {
-  return key === activeNav
-    ? html`<a href="${safeUrl(href)}" aria-current="page">${label}</a>`
-    : html`<a href="${safeUrl(href)}">${label}</a>`
+function navLabelFor(activeNav: string | undefined): string | undefined {
+  return NAV_ITEMS.find((item) => item.key === activeNav)?.label
 }
 
-/** A hidden CSRF field for a real `<form>` POST (server enforces the check). */
+function renderTab(item: NavItem, options: LayoutOptions): Html {
+  const href = safeUrl(item.href)
+  if (item.key !== options.activeNav) {
+    return html`<a class="tab" href="${href}">${item.label}</a>`
+  }
+  if (options.navAction === undefined) {
+    return html`<a class="tab" href="${href}" aria-current="page">${item.label}</a>`
+  }
+  const target = `#${options.navAction.targetId}`
+  return html`<div class="tab-group">
+      <a class="tab" href="${href}" aria-current="page">${item.label}</a>
+      <a class="tab-plus" href="${safeUrl(target)}" title="${options.navAction.title}" data-open-details="${options.navAction.targetId}">+</a>
+    </div>`
+}
+
+function visibleNavItems(options: LayoutOptions): readonly NavItem[] {
+  const role = options.currentAdmin?.role
+  return NAV_ITEMS.filter((item) => item.roles === undefined || (role !== undefined && item.roles.includes(role)))
+}
+
+function renderTabs(options: LayoutOptions): Html {
+  if (options.currentAdmin === undefined) return html``
+  const tabs = visibleNavItems(options).map((item) => renderTab(item, options))
+  const meta = options.navMeta !== undefined ? html`<span class="meta num">${options.navMeta}</span>` : html``
+  return html`<nav class="tabs" aria-label="Primary">${tabs}<span class="spacer"></span>${meta}</nav>`
+}
+
 /**
  * The sign-out control, rendered only when a session exists.
  *
@@ -80,15 +160,30 @@ function renderSignOut(options: LayoutOptions): Html {
   `
 }
 
-function renderNav(options: LayoutOptions): Html {
-  const links = NAV_ITEMS.map((item) => renderNavLink(item, options.activeNav))
+function renderSearch(options: LayoutOptions): Html {
+  const search = options.search
+  if (search === undefined) return html``
+  const clientFilter = search.clientFilter === true ? html` data-client-filter="1"` : html``
+  return html`<form class="search" method="get" action="${safeUrl(search.action)}" role="search"${clientFilter}>
+      <span class="dot dot-s"></span>
+      <input type="search" name="${search.name}" value="${search.value ?? ''}" placeholder="${search.placeholder}" aria-label="${search.placeholder}" autocomplete="off">
+    </form>`
+}
+
+function renderStatus(options: LayoutOptions): Html {
+  const label = (navLabelFor(options.activeNav) ?? options.title).toLowerCase()
+  return html`<div class="status"><span class="dot blink"></span><span>${label} · ${INSTANCE_LABEL}</span></div>`
+}
+
+function renderTopbar(options: LayoutOptions): Html {
   const whoami = options.currentAdmin
-    ? html`<span class="whoami">${options.currentAdmin.name} · ${options.currentAdmin.role}</span>`
+    ? html`<span class="whoami"><span class="avatar"></span><span>${options.currentAdmin.name}</span><span class="role">· ${options.currentAdmin.role}</span></span>`
     : html``
   return html`
-    <header class="app-nav">
-      <strong>mcp-journal</strong>
-      ${links}
+    <header class="topbar">
+      <a class="brand" href="${safeUrl('/')}">${BRAND_NAME}</a>
+      ${renderStatus(options)}
+      ${renderSearch(options)}
       <span class="spacer"></span>
       ${whoami}
       ${renderSignOut(options)}
@@ -105,8 +200,10 @@ function renderNav(options: LayoutOptions): Html {
  * something is wrong (manual M4 smoke). No attribute, no connection: the client
  * script treats its absence as "this page has no live channel".
  */
-function liveAttribute(options: LayoutOptions): Html {
-  return options.currentAdmin === undefined ? html`` : html` data-events-url="/events"`
+function bodyAttributes(options: LayoutOptions): Html {
+  const events = options.currentAdmin === undefined ? html`` : html` data-events-url="/events"`
+  const cls = options.bodyClass !== undefined ? html` class="${options.bodyClass}"` : html``
+  return html`${cls}${events}`
 }
 
 /**
@@ -121,12 +218,13 @@ export function renderLayout(options: LayoutOptions): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="csrf-token" content="${options.csrfToken}">
-<title>${options.title} · mcp-journal</title>
+<title>${options.title} · ${BRAND_NAME}</title>
 <link rel="stylesheet" href="/assets/app.css">
 <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
 </head>
-<body${liveAttribute(options)}>
-${renderNav(options)}
+<body${bodyAttributes(options)}>
+${options.currentAdmin === undefined ? html`` : renderTopbar(options)}
+${renderTabs(options)}
 <main>
 ${options.content}
 </main>

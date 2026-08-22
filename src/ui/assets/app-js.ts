@@ -1,4 +1,4 @@
-import { buildAsset, type Asset } from './app-css.js'
+import { buildAsset, type Asset } from './asset.js'
 
 /**
  * Inlined client script for the admin UI. Vanilla, no framework, no external
@@ -40,6 +40,14 @@ import { buildAsset, type Asset } from './app-css.js'
  *  Fallback
  *   - if SSE errors, the script polls `data-live-src` (or the page) every
  *     `data-poll-ms` (default 5000) until SSE recovers.
+ *
+ *  Disclosure helpers (McpCut console; every one degrades to plain HTML)
+ *   - `data-open-details="<id>"` on a link opens the `<details id>` and
+ *     scrolls to it (without JS the link is a plain `#id` anchor to the same
+ *     element, whose `<summary>` is visible and clickable).
+ *   - `data-close-details` on a button inside a `<details>` closes it.
+ *   - `form.search[data-client-filter]`: typing narrows `[data-filter-item]`
+ *     nodes by their text (without JS the form is an ordinary GET).
  */
 const APP_JS_SOURCE = `"use strict";
 (function () {
@@ -188,8 +196,59 @@ const APP_JS_SOURCE = `"use strict";
     });
   }
 
+  // --- Disclosure helpers ---------------------------------------------------
+  function onDetailsClick(event) {
+    var opener = event.target.closest("[data-open-details]");
+    if (opener) {
+      var target = document.getElementById(opener.getAttribute("data-open-details"));
+      if (target && typeof target.open === "boolean") {
+        event.preventDefault();
+        target.open = true;
+        target.scrollIntoView({ block: "start" });
+        var focusable = target.querySelector("input, select, textarea");
+        if (focusable) focusable.focus();
+      }
+      return;
+    }
+    var closer = event.target.closest("[data-close-details]");
+    if (closer) {
+      var details = closer.closest("details");
+      if (details) { event.preventDefault(); details.open = false; }
+    }
+  }
+
+  function normalize(text) {
+    return String(text || "").toLowerCase().replace(/\s+/g, " ").trim();
+  }
+
+  function applyClientFilter(input) {
+    var needle = normalize(input.value);
+    var items = document.querySelectorAll("[data-filter-item]");
+    var shown = 0;
+    for (var i = 0; i < items.length; i++) {
+      var hay = normalize(items[i].getAttribute("data-filter-text") || items[i].textContent);
+      var hit = !needle || hay.indexOf(needle) !== -1;
+      items[i].hidden = !hit;
+      if (hit) shown++;
+    }
+    var empty = document.querySelector("[data-filter-empty]");
+    if (empty) empty.hidden = shown > 0 || items.length === 0;
+  }
+
+  function wireClientFilter() {
+    var form = document.querySelector("form.search[data-client-filter]");
+    if (!form) return;
+    var input = form.querySelector("input");
+    if (!input) return;
+    form.addEventListener("submit", function (event) { event.preventDefault(); applyClientFilter(input); });
+    input.addEventListener("input", function () { applyClientFilter(input); });
+    if (input.value) applyClientFilter(input);
+  }
+
   function init() {
     document.addEventListener("click", onActionClick);
+    document.addEventListener("click", onDetailsClick);
+    wireClientFilter();
     syncPendingBadge(document);
     connect();
   }
