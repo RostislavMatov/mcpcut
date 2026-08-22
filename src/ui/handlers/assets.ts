@@ -2,6 +2,7 @@ import { APP_CSS } from '../assets/app-css.js'
 import { APP_JS } from '../assets/app-js.js'
 import type { Asset } from '../assets/asset.js'
 import { FAVICON } from '../assets/favicon.js'
+import { LOGIN_JS } from '../assets/login-js.js'
 import { SILKSCREEN_400, SILKSCREEN_700 } from '../assets/fonts.js'
 import {
   HTTP_STATUS_NOT_FOUND,
@@ -39,6 +40,7 @@ const ASSETS: Readonly<Record<string, Asset>> = Object.freeze(
   Object.assign(Object.create(null) as Record<string, Asset>, {
     'app.css': APP_CSS,
     'app.js': APP_JS,
+    'login.js': LOGIN_JS,
     'favicon.svg': FAVICON,
     'silkscreen-400.woff2': SILKSCREEN_400,
     'silkscreen-700.woff2': SILKSCREEN_700,

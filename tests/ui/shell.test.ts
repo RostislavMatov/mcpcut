@@ -177,3 +177,26 @@ describe('client script — the filter helpers really run (not just markup marke
     expect(JS).not.toContain('replace(/s+/g')
   })
 })
+
+describe('page shell — extra page scripts', () => {
+  test('only plain asset names become script tags; anything URL-shaped is dropped', () => {
+    const out = renderLayout({
+      title: 'x',
+      content: html`<p>x</p>`,
+      csrfToken: 'c',
+      scripts: ['login.js', 'https://evil.example/x.js', '../app.js', 'x.css'],
+    })
+    expect(out).toContain('<script src="/assets/login.js" defer></script>')
+    expect(out).not.toContain('evil.example')
+    expect(out).not.toContain('../app.js')
+    expect(out).not.toContain('x.css')
+  })
+
+  test('login.js is served from the asset allowlist and references no external origin', async () => {
+    const res = asResponse(await createAssetsHandler()(assetCtx('login.js')))
+    expect(res.status).toBe(200)
+    expect(res.headers?.['content-type']).toContain('text/javascript')
+    expect(String(res.body)).not.toMatch(/https?:\/\//)
+    expect(String(res.body)).toContain('page-login')
+  })
+})

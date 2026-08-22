@@ -55,3 +55,25 @@ describe('login handler', () => {
     expect(String(res.body)).toContain('name="token"')
   })
 })
+
+describe('login page — Auth screen extras (McpCut)', () => {
+  test('loads the login script as a same-origin asset and renders the decor layer + controls', () => {
+    const doc = renderLoginPage()
+    expect(doc).toContain('<script src="/assets/login.js" defer></script>')
+    expect(doc).toContain('data-decor')
+    expect((doc.match(/class="decor-block"/g) ?? []).length).toBe(6)
+    expect(doc).toContain('data-target')
+    expect(doc).toContain('data-reveal="token"')
+    expect(doc).toContain('data-remember')
+    expect(doc).toContain('data-footer')
+    // still no inline style / inline script anywhere on the page
+    expect(doc).not.toMatch(/\sstyle="/)
+    expect(doc).not.toMatch(/<script(?![^>]*\bsrc=)[^>]*>[^<]/)
+  })
+
+  test('the remember toggle posts nothing (it carries no name)', () => {
+    const doc = renderLoginPage()
+    const checkbox = /<input type="checkbox"[^>]*>/.exec(doc)?.[0] ?? ''
+    expect(checkbox).not.toContain('name=')
+  })
+})
