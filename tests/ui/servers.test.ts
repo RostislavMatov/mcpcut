@@ -205,7 +205,8 @@ describe('serversPage — McpCut structure', () => {
     expect(body).toContain('Lists repositories')
     expect(body).toContain('quarantined · new')
     expect(body).toContain('href="/quarantine"')
-    expect(body).toContain('2 tools · 1 quarantined')
+    expect(body).toContain('0 args · 0 env · 2 tools')
+    expect(body).toContain('1 quarantined')
     // The card-level marker for a server holding quarantined tools.
     expect(body).toContain('shimmer')
   })
@@ -239,9 +240,9 @@ describe('serversPage — McpCut structure', () => {
     await h.registry.addServer({ name: 'a', transport: 'stdio', command: 'node' })
     await h.registry.addServer({ name: 'b', transport: 'stdio', command: 'node' })
     const body = String(asResponse(await h.handlers.serversPage(getCtx())).body)
-    expect(body).toContain('<details class="drawer" id="add-server">')
+    expect(body).toContain('<details class="drawer srv-drawer" id="add-server">')
     expect(body).toContain('data-open-details="add-server"')
-    expect(body).toContain('2 servers')
+    expect(body).toContain('2 / 200 servers')
     expect(body).toContain('action="/servers/add"')
     // Fixed vocabularies are pill radios, same names/values the handler parses.
     expect(body).toContain('<input type="radio" name="transport" value="stdio" checked>')
@@ -268,7 +269,7 @@ describe('serversPage — McpCut structure', () => {
     )
     expect(res.status).toBe(400)
     const body = String(res.body)
-    const drawerStart = body.indexOf('<details class="drawer" id="add-server" open>')
+    const drawerStart = body.indexOf('<details class="drawer srv-drawer" id="add-server" open>')
     expect(drawerStart).toBeGreaterThan(-1)
     const alertAt = body.indexOf('role="alert"')
     expect(alertAt).toBeGreaterThan(drawerStart)
@@ -311,7 +312,7 @@ describe('serversAdd', () => {
           name: 'secret-probe',
           transport: 'stdio',
           command: 'node',
-          args: 'server.js,--flag',
+          args: 'server.js\n--flag',
           env: `LOG_LEVEL=debug\nX=${SECRET_LITERAL}`,
         }),
       ),
@@ -323,7 +324,7 @@ describe('serversAdd', () => {
     // instead of all eight being retyped.
     expect(body).toContain('<input name="name" value="secret-probe"')
     expect(body).toContain('<input name="command" value="node"')
-    expect(body).toContain('<input name="args" value="server.js,--flag"')
+    expect(textareaValue(body, 'args')).toBe('server.js\n--flag')
     // ...except the one line the validator called a secret: it is dropped
     // whole, key included, and the secret is absent from the WHOLE body.
     expect(textareaValue(body, 'env')).toBe('LOG_LEVEL=debug')
@@ -427,7 +428,7 @@ describe('serversAdd', () => {
           name: 'local',
           transport: 'stdio',
           command: 'node',
-          args: 'server.js,--flag with a space',
+          args: 'server.js\n--flag with a space',
         }),
       ),
     )
@@ -599,5 +600,186 @@ describe('vaultPage — names and dates only', () => {
     const source = readFileSync(new URL('../../src/ui/handlers/servers.ts', import.meta.url), 'utf8')
     expect(source).not.toContain('readSecretValues')
     expect(source).not.toContain('vault/resolve')
+  })
+})
+
+describe('serversPage — Servers.dc.html layout (views, modal drawer, edit)', () => {
+  test('the view toggle renders and ?view=list switches the card layout class', async () => {
+    h = makeHarness()
+    await h.registry.addServer({ name: 'a', transport: 'stdio', command: 'node' })
+    const grid = String(asResponse(await h.handlers.serversPage(getCtx())).body)
+    expect(grid).toContain('class="srv-grid view-grid"')
+    expect(grid).toContain('class="view-toggle"')
+    expect(grid).toContain('href="/servers?view=list"')
+    const list = String(
+      asResponse(await h.handlers.serversPage(getCtx({ query: new URLSearchParams('view=list') }))).body,
+    )
+    expect(list).toContain('class="srv-grid view-list"')
+  })
+
+  test('the drawer summary is the visually hidden one and the + points at the no-JS href', async () => {
+    h = makeHarness()
+    const body = String(asResponse(await h.handlers.serversPage(getCtx())).body)
+    expect(body).toContain('<summary class="srv-drawer-sum">Register a server</summary>')
+    expect(body).toContain('href="/servers?add=1#add-server"')
+    expect(body).toContain('data-open-details="add-server"')
+  })
+
+  test('?add=1 renders the register drawer open (the no-JS path)', async () => {
+    h = makeHarness()
+    const body = String(
+      asResponse(await h.handlers.serversPage(getCtx({ query: new URLSearchParams('add=1') }))).body,
+    )
+    expect(body).toContain('<details class="drawer srv-drawer" id="add-server" open>')
+  })
+
+  test('?edit=<name> prefills the edit drawer from the stored record, name locked', async () => {
+    h = makeHarness()
+    await h.registry.addServer({
+      name: 'pg',
+      transport: 'stdio',
+      command: 'uvx',
+      args: ['mcp-pg', '--readonly'],
+      env: { PGHOST: 'db.internal' },
+    })
+    const body = String(
+      asResponse(await h.handlers.serversPage(getCtx({ query: new URLSearchParams('edit=pg') }))).body,
+    )
+    expect(body).toContain('id="add-server" open>')
+    expect(body).toContain('Edit server')
+    expect(body).toContain('action="/servers/edit"')
+    expect(body).toContain('<input type="hidden" name="original" value="pg"')
+    expect(body).toContain('<input name="name_shown" value="pg" readonly')
+    expect(body).toContain('<input name="command" value="uvx"')
+    expect(textareaValue(body, 'args')).toBe('mcp-pg\n--readonly')
+    expect(textareaValue(body, 'env')).toBe('PGHOST=db.internal')
+  })
+
+  test('each card carries an owner Edit link into the edit drawer', async () => {
+    h = makeHarness()
+    await h.registry.addServer({ name: 'pg', transport: 'stdio', command: 'uvx' })
+    const body = String(asResponse(await h.handlers.serversPage(getCtx())).body)
+    expect(body).toContain('href="/servers?edit=pg#add-server"')
+    const viewer = getCtx({ session: { adminName: 'val', role: 'viewer', csrfToken: 'c' } })
+    const viewerBody = String(asResponse(await h.handlers.serversPage(viewer)).body)
+    expect(viewerBody).not.toContain('?edit=pg')
+  })
+})
+
+describe('serversEdit', () => {
+  test('confirms first, then updates in place and attributes the mutation', async () => {
+    h = makeHarness()
+    await h.registry.addServer({ name: 'pg', transport: 'stdio', command: 'uvx', args: ['old'] })
+    const fields = {
+      csrf_token: OWNER.csrfToken,
+      original: 'pg',
+      transport: 'stdio',
+      command: 'node',
+      args: 'server.js',
+    }
+    const confirmPage = asResponse(await h.handlers.serversEdit(formPost(fields)))
+    expect(confirmPage.status).toBe(200)
+    expect(String(confirmPage.body)).toContain('Save changes to')
+    expect(String(confirmPage.body)).toContain('action="/servers/edit"')
+    expect((await h.registry.getServer('pg'))?.command).toBe('uvx') // nothing persisted yet
+
+    const done = asResponse(await h.handlers.serversEdit(formPost({ ...fields, confirm: 'true' })))
+    expect(done.status).toBe(303)
+    const stored = await h.registry.getServer('pg')
+    expect(stored?.command).toBe('node')
+    expect(stored?.args).toEqual(['server.js'])
+    expect(h.audit).toContainEqual({ actor: 'ui', adminName: 'alice', action: 'server.update', target: 'pg' })
+  })
+
+  test('the posted name cannot override the original (the name is the key)', async () => {
+    h = makeHarness()
+    await h.registry.addServer({ name: 'pg', transport: 'stdio', command: 'uvx' })
+    const done = asResponse(
+      await h.handlers.serversEdit(
+        formPost({
+          csrf_token: OWNER.csrfToken,
+          original: 'pg',
+          name: 'stolen-name',
+          transport: 'stdio',
+          command: 'node',
+          confirm: 'true',
+        }),
+      ),
+    )
+    expect(done.status).toBe(303)
+    expect(await h.registry.getServer('stolen-name')).toBeUndefined()
+    expect((await h.registry.getServer('pg'))?.command).toBe('node')
+  })
+
+  test('a rejected edit re-renders the edit drawer open with the error inside', async () => {
+    h = makeHarness()
+    await h.registry.addServer({ name: 'pg', transport: 'stdio', command: 'uvx' })
+    const res = asResponse(
+      await h.handlers.serversEdit(
+        formPost({ csrf_token: OWNER.csrfToken, original: 'pg', transport: 'stdio', command: '' }),
+      ),
+    )
+    expect(res.status).toBe(400)
+    const body = String(res.body)
+    expect(body).toContain('id="add-server" open>')
+    expect(body).toContain('role="alert"')
+    expect(body).toContain('action="/servers/edit"')
+    expect(body).toContain('<input type="hidden" name="original" value="pg"')
+  })
+
+  test('answers 404 for an unknown original and 400 for a missing one', async () => {
+    h = makeHarness()
+    const missing = asResponse(
+      await h.handlers.serversEdit(formPost({ csrf_token: OWNER.csrfToken, transport: 'stdio', command: 'x' })),
+    )
+    expect(missing.status).toBe(400)
+    const unknown = asResponse(
+      await h.handlers.serversEdit(
+        formPost({ csrf_token: OWNER.csrfToken, original: 'ghost', transport: 'stdio', command: 'x', confirm: 'true' }),
+      ),
+    )
+    expect(unknown.status).toBe(404)
+  })
+})
+
+describe('serversAdd/Edit — the form always posts a protocol radio', () => {
+  test('a stdio submission with the default protocol=auto still validates', async () => {
+    h = makeHarness()
+    const res = asResponse(
+      await h.handlers.serversAdd(
+        formPost({
+          csrf_token: OWNER.csrfToken,
+          name: 'local',
+          transport: 'stdio',
+          command: 'node',
+          args: 'server.js',
+          protocol: 'auto', // what the browser posts: the radio group's default
+          url: '',
+          headers: '',
+          env: '',
+        }),
+      ),
+    )
+    expect(res.status).toBe(200) // the confirmation interstitial, not a 400
+    expect(String(res.body)).toContain('Register server')
+  })
+
+  test('a stdio edit with the default protocol=auto still validates', async () => {
+    h = makeHarness()
+    await h.registry.addServer({ name: 'pg', transport: 'stdio', command: 'uvx' })
+    const res = asResponse(
+      await h.handlers.serversEdit(
+        formPost({
+          csrf_token: OWNER.csrfToken,
+          original: 'pg',
+          transport: 'stdio',
+          command: 'node',
+          protocol: 'auto',
+          confirm: 'true',
+        }),
+      ),
+    )
+    expect(res.status).toBe(303)
+    expect((await h.registry.getServer('pg'))?.command).toBe('node')
   })
 })

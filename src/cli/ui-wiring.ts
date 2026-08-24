@@ -157,6 +157,7 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
     registry: {
       listServers: () => deps.registry.listServers(),
       addServer: (record) => deps.registry.addServer(record),
+      updateServer: (record) => deps.registry.updateServer(record),
       removeServer: (name) => deps.registry.removeServer(name),
     },
     agents: {

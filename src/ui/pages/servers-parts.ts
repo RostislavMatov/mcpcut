@@ -185,6 +185,19 @@ export function renderLegend(): Html {
   </div>`
 }
 
+/**
+ * The owner's card actions, as the design's expanded card: Edit (a link to
+ * `/servers?edit=<name>` — the server prefills the modal drawer, so it works
+ * without JavaScript) beside the Remove form.
+ */
+function renderCardActions(name: string, csrfToken: string): Html {
+  const editHref = `/servers?${new URLSearchParams({ edit: name }).toString()}#add-server`
+  return html`<div class="actions srv-actions">
+    <a class="btn srv-edit" href="${safeUrl(editHref)}">Edit</a>
+    ${renderRemoveForm(name, csrfToken)}
+  </div>`
+}
+
 /** A remove form, shown only to a manager (owner); it posts the server name. */
 function renderRemoveForm(name: string, csrfToken: string): Html {
   return html`<form method="post" action="/servers/remove" class="inline srv-remove">
@@ -198,21 +211,30 @@ function targetOf(record: ServerRecord): string {
   return record.transport === 'stdio' ? record.command : record.url
 }
 
-function renderCounts(tools: ServerToolsView | undefined): Html {
-  if (tools === undefined) return html``
-  const total = tools.tools.length
-  const noun = total === 1 ? 'tool' : 'tools'
-  return html`<span class="srv-sum-meta faint small num">${String(total)} ${noun} · ${String(tools.quarantinedCount)} quarantined</span>`
+/** The collapsed tile's meta line, as the design writes it per transport. */
+function summaryMetaOf(record: ServerRecord, tools: ServerToolsView | undefined): string {
+  const base =
+    record.transport === 'stdio'
+      ? `${(record.args ?? []).length} args · ${Object.keys(record.env ?? {}).length} env`
+      : `${record.protocol} · ${Object.keys(record.headers ?? {}).length} headers`
+  if (tools === undefined) return base
+  return `${base} · ${tools.tools.length} tools`
 }
 
 function renderSummary(record: ServerRecord, tools: ServerToolsView | undefined): Html {
-  const flagged = (tools?.quarantinedCount ?? 0) > 0
-  const dot = flagged ? 'dot dot-off dot-blink' : 'dot'
-  const flag = flagged ? html`<span class="pill pill-pixel pill-on shimmer">quarantined</span>` : html``
+  const quarantined = tools?.quarantinedCount ?? 0
+  const dot = quarantined > 0 ? 'dot dot-off dot-blink' : 'dot'
+  const flag =
+    quarantined > 0
+      ? html`<span class="pill pill-pixel pill-on shimmer">${String(quarantined)} quarantined</span>`
+      : html``
+  const tpill = record.transport === 'stdio' ? 'tpill tpill-stdio' : 'tpill tpill-http'
   return html`<summary class="srv-sum">
-    <span class="row srv-sum-top"><span class="${dot}"></span><span class="name pixel ellipsis">${record.name}</span><span class="pill">${record.transport}</span>${flag}</span>
+    <span class="row srv-sum-top"><span class="${dot}"></span><span class="name pixel ellipsis">${record.name}</span></span>
+    <span class="srv-sum-badges"><span class="${tpill}">${record.transport}</span>${flag}</span>
+    <span class="spacer-v"></span>
     <span class="srv-sum-target faint small ellipsis">${targetOf(record)}</span>
-    ${renderCounts(tools)}
+    <span class="srv-sum-meta faint small num">${summaryMetaOf(record, tools)}</span>
   </summary>`
 }
 
@@ -241,7 +263,7 @@ export function renderServerCard(options: ServerCardOptions): Html {
       ${renderServerDetails(record)}
       ${options.hasInventory ? renderToolsPanel(tools) : html``}
       ${renderLegend()}
-      ${canManage ? html`<div class="actions">${renderRemoveForm(record.name, csrfToken)}</div>` : html``}
+      ${canManage ? renderCardActions(record.name, csrfToken) : html``}
     </div>
   </details>`
 }

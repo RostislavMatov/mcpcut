@@ -123,3 +123,37 @@ describe('createRegistryStore', () => {
     expect(reread).toEqual(GITHUB)
   })
 })
+
+describe('updateServer', () => {
+  test('replaces an existing record in place and returns it', async () => {
+    const store = createRegistryStore(journalDir)
+    await store.addServer(GITHUB)
+
+    const changed: ServerRecord = { ...GITHUB, command: 'uvx', args: ['mcp-github', '--readonly'] }
+    const result = await store.updateServer(changed)
+
+    expect(result).toEqual({ status: 'updated', record: changed })
+    expect(await store.getServer('github')).toEqual(changed)
+    expect((await store.listServers()).length).toBe(1)
+  })
+
+  test('answers not-found for a name that was never registered', async () => {
+    const store = createRegistryStore(journalDir)
+
+    const result = await store.updateServer(REMOTE)
+
+    expect(result).toEqual({ status: 'not-found' })
+    expect(await store.listServers()).toEqual([])
+  })
+
+  test('rejects an invalid record without touching the stored one', async () => {
+    const store = createRegistryStore(journalDir)
+    await store.addServer(GITHUB)
+
+    const hostile = { ...GITHUB, env: { TOKEN: 'ghp_0123456789abcdefghijklmnopqrstuvwxyz' } }
+    await expect(store.updateServer(hostile as ServerRecord)).rejects.toBeInstanceOf(
+      InvalidServerRecordError,
+    )
+    expect(await store.getServer('github')).toEqual(GITHUB)
+  })
+})

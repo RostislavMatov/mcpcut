@@ -73,6 +73,7 @@ export const ROUTE_TABLE: readonly RouteEntry[] = [
   // --- owner: servers, vault (names only), admin management ---
   { method: 'GET', pattern: '/vault', minRole: 'owner', handler: 'vaultPage' },
   { method: 'POST', pattern: '/servers/add', minRole: 'owner', handler: 'serversAdd' },
+  { method: 'POST', pattern: '/servers/edit', minRole: 'owner', handler: 'serversEdit' },
   { method: 'POST', pattern: '/servers/remove', minRole: 'owner', handler: 'serversRemove' },
   { method: 'GET', pattern: '/admins', minRole: 'owner', handler: 'adminsPage' },
   { method: 'POST', pattern: '/admins/add', minRole: 'owner', handler: 'adminsAdd' },

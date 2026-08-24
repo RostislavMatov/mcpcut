@@ -1,5 +1,5 @@
 import { VAULT_REF_PREFIX } from '../registry/constants.js'
-import { looksLikeSecretLiteral } from '../registry/schema.js'
+import { looksLikeSecretLiteral, type ServerRecord } from '../registry/schema.js'
 
 /**
  * The register-server form's editable state, shared by the page that renders
@@ -113,5 +113,42 @@ export function echoableServerForm(fields: Readonly<Record<string, string>>): Se
     protocol: echoableScalar(fields.protocol),
     env: echoableLines(fields.env),
     headers: echoableLines(fields.headers),
+  }
+}
+
+/** `{K: V}` → the textarea's `K=V` per line block. */
+function kvLines(map: Readonly<Record<string, string>> | undefined): string {
+  return Object.entries(map ?? {})
+    .map(([key, value]) => `${key}=${value}`)
+    .join('\n')
+}
+
+/**
+ * A stored registry record as the edit form's values. The record already
+ * passed the schema (no secret literals can be stored), so everything is
+ * echoable as-is; fields of the other transport render blank.
+ */
+export function serverRecordToForm(record: ServerRecord): ServerFormValues {
+  if (record.transport === 'stdio') {
+    return {
+      name: record.name,
+      transport: record.transport,
+      command: record.command,
+      args: (record.args ?? []).join('\n'),
+      url: '',
+      protocol: '',
+      env: kvLines(record.env),
+      headers: '',
+    }
+  }
+  return {
+    name: record.name,
+    transport: record.transport,
+    command: '',
+    args: '',
+    url: record.url,
+    protocol: record.protocol,
+    env: '',
+    headers: kvLines(record.headers),
   }
 }
