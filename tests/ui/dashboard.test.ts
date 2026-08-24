@@ -214,3 +214,140 @@ describe('dashboard handler composition', () => {
     expect(doc).not.toContain('Call journal')
   })
 })
+
+describe('dashboard — Dashboard.dc.html layout (journal panel, call detail, sparklines)', () => {
+  test('journal panel: filter pills, Lat/Status columns, shown counter, sparklines, server bars', () => {
+    const doc = renderDashboardPage({ cards: [], csrfToken: 'c', summary: SUMMARY })
+    expect(doc).toContain('>ALL</a>')
+    expect(doc).toContain('href="/?server=github"')
+    expect(doc).toContain('<span>Lat</span>')
+    expect(doc).toContain('<span>Status</span>')
+    expect(doc).toContain('2 of 2 calls shown')
+    expect(doc).toContain('tile-bars')
+    expect(doc).toContain('tb-h')
+    expect(doc).toContain('sv-bar')
+    expect(doc).toContain('class="dash-side"')
+  })
+
+  test('server filter narrows rows and the counter says what was hidden', () => {
+    const summary: DashboardSummary = {
+      ...SUMMARY,
+      recentDecisions: toRecentDecisions(
+        [
+          { sessionId: 's1', record: decisionRecord('2026-08-22T10:00:01.000Z') },
+          {
+            sessionId: 's2',
+            record: decisionRecord('2026-08-22T10:00:05.000Z', { serverName: 'pg', toolName: 'pg_query' }),
+          },
+        ],
+        12,
+      ),
+    }
+    const doc = renderDashboardPage({ cards: [], csrfToken: 'c', summary, journalServer: 'github' })
+    expect(doc).not.toContain('pg_query')
+    expect(doc).toContain('1 of 2 calls shown')
+  })
+
+  test('an unknown ?server value is ignored (fails open to ALL)', () => {
+    const doc = renderDashboardPage({ cards: [], csrfToken: 'c', summary: SUMMARY, journalServer: 'nope' })
+    expect(doc).toContain('2 of 2 calls shown')
+  })
+
+  test('detail panel follows ?sel and defaults to the newest row', () => {
+    const newest = renderDashboardPage({ cards: [], csrfToken: 'c', summary: SUMMARY })
+    expect(newest).toContain('Call detail')
+    expect(newest).toContain('r-2026-08-22T10:00:05.000Z') // newest id in the panel header
+    expect(newest).toContain('Open session in journal')
+    const picked = renderDashboardPage({
+      cards: [],
+      csrfToken: 'c',
+      summary: SUMMARY,
+      selectedId: 'r-2026-08-22T10:00:01.000Z',
+    })
+    expect(picked).toContain('is-sel')
+    const hd = picked.indexOf('Call detail')
+    expect(picked.indexOf('r-2026-08-22T10:00:01.000Z', hd)).toBeGreaterThan(hd)
+  })
+
+  test('handler passes ?server and ?sel from the query string through to the page', async () => {
+    const handlers = createApprovalsHandlers({
+      queue: { list: async () => [], countPending: async () => 0, resolve: async () => ({ ok: false as const }) } as never,
+      summary: {
+        listServers: async () => [{ name: 'github', transport: 'stdio', command: 'gh-mcp' }],
+        readInventory: async () => ({ servers: {} }) as never,
+        listAgents: async () => [],
+        recentDecisions: async () => ({
+          hits: [{ sessionId: 's1', record: decisionRecord('2026-08-22T10:00:01.000Z') }],
+          truncated: false,
+          stoppedBy: 'exhausted',
+          filesScanned: 1,
+          filesTotal: 1,
+          bytesRead: 1,
+          skippedLineCount: 0,
+        }) as never,
+      },
+    })
+    const result = await handlers.approvalsPage({
+      method: 'GET',
+      path: '/',
+      params: {},
+      query: new URLSearchParams('server=github&sel=r-2026-08-22T10:00:01.000Z'),
+      session: SESSION,
+      body: Buffer.alloc(0),
+      headers: {},
+    })
+    if (result.kind !== 'response') throw new Error('expected response')
+    const doc = String(result.body)
+    expect(doc).toContain('is-sel')
+    expect(doc).toContain('1 of 1 calls shown')
+  })
+})
+
+describe('dashboard — header search filters journal rows client-side', () => {
+  test('search box, filterable rows and the filter empty state are wired', () => {
+    const doc = renderDashboardPage({
+      cards: [],
+      csrfToken: 'c',
+      currentAdmin: { name: 'alice', role: 'owner' },
+      summary: SUMMARY,
+    })
+    expect(doc).toContain('data-client-filter="1"')
+    expect(doc).toContain('search journal — server, tool, status')
+    expect(doc).toContain('data-filter-item data-filter-text="github/list_issues allow 10:00:01"')
+    expect(doc).toContain('data-filter-empty')
+  })
+
+  test('without a summary there is no search box (queue-only page)', () => {
+    const doc = renderApprovalsPage({ cards: [], csrfToken: 'c' })
+    expect(doc).not.toContain('data-client-filter')
+  })
+})
+
+describe('dashboard — hostile values in the new attribute interpolation points', () => {
+  test('data-filter-text and detail title attributes stay escaped', () => {
+    const doc = renderDashboardPage({
+      cards: [],
+      csrfToken: 'c',
+      summary: {
+        ...SUMMARY,
+        recentDecisions: toRecentDecisions(
+          [
+            {
+              sessionId: 's1',
+              record: decisionRecord('2026-08-22T10:00:01.000Z', {
+                serverName: 'srv"onmouseover="x',
+                toolName: '"><img src=x onerror=alert(1)>',
+                agentName: '</a><script>evil()</script>',
+              }),
+            },
+          ],
+          5,
+        ),
+      },
+    })
+    expect(doc).not.toContain('<img src=x')
+    expect(doc).not.toContain('<script>evil()')
+    expect(doc).not.toContain('"onmouseover="')
+    expect(doc).toContain('&lt;img src=x onerror=alert(1)&gt;')
+  })
+})
