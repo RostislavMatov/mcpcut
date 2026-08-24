@@ -783,3 +783,12 @@ describe('serversAdd/Edit — the form always posts a protocol radio', () => {
     expect((await h.registry.getServer('pg'))?.command).toBe('node')
   })
 })
+
+describe('serversPage — args row editor contract (servers.js)', () => {
+  test('the page loads servers.js and marks the args field for the enhancement', async () => {
+    h = makeHarness()
+    const body = String(asResponse(await h.handlers.serversPage(getCtx())).body)
+    expect(body).toContain('<script src="/assets/servers.js" defer></script>')
+    expect(body).toContain('class="field args-field"')
+  })
+})
