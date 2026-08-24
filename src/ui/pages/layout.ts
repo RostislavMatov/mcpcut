@@ -57,6 +57,12 @@ export interface NavAction {
   readonly title: string
   /** Id of the `<details>` the control opens (also the no-JS anchor target). */
   readonly targetId: string
+  /**
+   * Optional no-JS href. Defaults to `#targetId`; a page whose drawer summary
+   * is visually hidden points this at a GET that renders the drawer open
+   * (e.g. `/servers?add=1`), so the control still works without JavaScript.
+   */
+  readonly href?: string
 }
 
 export interface LayoutOptions {
@@ -76,6 +82,12 @@ export interface LayoutOptions {
   readonly navAction?: NavAction
   /** Optional right-aligned meta text in the tab bar (e.g. "4 / 50 servers"). */
   readonly navMeta?: string
+  /**
+   * Optional pre-rendered controls at the right end of the tab bar (after
+   * `navMeta`) — e.g. the servers page's grid/list view toggle. Already
+   * escaped `Html`, like `content`.
+   */
+  readonly navControls?: Html
   /** `body` class hook for page-level layout (e.g. `page-login`). */
   readonly bodyClass?: string
   /**
@@ -123,7 +135,7 @@ function renderTab(item: NavItem, options: LayoutOptions): Html {
   if (options.navAction === undefined) {
     return html`<a class="tab" href="${href}" aria-current="page">${item.label}</a>`
   }
-  const target = `#${options.navAction.targetId}`
+  const target = options.navAction.href ?? `#${options.navAction.targetId}`
   return html`<div class="tab-group">
       <a class="tab" href="${href}" aria-current="page">${item.label}</a>
       <a class="tab-plus" href="${safeUrl(target)}" title="${options.navAction.title}" data-open-details="${options.navAction.targetId}">+</a>
@@ -139,7 +151,8 @@ function renderTabs(options: LayoutOptions): Html {
   if (options.currentAdmin === undefined) return html``
   const tabs = visibleNavItems(options).map((item) => renderTab(item, options))
   const meta = options.navMeta !== undefined ? html`<span class="meta num">${options.navMeta}</span>` : html``
-  return html`<nav class="tabs" aria-label="Primary">${tabs}<span class="spacer"></span>${meta}</nav>`
+  const controls = options.navControls ?? html``
+  return html`<nav class="tabs" aria-label="Primary">${tabs}<span class="spacer"></span>${meta}${controls}</nav>`
 }
 
 /**

@@ -32,11 +32,23 @@ export type RemoveServerResult =
   | { readonly status: 'removed'; readonly record: ServerRecord }
   | { readonly status: 'not-found' }
 
+/** Result of `updateServer`: the stored record, or a typed not-found. */
+export type UpdateServerResult =
+  | { readonly status: 'updated'; readonly record: ServerRecord }
+  | { readonly status: 'not-found' }
+
 export interface RegistryStore {
   /** Adds a record; rejects with `DuplicateServerError` if the name is taken. */
   addServer(record: ServerRecord): Promise<ServerRecord>
   /** Removes by name; never throws for a missing name (typed result instead). */
   removeServer(name: string): Promise<RemoveServerResult>
+  /**
+   * Replaces the record stored under `record.name` (the name itself is the
+   * key and cannot change here — renaming would silently orphan agent grants,
+   * inventory and quarantine state, which are all keyed by name). Validates
+   * like `addServer`; typed not-found when nothing is stored under the name.
+   */
+  updateServer(record: ServerRecord): Promise<UpdateServerResult>
   /** Record by name, or `undefined`. Returned value is a private copy. */
   getServer(name: string): Promise<ServerRecord | undefined>
   /** All records, sorted by name. Returned values are private copies. */
@@ -106,6 +118,25 @@ export function createRegistryStore(journalDir?: string): RegistryStore {
     return removed !== undefined ? { status: 'removed', record: removed } : { status: 'not-found' }
   }
 
+  async function updateServer(record: ServerRecord): Promise<UpdateServerResult> {
+    const parsed = parseServerRecord(record)
+    if (!parsed.ok) {
+      throw new InvalidServerRecordError(parsed.error)
+    }
+    const validated = parsed.record
+    // Reset per attempt: `update` may re-run the callback on a stolen lock.
+    let updated = false
+    await store.update((current) => {
+      updated = false
+      if (ownRecord(current.servers, validated.name) === undefined) {
+        return current
+      }
+      updated = true
+      return { ...current, servers: { ...current.servers, [validated.name]: validated } }
+    })
+    return updated ? { status: 'updated', record: validated } : { status: 'not-found' }
+  }
+
   async function getServer(name: string): Promise<ServerRecord | undefined> {
     const current = await store.read()
     return ownRecord(current.servers, name)
@@ -116,5 +147,5 @@ export function createRegistryStore(journalDir?: string): RegistryStore {
     return Object.values(current.servers).sort((a, b) => a.name.localeCompare(b.name))
   }
 
-  return { addServer, removeServer, getServer, listServers }
+  return { addServer, updateServer, removeServer, getServer, listServers }
 }

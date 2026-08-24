@@ -1,10 +1,11 @@
+import { MAX_SERVERS_IN_REGISTRY } from '../../registry/constants.js'
 import type { ServerRecord } from '../../registry/schema.js'
 import type { SecretInfo } from '../../vault/store.js'
 import { html, join, safeUrl, type Html } from '../html.js'
 import { EMPTY_SERVER_FORM, type ServerFormValues } from '../server-form.js'
 import { csrfField } from './csrf-field.js'
 import { renderLayout, type CurrentAdmin } from './layout.js'
-import { renderAddDrawer } from './servers-form.js'
+import { renderServerDrawer, type ServerDrawerOptions } from './servers-form.js'
 import { renderServerCard, renderServerDetails, type ServerToolsByName } from './servers-parts.js'
 
 export {
@@ -33,18 +34,31 @@ export {
 /** Longest search query echoed back into the top-bar box. */
 const MAX_ECHOED_QUERY_CHARS = 200
 
+/** The two card layouts of the design's Servers screen. */
+export type ServersViewMode = 'grid' | 'list'
+
+/** The modal drawer's full state, built by the handler. */
+export interface ServerDrawerState extends ServerDrawerOptions {
+  readonly form: ServerFormValues
+}
+
 /** View model for the servers page (built by the handler from the stores). */
 export interface ServersView {
   readonly servers: readonly ServerRecord[]
   readonly canManage: boolean
   readonly csrfToken: string
   readonly currentAdmin: CurrentAdmin
+  /** Shown as a bare alert to a non-owner (owners get it inside the drawer). */
   readonly error?: string
   /**
-   * The add form's state to re-render, already stripped of secret literals by
-   * `echoableServerForm`. Absent on a plain page load (blank form).
+   * The modal drawer's state: mode (add/edit), whether it renders open, the
+   * form values (already echo-safe) and the drawer-local error. Absent →
+   * a closed, blank register drawer (owners always get the node, so the tab
+   * bar's `+` has something to open).
    */
-  readonly form?: ServerFormValues
+  readonly drawer?: ServerDrawerState
+  /** Tiles or list; `?view=list` switches, tiles are the default. */
+  readonly viewMode?: ServersViewMode
   /**
    * Per-server tools from the inventory store. Absent when the handler has no
    * inventory port — the page then renders no tools panels and no counts.
@@ -55,15 +69,32 @@ export interface ServersView {
 }
 
 function navMetaOf(view: ServersView): string {
-  const n = view.servers.length
-  const servers = `${n} ${n === 1 ? 'server' : 'servers'}`
+  const servers = `${view.servers.length} / ${MAX_SERVERS_IN_REGISTRY} servers`
   if (view.tools === undefined) return servers
   let quarantined = 0
   for (const record of view.servers) quarantined += view.tools.get(record.name)?.quarantinedCount ?? 0
   return quarantined > 0 ? `${servers} · ${quarantined} quarantined` : servers
 }
 
-function renderGrid(view: ServersView): Html {
+/** `/servers` with the mode and (when set) the search query preserved. */
+function viewHref(mode: ServersViewMode, view: ServersView): string {
+  const query = new URLSearchParams()
+  if (view.query !== undefined && view.query !== '') query.set('q', view.query)
+  if (mode === 'list') query.set('view', 'list')
+  const qs = query.toString()
+  return qs === '' ? '/servers' : `/servers?${qs}`
+}
+
+/** The design's ▦ / ≡ toggle at the right end of the tab bar. */
+function renderViewToggle(view: ServersView, mode: ServersViewMode): Html {
+  const cell = (m: ServersViewMode, glyph: string, title: string): Html => {
+    const cls = m === mode ? 'is-on' : ''
+    return html`<a class="${cls}" href="${safeUrl(viewHref(m, view))}" title="${title}">${glyph}</a>`
+  }
+  return html`<span class="view-toggle">${cell('grid', '▦', 'Tiles')}${cell('list', '≡', 'List')}</span>`
+}
+
+function renderGrid(view: ServersView, mode: ServersViewMode): Html {
   if (view.servers.length === 0) {
     return html`<p class="empty">No servers registered.</p>`
   }
@@ -77,32 +108,34 @@ function renderGrid(view: ServersView): Html {
       csrfToken: view.csrfToken,
     })
   })
-  return html`<section class="grid grid-cards srv-grid" aria-label="Servers">
+  const viewClass = mode === 'list' ? 'srv-grid view-list' : 'srv-grid view-grid'
+  return html`<section class="${viewClass}" aria-label="Servers">
     ${join(cards)}
     <p class="empty srv-no-match" data-filter-empty hidden>No server matches this search.</p>
   </section>`
 }
 
 /**
- * The owner's controls: the register drawer, forced open (with the error
- * inside it) when the handler is re-rendering a rejected submission.
+ * The owner's modal drawer. Always rendered for an owner (closed and blank
+ * when nothing forced it open) so the tab bar's `+` has a node to open; the
+ * handler forces it open — with the error inside — when re-rendering a
+ * rejected submission, and prefilled for `?add=1` / `?edit=<name>`.
  */
 function renderManage(view: ServersView): Html {
   if (!view.canManage) {
     return view.error !== undefined ? html`<p role="alert">${view.error}</p>` : html``
   }
-  const open = view.error !== undefined || view.form !== undefined
-  return renderAddDrawer(view.csrfToken, view.form ?? EMPTY_SERVER_FORM, {
-    open,
-    ...(view.error !== undefined ? { error: view.error } : {}),
-  })
+  const drawer: ServerDrawerState = view.drawer ?? { mode: 'add', open: false, form: EMPTY_SERVER_FORM }
+  const { form, ...options } = drawer
+  return renderServerDrawer(view.csrfToken, form, options)
 }
 
-/** Renders the `/servers` document: the registry grid plus, for owners, the register drawer. */
+/** Renders the `/servers` document: the card grid/list plus, for owners, the modal drawer. */
 export function renderServersPage(view: ServersView): string {
+  const mode: ServersViewMode = view.viewMode ?? 'grid'
   const content = html`
     ${renderManage(view)}
-    ${renderGrid(view)}
+    ${renderGrid(view, mode)}
   `
   const query = (view.query ?? '').slice(0, MAX_ECHOED_QUERY_CHARS)
   return renderLayout({
@@ -118,8 +151,17 @@ export function renderServersPage(view: ServersView): string {
       clientFilter: true,
       ...(query !== '' ? { value: query } : {}),
     },
-    ...(view.canManage ? { navAction: { title: 'Register a server', targetId: 'add-server' } } : {}),
+    ...(view.canManage
+      ? {
+          navAction: {
+            title: 'Register a server',
+            targetId: 'add-server',
+            href: '/servers?add=1#add-server',
+          },
+        }
+      : {}),
     navMeta: navMetaOf(view),
+    navControls: renderViewToggle(view, mode),
   })
 }
 
@@ -149,6 +191,8 @@ export interface AddConfirmView {
   readonly fields: Readonly<Record<string, string>>
   readonly csrfToken: string
   readonly currentAdmin: CurrentAdmin
+  /** `edit` posts the confirmation to `/servers/edit` and words it as a save. */
+  readonly mode?: 'add' | 'edit'
 }
 
 /**
@@ -163,28 +207,32 @@ export interface AddConfirmView {
  * args and env come from the form and are untrusted for render.
  */
 export function renderAddConfirm(view: AddConfirmView): string {
+  const isEdit = view.mode === 'edit'
   const replay = join(
     Object.entries(view.fields)
       .filter(([key]) => key !== 'csrf_token' && key !== 'confirm')
       .map(([key, value]) => html`<input type="hidden" name="${key}" value="${value}" />`),
   )
+  const heading = isEdit
+    ? html`Save changes to “${view.record.name}”?`
+    : html`Register server “${view.record.name}”?`
   const content = renderInterstitial({
-    heading: html`Register server “${view.record.name}”?`,
+    heading,
     warning: html`<p role="alert">
         The control plane will use this definition to reach the server. A
         <code>stdio</code> server means the plane spawns this exact command on this host.
         Confirm that it is what you intend to run.
       </p>`,
     details: html`<div class="srv-bd srv-confirm-details">${renderServerDetails(view.record)}</div>`,
-    form: html`<form method="post" action="/servers/add">
+    form: html`<form method="post" action="${safeUrl(isEdit ? '/servers/edit' : '/servers/add')}">
         ${csrfField(view.csrfToken)}
         ${replay}
         <input type="hidden" name="confirm" value="true" />
-        <div class="actions"><button type="submit" class="danger">Register it</button></div>
+        <div class="actions"><button type="submit" class="danger">${isEdit ? html`Save it` : html`Register it`}</button></div>
       </form>`,
   })
   return renderLayout({
-    title: 'Register server',
+    title: isEdit ? 'Edit server' : 'Register server',
     content,
     csrfToken: view.csrfToken,
     currentAdmin: view.currentAdmin,

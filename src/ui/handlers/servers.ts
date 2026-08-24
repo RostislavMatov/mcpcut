@@ -11,7 +11,7 @@ import {
   HTTP_STATUS_SEE_OTHER,
 } from '../constants.js'
 import { parseBodyFields, headerValue, type UiHandler, type UiRequestContext, type UiResult } from '../routes.js'
-import { echoableServerForm, splitKeyValueLine } from '../server-form.js'
+import { echoableServerForm, serverRecordToForm, splitKeyValueLine, EMPTY_SERVER_FORM } from '../server-form.js'
 import type { CurrentAdmin } from '../pages/layout.js'
 import {
   renderAddConfirm,
@@ -19,6 +19,7 @@ import {
   renderServersPage,
   renderVaultPage,
   toServerToolsByName,
+  type ServerDrawerState,
   type ServersView,
   type VaultView,
 } from '../pages/servers.js'
@@ -50,7 +51,7 @@ export interface UiAuditEvent {
 }
 
 export interface ServersHandlersDeps {
-  readonly registry: Pick<RegistryStore, 'listServers' | 'addServer' | 'removeServer'>
+  readonly registry: Pick<RegistryStore, 'listServers' | 'addServer' | 'updateServer' | 'removeServer'>
   readonly agents: Pick<AgentsStore, 'listAgents'>
   readonly vault: Pick<VaultStore, 'listSecrets'>
   /** Receives an attributed record of each successful mutation. Optional. */
@@ -68,6 +69,7 @@ export interface ServersHandlersDeps {
 export interface ServersHandlers {
   readonly serversPage: UiHandler
   readonly serversAdd: UiHandler
+  readonly serversEdit: UiHandler
   readonly serversRemove: UiHandler
   readonly vaultPage: UiHandler
 }
@@ -110,13 +112,24 @@ function parseKeyValueLines(block: string | undefined): Record<string, string> |
 function buildCandidate(fields: Readonly<Record<string, string>>): Record<string, unknown> {
   const candidate: Record<string, unknown> = { name: fields.name ?? '', transport: fields.transport ?? '' }
   if (fields.command !== undefined && fields.command !== '') candidate.command = fields.command
-  if (fields.args !== undefined && fields.args !== '') candidate.args = fields.args.split(',')
+  if (fields.args !== undefined && fields.args.trim() !== '') {
+    candidate.args = fields.args
+      .split(/\r?\n/)
+      .map((arg) => arg.trim())
+      .filter((arg) => arg !== '')
+  }
   const env = parseKeyValueLines(fields.env)
   if (env !== undefined) candidate.env = env
   if (fields.url !== undefined && fields.url !== '') candidate.url = fields.url
   const headers = parseKeyValueLines(fields.headers)
   if (headers !== undefined) candidate.headers = headers
-  if (fields.protocol !== undefined && fields.protocol !== '') candidate.protocol = fields.protocol
+  // The protocol radios always post a value (a radio group has a default),
+  // so for a stdio submission the field is form plumbing, not operator input —
+  // including it would make EVERY stdio registration from the browser fail
+  // strict validation with "unrecognized key protocol". Only http owns it.
+  if (fields.transport === 'http' && fields.protocol !== undefined && fields.protocol !== '') {
+    candidate.protocol = fields.protocol
+  }
   return candidate
 }
 
@@ -136,13 +149,37 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
       canManage: ctx.session?.role === 'owner',
       csrfToken: csrfTokenOf(ctx),
       currentAdmin: currentAdminOf(ctx),
+      viewMode: ctx.query.get('view') === 'list' ? 'list' : 'grid',
       ...(inventory !== undefined ? { tools: toServerToolsByName(inventory) } : {}),
       ...(query !== '' ? { query } : {}),
     }
   }
 
+  /**
+   * The drawer state a GET asked for: `?edit=<name>` prefills the edit form
+   * from the STORED record (schema-clean, so echoable as-is); `?add=1` opens
+   * the blank register form — the no-JS path behind the tab bar's `+`.
+   * An unknown edit name falls back to the closed drawer rather than an
+   * error page: the list below still shows what does exist.
+   */
+  function drawerFromQuery(ctx: UiRequestContext, view: ServersView): ServerDrawerState | undefined {
+    if (!view.canManage) return undefined
+    const editName = ctx.query.get('edit')
+    if (editName !== null && editName !== '') {
+      const record = view.servers.find((server) => server.name === editName)
+      if (record === undefined) return undefined
+      return { mode: 'edit', open: true, form: serverRecordToForm(record), editName: record.name }
+    }
+    if (ctx.query.get('add') !== null) {
+      return { mode: 'add', open: true, form: EMPTY_SERVER_FORM }
+    }
+    return undefined
+  }
+
   async function serversPage(ctx: UiRequestContext): Promise<UiResult> {
-    const body = renderServersPage(await baseView(ctx))
+    const view = await baseView(ctx)
+    const drawer = drawerFromQuery(ctx, view)
+    const body = renderServersPage({ ...view, ...(drawer !== undefined ? { drawer } : {}) })
     return { kind: 'response', status: HTTP_STATUS_OK, body }
   }
 
@@ -159,7 +196,28 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
     const body = renderServersPage({
       ...(await baseView(ctx)),
       error,
-      form: echoableServerForm(fields),
+      drawer: { mode: 'add', open: true, form: echoableServerForm(fields), error },
+    })
+    return { kind: 'response', status: HTTP_STATUS_BAD_REQUEST, body }
+  }
+
+  /** A rejected edit: like `rejectedAdd`, but the drawer stays in edit mode. */
+  async function rejectedEdit(
+    ctx: UiRequestContext,
+    fields: Readonly<Record<string, string>>,
+    original: string,
+    error: string,
+  ): Promise<UiResult> {
+    const body = renderServersPage({
+      ...(await baseView(ctx)),
+      error,
+      drawer: {
+        mode: 'edit',
+        open: true,
+        form: echoableServerForm({ ...fields, name: original }),
+        editName: original,
+        error,
+      },
     })
     return { kind: 'response', status: HTTP_STATUS_BAD_REQUEST, body }
   }
@@ -188,6 +246,43 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
       return rejectedAdd(ctx, fields, error instanceof Error ? error.message : String(error))
     }
     audit(ctx, 'server.add', parsed.record.name)
+    return redirect('/servers')
+  }
+
+  /**
+   * Saves an edited definition. The name is NOT editable: whatever the form
+   * posts, the candidate is built with the ORIGINAL name (grants, inventory
+   * and quarantine state are keyed by it — see `registry/store.ts
+   * updateServer`). Validation and the confirmation interstitial mirror the
+   * add flow: editing a stdio command is the same remote-code-execution power
+   * as registering one.
+   */
+  async function serversEdit(ctx: UiRequestContext): Promise<UiResult> {
+    const fields = fieldsOf(ctx)
+    const original = fields.original ?? ''
+    if (original === '') {
+      return { kind: 'response', status: HTTP_STATUS_BAD_REQUEST, body: 'missing original server name' }
+    }
+    const locked: Record<string, string> = { ...fields, name: original }
+    const parsed = parseServerRecord(buildCandidate(locked))
+    if (!parsed.ok) {
+      return rejectedEdit(ctx, fields, original, formatPolicyErrors(parsed.error).join('; '))
+    }
+    if (fields.confirm !== 'true') {
+      const body = renderAddConfirm({
+        record: parsed.record,
+        fields: locked,
+        csrfToken: csrfTokenOf(ctx),
+        currentAdmin: currentAdminOf(ctx),
+        mode: 'edit',
+      })
+      return { kind: 'response', status: HTTP_STATUS_OK, body }
+    }
+    const result = await deps.registry.updateServer(parsed.record)
+    if (result.status === 'not-found') {
+      return { kind: 'response', status: HTTP_STATUS_NOT_FOUND, body: 'unknown server' }
+    }
+    audit(ctx, 'server.update', result.record.name)
     return redirect('/servers')
   }
 
@@ -229,7 +324,7 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
     deps.audit?.({ actor: 'ui', adminName: ctx.session?.adminName ?? '', action, target })
   }
 
-  return { serversPage, serversAdd, serversRemove, vaultPage }
+  return { serversPage, serversAdd, serversEdit, serversRemove, vaultPage }
 }
 
 /** Names of active (non-revoked) agents holding a grant for `serverName`. */
