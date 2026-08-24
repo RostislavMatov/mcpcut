@@ -221,6 +221,43 @@ a.icon.srv-modal-x:hover { border-color: var(--fg); }
 .srv-form .choices { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .srv-form .grp-http .choices { grid-template-columns: repeat(3, 1fr); }
 .srv-form .choices .choice { justify-content: center; }
+/* Args row editor (servers.js enhancement; without JS the textarea stays). */
+.args-field.is-rows > label { display: none; }
+.arg-rows { display: flex; flex-direction: column; gap: 6px; }
+.arg-row {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) 32px;
+  gap: 8px;
+  align-items: center;
+}
+.arg-i { font-size: 11px; color: var(--fg-faint); }
+.arg-x {
+  height: 32px;
+  padding: 0;
+  border: 2px solid var(--line);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.arg-x:hover { border-color: var(--fg); }
+.arg-add {
+  align-self: flex-start;
+  padding: 7px 12px;
+  border: 2px solid var(--fg);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-pixel);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.arg-add:hover { background: var(--fg); color: var(--bg); }
+
 .srv-form .callout { display: block; }
 .srv-form .callout code { border-color: var(--fg); white-space: nowrap; }
 .srv-form .form-actions { display: flex; gap: 10px; }

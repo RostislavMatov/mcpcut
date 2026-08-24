@@ -61,7 +61,7 @@ function renderStdioGroup(form: ServerFormValues): Html {
   return html`<fieldset class="field-group grp grp-stdio">
       <legend class="label">stdio</legend>
       <label><span>command</span><input name="command" value="${form.command}" placeholder="uvx" /></label>
-      <div class="field">
+      <div class="field args-field">
         <label><span>args — one per line</span><textarea name="args" rows="3" placeholder="mcp-server-postgres&#10;--readonly">${form.args}</textarea></label>
         <span class="field-hint">one argument per line — spaces and commas stay inside the argument, never joined</span>
       </div>

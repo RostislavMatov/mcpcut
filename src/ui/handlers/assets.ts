@@ -1,6 +1,7 @@
 import { APP_CSS } from '../assets/app-css.js'
 import { APP_JS } from '../assets/app-js.js'
 import { DASHBOARD_JS } from '../assets/dashboard-js.js'
+import { SERVERS_JS } from '../assets/servers-js.js'
 import type { Asset } from '../assets/asset.js'
 import { FAVICON } from '../assets/favicon.js'
 import { LOGIN_JS } from '../assets/login-js.js'
@@ -43,6 +44,7 @@ const ASSETS: Readonly<Record<string, Asset>> = Object.freeze(
     'app.js': APP_JS,
     'login.js': LOGIN_JS,
     'dashboard.js': DASHBOARD_JS,
+    'servers.js': SERVERS_JS,
     'favicon.svg': FAVICON,
     'silkscreen-400.woff2': SILKSCREEN_400,
     'silkscreen-700.woff2': SILKSCREEN_700,

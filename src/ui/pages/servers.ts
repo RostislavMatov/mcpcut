@@ -162,6 +162,7 @@ export function renderServersPage(view: ServersView): string {
       : {}),
     navMeta: navMetaOf(view),
     navControls: renderViewToggle(view, mode),
+    scripts: ['servers.js'],
   })
 }
 
