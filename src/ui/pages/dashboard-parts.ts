@@ -67,11 +67,27 @@ function rowHref(decision: RecentDecisionView, filter: string | undefined): stri
   return `/?${query.toString()}`
 }
 
+/** The detail card's args-box line: the decision rule plus the args hash. */
+function detailMeta(decision: RecentDecisionView): string {
+  return decision.argsHash !== undefined
+    ? `rule ${decision.rule} · args ${decision.argsHash}`
+    : `rule ${decision.rule}`
+}
+
+/**
+ * The `data-*` payload `assets/dashboard-js.ts` copies into the detail card on
+ * click. Server-rendered and escaped here; the script only moves textContent.
+ */
+function rowDetailData(decision: RecentDecisionView, lat: string): Html {
+  const sessionHref = `/journal?session=${encodeURIComponent(decision.sessionId)}`
+  return html` data-detail-id="${decision.id}" data-server="${decision.serverName}" data-tool="${decision.toolName}" data-caller="${decision.agentName ?? '—'}" data-started="${shortTime(decision.ts)}" data-duration="${lat}" data-status="${decision.outcome.toUpperCase()}" data-meta="${detailMeta(decision)}" data-session-href="${safeUrl(sessionHref)}"`
+}
+
 function renderRow(decision: RecentDecisionView, input: JournalPanelInput): Html {
   const cls = decision.id === input.selectedId ? 'dash-row is-sel' : 'dash-row'
   const lat = decision.durationMs !== undefined ? `${decision.durationMs}ms` : '—'
   const filterText = `${decision.serverName}/${decision.toolName} ${decision.outcome} ${shortTime(decision.ts)}`
-  return html`<a class="${cls}" href="${safeUrl(rowHref(decision, input.filter))}" title="${decision.ts}" data-filter-item data-filter-text="${filterText}">
+  return html`<a class="${cls}" href="${safeUrl(rowHref(decision, input.filter))}" title="${decision.ts}" data-filter-item data-filter-text="${filterText}"${rowDetailData(decision, lat)}>
     <span class="muted num">${shortTime(decision.ts)}</span>
     <span class="ellipsis"><span class="server">${decision.serverName}</span>/<span class="tool-name">${decision.toolName}</span></span>
     <span class="lat num">${lat}</span>
@@ -106,8 +122,8 @@ export function renderJournalPanel(input: JournalPanelInput): Html {
   </section>`
 }
 
-function kv(key: string, value: string): Html {
-  return html`<div class="kv-line"><span class="label">${key}</span><span class="kv-v ellipsis" title="${value}">${value}</span></div>`
+function kv(key: string, value: string, slug: string): Html {
+  return html`<div class="kv-line"><span class="label">${key}</span><span class="kv-v ellipsis" data-d="${slug}" title="${value}">${value}</span></div>`
 }
 
 /** The right "Call detail" panel for the selected row (or its empty state). */
@@ -118,22 +134,18 @@ export function renderCallDetail(decision: RecentDecisionView | undefined): Html
       <p class="empty">Pick a row in the journal to inspect the decision behind it.</p>
     </section>`
   }
-  const meta =
-    decision.argsHash !== undefined
-      ? `rule ${decision.rule} · args ${decision.argsHash}`
-      : `rule ${decision.rule}`
   return html`<section class="panel dash-detail" aria-label="Call detail">
-    <div class="panel-hd"><h2>Call detail</h2><span class="label ellipsis">${decision.id}</span></div>
+    <div class="panel-hd"><h2>Call detail</h2><span class="label ellipsis" data-d="id">${decision.id}</span></div>
     <div class="dash-detail-bd">
       <div class="kv-rows">
-        ${kv('Server', decision.serverName)}
-        ${kv('Tool', decision.toolName)}
-        ${kv('Caller', decision.agentName ?? '—')}
-        ${kv('Started', shortTime(decision.ts))}
-        ${kv('Duration', decision.durationMs !== undefined ? `${decision.durationMs}ms` : '—')}
-        ${kv('Status', decision.outcome.toUpperCase())}
+        ${kv('Server', decision.serverName, 'server')}
+        ${kv('Tool', decision.toolName, 'tool')}
+        ${kv('Caller', decision.agentName ?? '—', 'caller')}
+        ${kv('Started', shortTime(decision.ts), 'started')}
+        ${kv('Duration', decision.durationMs !== undefined ? `${decision.durationMs}ms` : '—', 'duration')}
+        ${kv('Status', decision.outcome.toUpperCase(), 'status')}
       </div>
-      <div class="detail-args num">${meta}</div>
+      <div class="detail-args num" data-d="meta">${detailMeta(decision)}</div>
       <a class="detail-open" href="${safeUrl(`/journal?session=${encodeURIComponent(decision.sessionId)}`)}">Open session in journal</a>
     </div>
   </section>`

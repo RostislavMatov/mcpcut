@@ -230,6 +230,7 @@ export function renderDashboardPage(input: DashboardPageInput): string {
             placeholder: 'search journal — server, tool, status',
             clientFilter: true,
           },
+          scripts: ['dashboard.js'],
         }
       : {}),
   })
