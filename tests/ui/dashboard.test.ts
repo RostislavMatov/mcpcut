@@ -351,3 +351,20 @@ describe('dashboard — hostile values in the new attribute interpolation points
     expect(doc).toContain('&lt;img src=x onerror=alert(1)&gt;')
   })
 })
+
+describe('dashboard — row click enhancement (dashboard.js contract)', () => {
+  test('rows carry the detail data attributes and the page loads dashboard.js', () => {
+    const doc = renderDashboardPage({
+      cards: [],
+      csrfToken: 'c',
+      currentAdmin: { name: 'alice', role: 'owner' },
+      summary: SUMMARY,
+    })
+    expect(doc).toContain('<script src="/assets/dashboard.js" defer></script>')
+    expect(doc).toContain('data-detail-id="r-2026-08-22T10:00:05.000Z"')
+    expect(doc).toContain('data-status="DENY"')
+    expect(doc).toContain('data-session-href="/journal?session=s1"')
+    expect(doc).toContain('data-d="server"')
+    expect(doc).toContain('data-d="meta"')
+  })
+})

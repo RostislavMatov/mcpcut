@@ -122,3 +122,13 @@ describe('favicon (smoke M4: the browser probe answered 403)', () => {
     expect(asResponse(await handler({ ...faviconCtx(), path: '/favicon.ico/../app.js' })).status).toBe(404)
   })
 })
+
+describe('GET /assets/dashboard.js', () => {
+  test('is served from the allowlist with an ETag', () => {
+    const result = handler(ctx('dashboard.js')) as Extract<UiResult, { kind: 'response' }>
+    expect(result.status).toBe(200)
+    expect(result.headers?.['content-type']).toContain('text/javascript')
+    expect(String(result.body)).toContain('dash-detail')
+    expect(String(result.body)).toContain('replaceState')
+  })
+})
