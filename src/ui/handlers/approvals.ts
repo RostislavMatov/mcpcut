@@ -150,11 +150,26 @@ async function loadSummary(ports: DashboardSummaryPorts): Promise<DashboardSumma
   }
 }
 
+/**
+ * A short free-form query parameter (`?server=`, `?sel=`). The page validates
+ * `server` against the registry and `sel` against the rendered rows; here we
+ * only refuse the absurd (empty / oversized) so a hostile query string cannot
+ * bloat the render. Values are escaped at render like everything else.
+ */
+const QUERY_PARAM_MAX_LENGTH = 128
+
+function queryParam(ctx: UiRequestContext, name: string): string | undefined {
+  const value = ctx.query.get(name)
+  return value !== null && value !== '' && value.length <= QUERY_PARAM_MAX_LENGTH ? value : undefined
+}
+
 async function renderPage(deps: ApprovalsHandlerDeps, ctx: UiRequestContext): Promise<UiResult> {
   const view = await loadCards(deps)
   const summary = deps.summary !== undefined ? await loadSummary(deps.summary) : undefined
   const csrfToken = ctx.session?.csrfToken ?? ''
   const currentAdmin = currentAdminOf(ctx.session)
+  const journalServer = queryParam(ctx, 'server')
+  const selectedId = queryParam(ctx, 'sel')
   const html = renderApprovalsPage({
     cards: view.cards,
     totalPending: view.totalPending,
@@ -162,6 +177,8 @@ async function renderPage(deps: ApprovalsHandlerDeps, ctx: UiRequestContext): Pr
     csrfToken,
     ...(currentAdmin !== undefined ? { currentAdmin } : {}),
     ...(summary !== undefined ? { summary } : {}),
+    ...(journalServer !== undefined ? { journalServer } : {}),
+    ...(selectedId !== undefined ? { selectedId } : {}),
   })
   return { kind: 'response', status: HTTP_STATUS_OK, body: html }
 }
