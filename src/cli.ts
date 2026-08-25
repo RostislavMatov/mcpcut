@@ -11,6 +11,7 @@ import { runJournalCommandGroup } from './cli/journal-cmds.js'
 import { runKeygenCommand, type KeygenCommandOptions } from './cli/keygen-cmd.js'
 import { runMigrateCommand, type MigrateCommandOptions } from './cli/migrate-cmd.js'
 import { runPolicyShow, runPolicyValidate, type PolicyCliOptions } from './cli/policy-cmd.js'
+import { runPolicySet } from './cli/policy-set-cmd.js'
 import { runQuarantine, type RunQuarantineOptions } from './cli/quarantine-cmd.js'
 import { runServe, type ServeCommandOptions } from './cli/serve-cmd.js'
 import {
@@ -136,6 +137,7 @@ async function runPolicyCommand(
   const [subcommand, ...rest] = policyArgs
   if (subcommand === 'validate') return runPolicyValidate(rest, io, opts)
   if (subcommand === 'show') return runPolicyShow(rest, io, opts)
+  if (subcommand === 'set') return runPolicySet(rest, io, opts)
   io.stderr.write(
     `${subcommand === undefined ? 'Missing policy subcommand.' : `Unknown policy subcommand: ${subcommand}`}\n\n${USAGE}`,
   )

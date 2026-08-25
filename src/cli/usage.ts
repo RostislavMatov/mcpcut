@@ -37,6 +37,10 @@ export const USAGE = `Usage:
                                          Print the effective policy (defaults applied);
                                          --entry-point resolves the source the way that
                                          entry point does
+  mcp-journal policy set <server> <tool> allow|require-approval|deny|clear [--json]
+                                         Write (or clear) one exact per-tool rule in
+                                         <journal dir>/policy.json (owner token via
+                                         MCP_ADMIN_TOKEN); running proxies reload rules
   mcp-journal quarantine list [--server <name>] [--json]
                                          List quarantined tools
   mcp-journal quarantine approve <server> <tool> | --all --server <name>
