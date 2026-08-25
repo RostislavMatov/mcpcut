@@ -20,7 +20,7 @@ describe('journal handler — McpCut front (structure)', () => {
     const page2 = await bodyOf(await handler(ctx('page=2')))
     expect(page2).toContain('<h1>Call journal</h1>')
     expect(page2).toContain(`${total} sessions`)
-    expect(page2).toMatch(/<span class="meta num">\d+ sessions<\/span>/)
+    expect(page2).toMatch(/<span class="meta num" data-live-text="nav-meta">\d+ sessions<\/span>/)
     expect(page2).toMatch(/<a class="jr-row jr-session[^"]*" href="\/journal\?session=sess-050"/)
     expect(page2).toMatch(/<div class="panel-ft">[\s\S]*<nav class="pager">/)
     expect(page2).toContain('<a class="prev" href="/journal?page=1">Prev</a>')
@@ -48,7 +48,7 @@ describe('journal handler — McpCut front (structure)', () => {
     expect(session).toMatch(/jr-filters[\s\S]*name="q" value="abc"/)
     expect(session).toMatch(/name="tool" value="create_issue"/)
     expect(session).toContain('<h1>Session S1</h1>')
-    expect(session).toMatch(/<span class="meta num">page 1<\/span>/)
+    expect(session).toMatch(/<span class="meta num" data-live-text="nav-meta">page 1<\/span>/)
   })
 
   test('a record row is a <details> disclosure with the payload inside; time is HH:MM:SS with the full ts as title', async () => {
@@ -124,7 +124,7 @@ describe('journal handler — McpCut front (structure)', () => {
       /<a class="session-link[^"]*" href="\/journal\?session=%3Cb%3ES1%3C%2Fb%3E">&lt;b&gt;S1&lt;\/b&gt;<\/a>/,
     )
     expect(body).toContain('<p class="notice complete">Scanned all 2 session file(s).</p>')
-    expect(body).toMatch(/<span class="meta num">1 hit<\/span>/)
+    expect(body).toMatch(/<span class="meta num" data-live-text="nav-meta">1 hit<\/span>/)
   })
 
   test('the invalid-session view is a panel with an error notice and no reflected id', async () => {

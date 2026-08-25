@@ -150,7 +150,7 @@ function visibleNavItems(options: LayoutOptions): readonly NavItem[] {
 function renderTabs(options: LayoutOptions): Html {
   if (options.currentAdmin === undefined) return html``
   const tabs = visibleNavItems(options).map((item) => renderTab(item, options))
-  const meta = options.navMeta !== undefined ? html`<span class="meta num">${options.navMeta}</span>` : html``
+  const meta = options.navMeta !== undefined ? html`<span class="meta num" data-live-text="nav-meta">${options.navMeta}</span>` : html``
   const controls = options.navControls ?? html``
   return html`<nav class="tabs" aria-label="Primary">${tabs}<span class="spacer"></span>${meta}${controls}</nav>`
 }

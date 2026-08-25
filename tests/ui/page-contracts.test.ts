@@ -412,3 +412,193 @@ describe('scripted forms post their hidden fields (quarantine approve/reject)', 
     expect(JS_SOURCE).toMatch(/if \(payload === null\) payload = formPayload\(el\);/)
   })
 })
+
+/**
+ * A scripted action used to `location.reload()` after every 2xx, so each
+ * quarantine approve/reject flashed the whole page even though the list is a
+ * live region the script already knows how to re-fetch. Now a 2xx re-fetches
+ * the enclosing live region IF that region opts in with `data-live-settle`
+ * (the page is fully live: everything the action changes is inside the region
+ * or marked `data-live-text`) and falls back to a reload otherwise — the
+ * dashboard keeps reloading, because its tiles, decisions and servers strip
+ * all sit outside its queue region. Like the badge tests, these run the REAL
+ * functions lifted out of `APP_JS`.
+ */
+describe('scripted actions settle by refreshing an opted-in live region', () => {
+  type Settle = (el: unknown) => Promise<void> | void
+
+  interface SettleHarness {
+    settle: Settle
+    readonly refreshed: unknown[]
+    readonly busy: Array<[unknown, boolean]>
+    reloads: number
+  }
+
+  /** The shipped `settleAction`, with `refreshRegion`, `setBusy` and `window` stubbed. */
+  function loadSettleAction(): SettleHarness {
+    const source = /\n {2}function settleAction\(el\) \{[\s\S]*?\n {2}\}/.exec(JS_SOURCE)?.[0]
+    expect(source, 'settleAction not found in APP_JS').toBeDefined()
+    const harness: SettleHarness = { settle: () => undefined, refreshed: [], busy: [], reloads: 0 }
+    harness.settle = new Function(
+      'refreshRegion',
+      'setBusy',
+      'window',
+      `${source ?? ''}\nreturn settleAction;`,
+    )(
+      (r: unknown) => { harness.refreshed.push(r); return Promise.resolve() },
+      (el: unknown, on: boolean) => { harness.busy.push([el, on]) },
+      { location: { reload: () => { harness.reloads += 1 } } },
+    ) as Settle
+    return harness
+  }
+
+  /** An element whose `closest` answers only a selector that demands the opt-in. */
+  function elementStub(region: unknown, attrs: readonly string[] = []): unknown {
+    return {
+      closest: (selector: string) => (selector.includes('[data-live-settle]') ? region : null),
+      hasAttribute: (name: string) => attrs.includes(name),
+    }
+  }
+
+  test('a 2xx inside an opted-in live region re-fetches it and does not reload', async () => {
+    const h = loadSettleAction()
+    const region = { id: 'quarantine-region' }
+    const el = elementStub(region)
+    await h.settle(el)
+    expect(h.refreshed).toEqual([region])
+    expect(h.reloads).toBe(0)
+    // the control is released once the refresh settled (a failed re-fetch
+    // must not leave it stuck; a successful one replaced it anyway)
+    expect(h.busy).toEqual([[el, false]])
+  })
+
+  test('a 2xx outside an opted-in region still reloads the page', () => {
+    const h = loadSettleAction()
+    h.settle(elementStub(null))
+    expect(h.refreshed).toEqual([])
+    expect(h.reloads).toBe(1)
+  })
+
+  test('data-no-reload suppresses both the refresh and the reload', () => {
+    const h = loadSettleAction()
+    h.settle(elementStub({ id: 'r' }, ['data-no-reload']))
+    expect(h.refreshed).toEqual([])
+    expect(h.reloads).toBe(0)
+  })
+
+  test('runAction settles a 2xx through settleAction and never reloads directly', () => {
+    expect(JS_SOURCE).toMatch(/if \(res\.ok\) \{\s*settleAction\(el\);/)
+    expect(JS_SOURCE.match(/window\.location\.reload\(\)/g)).toHaveLength(1)
+  })
+
+  /**
+   * `disabled` on a <form> disables nothing — and every action form carries
+   * `data-action` on the form. `setBusy` toggles the buttons inside instead.
+   */
+  test('setBusy disables the buttons inside a form, not just the form', () => {
+    const source = /\n {2}function setBusy\(el, busy\) \{[\s\S]*?\n {2}\}/.exec(JS_SOURCE)?.[0]
+    expect(source, 'setBusy not found in APP_JS').toBeDefined()
+    const setBusy = new Function(`${source ?? ''}\nreturn setBusy;`)() as (el: unknown, busy: boolean) => void
+    const button = { disabled: false }
+    const form = { disabled: false, querySelectorAll: () => [button] }
+    setBusy(form, true)
+    expect(button.disabled).toBe(true)
+    setBusy(form, false)
+    expect(button.disabled).toBe(false)
+    expect(JS_SOURCE).toMatch(/setBusy\(el, true\);\s*fetch\(url/)
+    expect(JS_SOURCE).not.toMatch(/el\.setAttribute\("disabled"/)
+  })
+
+  /**
+   * Two re-fetches of one region can now overlap (the operator's own settle
+   * and the SSE watcher's within the same second); a late OLDER response must
+   * not overwrite a newer swap with stale cards.
+   */
+  test('refreshRegion drops a response that a later refresh of the same region superseded', async () => {
+    const source = /\n {2}function refreshRegion\(region\) \{[\s\S]*?\n {2}\}/.exec(JS_SOURCE)?.[0]
+    expect(source, 'refreshRegion not found in APP_JS').toBeDefined()
+    const swaps: string[] = []
+    const pending: Array<(text: string) => void> = []
+    const fetchStub = () =>
+      new Promise<{ ok: boolean; text: () => Promise<string> }>((resolve) => {
+        pending.push((text) => resolve({ ok: true, text: () => Promise.resolve(text) }))
+      })
+    const refreshRegion = new Function(
+      'fetch',
+      'swapRegion',
+      'window',
+      `${source ?? ''}\nreturn refreshRegion;`,
+    )(fetchStub, (_r: unknown, text: string) => { swaps.push(text) }, { location: { href: '/quarantine' } }) as (
+      region: unknown,
+    ) => Promise<void>
+    const attrs: Record<string, string> = {}
+    const region = {
+      getAttribute: (k: string) => attrs[k] ?? null,
+      setAttribute: (k: string, v: string) => { attrs[k] = v },
+    }
+    const first = refreshRegion(region)
+    const second = refreshRegion(region)
+    pending[1]?.('NEWER')
+    await second
+    pending[0]?.('OLDER')
+    await first
+    expect(swaps).toEqual(['NEWER'])
+  })
+
+  /** The shipped `syncLiveText`, run against stub documents. */
+  function loadSyncLiveText(): (scope: unknown, document: unknown) => void {
+    const source = /\n {2}function syncLiveText\(scope\) \{[\s\S]*?\n {2}\}/.exec(JS_SOURCE)?.[0]
+    expect(source, 'syncLiveText not found in APP_JS').toBeDefined()
+    return new Function(
+      'scope',
+      'document',
+      `var cssEscape = function (v) { return v; };\n${source ?? ''}\nsyncLiveText(scope);`,
+    ) as (scope: unknown, document: unknown) => void
+  }
+
+  interface TextNode { key: string; textContent: string }
+  function docStub(nodes: TextNode[]): unknown {
+    return {
+      querySelectorAll: () => nodes.map((n) => ({ getAttribute: () => n.key, get textContent() { return n.textContent }, set textContent(v: string) { n.textContent = v } })),
+      querySelector: (selector: string) => {
+        const key = /data-live-text="([^"]*)"/.exec(selector)?.[1]
+        const hit = nodes.find((n) => n.key === key)
+        return hit === undefined ? null : { textContent: hit.textContent }
+      },
+    }
+  }
+
+  test('every data-live-text node takes its text from the matching node in the fresh document', () => {
+    const live = [{ key: 'quarantine-held', textContent: '3 held' }, { key: 'nav-meta', textContent: '3 held' }]
+    const fresh = docStub([{ key: 'quarantine-held', textContent: '2 held' }, { key: 'nav-meta', textContent: '2 held' }])
+    loadSyncLiveText()(fresh, docStub(live))
+    expect(live.map((n) => n.textContent)).toEqual(['2 held', '2 held'])
+  })
+
+  test('a node with no counterpart in the fresh document keeps its text', () => {
+    const live = [{ key: 'nav-meta', textContent: '3 held' }]
+    loadSyncLiveText()(docStub([]), docStub(live))
+    expect(live[0]?.textContent).toBe('3 held')
+  })
+
+  test('swapRegion syncs live text after swapping the region', () => {
+    expect(JS_SOURCE).toMatch(/region\.innerHTML = fresh\.innerHTML;\s*syncPendingBadge\(doc\);\s*syncLiveText\(doc\);/)
+  })
+
+  test('the quarantine region opts in, and its held count and the nav meta are live-text nodes', () => {
+    const document = renderQuarantinePage({
+      cards: [QUARANTINE_CARD],
+      csrfToken: SESSION.csrfToken,
+      currentAdmin: { name: SESSION.adminName, role: SESSION.role },
+    })
+    expect(document).toMatch(/<section[^>]*data-live-region="quarantine-changed"[^>]*data-live-settle/)
+    expect(document).toMatch(/<span class="small dim num" data-live-text="quarantine-held">1 held<\/span>/)
+    expect(document).toMatch(/<span class="meta num" data-live-text="nav-meta">1 held<\/span>/)
+  })
+
+  test('the approval queue region does NOT opt in — the dashboard around it is not live', () => {
+    const document = renderApprovalsPage({ cards: [APPROVAL_CARD], csrfToken: SESSION.csrfToken })
+    expect(document).toContain('data-live-region="approval-pending approval-resolved"')
+    expect(document).not.toContain('data-live-settle')
+  })
+})
