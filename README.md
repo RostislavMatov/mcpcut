@@ -107,7 +107,11 @@ Dropping a `policy.json` in `./.mcp-journal/policy.json` (project) or
 `~/.mcp-journal/policy.json` (home) turns on enforcement (mode B): every
 `tools/call` is matched against the policy before it reaches the server, and
 `tools/list` results are filtered to what the agent is actually allowed to
-call.
+call. Running proxies re-read the policy file when it changes (checked
+before each decision, at most every 250 ms), so a rule edit — by hand, from
+the admin UI or via `policy set` — takes effect on the next call without a
+restart; a broken edit leaves the last valid policy in force and is reported
+loudly on stderr rather than silently relaxing anything.
 
 Resolution order (first found wins, **no merging** across sources):
 `--policy <path>` → `$MCP_JOURNAL_POLICY` → `./.mcp-journal/policy.json` →
@@ -454,12 +458,21 @@ Its state lives in `~/.mcp-journal/`:
 | `journal.db` | The journal (`journal_records` table), plus a marker of which legacy `*.jsonl` files have been imported | the proxy; `mcp-journal migrate` |
 | `registry.json`, `agents.json`, `admins.json`, `tool-inventory.json`, `approvals/` | Legacy pre-M4.5 files — read once into `state.db` (by `migrate`, or lazily on first touch), then left untouched as a cold backup | — (historical; no longer written) |
 | `vault.enc`, `vault.key` | Secrets encrypted with AES-256-GCM, plus the master key | `mcp-journal vault ...` |
-| `policy.json` | Allow / deny / require-approval rules | **you**, by hand |
+| `policy.json` | Allow / deny / require-approval rules | **you**, by hand; per-tool rules also from the admin UI (Servers card) and `mcp-journal policy set` |
 | `<sessionId>.jsonl` | Legacy journal (pre-M4.5), read only via `mcp-journal migrate`; the proxy no longer writes this format | — (historical; no longer written) |
 
-`policy.json` stays the one hand-edited file on purpose. The registry, the
-vault and the grant matrix change often, and a typo in any of them is a
-security problem rather than a syntax error — so they are CLI-managed.
+`policy.json` stays a plain file on purpose, and it stays hand-editable. The
+admin UI (Servers card) and `mcp-journal policy set` are just two more writers
+of the same file: they set one tool's rule (`allow` / `deny` /
+`require-approval`, or clear it), validate the result before writing, write
+atomically, refuse if the file changed on disk since the page was rendered, and
+record every edit in the journal with the admin's name and the policy hash
+before/after. Running proxies pick up rule changes without a restart. A few
+settings are wired in at startup and still need a restart to change: approval
+timeouts, grant TTL, `journal.failClosed` and `quarantine.enabled`
+(`policy show` says which is which). The registry, the vault and the grant
+matrix change often, and a typo in any of them is a security problem rather
+than a syntax error — so they are CLI-managed.
 
 ### Onboarding an agent
 
