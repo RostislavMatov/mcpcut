@@ -13,9 +13,14 @@ export const USAGE = `Usage:
   mcp-journal admin list|remove <name>|rotate <name>|role <name> <role>
                                          Inspect or edit admin identities
   mcp-journal server add <name> --transport stdio|http ...
-                                         Register an MCP server (see server add --help)
+                                         Register an MCP server (see server add --help);
+                                         probes it once right after registration
   mcp-journal server list|show <name>|remove <name>
-                                         Inspect or edit the server registry
+                                         Inspect or edit the server registry; list and show
+                                         print liveness + latency, probing stale servers
+  mcp-journal server refresh <name>     Force a probe of one server, re-shooting tools/list
+                                         (personal admin token via MCP_ADMIN_TOKEN, role
+                                         operator or owner; exit 0 alive / 1 otherwise)
   mcp-journal vault init|set <name>|list|remove <name>|rekey
                                          Manage the encrypted secrets vault (set reads stdin)
   mcp-journal agent create <name>       Create an agent identity (prints its token once)

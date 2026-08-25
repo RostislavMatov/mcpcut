@@ -3,13 +3,21 @@ import { formatReadableField } from '../journal/format.js'
 import { formatPolicyErrors } from '../policy/load.js'
 import { parseServerRecord, type ServerRecord } from '../registry/schema.js'
 import { createRegistryStore, type RegistryStore } from '../registry/store.js'
+import {
+  printProbedStatus,
+  printRegistrationProbe,
+  probeListStatusCells,
+  type ServerProbeOptions,
+} from './server-status-cmd.js'
 
 /**
  * `server add|list|show|remove` — CLI management of the MCP server registry
  * (`registry/store.ts`). Same shape as `policy-cmd.ts`: plain exported
  * functions returning an exit code, with injectable io and journal dir, so
  * `src/cli.ts` can dispatch into them (Wave 4) and tests can drive them
- * without touching real streams.
+ * without touching real streams. Since M5.5 п.1 (ADR-0008) `list` and `show`
+ * also probe stale servers and `add` probes right after registration —
+ * `server refresh` and the probe helpers live in `server-status-cmd.ts`.
  *
  * `server show` prints env/header values exactly as stored: the schema
  * guarantees the registry never holds a secret literal (vault references are
@@ -29,6 +37,10 @@ export interface ServerCliIo {
 export interface ServerCliOptions {
   /** Directory holding `registry.json`. Defaults to `JOURNAL_DIR`. */
   readonly journalDir?: string
+  /** Environment holding `MCP_ADMIN_TOKEN` for probe attribution (the `approvals-cmd.ts` seam). Defaults to `process.env`. */
+  readonly env?: NodeJS.ProcessEnv
+  /** Probe seams for tests (engine stub, horizons, list deadline, clock). */
+  readonly probes?: ServerProbeOptions
 }
 
 const DEFAULT_IO: ServerCliIo = { stdout: process.stdout, stderr: process.stderr }
@@ -44,11 +56,11 @@ const ADD_USAGE = `Usage:
 `
 
 const LIST_USAGE = `Usage:
-  server list   List registered servers
+  server list   List registered servers with live status (stale servers are probed)
 `
 
 const SHOW_USAGE = `Usage:
-  server show <name>   Print the full registry record for one server
+  server show <name>   Print the full registry record and current status for one server
 `
 
 const REMOVE_USAGE = `Usage:
@@ -224,6 +236,10 @@ export async function runServerAdd(
     return 1
   }
   io.stdout.write(`added server "${result.record.name}" (${result.record.transport})\n`)
+  // One forced probe with `tools/list` right after registration (O8,
+  // ADR-0008): liveness — or why the plane could not even try — without a
+  // single agent call. The record is already written; exit stays 0.
+  await printRegistrationProbe(result.record.name, io, opts)
   return 0
 }
 
@@ -235,18 +251,24 @@ function listTarget(record: ServerRecord): string {
   return formatReadableField(shortened)
 }
 
-function formatServerTable(records: readonly ServerRecord[]): string {
+function formatServerTable(records: readonly ServerRecord[], statusCells: readonly string[]): string {
   const rows = [
-    ['NAME', 'TRANSPORT', 'TARGET'],
-    ...records.map((record) => [record.name, record.transport, listTarget(record)]),
+    ['NAME', 'TRANSPORT', 'TARGET', 'STATUS'],
+    ...records.map((record, index) => [record.name, record.transport, listTarget(record), statusCells[index] ?? '']),
   ]
-  const widths = [0, 1].map((column) => Math.max(...rows.map((row) => (row[column] ?? '').length)))
+  const widths = [0, 1, 2].map((column) => Math.max(...rows.map((row) => (row[column] ?? '').length)))
+  const cell = (row: readonly string[], column: number): string =>
+    (row[column] ?? '').padEnd(widths[column] ?? 0)
   return `${rows
-    .map((row) => `${(row[0] ?? '').padEnd(widths[0] ?? 0)}  ${(row[1] ?? '').padEnd(widths[1] ?? 0)}  ${row[2] ?? ''}`)
+    .map((row) => `${cell(row, 0)}  ${cell(row, 1)}  ${cell(row, 2)}  ${row[3] ?? ''}`)
     .join('\n')}\n`
 }
 
-/** `server list`: table of registered servers (name, transport, command/url). */
+/**
+ * `server list`: registry table plus a live STATUS column — stale servers
+ * are probed concurrently under the shared deadline first (owner decision
+ * 2026-08-24: list PROBES, like `claude mcp list`); fresh come from the store.
+ */
 export async function runServerList(
   args: string[],
   io: ServerCliIo = DEFAULT_IO,
@@ -271,7 +293,8 @@ export async function runServerList(
     io.stdout.write('(no servers registered)\n')
     return 0
   }
-  io.stdout.write(formatServerTable(records))
+  const statusCells = await probeListStatusCells(records.map((record) => record.name), io, opts)
+  io.stdout.write(formatServerTable(records, statusCells))
   return 0
 }
 
@@ -340,6 +363,9 @@ export async function runServerShow(
     return 1
   }
   io.stdout.write(formatServerRecord(record))
+  // A stale status is refreshed by one synchronous probe (bounded by the
+  // probe timeout); a fresh one is printed straight from the store (O1/O2).
+  await printProbedStatus(record.name, io, opts)
   return 0
 }
 

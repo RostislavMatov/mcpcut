@@ -2,12 +2,21 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { createAdminStore } from '../../src/admin/store.js'
 import {
   runServerAdd,
   runServerList,
   runServerRemove,
   runServerShow,
+  type ServerCliOptions,
 } from '../../src/cli/server-cmd.js'
+import { runServerRefresh, type ServerProbeOptions } from '../../src/cli/server-status-cmd.js'
+import type { DecisionInfo, JournalRecord } from '../../src/journal/record.js'
+import { createJournalSink } from '../../src/journal/sink.js'
+import { PROBE_MAX_CONCURRENT } from '../../src/probe/constants.js'
+import type { ProbeResult } from '../../src/probe/engine.js'
+import { PROBING_MARKER_FRESH_FOR_MS, type RunProbeFn } from '../../src/probe/orchestrator.js'
+import { createServerStatusStore } from '../../src/probe/status-store.js'
 import { REGISTRY_FILE_NAME } from '../../src/registry/constants.js'
 import { createRegistryStore } from '../../src/registry/store.js'
 
@@ -38,7 +47,68 @@ function fakeIo(): {
   }
 }
 
-const opts = () => ({ journalDir })
+const ALIVE_RESULT: ProbeResult = {
+  status: 'alive',
+  initializeLatencyMs: 34,
+  probedVia: 'initialize',
+}
+
+/**
+ * Every test injects a probe engine stub: the real engine would spawn the
+ * registered command or hit the registered URL over the network — neither
+ * belongs in a unit test (and the http fixtures point at example.com).
+ */
+function stubProbe(result: ProbeResult = ALIVE_RESULT): RunProbeFn {
+  return async () => result
+}
+
+/** A probe spy recording every engine call (server name + withTools). */
+function spyProbe(result: ProbeResult = ALIVE_RESULT): {
+  runProbe: RunProbeFn
+  calls: Array<{ name: string; withTools: boolean }>
+} {
+  const calls: Array<{ name: string; withTools: boolean }> = []
+  return {
+    calls,
+    runProbe: async (record, o) => {
+      calls.push({ name: record.name, withTools: o.withTools })
+      return result
+    },
+  }
+}
+
+const opts = (
+  extra: { probes?: Partial<ServerProbeOptions>; env?: NodeJS.ProcessEnv } = {},
+): ServerCliOptions => ({
+  journalDir,
+  env: extra.env ?? {},
+  probes: { runProbe: stubProbe(), ...(extra.probes ?? {}) },
+})
+
+/** Registers a server directly through the store — no CLI, no registration probe. */
+async function seedServer(name: string): Promise<void> {
+  await createRegistryStore(journalDir).addServer({ name, transport: 'stdio', command: 'node' })
+}
+
+/** Writes a fresh alive entry (12ms) straight into the status store; `agoMs` shifts its clock back. */
+async function seedAliveStatus(name: string, agoMs = 0): Promise<void> {
+  const store = createServerStatusStore({
+    journalDir,
+    probingFreshForMs: PROBING_MARKER_FRESH_FOR_MS,
+    now: () => Date.now() - agoMs,
+  })
+  await store.recordResult(
+    name,
+    { status: 'alive', probedVia: 'initialize', initializeLatencyMs: 12 },
+    { initiator: { trigger: 'refresh' } },
+  )
+}
+
+/** Reads one server's persisted status entry back for attribution assertions. */
+async function storedStatusOf(name: string): Promise<unknown> {
+  const store = createServerStatusStore({ journalDir, probingFreshForMs: PROBING_MARKER_FRESH_FOR_MS })
+  return store.getStatus(name)
+}
 
 const ADD_GITHUB = [
   'github',
@@ -346,5 +416,373 @@ describe('server remove', () => {
 
     expect(exitCode).toBe(1)
     expect(io.err()).toContain('corrupt')
+  })
+})
+
+/** ISO timestamp of a moment `ms` before now. */
+function isoAgo(ms: number): string {
+  return new Date(Date.now() - ms).toISOString()
+}
+
+/** Seeds one allowed decision for `serverName` into journal.db through the real sink. */
+async function seedAllowedDecision(serverName: string, agoMs: number): Promise<void> {
+  const decision: DecisionInfo = {
+    outcome: 'allow',
+    rule: 'classDefaults.read',
+    serverName,
+    toolName: 'list_issues',
+    toolClass: 'read',
+    quarantineState: 'known',
+    argsHash: 'sha256:abc',
+  }
+  const record: JournalRecord = {
+    id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    ts: isoAgo(agoMs),
+    sessionId: 'session-1',
+    direction: 'client→server',
+    kind: 'decision',
+    payload: null,
+    decision,
+  }
+  const sink = createJournalSink('session-1', { dir: journalDir })
+  sink.write(record)
+  await sink.close()
+}
+
+/** Mints an admin and returns an env carrying their personal token. */
+async function adminEnv(name: string, role: 'owner' | 'operator' | 'viewer'): Promise<NodeJS.ProcessEnv> {
+  const { token } = await createAdminStore({ journalDir }).createAdmin(name, role)
+  return { MCP_ADMIN_TOKEN: token }
+}
+
+describe('server list status column (M5.5 п.1, Task 8)', () => {
+  test('stale servers are probed and the table shows ✓ with latency', async () => {
+    await seedServer('github')
+    const spy = spyProbe()
+    const io = fakeIo()
+
+    const exitCode = await runServerList([], io, opts({ probes: { runProbe: spy.runProbe } }))
+
+    expect(exitCode).toBe(0)
+    expect(spy.calls).toHaveLength(1)
+    expect(io.out()).toContain('STATUS')
+    expect(io.out()).toContain('✓ 34ms')
+  })
+
+  test('a lazy list probe does not re-shoot tools/list (withTools false)', async () => {
+    await seedServer('github')
+    const spy = spyProbe()
+
+    await runServerList([], fakeIo(), opts({ probes: { runProbe: spy.runProbe } }))
+
+    expect(spy.calls).toEqual([{ name: 'github', withTools: false }])
+  })
+
+  test('a fresh stored status is printed from the store without probing', async () => {
+    await seedServer('github')
+    await seedAliveStatus('github')
+    const spy = spyProbe()
+    const io = fakeIo()
+
+    const exitCode = await runServerList([], io, opts({ probes: { runProbe: spy.runProbe } }))
+
+    expect(exitCode).toBe(0)
+    expect(spy.calls).toHaveLength(0)
+    expect(io.out()).toContain('✓ 12ms')
+    expect(io.out()).not.toContain('(stale)')
+  })
+
+  test('fresh journal traffic serves as the status without probing', async () => {
+    await seedServer('github')
+    await seedAllowedDecision('github', 5 * 60_000)
+    const spy = spyProbe()
+    const io = fakeIo()
+
+    const exitCode = await runServerList([], io, opts({ probes: { runProbe: spy.runProbe } }))
+
+    expect(exitCode).toBe(0)
+    expect(spy.calls).toHaveLength(0)
+    expect(io.out()).toContain('✓ traffic')
+  })
+
+  test('a failed probe renders ✗ with the verdict; the command still exits 0', async () => {
+    await seedServer('github')
+    const io = fakeIo()
+
+    const exitCode = await runServerList(
+      [],
+      io,
+      opts({ probes: { runProbe: stubProbe({ status: 'unreachable', message: 'no answer' }) } }),
+    )
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain('✗ unreachable')
+  })
+
+  test('N stale servers: at most the cap probes at once, and the command returns by the shared deadline, not N×timeout', async () => {
+    for (const name of ['a1', 'a2', 'a3', 'a4', 'a5']) {
+      await seedServer(name)
+    }
+    await seedServer('zzz')
+    await seedAliveStatus('zzz', 2 * 3_600_000)
+    let active = 0
+    let maxActive = 0
+    const runProbe: RunProbeFn = () => {
+      active += 1
+      maxActive = Math.max(maxActive, active)
+      return new Promise<ProbeResult>(() => {}) // never settles — a hung server
+    }
+    const io = fakeIo()
+    const startedAt = Date.now()
+
+    const exitCode = await runServerList(
+      [],
+      io,
+      opts({ probes: { runProbe, listDeadlineMs: 150 } }),
+    )
+
+    expect(exitCode).toBe(0)
+    expect(Date.now() - startedAt).toBeLessThan(2_000)
+    expect(maxActive).toBe(PROBE_MAX_CONCURRENT)
+    expect(io.out()).toContain('probing')
+    // The queued-out server keeps its old entry, marked as stale.
+    expect(io.out()).toContain('✓ 12ms (stale)')
+  })
+
+  test('MCP_ADMIN_TOKEN attributes the lazy probe to the named admin', async () => {
+    await seedServer('github')
+    const env = await adminEnv('alice', 'viewer')
+
+    await runServerList([], fakeIo(), opts({ env }))
+
+    expect(await storedStatusOf('github')).toMatchObject({
+      status: 'alive',
+      initiator: { trigger: 'lazy', adminName: 'alice' },
+    })
+  })
+
+  test('without a token the lazy probe stays unattributed and list still works', async () => {
+    await seedServer('github')
+    const io = fakeIo()
+
+    const exitCode = await runServerList([], io, opts())
+
+    expect(exitCode).toBe(0)
+    expect(await storedStatusOf('github')).toMatchObject({ initiator: { trigger: 'lazy' } })
+    const stored = (await storedStatusOf('github')) as { initiator: Record<string, unknown> }
+    expect(stored.initiator['adminName']).toBeUndefined()
+  })
+})
+
+describe('server show status (M5.5 п.1, Task 8)', () => {
+  test('a stale status triggers a synchronous probe and the fresh result is printed', async () => {
+    await seedServer('github')
+    const spy = spyProbe()
+    const io = fakeIo()
+
+    const exitCode = await runServerShow(['github'], io, opts({ probes: { runProbe: spy.runProbe } }))
+
+    expect(exitCode).toBe(0)
+    expect(spy.calls).toHaveLength(1)
+    expect(io.out()).toContain('status: alive')
+    expect(io.out()).toContain('34ms')
+    expect(io.out()).toContain('initialize')
+  })
+
+  test('a fresh status is printed without probing', async () => {
+    await seedServer('github')
+    await seedAliveStatus('github')
+    const spy = spyProbe()
+    const io = fakeIo()
+
+    const exitCode = await runServerShow(['github'], io, opts({ probes: { runProbe: spy.runProbe } }))
+
+    expect(exitCode).toBe(0)
+    expect(spy.calls).toHaveLength(0)
+    expect(io.out()).toContain('12ms')
+  })
+
+  test('vault-refused is printed with its reason (names, never values)', async () => {
+    await seedServer('github')
+    const io = fakeIo()
+
+    const exitCode = await runServerShow(
+      ['github'],
+      io,
+      opts({
+        probes: {
+          runProbe: stubProbe({
+            status: 'vault-refused',
+            message: 'secret "github-pat" is not in the vault',
+          }),
+        },
+      }),
+    )
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain('vault-refused')
+    expect(io.out()).toContain('github-pat')
+  })
+})
+
+describe('server refresh (M5.5 п.1, Task 8)', () => {
+  test('without MCP_ADMIN_TOKEN it refuses with a hint and probes nothing', async () => {
+    await seedServer('github')
+    const spy = spyProbe()
+    const io = fakeIo()
+
+    const exitCode = await runServerRefresh(['github'], io, opts({ probes: { runProbe: spy.runProbe } }))
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('MCP_ADMIN_TOKEN')
+    expect(spy.calls).toHaveLength(0)
+  })
+
+  test('a viewer token is refused naming the required role', async () => {
+    await seedServer('github')
+    const env = await adminEnv('vera', 'viewer')
+    const spy = spyProbe()
+    const io = fakeIo()
+
+    const exitCode = await runServerRefresh(
+      ['github'],
+      io,
+      opts({ env, probes: { runProbe: spy.runProbe } }),
+    )
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('operator')
+    expect(spy.calls).toHaveLength(0)
+  })
+
+  test('an operator token probes with tools/list, prints the outcome and exits 0 when alive', async () => {
+    await seedServer('github')
+    const env = await adminEnv('olga', 'operator')
+    const spy = spyProbe()
+    const io = fakeIo()
+
+    const exitCode = await runServerRefresh(
+      ['github'],
+      io,
+      opts({ env, probes: { runProbe: spy.runProbe } }),
+    )
+
+    expect(exitCode).toBe(0)
+    expect(spy.calls).toEqual([{ name: 'github', withTools: true }])
+    expect(io.out()).toContain('alive')
+    expect(io.out()).toContain('34ms')
+    expect(await storedStatusOf('github')).toMatchObject({
+      initiator: { trigger: 'refresh', adminName: 'olga' },
+    })
+  })
+
+  test('a non-alive outcome prints its reason and exits 1', async () => {
+    await seedServer('github')
+    const env = await adminEnv('olga', 'operator')
+    const io = fakeIo()
+
+    const exitCode = await runServerRefresh(
+      ['github'],
+      io,
+      opts({ env, probes: { runProbe: stubProbe({ status: 'unreachable', message: 'no answer within 10000ms' }) } }),
+    )
+
+    expect(exitCode).toBe(1)
+    expect(io.out()).toContain('unreachable')
+    expect(io.out()).toContain('no answer within 10000ms')
+  })
+
+  test('newly quarantined tools are printed once; an unchanged schemaHash is not re-quarantined', async () => {
+    await seedServer('github')
+    const env = await adminEnv('olga', 'operator')
+    const withTools: ProbeResult = {
+      ...ALIVE_RESULT,
+      tools: [{ name: 'do_thing', description: 'd', inputSchema: { type: 'object' } }],
+    }
+    const first = fakeIo()
+    const second = fakeIo()
+
+    await runServerRefresh(['github'], first, opts({ env, probes: { runProbe: stubProbe(withTools) } }))
+    await runServerRefresh(['github'], second, opts({ env, probes: { runProbe: stubProbe(withTools) } }))
+
+    expect(first.out()).toContain('quarantined: do_thing')
+    expect(second.out()).not.toContain('do_thing')
+  })
+
+  test('an unknown server exits 1 naming it', async () => {
+    const env = await adminEnv('olga', 'operator')
+    const io = fakeIo()
+
+    const exitCode = await runServerRefresh(['nope'], io, opts({ env }))
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('nope')
+  })
+
+  test('missing name prints usage, exit 1', async () => {
+    const io = fakeIo()
+
+    const exitCode = await runServerRefresh([], io, opts())
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('Usage')
+  })
+})
+
+describe('server add auto-probe (M5.5 п.1, Task 8)', () => {
+  test('a successful add probes the server with registration attribution and prints the result', async () => {
+    const spy = spyProbe()
+    const io = fakeIo()
+
+    const exitCode = await runServerAdd(ADD_GITHUB, io, opts({ probes: { runProbe: spy.runProbe } }))
+
+    expect(exitCode).toBe(0)
+    expect(spy.calls).toEqual([{ name: 'github', withTools: true }])
+    expect(io.out()).toContain('probe:')
+    expect(io.out()).toContain('alive')
+    expect(io.out()).toContain('34ms')
+    expect(await storedStatusOf('github')).toMatchObject({ initiator: { trigger: 'registration' } })
+  })
+
+  test('MCP_ADMIN_TOKEN attributes the registration probe by name', async () => {
+    const env = await adminEnv('oskar', 'owner')
+
+    await runServerAdd(ADD_GITHUB, fakeIo(), opts({ env }))
+
+    expect(await storedStatusOf('github')).toMatchObject({
+      initiator: { trigger: 'registration', adminName: 'oskar' },
+    })
+  })
+
+  test('vault-refused: the server IS registered and the probe explains why it could not try; exit stays 0', async () => {
+    const io = fakeIo()
+
+    const exitCode = await runServerAdd(
+      ADD_GITHUB,
+      io,
+      opts({
+        probes: {
+          runProbe: stubProbe({
+            status: 'vault-refused',
+            message: 'secret "github-pat" is not in the vault',
+          }),
+        },
+      }),
+    )
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain('vault-refused')
+    expect(io.out()).toContain('github-pat')
+    expect(await createRegistryStore(journalDir).getServer('github')).toBeDefined()
+  })
+
+  test('a failed add probes nothing', async () => {
+    await runServerAdd(ADD_GITHUB, fakeIo(), opts())
+    const spy = spyProbe()
+
+    const exitCode = await runServerAdd(ADD_GITHUB, fakeIo(), opts({ probes: { runProbe: spy.runProbe } }))
+
+    expect(exitCode).toBe(1)
+    expect(spy.calls).toHaveLength(0)
   })
 })
