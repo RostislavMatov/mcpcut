@@ -6,8 +6,18 @@ import { renderAgentsPage } from '../../src/ui/pages/agents.js'
 import { renderApprovalsPage, type ApprovalCardView } from '../../src/ui/pages/approvals.js'
 import { renderLoginPage } from '../../src/ui/pages/login.js'
 import { renderQuarantinePage, type QuarantineCardView } from '../../src/ui/pages/quarantine.js'
-import { renderRemoveWarning, renderServersPage, renderVaultPage } from '../../src/ui/pages/servers.js'
+import {
+  renderRemoveWarning,
+  renderServersPage,
+  renderVaultPage,
+  toServerToolsByName,
+  type ServersView,
+} from '../../src/ui/pages/servers.js'
+import { serverToolsRegionKey } from '../../src/ui/pages/servers-tool-rule.js'
 import type { UiSession } from '../../src/ui/auth.js'
+import type { PolicyView } from '../../src/policy/edit/policy-view.js'
+import { parsePolicy } from '../../src/policy/schema.js'
+import { policyHashOf } from '../../src/policy/provenance.js'
 
 /**
  * Contract tests between the server-rendered pages and the client script
@@ -53,9 +63,53 @@ const QUARANTINE_CARD: QuarantineCardView = {
   truncated: false,
 }
 
+const POLICY_DOCUMENT = { version: 1, servers: { github: { tools: { create_issue: 'deny' } } } }
+const POLICY = (() => {
+  const parsed = parsePolicy(POLICY_DOCUMENT)
+  if (!parsed.ok) throw new Error('bad policy fixture')
+  return parsed.policy
+})()
+const POLICY_VIEW: PolicyView = {
+  status: 'loaded',
+  policy: POLICY,
+  hash: policyHashOf(POLICY),
+  sourcePath: '/state/policy.json',
+}
+
+/** The servers page with an inventory and a loaded policy: tools panels, rule pills and controls. */
+function serversWithRules(): ServersView {
+  const inventory = {
+    version: 1 as const,
+    servers: {
+      github: {
+        approved: { create_issue: { schemaHash: 'h', approvedAt: '2026-08-01T00:00:00.000Z' } },
+        quarantined: {},
+      },
+    },
+  }
+  return {
+    servers: [{ name: 'github', transport: 'stdio', command: 'gh-mcp' }],
+    canManage: true,
+    csrfToken: SESSION.csrfToken,
+    currentAdmin: { name: SESSION.adminName, role: SESSION.role },
+    tools: toServerToolsByName(inventory, POLICY),
+    policyView: POLICY_VIEW,
+  }
+}
+
+/**
+ * A live region that names no SSE topic and carries `data-live-settle` is
+ * settle-only: nothing publishes to it, an action inside it re-fetches it.
+ * The per-server tools panel (`server-tools:<name>`) is the one such region.
+ */
+function isSettleOnlyRegion(key: string): boolean {
+  return key === serverToolsRegionKey(key.slice('server-tools:'.length)) && key.startsWith('server-tools:')
+}
+
 /** Every page document the UI can serve, rendered with a representative view. */
 function allPages(): ReadonlyArray<{ readonly name: string; readonly html: string }> {
   return [
+    { name: 'servers-rules', html: renderServersPage(serversWithRules()) },
     {
       name: 'approvals',
       html: renderApprovalsPage({ cards: [APPROVAL_CARD], csrfToken: SESSION.csrfToken }),
@@ -193,10 +247,44 @@ describe('live-region attributes match what APP_JS consumes (M-3)', () => {
     expect(topics.length).toBeGreaterThan(0)
     for (const page of allPages()) {
       for (const value of attributeValues(page.html, 'data-live-region')) {
+        if (isSettleOnlyRegion(value)) {
+          expect(page.html, `${page.name}: settle-only region "${value}" must opt in`).toMatch(
+            new RegExp(`data-live-region="${value}"[^>]*data-live-settle`),
+          )
+          continue
+        }
         for (const topic of value.split(/\s+/).filter((entry) => entry !== '')) {
           expect(topics, `${page.name}: topic "${topic}"`).toContain(topic)
         }
       }
+    }
+  })
+
+  test('the servers tools panel is a settle-only region keyed per server, re-fetched from /servers', () => {
+    const document = renderServersPage(serversWithRules())
+    const regions = attributeValues(document, 'data-live-region')
+    expect(regions).toEqual(['server-tools:github'])
+    expect(document).toMatch(/<div class="rows srv-tool-rows" data-live-region="server-tools:github" data-live-src="\/servers" data-live-settle>/)
+    // `swapRegion` finds the region again in the refetched document by its
+    // exact key, through the script's own cssEscape — a colon needs none.
+    expect(JS_SOURCE).toContain(`'[data-live-region="' + cssEscape(key) + '"]'`)
+    expect(regions[0]).not.toMatch(/["\\]/)
+    // The region is inside the <details>, so a swap never closes the panel.
+    expect(document).toMatch(/<details class="disclosure srv-tools">[\s\S]*?data-live-region="server-tools:github"[\s\S]*?<\/details>/)
+  })
+
+  test('every rule form carries the same encoded path in action and data-action, plus the CAS token', () => {
+    const document = renderServersPage(serversWithRules())
+    const forms = document.match(/<form[^>]*srv-rule-form[^>]*>[\s\S]*?<\/form>/g) ?? []
+    expect(forms.length).toBe(4) // allow · approval · deny · reset (an exact rule exists)
+    for (const form of forms) {
+      const action = /action="([^"]*)"/.exec(form)?.[1]
+      const dataAction = /data-action="([^"]*)"/.exec(form)?.[1]
+      expect(action).toBe('/servers/github/tools/create_issue/rule')
+      expect(dataAction).toBe(action)
+      expect(matchRoute('POST', action ?? '')).not.toBeNull()
+      expect(form).toContain('name="csrf_token"')
+      expect(form).toContain(`name="expected_hash" value="${POLICY_VIEW.hash}"`)
     }
   })
 

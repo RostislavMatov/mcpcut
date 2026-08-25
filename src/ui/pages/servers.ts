@@ -1,12 +1,14 @@
 import { MAX_SERVERS_IN_REGISTRY } from '../../registry/constants.js'
 import type { ServerRecord } from '../../registry/schema.js'
 import type { SecretInfo } from '../../vault/store.js'
+import type { PolicyView } from '../../policy/edit/policy-view.js'
 import { html, join, safeUrl, type Html } from '../html.js'
 import { EMPTY_SERVER_FORM, type ServerFormValues } from '../server-form.js'
 import { csrfField } from './csrf-field.js'
 import { renderLayout, type CurrentAdmin } from './layout.js'
 import { renderServerDrawer, type ServerDrawerOptions } from './servers-form.js'
 import { renderServerCard, renderServerDetails, type ServerToolsByName } from './servers-parts.js'
+import { renderPolicyBanner, renderPolicySources, ruleControlsOf, toolsNoteOf } from './servers-policy-view.js'
 import type { ServerStatusesByName } from './servers-status.js'
 
 export {
@@ -86,6 +88,11 @@ export interface ServersView {
   readonly canRefresh?: boolean
   /** The `q` query, echoed into the search box (the client filter applies it on load). */
   readonly query?: string
+  /**
+   * The policy as read for the UI (ADR-0009, the ADR-0005 sources panel).
+   * Absent when the handler has no policy port — no pills, no controls.
+   */
+  readonly policyView?: PolicyView
 }
 
 function navMetaOf(view: ServersView): string {
@@ -118,6 +125,8 @@ function renderGrid(view: ServersView, mode: ServersViewMode): Html {
   if (view.servers.length === 0) {
     return html`<p class="empty">No servers registered.</p>`
   }
+  const ruleControls = ruleControlsOf(view.policyView, view.canManage)
+  const toolsNote = toolsNoteOf(view.policyView)
   const cards = view.servers.map((record) => {
     const tools = view.tools?.get(record.name)
     const status = view.statuses?.get(record.name)
@@ -129,6 +138,8 @@ function renderGrid(view: ServersView, mode: ServersViewMode): Html {
       canManage: view.canManage,
       ...(view.canRefresh !== undefined ? { canRefresh: view.canRefresh } : {}),
       csrfToken: view.csrfToken,
+      ...(ruleControls !== undefined ? { ruleControls } : {}),
+      ...(toolsNote !== undefined ? { toolsNote } : {}),
     })
   })
   const viewClass = mode === 'list' ? 'srv-grid view-list' : 'srv-grid view-grid'
@@ -157,7 +168,9 @@ function renderManage(view: ServersView): Html {
 export function renderServersPage(view: ServersView): string {
   const mode: ServersViewMode = view.viewMode ?? 'grid'
   const content = html`
+    ${renderPolicyBanner(view.policyView)}
     ${renderManage(view)}
+    ${renderPolicySources(view.policyView)}
     ${renderGrid(view, mode)}
   `
   const query = (view.query ?? '').slice(0, MAX_ECHOED_QUERY_CHARS)

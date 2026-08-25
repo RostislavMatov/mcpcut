@@ -1,9 +1,18 @@
 import { HTTP_PROTOCOL_VALUES, VAULT_REF_PREFIX } from '../../registry/constants.js'
 import type { ServerRecord } from '../../registry/schema.js'
 import type { InventoryStoreData } from '../../policy/inventory-store.js'
+import type { Policy } from '../../policy/schema.js'
 import { html, join, safeUrl, type Html } from '../html.js'
 import { csrfField } from './csrf-field.js'
 import { renderRefreshForm, renderStatusDot, type ServerStatusView } from './servers-status.js'
+import {
+  renderToolRuleControls,
+  renderToolRulePill,
+  serverToolsRegionKey,
+  toolRuleViewOf,
+  type ToolRuleControls,
+  type ToolRuleView,
+} from './servers-tool-rule.js'
 
 /**
  * Building blocks of the Servers screen (McpCut console): the server card,
@@ -22,6 +31,8 @@ export interface ServerToolView {
   readonly description?: string
   /** Present when the tool is quarantined; the quarantine state it is in. */
   readonly quarantined?: 'new' | 'changed'
+  /** The effective policy outcome + source (ADR-0009); absent when the page has no loaded policy. */
+  readonly rule?: ToolRuleView
 }
 
 /** The tools of one server, from the inventory store. */
@@ -49,9 +60,10 @@ export const TOOL_DESCRIPTION_MAX_CHARS = 240
  * Projects the inventory into the card view: the union of approved and
  * quarantined tool names per server, quarantined state winning when a tool is
  * in both (a `changed` tool keeps its approved record while the new one waits).
- * Sorted by name so the listing is stable across re-renders.
+ * Sorted by name so the listing is stable across re-renders. With a loaded
+ * `policy`, every tool also carries its effective rule (`effectiveToolRule`).
  */
-export function toServerToolsByName(inventory: InventoryStoreData): ServerToolsByName {
+export function toServerToolsByName(inventory: InventoryStoreData, policy?: Policy): ServerToolsByName {
   const out = new Map<string, ServerToolsView>()
   for (const [serverName, inv] of Object.entries(inventory.servers)) {
     const byName = new Map<string, ServerToolView>()
@@ -61,7 +73,9 @@ export function toServerToolsByName(inventory: InventoryStoreData): ServerToolsB
     for (const [name, record] of Object.entries(inv.quarantined)) {
       byName.set(name, withDescription({ name, quarantined: record.state }, record.descriptor.description))
     }
-    const tools = [...byName.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    const tools = [...byName.values()]
+      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+      .map((tool) => (policy === undefined ? tool : { ...tool, rule: toolRuleViewOf(policy, inventory, serverName, tool.name) }))
     out.set(serverName, { tools, quarantinedCount: Object.keys(inv.quarantined).length })
   }
   return out
@@ -79,7 +93,17 @@ function renderDescription(description: string): Html {
   return html`<p class="srv-tool-desc muted pretty">${head}<span class="faint"> … (truncated)</span></p>`
 }
 
-function renderTool(tool: ServerToolView): Html {
+/** What the tools panel needs beyond the tools: whose panel, and the rule controls' state. */
+export interface ToolsPanelContext {
+  readonly serverName: string
+  readonly csrfToken: string
+  /** Absent → no rule controls at all (the page has no policy port). */
+  readonly ruleControls?: ToolRuleControls
+  /** One line shown above the tools (O4: "no policy — enforcement off"). */
+  readonly note?: string
+}
+
+function renderTool(tool: ServerToolView, ctx: ToolsPanelContext): Html {
   const pill =
     tool.quarantined !== undefined
       ? html`<span class="pill pill-pixel pill-on"><span class="dot dot-s dot-blink"></span>quarantined · ${tool.quarantined}</span>`
@@ -88,9 +112,21 @@ function renderTool(tool: ServerToolView): Html {
     tool.quarantined !== undefined
       ? html`<a class="small" href="${safeUrl('/quarantine')}">review in quarantine</a>`
       : html``
+  const rulePill = tool.rule !== undefined ? renderToolRulePill(tool.rule) : html``
+  const controls =
+    tool.rule !== undefined && ctx.ruleControls !== undefined
+      ? renderToolRuleControls({
+          serverName: ctx.serverName,
+          toolName: tool.name,
+          csrfToken: ctx.csrfToken,
+          view: tool.rule,
+          controls: ctx.ruleControls,
+        })
+      : html``
   return html`<div class="srv-tool">
-    <div class="row"><span class="srv-tool-name">${tool.name}</span>${pill}<span class="spacer"></span>${review}</div>
+    <div class="row"><span class="srv-tool-name">${tool.name}</span>${pill}${rulePill}<span class="spacer"></span>${review}</div>
     ${tool.description !== undefined ? renderDescription(tool.description) : html``}
+    ${controls}
   </div>`
 }
 
@@ -99,17 +135,23 @@ function renderTool(tool: ServerToolView): Html {
  * knows for this server. Absent entirely when the page has no inventory
  * (the port is optional); "no tools observed yet" when the inventory has no
  * entry for the server (it fills on the first `tools/list` seen by the proxy).
+ *
+ * The body is a settle-only live region keyed per server (finding 9): a rule
+ * action inside it re-fetches `/servers` and swaps ONLY this body, so the
+ * open `<details>` stays open. No SSE topic is named — nothing publishes
+ * one — so the region never refreshes on its own.
  */
-export function renderToolsPanel(tools: ServerToolsView | undefined): Html {
+export function renderToolsPanel(tools: ServerToolsView | undefined, ctx: ToolsPanelContext): Html {
   const count = tools?.tools.length ?? 0
   const dot = (tools?.quarantinedCount ?? 0) > 0 ? 'dot dot-s dot-blink' : 'dot dot-s'
+  const note = ctx.note !== undefined ? html`<div class="srv-tools-note faint small">${ctx.note}</div>` : html``
   const body =
     tools === undefined || count === 0
       ? html`<div class="empty">no tools observed yet</div>`
-      : join(tools.tools.map(renderTool))
+      : join(tools.tools.map((tool) => renderTool(tool, ctx)))
   return html`<details class="disclosure srv-tools">
     <summary class="srv-tools-sum"><span class="${dot}"></span><span class="pixel upper">tools</span><span class="dim small num">${String(count)}</span><span class="spacer"></span><span class="caret">▼</span></summary>
-    <div class="rows srv-tool-rows">${body}</div>
+    <div class="rows srv-tool-rows" data-live-region="${serverToolsRegionKey(ctx.serverName)}" data-live-src="/servers" data-live-settle>${note}${body}</div>
   </details>`
 }
 
@@ -262,6 +304,10 @@ export interface ServerCardOptions {
   /** Status dot state; absence renders the neutral never-checked dot. */
   readonly status?: ServerStatusView
   readonly csrfToken: string
+  /** Rule controls' state for this viewer (ADR-0009); absent → none rendered. */
+  readonly ruleControls?: ToolRuleControls
+  /** One-line note above the tools (O4). */
+  readonly toolsNote?: string
 }
 
 /**
@@ -270,6 +316,15 @@ export interface ServerCardOptions {
  * `data-filter-text` feeds the top-bar client filter with name, target and
  * transport, so typing "http" or a command name narrows the grid.
  */
+function toolsPanelContextOf(options: ServerCardOptions): ToolsPanelContext {
+  return {
+    serverName: options.record.name,
+    csrfToken: options.csrfToken,
+    ...(options.ruleControls !== undefined ? { ruleControls: options.ruleControls } : {}),
+    ...(options.toolsNote !== undefined ? { note: options.toolsNote } : {}),
+  }
+}
+
 export function renderServerCard(options: ServerCardOptions): Html {
   const { record, tools } = options
   const filterText = `${record.name} ${targetOf(record)} ${record.transport}`
@@ -277,7 +332,7 @@ export function renderServerCard(options: ServerCardOptions): Html {
     ${renderSummary(record, tools, options.status)}
     <div class="srv-bd">
       ${renderServerDetails(record)}
-      ${options.hasInventory ? renderToolsPanel(tools) : html``}
+      ${options.hasInventory ? renderToolsPanel(tools, toolsPanelContextOf(options)) : html``}
       ${renderLegend()}
       ${renderCardActions(options)}
     </div>

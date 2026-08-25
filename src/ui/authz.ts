@@ -80,6 +80,10 @@ export const ROUTE_TABLE: readonly RouteEntry[] = [
   { method: 'POST', pattern: '/servers/add', minRole: 'owner', handler: 'serversAdd' },
   { method: 'POST', pattern: '/servers/edit', minRole: 'owner', handler: 'serversEdit' },
   { method: 'POST', pattern: '/servers/remove', minRole: 'owner', handler: 'serversRemove' },
+  // Per-tool policy rule (ADR-0009): writes `policy.json`, a security
+  // boundary — the same threshold as registering a server. The two `:params`
+  // arrive percent-encoded; the handler decodes each exactly once.
+  { method: 'POST', pattern: '/servers/:name/tools/:tool/rule', minRole: 'owner', handler: 'serversToolRule' },
   { method: 'GET', pattern: '/admins', minRole: 'owner', handler: 'adminsPage' },
   { method: 'POST', pattern: '/admins/add', minRole: 'owner', handler: 'adminsAdd' },
   { method: 'POST', pattern: '/admins/remove', minRole: 'owner', handler: 'adminsRemove' },
