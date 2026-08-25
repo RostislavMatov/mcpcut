@@ -1,7 +1,7 @@
 # ADR-0007: Доказательный журнал — хеш-цепочка и подпись (M5)
 
-- **Статус**: предложено (2026-08-18). Волна 3 (хеш-цепочка) реализована и верифицируется,
-  волна 4 (подпись и ADR) — в разработке
+- **Статус**: принято (2026-08-18; статус актуализирован 2026-08-24 — M5 закрыт целиком, все 6 волн
+  реализованы, смок `docs/smoke-m5.md`)
 - **Область**: `src/journal/chain.ts`, `src/journal/chain-verify.ts`, `src/journal/db.ts` (волна 3),
   `src/journal/signing.ts` (волна 4), `src/cli/verify-cmd.ts`, `src/cli/keygen-cmd.ts` (волны 3–5),
   `docs/adr/0006-storage-sqlite.md` (уточнения), `docs/adr/0004-admin-ui-architecture.md` (поправка)
