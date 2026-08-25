@@ -87,6 +87,9 @@ const QUARANTINE_LIVE_SRC = '/quarantine'
  * The live region: the node `assets/app-js.ts` re-fetches and swaps on
  * `quarantine-changed`, so its `data-live-region` value and `data-live-src`
  * must stay exactly what the script looks up (`tests/ui/page-contracts.test.ts`).
+ * `data-live-settle` lets an approve/reject inside settle by re-fetching this
+ * region instead of reloading the page: the counts outside it carry
+ * `data-live-text` and follow along.
  */
 function renderLiveRegion(input: QuarantinePageInput): Html {
   const body =
@@ -97,6 +100,7 @@ function renderLiveRegion(input: QuarantinePageInput): Html {
     class="quarantine"
     data-live-region="${QUARANTINE_LIVE_TOPICS}"
     data-live-src="${QUARANTINE_LIVE_SRC}"
+    data-live-settle
   >
     ${body}
   </section>`
@@ -105,7 +109,7 @@ function renderLiveRegion(input: QuarantinePageInput): Html {
 /** Renders the full quarantine document (string ready for the HTTP body). */
 export function renderQuarantinePage(input: QuarantinePageInput): string {
   const content = html`<section class="panel panel-strong qr-panel" aria-label="Quarantine">
-    <div class="panel-hd"><h1>Quarantine</h1><span class="small dim num">${String(input.cards.length)} held</span></div>
+    <div class="panel-hd"><h1>Quarantine</h1><span class="small dim num" data-live-text="quarantine-held">${String(input.cards.length)} held</span></div>
     ${renderLiveRegion(input)}
   </section>`
   return renderLayout({

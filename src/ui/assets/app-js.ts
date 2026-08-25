@@ -25,7 +25,9 @@ import { buildAsset, type Asset } from './asset.js'
  *     `csrf_token` field, which rides in the header) — a form whose identity
  *     lives in hidden inputs (quarantine: `server`/`tool`) then sends the same
  *     thing over fetch as over a native submit.
- *   - after a 2xx the script reloads, unless `data-no-reload` is present.
+ *   - after a 2xx the script re-fetches the live region the control sits in
+ *     when that region carries `data-live-settle` (see below), and falls back
+ *     to a full reload otherwise; `data-no-reload` suppresses both.
  *
  *  Live regions (SSE-driven refresh)
  *   - `<body data-events-url="/events">` names the SSE endpoint. The attribute
@@ -35,6 +37,13 @@ import { buildAsset, type Asset } from './asset.js'
  *     lists the SSE topics that should refresh it; the script re-fetches
  *     `data-live-src` (default: current URL) and swaps the container's
  *     innerHTML from the matching `data-live-region` node in the response.
+ *   - `data-live-text="<key>"` on a node OUTSIDE the region (a count in a
+ *     panel head, the nav meta) makes its text follow the same-keyed node of
+ *     the fetched document on every swap.
+ *   - `data-live-settle` on a region declares the page fully live around it:
+ *     an action inside settles by re-fetching the region instead of reloading.
+ *     Opt-in on purpose — the dashboard's tiles, decisions and servers strip
+ *     sit outside its queue region and would go stale without a reload.
  *   - `data-pending-count` on any element is kept in sync and mirrored into
  *     the document title so a background tab shows a badge. The optional
  *     `data-pending-total` on the SAME element overrides it when it is larger:
@@ -97,12 +106,32 @@ const APP_JS_SOURCE = `"use strict";
     return any ? JSON.stringify(out) : null;
   }
 
+  // "disabled" on a <form> disables nothing, and the action forms carry
+  // data-action on the form itself: toggle the buttons inside as well.
+  function setBusy(el, busy) {
+    el.disabled = busy;
+    var buttons = el.querySelectorAll ? el.querySelectorAll("button, input[type=submit]") : [];
+    for (var i = 0; i < buttons.length; i++) buttons[i].disabled = busy;
+  }
+
+  // After a 2xx: re-fetch the live region the control sits in when that
+  // region opted in with data-live-settle (the quarantine list — everything
+  // the action changes is inside it or marked data-live-text), so the page
+  // never flashes; reload otherwise. A successful swap replaces the control;
+  // a failed re-fetch releases it instead of leaving it stuck.
+  function settleAction(el) {
+    if (el.hasAttribute("data-no-reload")) return;
+    var region = el.closest("[data-live-region][data-live-settle]");
+    if (!region) { window.location.reload(); return; }
+    return refreshRegion(region).then(function () { setBusy(el, false); });
+  }
+
   function runAction(el) {
     var url = el.getAttribute("data-action");
     var method = (el.getAttribute("data-method") || "POST").toUpperCase();
     var payload = el.getAttribute("data-payload");
     if (payload === null) payload = formPayload(el);
-    el.setAttribute("disabled", "disabled");
+    setBusy(el, true);
     fetch(url, {
       method: method,
       credentials: "same-origin",
@@ -114,15 +143,15 @@ const APP_JS_SOURCE = `"use strict";
     })
       .then(function (res) {
         if (res.ok) {
-          if (!el.hasAttribute("data-no-reload")) window.location.reload();
+          settleAction(el);
         } else {
           announce("Action failed (" + res.status + ")");
-          el.removeAttribute("disabled");
+          setBusy(el, false);
         }
       })
       .catch(function () {
         announce("Network error");
-        el.removeAttribute("disabled");
+        setBusy(el, false);
       });
   }
 
@@ -137,11 +166,19 @@ const APP_JS_SOURCE = `"use strict";
     return out;
   }
 
+  // Re-fetches of one region may overlap (the operator's own settle and the
+  // watcher's event within the same second); each carries a generation and a
+  // response is dropped when a later re-fetch has since superseded it, so an
+  // older response never overwrites newer cards.
   function refreshRegion(region) {
     var src = region.getAttribute("data-live-src") || window.location.href;
-    fetch(src, { credentials: "same-origin", headers: { "x-requested-with": "fetch" } })
+    var generation = String((parseInt(region.getAttribute("data-live-generation") || "0", 10) || 0) + 1);
+    region.setAttribute("data-live-generation", generation);
+    return fetch(src, { credentials: "same-origin", headers: { "x-requested-with": "fetch" } })
       .then(function (res) { return res.ok ? res.text() : Promise.reject(res.status); })
-      .then(function (htmlText) { swapRegion(region, htmlText); })
+      .then(function (htmlText) {
+        if (region.getAttribute("data-live-generation") === generation) swapRegion(region, htmlText);
+      })
       .catch(function () { /* keep the stale view; a later event retries */ });
   }
 
@@ -152,6 +189,17 @@ const APP_JS_SOURCE = `"use strict";
     if (fresh) {
       region.innerHTML = fresh.innerHTML;
       syncPendingBadge(doc);
+      syncLiveText(doc);
+    }
+  }
+  // Text nodes OUTSIDE a live region that still describe it (the quarantine
+  // "N held" in the panel head and the nav meta): copied from the fresh doc.
+  function syncLiveText(scope) {
+    var nodes = document.querySelectorAll("[data-live-text]");
+    for (var i = 0; i < nodes.length; i++) {
+      var key = nodes[i].getAttribute("data-live-text");
+      var fresh = scope.querySelector('[data-live-text="' + cssEscape(key) + '"]');
+      if (fresh) nodes[i].textContent = fresh.textContent;
     }
   }
 
