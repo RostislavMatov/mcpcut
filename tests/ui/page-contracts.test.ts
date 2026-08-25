@@ -357,3 +357,58 @@ describe('the pending badge reports the queue, not the page (smoke LOW-3)', () =
     expect(document).toContain('data-live-region=') // the node is inside the live region
   })
 })
+
+/**
+ * A scripted <form data-action> is submitted by `runAction` over fetch, not by
+ * the browser — so its hidden fields reach the server only if the script
+ * serialises them itself. The approval forms carry their identity in the URL
+ * and were never affected; the quarantine forms carry `server`/`tool` as
+ * hidden inputs and posted an EMPTY body (→ 400, "Action failed") from the
+ * day they shipped. Like the badge tests above, these run the REAL
+ * `formPayload` lifted out of `APP_JS` against a stub built from the REAL
+ * rendered form.
+ */
+describe('scripted forms post their hidden fields (quarantine approve/reject)', () => {
+  /** The shipped `formPayload`, lifted from the script source. */
+  function loadFormPayload(): (form: unknown) => string | null {
+    const source = /\n {2}function formPayload\(el\) \{[\s\S]*?\n {2}\}/.exec(JS_SOURCE)?.[0]
+    expect(source, 'formPayload not found in APP_JS').toBeDefined()
+    return new Function(`${source ?? ''}\nreturn formPayload;`)() as (form: unknown) => string | null
+  }
+
+  /** A `form.elements`-alike for the first `<form data-action="…">` in a document. */
+  function formStubOf(documentHtml: string, action: string): unknown {
+    const block = new RegExp(`<form[^>]*data-action="${action}"[^>]*>[\\s\\S]*?</form>`).exec(documentHtml)?.[0]
+    expect(block, `no form for ${action}`).toBeDefined()
+    const elements: Array<{ name: string; value: string }> = []
+    for (const input of (block ?? '').matchAll(/<input[^>]*>/g)) {
+      const name = /\sname="([^"]*)"/.exec(input[0])?.[1] ?? ''
+      const value = /\svalue="([^"]*)"/.exec(input[0])?.[1] ?? ''
+      elements.push({ name, value })
+    }
+    return { elements, getAttribute: () => null }
+  }
+
+  test('the quarantine approve form serialises server and tool into the JSON body', () => {
+    const document = renderQuarantinePage({ cards: [QUARANTINE_CARD], csrfToken: SESSION.csrfToken })
+    const payload = loadFormPayload()(formStubOf(document, '/quarantine/approve'))
+    expect(payload).not.toBeNull()
+    expect(JSON.parse(payload ?? '{}')).toEqual({ server: 'github', tool: 'create_issue' })
+  })
+
+  test('the csrf field stays out of the body — it rides in the header', () => {
+    const document = renderQuarantinePage({ cards: [QUARANTINE_CARD], csrfToken: SESSION.csrfToken })
+    const payload = loadFormPayload()(formStubOf(document, '/quarantine/reject'))
+    expect(payload).not.toContain(SESSION.csrfToken)
+  })
+
+  test('an approval form (identity in the URL) keeps posting no body', () => {
+    const document = renderApprovalsPage({ cards: [APPROVAL_CARD], csrfToken: SESSION.csrfToken })
+    const payload = loadFormPayload()(formStubOf(document, `/approvals/${APPROVAL_CARD.approvalId}/approve`))
+    expect(payload).toBeNull()
+  })
+
+  test('runAction falls back to the form fields when no data-payload is set', () => {
+    expect(JS_SOURCE).toMatch(/if \(payload === null\) payload = formPayload\(el\);/)
+  })
+})

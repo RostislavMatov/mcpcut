@@ -20,7 +20,11 @@ import { buildAsset, type Asset } from './asset.js'
  *  Actions (mutations without a full page nav)
  *   - any element with `data-action="/path"` triggers a fetch on click.
  *   - `data-method` (default `POST`), `data-confirm` (optional confirm text),
- *     `data-payload` (optional JSON string sent as the request body).
+ *     `data-payload` (optional JSON string sent as the request body). Without
+ *     it, a <form> posts its own named fields as the JSON body (all but the
+ *     `csrf_token` field, which rides in the header) — a form whose identity
+ *     lives in hidden inputs (quarantine: `server`/`tool`) then sends the same
+ *     thing over fetch as over a native submit.
  *   - after a 2xx the script reloads, unless `data-no-reload` is present.
  *
  *  Live regions (SSE-driven refresh)
@@ -76,10 +80,28 @@ const APP_JS_SOURCE = `"use strict";
     runAction(el);
   }
 
+  // The named fields of a scripted <form>, as the JSON body runAction posts
+  // when no data-payload is set; null for a non-form or a form with no field
+  // beyond csrf_token, so such actions keep posting no body at all.
+  function formPayload(el) {
+    var fields = el.elements;
+    if (!fields) return null;
+    var out = {};
+    var any = false;
+    for (var i = 0; i < fields.length; i++) {
+      var name = fields[i].name;
+      if (!name || name === "csrf_token") continue;
+      out[name] = fields[i].value;
+      any = true;
+    }
+    return any ? JSON.stringify(out) : null;
+  }
+
   function runAction(el) {
     var url = el.getAttribute("data-action");
     var method = (el.getAttribute("data-method") || "POST").toUpperCase();
     var payload = el.getAttribute("data-payload");
+    if (payload === null) payload = formPayload(el);
     el.setAttribute("disabled", "disabled");
     fetch(url, {
       method: method,
