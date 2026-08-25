@@ -20,6 +20,7 @@ import {
   runServerShow,
   type ServerCliOptions,
 } from './cli/server-cmd.js'
+import { runServerRefresh } from './cli/server-status-cmd.js'
 import { runUi, type UiCommandOptions } from './cli/ui-cmd.js'
 import { runVault, type VaultCmdDeps } from './cli/vault-cmd.js'
 import { runPruneCommand, type PruneCommandOptions } from './cli/prune-cmd.js'
@@ -109,7 +110,7 @@ export async function dispatch(
   return 1
 }
 
-/** `server add|list|show|remove` sub-router (same shape as runPolicyCommand). */
+/** `server add|list|show|remove|refresh` sub-router (same shape as runPolicyCommand). */
 async function runServerCommand(
   args: string[],
   io: CliIo,
@@ -120,6 +121,7 @@ async function runServerCommand(
   if (subcommand === 'list') return runServerList(rest, io, opts)
   if (subcommand === 'show') return runServerShow(rest, io, opts)
   if (subcommand === 'remove') return runServerRemove(rest, io, opts)
+  if (subcommand === 'refresh') return runServerRefresh(rest, io, opts)
   io.stderr.write(
     `${subcommand === undefined ? 'Missing server subcommand.' : `Unknown server subcommand: ${subcommand}`}\n\n${USAGE}`,
   )
