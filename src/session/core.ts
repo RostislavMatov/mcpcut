@@ -2,6 +2,7 @@ import type { RecordBuilder, ClientServerDirection } from '../journal/record.js'
 import type { JournalSink } from '../journal/sink.js'
 import type { GrantRegistry } from '../policy/approvals/grants.js'
 import type { ApprovalWaiter } from '../policy/approvals/waiter.js'
+import type { PolicyProvider } from '../policy/reload.js'
 import type { Policy } from '../policy/schema.js'
 import { classify } from '../protocol/classify.js'
 import {
@@ -99,8 +100,12 @@ export interface CreateSessionDeps {
   readonly serverName: string
   readonly client: SessionEndpoints
   readonly server: SessionEndpoints
-  /** Pre-loaded, already-validated policy (loading is the caller's job). */
-  readonly policy: Policy
+  /**
+   * Pre-loaded, already-validated policy (loading is the caller's job). A
+   * `PolicyProvider` hot-reloads the rules under the session; a plain
+   * `Policy` behaves exactly as before.
+   */
+  readonly policy: Policy | PolicyProvider
   readonly inventory: GateInventory
   readonly approvals: SessionApprovals
   readonly grants: GrantRegistry
@@ -291,9 +296,9 @@ export function createSession(deps: CreateSessionDeps): SessionHandle {
   }
 
   // Same provenance discipline as the gate's own writer (`gate-core.ts`):
-  // the policy is loaded once per process and immutable, so its fingerprint
-  // is computed once here and stamped on every decision record this module
-  // writes. The revocation record has no agent scope to consult — the agent
+  // the fingerprint of the policy IN FORCE is stamped on every decision
+  // record this module writes (re-hashed only when a hot reload swapped the
+  // object). The revocation record has no agent scope to consult — the agent
   // has just lost the session — so it carries `policyHash` only.
   const writeDecision = createDecisionWriter({
     sink: journal.sink,

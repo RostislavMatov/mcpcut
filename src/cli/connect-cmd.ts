@@ -5,7 +5,7 @@ import type { AgentRecord } from '../agents/schema.js'
 import { createAgentsStore, type AgentsStore } from '../agents/store.js'
 import { JOURNAL_DIR } from '../config.js'
 import type { LoadPolicyOptions } from '../policy/load.js'
-import type { Policy } from '../policy/schema.js'
+import type { PolicyProvider } from '../policy/reload.js'
 import { guardDiagnostics } from '../proxy/diagnostics.js'
 import { EXIT_CODE_JOURNAL_FAILURE } from '../proxy/wrap.js'
 import { createOrderedWriter } from '../proxy/writer.js'
@@ -330,7 +330,7 @@ interface RunSessionArgs {
   readonly onDiagnostic: (line: string) => void
   readonly agentStore: AgentRecordReader
   readonly agent: AgentRecord
-  readonly policy: Policy
+  readonly policy: PolicyProvider
   readonly prepared: PreparedUpstream
 }
 

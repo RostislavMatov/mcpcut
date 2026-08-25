@@ -1,10 +1,11 @@
 import { parseArgs } from 'node:util'
 import { JOURNAL_DIR } from '../config.js'
 import { loadPolicy, type LoadPolicyOptions, type PolicyLoadResult } from '../policy/load.js'
+import type { PolicyProvider } from '../policy/reload.js'
 import { resolvePolicySource } from '../policy/source.js'
-import type { Policy } from '../policy/schema.js'
 import { runWrap, type RunWrapOptions } from '../proxy/wrap.js'
 import { preflightDatabases } from '../store/preflight.js'
+import { createReloadingPolicy } from './policy-reload.js'
 
 /**
  * `wrap [options] -- <cmd> [args...]`: parses the options that come *before*
@@ -126,8 +127,8 @@ function parseWrapFlags(preArgs: readonly string[]): WrapFlags | undefined {
 }
 
 interface PolicyOutcome {
-  /** Present only when a policy was actually loaded (mode B). */
-  readonly policy?: Policy
+  /** Present only when a policy was actually loaded (mode B); hot-reloads from its file. */
+  readonly policy?: PolicyProvider
   /** Present only when resolution failed and the caller must stop before spawning anything. */
   readonly exitCode?: number
 }
@@ -179,7 +180,14 @@ async function resolvePolicy(
     return {}
   }
   io.stderr.write(`policy: loaded from ${result.sourcePath}\n`)
-  return { policy: result.policy }
+  return {
+    policy: createReloadingPolicy({
+      initial: result.policy,
+      sourcePath: result.sourcePath,
+      loadOptions: source.loadOptions,
+      stderr: io.stderr,
+    }),
+  }
 }
 
 /** `result.errors` are already human-readable lines (see `formatPolicyErrors`); each is prefixed with its source path here. */

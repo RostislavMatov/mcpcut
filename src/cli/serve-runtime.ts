@@ -5,6 +5,7 @@ import { createApprovalQueue } from '../policy/approvals/queue.js'
 import { createApprovalWaiter } from '../policy/approvals/waiter.js'
 import { createGrantRegistry } from '../policy/approvals/grants.js'
 import { createInventory } from '../policy/inventory.js'
+import type { PolicyProvider } from '../policy/reload.js'
 import type { Policy } from '../policy/schema.js'
 import type { RegistryStore } from '../registry/store.js'
 import type { ServerRecord } from '../registry/schema.js'
@@ -62,8 +63,8 @@ export interface ServeRuntimeDeps {
   readonly agents: AgentRecordReader
   /** Downstream model of the request currently being opened (see serve-hooks). */
   readonly handoff: ModelHandoff
-  /** Already validated, with any `--fail-closed` override applied. */
-  readonly policy: Policy
+  /** Already validated, with any `--fail-closed` override applied; a provider hot-reloads it. */
+  readonly policy: Policy | PolicyProvider
   readonly journalDir: string
   readonly approvalsBaseDir: string
   readonly inventoryStorePath: string

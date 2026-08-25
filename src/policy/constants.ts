@@ -247,3 +247,15 @@ export const SCHEMA_DIFF_MAX_DEPTH = 32
  * changes are dropped and the diff reports `truncated: true`.
  */
 export const SCHEMA_DIFF_MAX_CHANGES = 200
+
+/**
+ * Minimum interval between two `stat` checks of the policy file by a running
+ * proxy (`policy/reload.ts`). Hot reload is polled from the gate's own hot
+ * path — before a decision, before a `tools/list` rewrite — so the check has
+ * to be cheap even under a burst of calls: at most one `stat` per this many
+ * milliseconds, and the read itself only when `mtime`/`size` moved. No
+ * `fs.watch`, for the same reason `APPROVAL_POLL_INTERVAL_MS` has none: watch
+ * semantics differ across platforms and network filesystems, and a stat-based
+ * check is predictable everywhere and holds no descriptor per process.
+ */
+export const POLICY_RECHECK_MIN_MS = 250

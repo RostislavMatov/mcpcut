@@ -1,6 +1,7 @@
 import { classifyTool } from '../policy/classify-tool.js'
 import type { DecideInput, PolicyDecision } from '../policy/decide.js'
-import type { Policy, ToolClass } from '../policy/schema.js'
+import type { PolicyProvider } from '../policy/reload.js'
+import type { ToolClass } from '../policy/schema.js'
 import type { ParsedToolCall, ToolDescriptor } from '../protocol/mcp.js'
 import {
   CATALOG_UNTRUSTED_RULE,
@@ -26,13 +27,14 @@ import {
 
 /** Everything the assembler reads. All of it is rules, none of it is session state. */
 export interface DecideInputAssemblerDeps {
-  readonly policy: Policy
+  /** Read per call (`current()`), never captured: the rules may be hot-reloaded under the session. */
+  readonly policy: PolicyProvider
   readonly serverName: string
   readonly inventory: GateInventory
   /** Present only on an agent session; absent means the M2 chain runs unchanged. */
   readonly agentScope?: GateAgentScope
-  /** Per-server class overrides from the policy, already narrowed by the caller. */
-  readonly classOverrides?: Record<string, ToolClass>
+  /** This server's class overrides from the policy IN FORCE — a getter, for the same reason. */
+  readonly classOverridesOf: () => Record<string, ToolClass> | undefined
   /** The tool catalog's descriptor lookup (`tool-catalog.ts`). */
   readonly descriptorOf: (toolName: string) => ToolDescriptor
   /**
@@ -45,14 +47,14 @@ export interface DecideInputAssemblerDeps {
 }
 
 export function createDecideInputAssembler(deps: DecideInputAssemblerDeps) {
-  const { policy, serverName, inventory, agentScope, classOverrides } = deps
+  const { policy, serverName, inventory, agentScope } = deps
 
   /** Resolves class, quarantine state and args fingerprint for one call. Fails closed by throwing. */
   function factsOf(call: ParsedToolCall): CallFacts {
     return {
       serverName,
       toolName: call.toolName,
-      toolClass: classifyTool(deps.descriptorOf(call.toolName), classOverrides),
+      toolClass: classifyTool(deps.descriptorOf(call.toolName), deps.classOverridesOf()),
       quarantineState: inventory.stateOf(call.toolName),
       argsHash: argsHashOf(call.args),
     }
@@ -73,7 +75,7 @@ export function createDecideInputAssembler(deps: DecideInputAssemblerDeps) {
     // thing everywhere (`decide()`: "no direction established").
     const surfaceDelta = inventory.surfaceDeltaOf(facts.toolName)
     return {
-      policy,
+      policy: policy.current(),
       serverName,
       toolName: facts.toolName,
       toolClass: facts.toolClass,

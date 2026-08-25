@@ -8,6 +8,7 @@ import { createApprovalQueue } from '../policy/approvals/queue.js'
 import { createApprovalWaiter } from '../policy/approvals/waiter.js'
 import { canonicalJson, sha256Hex } from '../policy/hash.js'
 import { createInventory, INVENTORY_FILE_NAME } from '../policy/inventory.js'
+import type { PolicyProvider } from '../policy/reload.js'
 import type { Policy } from '../policy/schema.js'
 import { createPolicyGate, type GateAgentScope } from './gate.js'
 import { startPipeline, type GateFn } from './pipeline.js'
@@ -75,8 +76,12 @@ export interface RelayWiring {
 }
 
 export interface PolicyRelayArgs {
-  /** Already carries any `--fail-closed` override; the gate reads it from here. */
-  readonly policy: Policy
+  /**
+   * Already carries any `--fail-closed` override; the gate reads it from here.
+   * A `PolicyProvider` hot-reloads the rules under the session; a plain
+   * `Policy` behaves exactly as before (it is wrapped in a static provider).
+   */
+  readonly policy: Policy | PolicyProvider
   readonly serverName: string
   readonly sessionId: string
   readonly handle: ServerHandle

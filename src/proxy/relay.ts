@@ -5,6 +5,7 @@ import type {
   RecordBuilder,
 } from '../journal/record.js'
 import type { JournalSink } from '../journal/sink.js'
+import type { PolicyProvider } from '../policy/reload.js'
 import type { Policy } from '../policy/schema.js'
 import { classify } from '../protocol/classify.js'
 import type { GateAgentScope } from './gate.js'
@@ -47,7 +48,7 @@ export interface RelayArgs {
   ) => void
   readonly sessionId: string
   /** Absent means mode A: the M1 splice relay, with nothing intercepted. */
-  readonly policy: Policy | undefined
+  readonly policy: Policy | PolicyProvider | undefined
   readonly serverName: string
   readonly journalDir?: string
   readonly approvalsBaseDir?: string
@@ -62,7 +63,7 @@ export function wireRelay(args: RelayArgs): RelayWiring {
 }
 
 /** Mode B: message pipelines around the policy gate. */
-function wirePipelines(args: RelayArgs, policy: Policy): RelayWiring {
+function wirePipelines(args: RelayArgs, policy: Policy | PolicyProvider): RelayWiring {
   const { recordBuilder, sink, clientStderr } = args
   const diagnostics = args.diagnostics ?? clientStderr
   return wirePolicyRelay({

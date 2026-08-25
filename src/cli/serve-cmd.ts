@@ -5,9 +5,11 @@ import { createAgentsStore, type AgentsStore } from '../agents/store.js'
 import type { JournalSinkOptions } from '../journal/sink.js'
 import { INVENTORY_FILE_NAME } from '../policy/inventory.js'
 import { loadPolicy, type LoadPolicyOptions, type PolicyLoadResult } from '../policy/load.js'
+import { mapPolicyProvider, staticPolicyProvider, type PolicyProvider } from '../policy/reload.js'
 import { resolvePolicySource } from '../policy/source.js'
 import type { Policy } from '../policy/schema.js'
 import { journalingOnlyPolicy } from './connect-policy.js'
+import { createReloadingPolicy } from './policy-reload.js'
 import { guardDiagnostics } from '../proxy/diagnostics.js'
 import { createRegistryStore, type RegistryStore } from '../registry/store.js'
 import { preflightDatabases } from '../store/preflight.js'
@@ -176,7 +178,7 @@ function parsePort(raw: unknown): number | null {
   return port <= MAX_TCP_PORT ? port : null
 }
 
-type PolicyOutcome = { readonly policy: Policy } | { readonly exitCode: number }
+type PolicyOutcome = { readonly policy: PolicyProvider } | { readonly exitCode: number }
 
 /** `--fail-closed` only ever turns fail-closed ON; a policy asking for it always gets it. */
 function applyFailClosed(policy: Policy, failClosed: boolean): Policy {
@@ -231,10 +233,19 @@ async function resolvePolicy(
     // default — turning enforcement on is an explicit operator act (M2 rule),
     // and the two entry points must not diverge on it.
     io.stderr.write('serve: no policy file found; journaling only (agent grants still apply)\n')
-    return { policy: applyFailClosed(journalingOnlyPolicy(), flags.failClosed) }
+    return { policy: staticPolicyProvider(applyFailClosed(journalingOnlyPolicy(), flags.failClosed)) }
   }
   io.stderr.write(`serve: policy loaded from ${result.sourcePath}\n`)
-  return { policy: applyFailClosed(result.policy, flags.failClosed) }
+  // The override is a mapping over the provider, so it survives a hot reload
+  // (wave 2 of the policy-tool-rules-ui plan): every session opened by this
+  // front reads the rules in force at its next decision, not at start-up.
+  const reloading = createReloadingPolicy({
+    initial: result.policy,
+    sourcePath: result.sourcePath,
+    loadOptions: source.loadOptions,
+    stderr: io.stderr,
+  })
+  return { policy: mapPolicyProvider(reloading, (policy) => applyFailClosed(policy, flags.failClosed)) }
 }
 
 /** Builds the front for one run, with every semantic hook injected. */
@@ -242,7 +253,7 @@ function buildFront(
   flags: ServeFlags,
   io: ServeCliIo,
   opts: ServeCommandOptions,
-  policy: Policy,
+  policy: PolicyProvider,
   journalDir: string,
 ): HttpFront {
   // Only the vault still holds a cross-process file lock (its forced-removal
@@ -276,7 +287,8 @@ function buildFront(
     ...(opts.revocationPollIntervalMs !== undefined
       ? { revocationPollIntervalMs: opts.revocationPollIntervalMs }
       : {}),
-    failClosed: policy.journal.failClosed,
+    // Wiring-time configuration: read once, does not hot-reload.
+    failClosed: policy.current().journal.failClosed,
     ...(opts.journalCommitBatchImpl !== undefined
       ? { journalCommitBatchImpl: opts.journalCommitBatchImpl }
       : {}),
