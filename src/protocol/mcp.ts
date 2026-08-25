@@ -24,7 +24,8 @@ import type { ClassifiedMessage, JsonRpcId } from './classify.js'
 
 /** The single point of coupling to the MCP `tools/call` method name; import it rather than re-typing the literal. */
 export const TOOLS_CALL_METHOD = 'tools/call'
-const TOOLS_LIST_METHOD = 'tools/list'
+/** Same rule for `tools/list` (the probe engine and inventory both need it). */
+export const TOOLS_LIST_METHOD = 'tools/list'
 
 /** A single tool as reported by a server's `tools/list` response. */
 export interface ToolDescriptor {

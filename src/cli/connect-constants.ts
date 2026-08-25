@@ -1,5 +1,6 @@
 import { join } from 'node:path'
 import { POLICY_ENV_VAR, POLICY_FILE_NAME } from '../policy/constants.js'
+import { DIAGNOSTIC_PREFIX } from '../upstream/constants.js'
 
 /**
  * Constants and operator-facing messages for `mcp-journal connect` (M3
@@ -27,8 +28,12 @@ export const AGENT_TOKEN_ENV_VAR = 'MCP_AGENT_TOKEN'
  */
 export const ADR_0002_REFERENCE = 'docs/adr/0002-http-dual-version.md'
 
-/** Diagnostic prefix for everything this command writes to stderr. */
-export const DIAGNOSTIC_PREFIX = '[connect]'
+/**
+ * Diagnostic prefix and child-exit grace period moved to
+ * `src/upstream/constants.ts` with the upstream extraction (M5.5, probe
+ * engine); re-exported so existing importers keep working.
+ */
+export { CHILD_EXIT_GRACE_MS, DIAGNOSTIC_PREFIX } from '../upstream/constants.js'
 
 /** Exit code for any refusal decided before (or instead of) a session. */
 export const EXIT_CODE_REFUSED = 1
@@ -38,12 +43,6 @@ export const EXIT_CODE_REFUSED = 1
  * cannot turn into an unbounded dump for an agent with many grants.
  */
 export const MAX_LISTED_SERVERS = 20
-
-/**
- * Grace period for a child that was asked to exit (its stdin was closed)
- * before `connect` escalates to SIGTERM/SIGKILL.
- */
-export const CHILD_EXIT_GRACE_MS = 5_000
 
 /** Where a connect session's policy — and only a connect session's policy — comes from. */
 export const POLICY_SOURCE_DESCRIPTION = `<journal-dir>/${POLICY_FILE_NAME}`
