@@ -8,6 +8,7 @@ import { loadPolicy, type LoadPolicyOptions, type PolicyLoadResult } from '../po
 import { resolvePolicySource } from '../policy/source.js'
 import type { Policy } from '../policy/schema.js'
 import { journalingOnlyPolicy } from './connect-policy.js'
+import { guardDiagnostics } from '../proxy/diagnostics.js'
 import { createRegistryStore, type RegistryStore } from '../registry/store.js'
 import { preflightDatabases } from '../store/preflight.js'
 import { createHttpFront, type HttpFront } from '../transport/http/server.js'
@@ -300,9 +301,12 @@ function buildFront(
  */
 export async function runServe(
   argv: readonly string[],
-  io: ServeCliIo = DEFAULT_IO,
+  rawIo: ServeCliIo = DEFAULT_IO,
   opts: ServeCommandOptions = {},
 ): Promise<number> {
+  // Guarded so a stderr failure reported as a diagnostic cannot re-enter
+  // stderr (see `proxy/diagnostics.ts`: the orphaned-proxy 100% CPU loop).
+  const io: ServeCliIo = { ...rawIo, stderr: guardDiagnostics(rawIo.stderr) }
   const parsed = parseServeFlags(argv)
   if ('error' in parsed) {
     io.stderr.write(`${parsed.error}\n\n${SERVE_USAGE}`)

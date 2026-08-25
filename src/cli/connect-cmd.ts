@@ -6,6 +6,7 @@ import { createAgentsStore, type AgentsStore } from '../agents/store.js'
 import { JOURNAL_DIR } from '../config.js'
 import type { LoadPolicyOptions } from '../policy/load.js'
 import type { Policy } from '../policy/schema.js'
+import { guardDiagnostics } from '../proxy/diagnostics.js'
 import { EXIT_CODE_JOURNAL_FAILURE } from '../proxy/wrap.js'
 import { createOrderedWriter } from '../proxy/writer.js'
 import type { ServerRecord } from '../registry/schema.js'
@@ -200,8 +201,11 @@ export async function runConnect(
     return EXIT_CODE_REFUSED
   }
 
+  // Guarded so a stderr failure reported as a diagnostic cannot re-enter
+  // stderr (see `proxy/diagnostics.ts`: the orphaned-connect 100% CPU loop).
+  const diagnostics = guardDiagnostics(io.stderr)
   const onDiagnostic = (line: string): void => {
-    io.stderr.write(line)
+    diagnostics.write(line)
   }
 
   const agents =
