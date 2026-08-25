@@ -582,3 +582,45 @@ describe('runPolicyShow without --entry-point', () => {
     expect(io.out()).not.toContain('--entry-point connect|wrap|serve|ui')
   })
 })
+
+/**
+ * Plan policy-tool-rules-ui, wave 5 (finding 4; ADR-0009 §3): `policy show`
+ * states what a running proxy re-reads without a restart and what it does
+ * not, so the partial nature of hot reload is visible where the operator
+ * looks.
+ */
+describe('runPolicyShow -- hot reload line', () => {
+  test('the readable view names the reloaded rule fields and the restart-only wiring fields', async () => {
+    await writePolicyFile(journalDir, VALID_POLICY)
+    const io = fakeIo()
+
+    const exitCode = await runPolicyShow([], io, { cwd, journalDir, env: {} })
+
+    expect(exitCode).toBe(0)
+    const line = io.out().split('\n').find((candidate) => candidate.startsWith('hot reload:'))
+    expect(line).toBeDefined()
+    expect(line).toContain('rules yes')
+    expect(line).toContain('wiring config no')
+    for (const field of ['servers.*', 'classDefaults', 'defaultDecision', 'toolsList.filter', 'quarantine.onQuarantined']) {
+      expect(line).toContain(field)
+    }
+    for (const field of ['approval.timeoutMs', 'approval.grantTtlMs', 'journal.failClosed', 'quarantine.enabled']) {
+      expect(line).toContain(field)
+    }
+    expect(line).toContain('restart')
+  })
+
+  test('--json carries the same split as a hotReload field', async () => {
+    await writePolicyFile(journalDir, VALID_POLICY)
+    const io = fakeIo()
+
+    const exitCode = await runPolicyShow(['--json'], io, { cwd, journalDir, env: {} })
+
+    expect(exitCode).toBe(0)
+    const parsed = JSON.parse(io.out()) as { hotReload: { reloads: string[]; restartRequired: string[] } }
+    expect(parsed.hotReload).toEqual({
+      reloads: ['servers.*', 'classDefaults', 'defaultDecision', 'toolsList.filter', 'quarantine.onQuarantined'],
+      restartRequired: ['approval.timeoutMs', 'approval.grantTtlMs', 'journal.failClosed', 'quarantine.enabled'],
+    })
+  })
+})

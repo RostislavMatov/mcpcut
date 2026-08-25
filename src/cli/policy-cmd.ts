@@ -14,7 +14,7 @@ import {
   type ResolvedPolicySource,
 } from '../policy/source.js'
 import { policyFlagRefusal, policySourceIgnoredNote } from './connect-constants.js'
-import { BARE_SHOW_TRUST_CLASS, BARE_SHOW_VIEW_LINES } from './policy-show-constants.js'
+import { BARE_SHOW_TRUST_CLASS, BARE_SHOW_VIEW_LINES, HOT_RELOAD_JSON, HOT_RELOAD_LINE } from './policy-show-constants.js'
 
 /**
  * `policy validate|show` -- operator-facing inspection of the resolved
@@ -301,7 +301,7 @@ function reportLoadedShow(
       : { trustClass: BARE_SHOW_TRUST_CLASS }
 
   if (view.json) {
-    io.stdout.write(`${JSON.stringify({ ...entry, sourcePath, policyHash: policyHashOf(policy), policy })}\n`)
+    io.stdout.write(`${JSON.stringify({ ...entry, sourcePath, policyHash: policyHashOf(policy), hotReload: HOT_RELOAD_JSON, policy })}\n`)
     return 0
   }
 
@@ -345,6 +345,7 @@ function formatReadableShow(
     `toolsList: ${JSON.stringify(policy.toolsList)}`,
     `approval: ${JSON.stringify(policy.approval)}`,
     `journal: ${JSON.stringify(policy.journal)}`,
+    HOT_RELOAD_LINE,
     '',
     'servers:',
     ...formatServersSection(policy, serverFilter),

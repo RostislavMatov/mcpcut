@@ -29,3 +29,36 @@ export const BARE_SHOW_VIEW_LINES: readonly string[] = [
   `entry point: none given -- ${BARE_SHOW_TRUST_CLASS} view (${SAME_RESOLUTION_ENTRY_POINTS.join(', ')})`,
   `             other views: --entry-point ${ENTRY_POINTS.join('|')}`,
 ]
+
+/**
+ * What a running proxy re-reads from `policy.json` without a restart and
+ * what it does not (ADR-0009 §3; plan finding 4). Printed by `policy show`
+ * so the partial nature of hot reload is stated where the operator looks,
+ * not only in the ADR: the RULES reload (everything `decide()` and the
+ * `tools/list` catalog read); the wiring config is captured when the queue,
+ * waiter, sink and inventory are built and stays until restart.
+ */
+export const HOT_RELOADED_FIELDS: readonly string[] = [
+  'servers.*',
+  'classDefaults',
+  'defaultDecision',
+  'toolsList.filter',
+  'quarantine.onQuarantined',
+]
+
+export const RESTART_REQUIRED_FIELDS: readonly string[] = [
+  'approval.timeoutMs',
+  'approval.grantTtlMs',
+  'journal.failClosed',
+  'quarantine.enabled',
+]
+
+export const HOT_RELOAD_LINE =
+  `hot reload: rules yes (${HOT_RELOADED_FIELDS.join(', ')}) · ` +
+  `wiring config no (${RESTART_REQUIRED_FIELDS.join(', ')} -- restart running proxies)`
+
+/** The `--json` counterpart of `HOT_RELOAD_LINE`. */
+export const HOT_RELOAD_JSON = {
+  reloads: HOT_RELOADED_FIELDS,
+  restartRequired: RESTART_REQUIRED_FIELDS,
+} as const

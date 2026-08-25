@@ -2,7 +2,6 @@ import { join } from 'node:path'
 import { parseArgs } from 'node:util'
 import { roleSatisfies, type Role } from '../admin/authz.js'
 import { ADMIN_TOKEN_ENV_VAR } from '../admin/constants.js'
-import { createAdminStore } from '../admin/store.js'
 import { JOURNAL_DIR } from '../config.js'
 import { formatReadableField } from '../journal/format.js'
 import { INVENTORY_FILE_NAME, listAllQuarantined, type QuarantinedEntry } from '../policy/inventory.js'
@@ -11,7 +10,7 @@ import { UnknownServerError, type RunProbeFn } from '../probe/orchestrator.js'
 import type { ProbeInitiator, ServerStatus } from '../probe/status-schema.js'
 import { createRegistryStore } from '../registry/store.js'
 import { createVaultStore } from '../vault/store.js'
-import { isExpectedAdminError } from './admin-cmd.js'
+import { adminFromEnv } from './admin-token.js'
 import { composeProbeChain, type ProbeChain } from './probe-wiring.js'
 import type { ServerCliIo, ServerCliOptions } from './server-cmd.js'
 import { statusCellOf, statusLineOf } from './server-status-format.js'
@@ -25,8 +24,8 @@ import { statusCellOf, statusLineOf } from './server-status-format.js'
  * chain itself is the shared `composeProbeChain` (`probe-wiring.ts`) — the
  * same composition the admin UI runs.
  *
- * Attribution: `MCP_ADMIN_TOKEN` → named admin (`approvals-cmd.ts` pattern).
- * For the lazy/registration triggers the token is OPTIONAL — it buys a name
+ * Attribution: `MCP_ADMIN_TOKEN` → named admin (`admin-token.ts`, shared with
+ * `policy set`). For the lazy/registration triggers the token is OPTIONAL — it buys a name
  * in the probe record, it gates nothing (list/show/add keep working without
  * it). `refresh` REQUIRES it with role ≥ operator: the same threshold
  * `src/ui/authz.ts` puts on `POST /servers/refresh`, so the CLI cannot be
@@ -129,29 +128,6 @@ function composeServerProbes(io: ServerCliIo, opts: ServerCliOptions): ProbeChai
     ...(probes.staleAfterMs !== undefined ? { staleAfterMs: probes.staleAfterMs } : {}),
     ...(probes.now !== undefined ? { now: probes.now } : {}),
   })
-}
-
-type TokenAdmin =
-  | { readonly kind: 'ok'; readonly name: string; readonly role: Role }
-  | { readonly kind: 'missing' }
-  | { readonly kind: 'unknown' }
-  | { readonly kind: 'unreadable'; readonly detail: string }
-
-/** Resolves `MCP_ADMIN_TOKEN` to a named admin; never throws for expected store faults. */
-async function adminFromEnv(opts: ServerCliOptions): Promise<TokenAdmin> {
-  const env = opts.env ?? process.env
-  const token = env[ADMIN_TOKEN_ENV_VAR]
-  if (token === undefined || token === '') {
-    return { kind: 'missing' }
-  }
-  const store = createAdminStore(opts.journalDir !== undefined ? { journalDir: opts.journalDir } : {})
-  try {
-    const admin = await store.findAdminByToken(token)
-    return admin === undefined ? { kind: 'unknown' } : { kind: 'ok', name: admin.name, role: admin.role }
-  } catch (error: unknown) {
-    if (!isExpectedAdminError(error)) throw error
-    return { kind: 'unreadable', detail: error.message }
-  }
 }
 
 /** The lazy/registration initiator: attributed when a valid token is around, silent otherwise. */
