@@ -1,6 +1,7 @@
 import { buildDecisionRecord } from '../journal/decision.js'
 import type { DecisionInfo, DecisionInfoDraft } from '../journal/record.js'
 import { policyHashOf } from '../policy/provenance.js'
+import { toPolicyProvider, type PolicyProvider } from '../policy/reload.js'
 import type { Policy } from '../policy/schema.js'
 import type { GateSink } from './gate-helpers.js'
 
@@ -25,13 +26,14 @@ export interface ProvenanceSnapshot {
  * The provenance every decision record written through this session is
  * stamped with.
  *
- * Deliberately ONE method and no readable fields. The policy hash is fixed
- * for the process, but the grants fingerprint is not — `agent-watch.ts`
- * rebuilds the agent's scope on every poll — so the pair only ever means
- * anything as of some instant. Exposing the two separately is what let a
- * caller read them at two different instants and pin the wrong matrix onto a
- * record; `snapshot()` is the only way to obtain them, so that mistake is no
- * longer expressible.
+ * Deliberately ONE method and no readable fields. Neither half is fixed for
+ * the process: the grants fingerprint moves when `agent-watch.ts` rebuilds
+ * the agent's scope on a poll, and the policy hash moves when `policy.json`
+ * is reloaded (wave 2 of the policy-tool-rules-ui plan) — so the pair only
+ * ever means anything as of some instant. Exposing the two separately is what
+ * let a caller read them at two different instants and pin the wrong matrix
+ * onto a record; `snapshot()` is the only way to obtain them, so that mistake
+ * is no longer expressible.
  */
 export interface DecisionProvenance {
   /**
@@ -58,20 +60,35 @@ export interface GrantsFingerprintSource {
  * own decision writer, so a session can never hash the same policy twice from
  * two independently-passed references and disagree with itself.
  *
- * The policy hash is computed once: the policy is loaded once per process and
- * is immutable (there is no hot reload), so re-hashing per record would only
- * burn CPU. The grants fingerprint stays a getter for the opposite reason —
- * the matrix genuinely changes under a live session.
+ * The policy hash is the fingerprint of the policy IN FORCE at the instant of
+ * the snapshot — `provider.current()` — which is what makes a record written
+ * after a hot reload name the rules it was actually decided under. It is
+ * cached on the identity of that object: a reload swaps in a new object and
+ * the next snapshot re-hashes once; between reloads no CPU is spent, exactly
+ * as when the policy was hashed once per process. A plain `Policy` is wrapped
+ * in a static provider, so its hash is computed once and never again.
  */
 export function createDecisionProvenance(
-  policy: Policy,
+  policy: Policy | PolicyProvider,
   agentScope?: GrantsFingerprintSource,
 ): DecisionProvenance {
-  const policyHash = policyHashOf(policy)
+  const provider = toPolicyProvider(policy)
+  let hashedPolicy: Policy | null = null
+  let policyHash = ''
+
+  function currentPolicyHash(): string {
+    const current = provider.current()
+    if (current !== hashedPolicy) {
+      hashedPolicy = current
+      policyHash = policyHashOf(current)
+    }
+    return policyHash
+  }
+
   return Object.freeze({
     snapshot: (): ProvenanceSnapshot =>
       Object.freeze({
-        policyHash,
+        policyHash: currentPolicyHash(),
         ...(agentScope !== undefined ? { grantsHash: agentScope.grantsHash() } : {}),
       }),
   })

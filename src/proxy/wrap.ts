@@ -3,6 +3,7 @@ import { ulid } from 'ulid'
 import { RELAY_DRAIN_TIMEOUT_MS, SIGKILL_ESCALATION_MS } from '../config.js'
 import { createRecordBuilder, type JournalDirection } from '../journal/record.js'
 import { createJournalSink, type JournalSinkOptions } from '../journal/sink.js'
+import { mapPolicyProvider, toPolicyProvider, type PolicyProvider } from '../policy/reload.js'
 import type { Policy } from '../policy/schema.js'
 import { guardDiagnostics } from './diagnostics.js'
 import type { GateAgentScope } from './gate.js'
@@ -93,9 +94,10 @@ export interface RunWrapOptions {
   /**
    * Pre-loaded, already-validated policy. Its presence is what selects mode
    * B; omitting it keeps the exact M1 splice relay. Loading is the caller's
-   * job (see the module doc comment).
+   * job (see the module doc comment). A `PolicyProvider` hot-reloads the
+   * rules under the session; a plain `Policy` behaves exactly as before.
    */
-  readonly policy?: Policy
+  readonly policy?: Policy | PolicyProvider
   /**
    * Identity this server is known by in policy rules and quarantine.
    * Defaults to `auto:<sha256(command+args) prefix>`.
@@ -237,19 +239,25 @@ function policyLocationsOf(
 
 /** The `--fail-closed` flag only ever turns fail-closed *on*, never off. */
 function failClosedOf(opts: RunWrapOptions): boolean {
-  return opts.failClosed === true || opts.policy?.journal.failClosed === true
+  return (
+    opts.failClosed === true ||
+    (opts.policy !== undefined && toPolicyProvider(opts.policy).current().journal.failClosed)
+  )
 }
 
 /**
  * Applies a `--fail-closed` override to the policy the gate will read, so
- * there is exactly one source of truth for the flag inside the session.
- * Returns the original object when nothing changes (no needless copy).
+ * there is exactly one source of truth for the flag inside the session. The
+ * override is a mapping over the provider — it survives a hot reload — and
+ * returns the reloaded object itself when nothing changes (no needless copy).
  */
-function effectivePolicyOf(opts: RunWrapOptions, isFailClosed: boolean): Policy | undefined {
-  const policy = opts.policy
-  if (policy === undefined || policy.journal.failClosed === isFailClosed) {
-    return policy
-  }
+function effectivePolicyOf(opts: RunWrapOptions, isFailClosed: boolean): PolicyProvider | undefined {
+  if (opts.policy === undefined) return undefined
+  return mapPolicyProvider(toPolicyProvider(opts.policy), (policy) => withFailClosed(policy, isFailClosed))
+}
+
+function withFailClosed(policy: Policy, isFailClosed: boolean): Policy {
+  if (policy.journal.failClosed === isFailClosed) return policy
   return { ...policy, journal: { ...policy.journal, failClosed: isFailClosed } }
 }
 

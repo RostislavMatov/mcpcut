@@ -1,4 +1,5 @@
 import { loadPolicy, type LoadPolicyOptions, type PolicyLoadResult } from '../policy/load.js'
+import { staticPolicyProvider, type PolicyProvider } from '../policy/reload.js'
 import { resolvePolicySource } from '../policy/source.js'
 import { parsePolicy, type Policy } from '../policy/schema.js'
 import {
@@ -6,6 +7,7 @@ import {
   policyFlagRefusal,
   policySourceIgnoredNote,
 } from './connect-constants.js'
+import { createReloadingPolicy } from './policy-reload.js'
 
 /**
  * Policy resolution for `connect`, and the policy a run gets when no file
@@ -48,6 +50,13 @@ import {
  * A broken policy file is a hard stop, never a fallback to this policy:
  * falling back to allow-all because a security config failed to parse is
  * precisely the failure mode M2 forbade.
+ *
+ * A loaded file is handed over as a hot-reloading provider (wave 2 of the
+ * policy-tool-rules-ui plan): the session re-reads it when it changes on
+ * disk, through the SAME neutralized `loadOptions` resolved here, so the
+ * agent-launched trust class keeps holding for the life of the process. The
+ * journaling-only fallback has no file behind it and never reloads — turning
+ * enforcement on remains an explicit operator act plus a restart.
  */
 
 /** Minimal writable-stream shape this module needs, so tests can inject capture objects. */
@@ -56,7 +65,7 @@ export interface ConnectPolicyIo {
 }
 
 export type ConnectPolicyOutcome =
-  | { readonly status: 'resolved'; readonly policy: Policy }
+  | { readonly status: 'resolved'; readonly policy: PolicyProvider }
   | { readonly status: 'failed'; readonly exitCode: number }
 
 /** The policy used when no `policy.json` was found: journal everything, let grants decide. */
@@ -124,10 +133,18 @@ export async function resolveConnectPolicy(
   }
   if (result.status === 'disabled') {
     args.io.stderr.write('policy: none found, journaling only (agent grants still apply)\n')
-    return { status: 'resolved', policy: journalingOnlyPolicy() }
+    return { status: 'resolved', policy: staticPolicyProvider(journalingOnlyPolicy()) }
   }
   args.io.stderr.write(`policy: loaded from ${result.sourcePath}\n`)
-  return { status: 'resolved', policy: result.policy }
+  return {
+    status: 'resolved',
+    policy: createReloadingPolicy({
+      initial: result.policy,
+      sourcePath: result.sourcePath,
+      loadOptions: source.loadOptions,
+      stderr: args.io.stderr,
+    }),
+  }
 }
 
 /** `result.errors` are already human-readable lines; each is prefixed with its source path. */

@@ -6,6 +6,7 @@ import { createGrantRegistry } from '../policy/approvals/grants.js'
 import { createApprovalQueue } from '../policy/approvals/queue.js'
 import { createApprovalWaiter } from '../policy/approvals/waiter.js'
 import { createInventory, INVENTORY_FILE_NAME } from '../policy/inventory.js'
+import { mapPolicyProvider, toPolicyProvider, type PolicyProvider } from '../policy/reload.js'
 import type { Policy } from '../policy/schema.js'
 import {
   createSession,
@@ -45,8 +46,8 @@ export interface StartConnectSessionArgs {
   readonly agent: SessionAgent
   readonly client: SessionEndpoints
   readonly server: SessionEndpoints
-  /** Pre-loaded, already-validated policy (loading is the caller's job). */
-  readonly policy: Policy
+  /** Pre-loaded, already-validated policy (loading is the caller's job); a provider hot-reloads it. */
+  readonly policy: Policy | PolicyProvider
   /** `--fail-closed`; only ever turns fail-closed ON, never off. */
   readonly failClosed: boolean
   /**
@@ -81,14 +82,16 @@ export interface ConnectSessionHandle {
 
 /**
  * Applies the `--fail-closed` override to the policy the gate reads, so there
- * is exactly one source of truth for the flag inside the session. Returns the
- * original object when nothing changes.
+ * is exactly one source of truth for the flag inside the session. A mapping
+ * over the provider, so the override survives a hot reload; returns the
+ * reloaded object itself when nothing changes.
  */
-function effectivePolicyOf(policy: Policy, failClosed: boolean): Policy {
-  if (policy.journal.failClosed === failClosed) {
-    return policy
-  }
-  return { ...policy, journal: { ...policy.journal, failClosed } }
+function effectivePolicyOf(policy: PolicyProvider, failClosed: boolean): PolicyProvider {
+  return mapPolicyProvider(policy, (current) =>
+    current.journal.failClosed === failClosed
+      ? current
+      : { ...current, journal: { ...current.journal, failClosed } },
+  )
 }
 
 function describe(error: unknown): string {
@@ -136,7 +139,8 @@ function createJournalFailureGuard(onDiagnostic: (line: string) => void): Journa
 
 export function startConnectSession(args: StartConnectSessionArgs): ConnectSessionHandle {
   const journalDir = args.journalDir ?? JOURNAL_DIR
-  const isFailClosed = args.failClosed || args.policy.journal.failClosed
+  const policy = toPolicyProvider(args.policy)
+  const isFailClosed = args.failClosed || policy.current().journal.failClosed
   const approvalsBaseDir = args.approvalsBaseDir ?? join(journalDir, APPROVALS_SUBDIR)
   const inventoryStorePath = args.inventoryStorePath ?? join(journalDir, INVENTORY_FILE_NAME)
 
@@ -162,7 +166,7 @@ export function startConnectSession(args: StartConnectSessionArgs): ConnectSessi
     serverName: args.serverName,
     client: args.client,
     server: args.server,
-    policy: effectivePolicyOf(args.policy, isFailClosed),
+    policy: effectivePolicyOf(policy, isFailClosed),
     inventory: createInventory(args.serverName, { storePath: inventoryStorePath, onError }),
     approvals: {
       queue: createApprovalQueue({ baseDir: approvalsBaseDir }),

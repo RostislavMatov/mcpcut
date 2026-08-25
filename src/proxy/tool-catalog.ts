@@ -1,7 +1,7 @@
 import type { ToolClass } from '../journal/record.js'
 import { classifyTool } from '../policy/classify-tool.js'
 import { decide } from '../policy/decide.js'
-import type { Policy } from '../policy/schema.js'
+import type { PolicyProvider } from '../policy/reload.js'
 import type { ClassifiedMessage } from '../protocol/classify.js'
 import { parseToolsListResult, type ToolDescriptor } from '../protocol/mcp.js'
 import type { Verdict } from './pipeline.js'
@@ -27,10 +27,12 @@ import {
 const MAX_CACHED_DESCRIPTORS = 5_000
 
 export interface ToolCatalogDeps {
-  readonly policy: Policy
+  /** Read per `tools/list` (`current()`), never captured: the rules may be hot-reloaded. */
+  readonly policy: PolicyProvider
   readonly serverName: string
   readonly inventory: GateInventory
-  readonly classOverrides: Record<string, ToolClass> | undefined
+  /** This server's class overrides from the policy IN FORCE — a getter, for the same reason. */
+  readonly classOverridesOf: () => Record<string, ToolClass> | undefined
   readonly writeDecision: DecisionWriter
   /** Awaited before a rewritten catalog is emitted; a no-op unless fail-closed. */
   readonly settleJournal: () => Promise<void>
@@ -83,10 +85,10 @@ export function createToolCatalog(deps: ToolCatalogDeps): ToolCatalog {
     // catalog-trust fields the pinned `decide()` requires are supplied
     // without an excess-property error while the shared type lands.
     const input = {
-      policy: deps.policy,
+      policy: deps.policy.current(),
       serverName: deps.serverName,
       toolName: tool.name,
-      toolClass: classifyTool(tool, deps.classOverrides),
+      toolClass: classifyTool(tool, deps.classOverridesOf()),
       quarantineState: deps.inventory.stateOf(tool.name),
       hasActiveGrant: false,
       catalogObserved: deps.inventory.hasObservedCatalog(),
@@ -159,6 +161,10 @@ export function createToolCatalog(deps: ToolCatalogDeps): ToolCatalog {
     try {
       const parsed = parseToolsListResult(msg)
       if (parsed === null) return FORWARD
+      // A catalog rewrite is a policy decision too: give a pending edit the
+      // same chance to land as a `tools/call` gives it (the swap itself is
+      // asynchronous; this response is filtered under the policy in force).
+      deps.policy.maybeRefresh()
       cacheDescriptors(parsed.tools)
       // Quarantines new/changed tools before any visibility decision reads
       // their state, and before the next call can be gated. Never throws.
@@ -171,7 +177,7 @@ export function createToolCatalog(deps: ToolCatalogDeps): ToolCatalog {
         if (deps.isGrantedToAgent === undefined) return verdict
         return await filterCatalog(msg, parsed.tools, everyToolVisible)
       }
-      if (deps.policy.toolsList.filter === 'off') {
+      if (deps.policy.current().toolsList.filter === 'off') {
         // `filter: off` opts out of POLICY visibility hygiene only; the
         // agent-grant allowlist is not a policy knob and always applies.
         if (deps.isGrantedToAgent === undefined) return FORWARD

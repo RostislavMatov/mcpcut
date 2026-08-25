@@ -1,5 +1,6 @@
 import type { ApprovalWaiter } from '../policy/approvals/waiter.js'
 import type { GrantRegistry } from '../policy/approvals/grants.js'
+import type { PolicyProvider } from '../policy/reload.js'
 import type { Policy } from '../policy/schema.js'
 import type { MessageGate, MessageSink } from '../transport/message.js'
 import type { GateApprovalQueue } from './gate-approvals.js'
@@ -20,7 +21,14 @@ import type {
 export type GateAnswerSink = Pick<MessageSink, 'write'>
 
 export interface MessagePolicyGateDeps {
-  readonly policy: Policy
+  /**
+   * The rules to decide under. A `PolicyProvider` is read per decision, so an
+   * edit of `policy.json` reaches this gate without a restart (wave 2 of the
+   * policy-tool-rules-ui plan); a plain `Policy` is wrapped in a static
+   * provider and behaves exactly as before. Wiring-time configuration —
+   * `approval.*`, `journal.failClosed` — is read once from the initial value.
+   */
+  readonly policy: Policy | PolicyProvider
   readonly serverName: string
   readonly sessionId: string
   readonly inventory: GateInventory

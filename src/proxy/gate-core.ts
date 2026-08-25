@@ -3,6 +3,7 @@ import { JOURNAL_DIR } from '../config.js'
 import type { JsonRpcId } from '../protocol/classify.js'
 import { decide, type PolicyDecision } from '../policy/decide.js'
 import type { GrantKey } from '../policy/approvals/grants.js'
+import { toPolicyProvider } from '../policy/reload.js'
 import type { ParsedToolCall } from '../protocol/mcp.js'
 import { serverMessage } from '../transport/message.js'
 import type { Verdict } from './pipeline.js'
@@ -93,13 +94,20 @@ function defaultOnError(error: unknown): void {
 }
 
 export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePolicyGate {
-  const { policy, serverName, inventory, grantRegistry, approvalQueue, approvalWaiter } = deps
+  const { serverName, inventory, grantRegistry, approvalQueue, approvalWaiter } = deps
   const agentScope = deps.agentScope
   const clock = deps.clock ?? Date.now
   const onError = deps.onError ?? defaultOnError
   const approvalsBaseDir = deps.approvalsBaseDir ?? join(JOURNAL_DIR, APPROVALS_SUBDIR)
-  const classOverrides = policy.servers?.[serverName]?.classOverrides
-  const failClosed = policy.journal.failClosed
+  // The rules are read through the provider on every decision (hot reload,
+  // wave 2 of the policy-tool-rules-ui plan). Wiring-time configuration is
+  // read ONCE from the policy in force at construction and does not reload:
+  // `journal.failClosed` here, `approval.timeoutMs`/`grantTtlMs` in the
+  // approval flow below, `quarantine.enabled` inside the inventory the caller
+  // built. Class overrides are rules, so they go through a getter.
+  const policy = toPolicyProvider(deps.policy)
+  const classOverridesOf = () => policy.current().servers?.[serverName]?.classOverrides
+  const failClosed = policy.current().journal.failClosed
   // Provenance for every decision record this gate writes (M5). The session
   // shares its own when it has one; otherwise it is built once here, which
   // also covers `denyOnGateError`: a gate-internal failure has resolved
@@ -157,7 +165,7 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     policy,
     serverName,
     inventory,
-    classOverrides,
+    classOverridesOf,
     writeDecision,
     settleJournal,
     onError,
@@ -187,7 +195,7 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     serverName,
     inventory,
     ...(agentScope !== undefined ? { agentScope } : {}),
-    ...(classOverrides !== undefined ? { classOverrides } : {}),
+    classOverridesOf,
     descriptorOf: (toolName: string) => catalog.descriptorOf(toolName),
     hasInventoryLoadFailed: () => inventoryLoadFailed,
   })
@@ -215,7 +223,9 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
   }
 
   const approvalFlow = createApprovalFlow({
-    policy,
+    // Wiring-time snapshot on purpose: the flow reads only `approval.timeoutMs`
+    // and `approval.grantTtlMs`, which do not hot-reload (see above).
+    policy: policy.current(),
     serverName,
     sessionId: deps.sessionId,
     // The agent's name rides the pending file and the pending decision
@@ -251,6 +261,11 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
   }
 
   function decideToolCall(call: ParsedToolCall): Verdict | Promise<Verdict> {
+    // Schedules a `stat` of the policy file (rate-limited); a pending edit
+    // lands asynchronously, so THIS call is still decided under the policy in
+    // force — `factsOf`, `decideInputOf` and `snapshot()` below all read the
+    // same object because nothing in this synchronous stretch can swap it.
+    policy.maybeRefresh()
     const facts = factsOf(call)
     const grantKey: GrantKey = { serverName, toolName: facts.toolName, argsHash: facts.argsHash }
     const decision = enforceCatalogTrust(decide(decideInputOf(facts, grantRegistry.isGranted(grantKey))))
