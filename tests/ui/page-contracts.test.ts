@@ -574,6 +574,16 @@ describe('scripted actions settle by refreshing an opted-in live region', () => 
     expect(h.reloads).toBe(0)
   })
 
+  test('a refusal toast carries the server\'s message when the JSON body has one', async () => {
+    const source = /\n {2}function failureMessage\(res\) \{[\s\S]*?\n {2}\}/.exec(JS_SOURCE)?.[0]
+    expect(source, 'failureMessage not found in APP_JS').toBeDefined()
+    const failureMessage = new Function(`${source ?? ''}\nreturn failureMessage;`)() as (res: unknown) => Promise<string>
+    await expect(failureMessage({ json: () => Promise.resolve({ message: 'policy changed on disk' }) })).resolves.toBe('policy changed on disk')
+    await expect(failureMessage({ json: () => Promise.reject(new Error('not json')) })).resolves.toBe('')
+    await expect(failureMessage({ json: () => Promise.resolve({ message: 42 }) })).resolves.toBe('')
+    expect(JS_SOURCE).toMatch(/announce\("Action failed \(" \+ res\.status \+ "\)" \+ \(message \? ": " \+ message : ""\)\)/)
+  })
+
   test('runAction settles a 2xx through settleAction and never reloads directly', () => {
     expect(JS_SOURCE).toMatch(/if \(res\.ok\) \{\s*settleAction\(el\);/)
     expect(JS_SOURCE.match(/window\.location\.reload\(\)/g)).toHaveLength(1)
