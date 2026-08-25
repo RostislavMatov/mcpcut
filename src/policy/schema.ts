@@ -18,7 +18,7 @@ import {
  */
 
 /** A server name, or a proxy-generated `auto:<sha256 prefix>` identity. */
-const SERVER_NAME_PATTERN = /^[A-Za-z0-9_.:-]{1,64}$/
+export const SERVER_NAME_PATTERN = /^[A-Za-z0-9_.:-]{1,64}$/
 
 /** Every outcome a policy rule can resolve to. */
 export const POLICY_OUTCOME_VALUES = ['allow', 'deny', 'require-approval'] as const

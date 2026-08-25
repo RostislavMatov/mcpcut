@@ -21,6 +21,7 @@ export const JOURNAL_KINDS: readonly string[] = [
   'stderr',
   'decision',
   'probe',
+  'policy-edit',
 ]
 
 export interface SessionSummary {
