@@ -1,8 +1,9 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { POLICY_RECHECK_MIN_MS } from '../../src/policy/constants.js'
+import { PROJECT_POLICY_SUBDIR } from '../../src/policy/load.js'
 import { requestLine, waitUntil } from '../proxy/harness.js'
 import {
   createPlane,
@@ -139,6 +140,47 @@ describe('policy hot reload through a live connect session', () => {
       await callEcho(live, 5)
       await waitUntil(() => plane.allErr().includes('policy reloaded: '))
       expect(await callEcho(live, 6)).toMatchObject({ id: 6, error: { data: { reason: 'policy_denied' } } })
+
+      live.stdio.clientOutbox.end()
+      await live.done
+    },
+    TEST_TIMEOUT_MS,
+  )
+
+  test(
+    'a higher-priority candidate created after binding is reported once, never switched to',
+    async () => {
+      const live = await startLiveSession('reload-e2e-3')
+      await callEcho(live, 1)
+
+      // `connect` resolves `<journalDir>/.mcp-journal/policy.json` BEFORE
+      // `<journalDir>/policy.json` (ADR-0005); it did not exist at start-up.
+      const nestedDir = join(plane.journalDir, PROJECT_POLICY_SUBDIR)
+      const nestedPath = join(nestedDir, 'policy.json')
+      await mkdir(nestedDir, { recursive: true })
+      await writeFile(nestedPath, JSON.stringify({ version: 1, ...denyEcho() }), 'utf8')
+      await waitOutRecheckCooldown()
+      await callEcho(live, 2)
+      await waitUntil(() => plane.allErr().includes('policy shadowed: '))
+
+      // Still the bound policy: the nested deny never applies to this session.
+      for (const id of [3, 4]) {
+        await waitOutRecheckCooldown()
+        expect(await callEcho(live, id)).toMatchObject({ id, result: expect.anything() })
+      }
+      expect(plane.allErr().match(/policy shadowed: /g)).toHaveLength(1)
+      expect(plane.allErr()).toContain(`policy shadowed: ${nestedPath} now resolves first; still enforcing `)
+      expect(plane.allErr()).toMatch(/restart to switch/)
+
+      // Gone, then back: quiet while gone, one more line on reappearance.
+      await unlink(nestedPath)
+      await waitOutRecheckCooldown()
+      await callEcho(live, 5)
+      await waitOutRecheckCooldown()
+      await writeFile(nestedPath, JSON.stringify({ version: 1, ...denyEcho() }), 'utf8')
+      await waitOutRecheckCooldown()
+      await callEcho(live, 6)
+      await waitUntil(() => (plane.allErr().match(/policy shadowed: /g) ?? []).length === 2)
 
       live.stdio.clientOutbox.end()
       await live.done

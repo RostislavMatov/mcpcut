@@ -1,9 +1,11 @@
-import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import {
+  createPolicyFileWriter,
   defaultPolicyFileDeps,
+  POLICY_LOCK_STALE_MS,
   readPolicyFileForEdit,
   writePolicyFile,
   type PolicyFileDeps,
@@ -23,6 +25,8 @@ import { parsePolicy, type Policy } from '../../../src/policy/schema.js'
  */
 
 const TEMP_SUFFIX = '.tmp'
+const LOCK_SUFFIX = '.lock'
+const ONE_SECOND_MS = 1000
 const FILE_MODE_MASK = 0o777
 const OWNER_ONLY_MODE = 0o600
 
@@ -50,6 +54,21 @@ async function writeRaw(contents: string): Promise<void> {
 
 async function tempFilesIn(dir: string): Promise<string[]> {
   return (await readdir(dir)).filter((name) => name.endsWith(TEMP_SUFFIX))
+}
+
+async function lockFilesIn(dir: string): Promise<string[]> {
+  return (await readdir(dir)).filter((name) => name.includes(LOCK_SUFFIX))
+}
+
+function lockPath(): string {
+  return `${policyPath}${LOCK_SUFFIX}`
+}
+
+/** A lock left by another writer, `ageMs` old. */
+async function plantLock(ageMs: number): Promise<void> {
+  await writeFile(lockPath(), '', 'utf8')
+  const atMs = Date.now() - ageMs
+  await utimes(lockPath(), atMs / ONE_SECOND_MS, atMs / ONE_SECOND_MS)
 }
 
 async function loadedHash(path: string): Promise<string> {
@@ -327,5 +346,116 @@ describe('writePolicyFile: atomicity', () => {
     const result = await writePolicyFile(policyPath, policyOf(), { expectedHash: null }, deps)
     expect(result.status).toBe('error')
     expect(await readdir(tempDir)).toEqual([])
+  })
+})
+
+describe('writePolicyFile: cross-process lock', () => {
+  test('two independent writers (two processes) racing on the same token: exactly one wins', async () => {
+    await writeRaw('{"version":1}')
+    const before = await readPolicyFileForEdit(policyPath)
+    if (before.status !== 'loaded') throw new Error('fixture did not load')
+    const first = applyToolRuleToDocument(before.document, 'github', 'a', 'deny')
+    const second = applyToolRuleToDocument(before.document, 'github', 'b', 'allow')
+    if (!first.ok || !second.ok) throw new Error('fixture edits failed')
+
+    // Separate writers = separate in-process chains: only the lock file on
+    // disk stands between them, exactly as between `ui` and `policy set`.
+    const processA = createPolicyFileWriter()
+    const processB = createPolicyFileWriter()
+    const results = await Promise.all([
+      processA.write(policyPath, first.document, { expectedHash: before.hash }),
+      processB.write(policyPath, second.document, { expectedHash: before.hash }),
+    ])
+    expect(results.map((result) => result.status).sort()).toEqual(['conflict', 'written'])
+    expect(await lockFilesIn(tempDir)).toEqual([])
+    expect(await tempFilesIn(tempDir)).toEqual([])
+  })
+
+  test('the in-process chain alone would not have stopped them: the lock is what did', async () => {
+    await writeRaw('{"version":1}')
+    const before = await readPolicyFileForEdit(policyPath)
+    if (before.status !== 'loaded') throw new Error('fixture did not load')
+    const seen: string[] = []
+    const deps: PolicyFileDeps = {
+      ...defaultPolicyFileDeps,
+      openExclusive: async (path) => {
+        seen.push(path)
+        await defaultPolicyFileDeps.openExclusive(path)
+      },
+    }
+    const results = await Promise.all([
+      createPolicyFileWriter().write(policyPath, before.document, { expectedHash: before.hash }, deps),
+      createPolicyFileWriter().write(policyPath, before.document, { expectedHash: before.hash }, deps),
+    ])
+    expect(results.map((result) => result.status).sort()).toEqual(['conflict', 'written'])
+    // Both writers reached for the same lock; the second create failed.
+    expect(seen).toEqual([lockPath(), lockPath()])
+  })
+
+  test('a fresh foreign lock yields conflict with the current on-disk hash, without waiting', async () => {
+    await writeRaw('{"version":1,"defaultDecision":"deny"}')
+    const onDisk = await loadedHash(policyPath)
+    await plantLock(0)
+    const startedAt = Date.now()
+    const result = await writePolicyFile(policyPath, policyOf(), { expectedHash: onDisk })
+    expect(result).toEqual({ status: 'conflict', currentHash: onDisk })
+    expect(Date.now() - startedAt).toBeLessThan(POLICY_LOCK_STALE_MS)
+    // A foreign lock is never removed by the writer that lost to it.
+    expect(await lockFilesIn(tempDir)).toEqual(['policy.json.lock'])
+    expect(await loadedHash(policyPath)).toBe(onDisk)
+  })
+
+  test('a fresh foreign lock on an absent file yields conflict with currentHash null', async () => {
+    await plantLock(0)
+    const result = await writePolicyFile(policyPath, policyOf(), { expectedHash: null })
+    expect(result).toEqual({ status: 'conflict', currentHash: null })
+  })
+
+  test('a stale lock (older than POLICY_LOCK_STALE_MS) is broken and the write proceeds', async () => {
+    await writeRaw('{"version":1}')
+    const onDisk = await loadedHash(policyPath)
+    await plantLock(POLICY_LOCK_STALE_MS + ONE_SECOND_MS)
+    const result = await writePolicyFile(policyPath, policyOf({ defaultDecision: 'deny' }), {
+      expectedHash: onDisk,
+    })
+    expect(result.status).toBe('written')
+    expect(await lockFilesIn(tempDir)).toEqual([])
+    expect(await readdir(tempDir)).toEqual(['policy.json'])
+  })
+
+  test('the lock never survives a CAS conflict', async () => {
+    await writeRaw('{"version":1}')
+    const result = await writePolicyFile(policyPath, policyOf(), { expectedHash: 'f'.repeat(64) })
+    expect(result.status).toBe('conflict')
+    expect(await lockFilesIn(tempDir)).toEqual([])
+  })
+
+  test('the lock never survives a failed rename', async () => {
+    await writeRaw('{"version":1}')
+    const onDisk = await loadedHash(policyPath)
+    const deps: PolicyFileDeps = {
+      ...defaultPolicyFileDeps,
+      rename: async () => {
+        throw new Error('disk on fire')
+      },
+    }
+    const result = await writePolicyFile(policyPath, policyOf(), { expectedHash: onDisk }, deps)
+    expect(result.status).toBe('error')
+    expect(await readdir(tempDir)).toEqual(['policy.json'])
+  })
+
+  test('a lock the filesystem refuses for any reason but EEXIST is an error, not a conflict', async () => {
+    await writeRaw('{"version":1}')
+    const onDisk = await loadedHash(policyPath)
+    const deps: PolicyFileDeps = {
+      ...defaultPolicyFileDeps,
+      openExclusive: async () => {
+        throw Object.assign(new Error('read-only file system'), { code: 'EROFS' })
+      },
+    }
+    const result = await writePolicyFile(policyPath, policyOf(), { expectedHash: onDisk }, deps)
+    expect(result.status).toBe('error')
+    if (result.status === 'error') expect(result.errors[0]).toContain('read-only file system')
+    expect(await readFile(policyPath, 'utf8')).toBe('{"version":1}')
   })
 })

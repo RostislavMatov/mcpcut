@@ -13,6 +13,7 @@ import {
   type PolicyProvider,
   type PolicyReloadEvent,
   type PolicyReloadFailure,
+  type PolicyShadowedEvent,
 } from '../../src/policy/reload.js'
 import { parsePolicy, type Policy } from '../../src/policy/schema.js'
 
@@ -45,9 +46,12 @@ interface FakeFile {
 interface Stand {
   readonly provider: PolicyProvider
   readonly file: FakeFile
+  /** Paths that resolve BEFORE the bound file and currently exist (finding 2). */
+  readonly shadowing: Set<string>
   readonly clock: { now: number }
   readonly reloads: PolicyReloadEvent[]
   readonly failures: PolicyReloadFailure[]
+  readonly shadowed: PolicyShadowedEvent[]
   readonly statCalls: () => number
   readonly readCalls: () => number
 }
@@ -56,11 +60,19 @@ function enoent(): Error {
   return Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' })
 }
 
-function createStand(initialDocument: Record<string, unknown> = ALLOW_ALL): Stand {
+interface StandOptions {
+  readonly initialDocument?: Record<string, unknown>
+  readonly precedingCandidates?: readonly string[]
+}
+
+function createStand(opts: StandOptions = {}): Stand {
+  const initialDocument = opts.initialDocument ?? ALLOW_ALL
   const file: FakeFile = { text: JSON.stringify(initialDocument), version: { mtimeMs: 1000, size: 10 } }
+  const shadowing = new Set<string>()
   const clock = { now: 100_000 }
   const reloads: PolicyReloadEvent[] = []
   const failures: PolicyReloadFailure[] = []
+  const shadowed: PolicyShadowedEvent[] = []
   let statCalls = 0
   let readCalls = 0
 
@@ -79,16 +91,31 @@ function createStand(initialDocument: Record<string, unknown> = ALLOW_ALL): Stan
     initial: policyOf(initialDocument),
     sourcePath: SOURCE_PATH,
     loadOptions,
+    ...(opts.precedingCandidates !== undefined ? { precedingCandidates: opts.precedingCandidates } : {}),
     now: () => clock.now,
-    stat: () => {
+    stat: (path) => {
+      if (path !== SOURCE_PATH) {
+        return shadowing.has(path) ? Promise.resolve({ mtimeMs: 1, size: 1 }) : Promise.reject(enoent())
+      }
       statCalls += 1
       if (file.text === null) return Promise.reject(enoent())
       return Promise.resolve(file.version)
     },
     onReload: (event) => reloads.push(event),
     onError: (failure) => failures.push(failure),
+    onShadowed: (event) => shadowed.push(event),
   })
-  return { provider, file, clock, reloads, failures, statCalls: () => statCalls, readCalls: () => readCalls }
+  return {
+    provider,
+    file,
+    shadowing,
+    clock,
+    reloads,
+    failures,
+    shadowed,
+    statCalls: () => statCalls,
+    readCalls: () => readCalls,
+  }
 }
 
 /**
@@ -105,6 +132,14 @@ function editFile(stand: Stand, document: Record<string, unknown> | string): voi
   const text = typeof document === 'string' ? document : JSON.stringify(document)
   stand.file.text = text
   stand.file.version = { mtimeMs: stand.file.version.mtimeMs + 1, size: text.length }
+}
+
+/**
+ * Edits the fake file WITHOUT moving its version: what a coarse-mtime file
+ * system (or overlayfs) shows for two same-size writes inside one tick.
+ */
+function editFileSameVersion(stand: Stand, text: string): void {
+  stand.file.text = text
 }
 
 describe('createPolicyProvider — the contract the gate relies on', () => {
@@ -298,6 +333,67 @@ describe('createPolicyProvider — failure keeps the last valid policy (O3)', ()
     expect(stand.reloads).toHaveLength(1)
   })
 
+  test('a same-size fix inside the same mtime tick is still picked up (coarse-mtime file systems)', async () => {
+    const stand = createStand()
+    // `"deny!"` and `"deny "` are the same length: broken and fixed share one version key.
+    const broken = JSON.stringify(DENY_ALL).replace('"deny"', '"deny!"')
+    const fixed = `${JSON.stringify(DENY_ALL)} `
+    expect(broken.length).toBe(fixed.length)
+    editFile(stand, broken)
+    await stand.provider.refresh()
+    expect(stand.failures).toHaveLength(1)
+    expect(stand.provider.current().defaultDecision).toBe('allow')
+
+    editFileSameVersion(stand, fixed)
+    await stand.provider.refresh()
+
+    expect(stand.provider.current().defaultDecision).toBe('deny')
+    expect(stand.reloads).toHaveLength(1)
+    expect(stand.failures).toHaveLength(1)
+  })
+
+  test('while the file is broken every check re-reads it, but an unchanged broken file is not re-reported', async () => {
+    const stand = createStand()
+    editFile(stand, '{ not json')
+    await stand.provider.refresh()
+    const readsAfterFirstFailure = stand.readCalls()
+
+    await stand.provider.refresh()
+    await stand.provider.refresh()
+
+    expect(stand.readCalls()).toBe(readsAfterFirstFailure + 2)
+    expect(stand.failures).toHaveLength(1)
+  })
+
+  test('a DIFFERENT failure under the same version key is reported again; the same one is not', async () => {
+    const stand = createStand()
+    editFile(stand, '{ not json')
+    await stand.provider.refresh()
+    // Same key, same complaint: nothing new to tell the operator.
+    editFileSameVersion(stand, '{ still not json')
+    await stand.provider.refresh()
+    expect(stand.failures).toHaveLength(1)
+
+    // Same key, a different complaint (valid JSON, invalid schema): worth a line.
+    editFileSameVersion(stand, JSON.stringify({ version: 1, defaultDecision: 'maybe' }))
+    await stand.provider.refresh()
+    expect(stand.failures).toHaveLength(2)
+    expect(stand.failures[1]!.errors.join('\n')).toContain('defaultDecision')
+  })
+
+  test('after a successful load the version-key short-circuit is back: no re-read on an equal key', async () => {
+    const stand = createStand()
+    editFile(stand, '{ not json')
+    await stand.provider.refresh()
+    editFile(stand, DENY_ALL)
+    await stand.provider.refresh()
+    const readsAfterFix = stand.readCalls()
+
+    await stand.provider.refresh()
+
+    expect(stand.readCalls()).toBe(readsAfterFix)
+  })
+
   test('a stat failure other than ENOENT is a version too: reported once, policy kept', async () => {
     const failures: PolicyReloadFailure[] = []
     let statCalls = 0
@@ -408,6 +504,72 @@ describe('createPolicyProvider — ADR-0005: the source is pinned to the entry p
     await provider.refresh()
     expect(provider.current().defaultDecision).toBe('deny')
     expect(reloads).toHaveLength(1)
+  })
+})
+
+describe('createPolicyProvider — a higher-priority candidate created after binding (shadowing)', () => {
+  const PROJECT_PATH = '/plane/.mcp-journal/policy.json'
+
+  test('a preceding candidate that appears is reported ONCE, and the bound policy is never re-targeted', async () => {
+    const stand = createStand({ precedingCandidates: [PROJECT_PATH] })
+    await stand.provider.refresh()
+    expect(stand.shadowed).toEqual([])
+
+    stand.shadowing.add(PROJECT_PATH)
+    await stand.provider.refresh()
+    await stand.provider.refresh()
+    stand.clock.now += POLICY_RECHECK_MIN_MS
+    stand.provider.maybeRefresh()
+    await settleScheduledCheck()
+
+    expect(stand.shadowed).toEqual([
+      { shadowingPath: PROJECT_PATH, sourcePath: SOURCE_PATH, keptHash: policyHashOf(policyOf(ALLOW_ALL)) },
+    ])
+    expect(stand.provider.current().defaultDecision).toBe('allow')
+    expect(stand.provider.sourcePath).toBe(SOURCE_PATH)
+    expect(stand.failures).toEqual([])
+  })
+
+  test('once it disappears the provider goes quiet, and a later reappearance is reported again', async () => {
+    const stand = createStand({ precedingCandidates: [PROJECT_PATH] })
+    stand.shadowing.add(PROJECT_PATH)
+    await stand.provider.refresh()
+    expect(stand.shadowed).toHaveLength(1)
+
+    stand.shadowing.delete(PROJECT_PATH)
+    await stand.provider.refresh()
+    expect(stand.shadowed).toHaveLength(1)
+
+    stand.shadowing.add(PROJECT_PATH)
+    await stand.provider.refresh()
+    expect(stand.shadowed).toHaveLength(2)
+  })
+
+  test('the FIRST existing candidate in resolution order is the one named', async () => {
+    const ENV_PATH = '/elsewhere/policy.json'
+    const stand = createStand({ precedingCandidates: [ENV_PATH, PROJECT_PATH] })
+    stand.shadowing.add(PROJECT_PATH)
+    await stand.provider.refresh()
+    expect(stand.shadowed.at(-1)?.shadowingPath).toBe(PROJECT_PATH)
+
+    // A higher-priority one appearing on top is a change worth another line.
+    stand.shadowing.add(ENV_PATH)
+    await stand.provider.refresh()
+    expect(stand.shadowed.at(-1)?.shadowingPath).toBe(ENV_PATH)
+    expect(stand.shadowed).toHaveLength(2)
+  })
+
+  test('the bound file keeps hot-reloading while shadowed', async () => {
+    const stand = createStand({ precedingCandidates: [PROJECT_PATH] })
+    stand.shadowing.add(PROJECT_PATH)
+    await stand.provider.refresh()
+
+    editFile(stand, DENY_ALL)
+    await stand.provider.refresh()
+
+    expect(stand.provider.current().defaultDecision).toBe('deny')
+    expect(stand.reloads).toHaveLength(1)
+    expect(stand.shadowed).toHaveLength(1)
   })
 })
 

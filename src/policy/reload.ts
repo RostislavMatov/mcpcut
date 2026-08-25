@@ -19,7 +19,7 @@ import type { Policy } from './schema.js'
  * `journal.failClosed`, `quarantine.enabled` — those are read once when the
  * queue, waiter, sink and inventory are constructed and stay until restart.
  *
- * Two properties are load-bearing for the gate:
+ * Three properties are load-bearing for the gate:
  *
  *  - **`current()` is synchronous.** The gate decides on a synchronous hot
  *    path and must never await the file system. A check is therefore
@@ -29,16 +29,22 @@ import type { Policy } from './schema.js'
  *    single reference assignment of an already-parsed object).
  *  - **A failed reload keeps the last valid policy** (owner decision O3). A
  *    broken, unreadable or vanished file is reported through `onError` ONCE
- *    per file version — never once per call — and the policy in force does
- *    not move. Deleting the file on the fly is an error, not "enforcement
- *    off": silently dropping to journal-only is not a mode this supports.
- *
- * Re-reads go through `loadPolicy` with the SAME `loadOptions` the entry
- * point resolved through `resolvePolicySource`, so ADR-0005 keeps holding at
- * runtime: an agent-launched `connect` can never start reading a project or
- * `$MCP_JOURNAL_POLICY` file it was denied at start-up. A re-read that
- * resolves to a different file than the one this provider was bound to is
- * refused like any other failed reload.
+ *    per distinct failure — never once per call — and the policy in force
+ *    does not move. Deleting the file on the fly is an error, not
+ *    "enforcement off": silently dropping to journal-only is not a mode this
+ *    supports. While the file is broken, every (cooldown-limited) check
+ *    re-reads it rather than trusting the `mtime`/`size` key: a same-size fix
+ *    written inside one mtime tick (coarse-mtime file systems, overlayfs)
+ *    would otherwise stay masked until an unrelated edit.
+ *  - **The source is pinned for the life of the process** (ADR-0005).
+ *    Re-reads go through `loadPolicy` with the SAME `loadOptions` the entry
+ *    point resolved through `resolvePolicySource`, so an agent-launched
+ *    `connect` can never start reading a project or `$MCP_JOURNAL_POLICY`
+ *    file it was denied at start-up. A re-read that resolves to a different
+ *    file is refused like any other failed reload; a higher-priority
+ *    candidate that APPEARS after binding is reported through `onShadowed`
+ *    (once, until it disappears) but never switched to: a fresh start would
+ *    read it, this process keeps enforcing what it was bound to.
  */
 
 export interface PolicyProvider {
@@ -49,7 +55,7 @@ export interface PolicyProvider {
    * Called by consumers right before a decision; returns immediately.
    */
   maybeRefresh(): void
-  /** Runs one version check now (coalesced with an in-flight one). Never rejects. */
+  /** Runs one check that STARTS after this call (see `refresh` below). Never rejects. */
   refresh(): Promise<void>
   /** The file this provider is bound to, or `STATIC_POLICY_SOURCE`. */
   readonly sourcePath: string
@@ -81,6 +87,13 @@ export interface PolicyReloadFailure {
   readonly keptHash: string
 }
 
+/** A higher-priority candidate exists now; a fresh start would read it, this process does not. */
+export interface PolicyShadowedEvent {
+  readonly shadowingPath: string
+  readonly sourcePath: string
+  readonly keptHash: string
+}
+
 export interface CreatePolicyProviderArgs {
   /** The policy the entry point already loaded and validated at start-up. */
   readonly initial: Policy
@@ -88,8 +101,16 @@ export interface CreatePolicyProviderArgs {
   readonly sourcePath: string
   /** Exactly what the entry point resolved through `resolvePolicySource` (ADR-0005). */
   readonly loadOptions: LoadPolicyOptions
+  /**
+   * Candidate paths that resolve BEFORE `sourcePath` in the entry point's
+   * order and did not exist at start-up (`resolvePolicySource().candidates`
+   * up to the bound one). Each check `stat`s them; one that appears is
+   * reported via `onShadowed`. Omitted = no shadow check.
+   */
+  readonly precedingCandidates?: readonly string[]
   readonly onReload?: (event: PolicyReloadEvent) => void
   readonly onError?: (failure: PolicyReloadFailure) => void
+  readonly onShadowed?: (event: PolicyShadowedEvent) => void
   /** Injectable clock (ms) for the recheck cooldown. Defaults to `Date.now`. */
   readonly now?: () => number
   /**
@@ -105,37 +126,50 @@ export interface CreatePolicyProviderArgs {
 const VERSION_ABSENT = 'absent'
 const VERSION_STAT_ERROR_PREFIX = 'stat-error:'
 
-type ObservedVersion =
-  | { readonly key: string; readonly error?: undefined }
-  | { readonly key: string; readonly error: string }
+type ObservedVersion = { readonly key: string; readonly error?: string }
 
 export function createPolicyProvider(args: CreatePolicyProviderArgs): PolicyProvider {
   const { sourcePath, loadOptions } = args
+  const precedingCandidates = args.precedingCandidates ?? []
   const now = args.now ?? Date.now
   const stat = args.stat ?? defaultStatFor(loadOptions)
   const onReload = args.onReload ?? noop
   const onError = args.onError ?? noop
+  const onShadowed = args.onShadowed ?? noop
 
   let current: Policy = args.initial
   let lastCheckAt = Number.NEGATIVE_INFINITY
   /** `null` until the first check: the baseline is established by one read, never assumed. */
   let lastSeenVersion: string | null = null
+  /**
+   * Non-null while the last observed version FAILED to load: the version key
+   * plus the errors it produced. Disables the equal-key short-circuit (the
+   * file is re-read on every check) and dedupes the diagnostic — a still
+   * broken file is not re-reported, a differently broken one is.
+   */
+  let lastFailureSignature: string | null = null
+  /** The preceding candidate currently reported as shadowing, or `null`. */
+  let shadowingPath: string | null = null
   let inFlight: Promise<void> | null = null
   /** At most one follow-up check queued behind `inFlight` (see `refresh`). */
   let queued: Promise<void> | null = null
 
-  function reportFailure(errors: readonly string[]): void {
+  function failWith(versionKey: string, errors: readonly string[]): void {
+    const signature = `${versionKey}\n${errors.join('\n')}`
+    if (signature === lastFailureSignature) return
+    lastFailureSignature = signature
     safely(() => onError({ sourcePath, errors, keptHash: policyHashOf(current) }))
   }
 
   /** Applies a successful load: swaps only when the EFFECTIVE policy changed. */
-  function applyLoaded(result: Extract<PolicyLoadResult, { status: 'loaded' }>): void {
+  function applyLoaded(versionKey: string, result: Extract<PolicyLoadResult, { status: 'loaded' }>): void {
     if (result.sourcePath !== sourcePath) {
-      reportFailure([
+      failWith(versionKey, [
         `policy now resolves from a different file: ${result.sourcePath}; this process stays bound to ${sourcePath}`,
       ])
       return
     }
+    lastFailureSignature = null
     const hashBefore = policyHashOf(current)
     const hashAfter = policyHashOf(result.policy)
     if (hashBefore === hashAfter) return
@@ -143,25 +177,39 @@ export function createPolicyProvider(args: CreatePolicyProviderArgs): PolicyProv
     safely(() => onReload({ sourcePath, hashBefore, hashAfter }))
   }
 
-  async function checkOnce(): Promise<void> {
+  async function checkBoundFile(): Promise<void> {
     const observed = await observeVersion(stat, sourcePath)
-    if (observed.key === lastSeenVersion) return
+    if (observed.key === lastSeenVersion && lastFailureSignature === null) return
     lastSeenVersion = observed.key
     if (observed.error !== undefined) {
-      reportFailure([observed.error])
+      failWith(observed.key, [observed.error])
       return
     }
 
     const result = await loadPolicy(loadOptions)
     if (result.status === 'error') {
-      reportFailure(result.errors)
+      failWith(observed.key, result.errors)
       return
     }
     if (result.status === 'disabled') {
-      reportFailure([`policy file not found: ${sourcePath}`])
+      failWith(observed.key, [`policy file not found: ${sourcePath}`])
       return
     }
-    applyLoaded(result)
+    applyLoaded(observed.key, result)
+  }
+
+  /** Reports the first preceding candidate that exists — once, until the picture changes. */
+  async function checkShadowing(): Promise<void> {
+    const found = await firstExisting(stat, precedingCandidates)
+    if (found === shadowingPath) return
+    shadowingPath = found
+    if (found === null) return
+    safely(() => onShadowed({ shadowingPath: found, sourcePath, keptHash: policyHashOf(current) }))
+  }
+
+  async function checkOnce(): Promise<void> {
+    await checkBoundFile()
+    await checkShadowing()
   }
 
   /**
@@ -175,7 +223,7 @@ export function createPolicyProvider(args: CreatePolicyProviderArgs): PolicyProv
     if (inFlight === null) {
       inFlight = checkOnce()
         .catch((error: unknown) => {
-          reportFailure([`policy reload failed unexpectedly: ${describeCause(error)}`])
+          failWith(VERSION_STAT_ERROR_PREFIX, [`policy reload failed unexpectedly: ${describeCause(error)}`])
         })
         .finally(() => {
           inFlight = null
@@ -272,6 +320,24 @@ async function observeVersion(stat: PolicyStat, sourcePath: string): Promise<Obs
       error: `cannot stat policy file "${sourcePath}": ${cause}`,
     }
   }
+}
+
+/**
+ * The first candidate, in resolution order, that a fresh start would find.
+ * Anything but ENOENT counts as present: an unreadable file at a higher
+ * priority would fail a fresh start outright, which is just as much a
+ * divergence from this process as a readable one.
+ */
+async function firstExisting(stat: PolicyStat, candidates: readonly string[]): Promise<string | null> {
+  for (const path of candidates) {
+    try {
+      await stat(path)
+      return path
+    } catch (error: unknown) {
+      if (!isEnoent(error)) return path
+    }
+  }
+  return null
 }
 
 function defaultStatFor(loadOptions: LoadPolicyOptions): PolicyStat {

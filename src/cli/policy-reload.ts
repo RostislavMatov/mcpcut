@@ -4,9 +4,11 @@ import {
   type PolicyProvider,
   type PolicyReloadEvent,
   type PolicyReloadFailure,
+  type PolicyShadowedEvent,
   type PolicyStat,
 } from '../policy/reload.js'
 import type { Policy } from '../policy/schema.js'
+import type { PolicySourceCandidate } from '../policy/source.js'
 
 /**
  * The one place the three proxy entry points (`connect`, `wrap`, `serve`)
@@ -37,7 +39,13 @@ export interface ReloadingPolicyArgs {
   readonly sourcePath: string
   /** Exactly what `resolvePolicySource` returned for this entry point (ADR-0005). */
   readonly loadOptions: LoadPolicyOptions
-  /** Where the two diagnostic lines go. Must already be guarded where stderr can break (`serve`). */
+  /**
+   * `resolvePolicySource().candidates`, in resolution order. The ones before
+   * `sourcePath` did not exist at start-up; one appearing later is reported
+   * as shadowing (never switched to). Omitted = no shadow check.
+   */
+  readonly candidates?: readonly PolicySourceCandidate[]
+  /** Where the diagnostic lines go. Must already be guarded where stderr can break (`serve`). */
   readonly stderr: PolicyReloadStderr
   /** Test seam; see `CreatePolicyProviderArgs.stat`. */
   readonly stat?: PolicyStat
@@ -49,6 +57,7 @@ export function createReloadingPolicy(args: ReloadingPolicyArgs): PolicyProvider
     initial: args.initial,
     sourcePath: args.sourcePath,
     loadOptions: args.loadOptions,
+    precedingCandidates: precedingCandidatesOf(args.candidates ?? [], args.sourcePath),
     ...(args.stat !== undefined ? { stat: args.stat } : {}),
     onReload: (event) => {
       args.stderr.write(formatPolicyReloaded(event))
@@ -56,7 +65,20 @@ export function createReloadingPolicy(args: ReloadingPolicyArgs): PolicyProvider
     onError: (failure) => {
       args.stderr.write(formatPolicyReloadFailure(failure))
     },
+    onShadowed: (event) => {
+      args.stderr.write(formatPolicyShadowed(event))
+    },
   })
+}
+
+/** The candidate paths tried before the one that was actually loaded. */
+function precedingCandidatesOf(
+  candidates: readonly PolicySourceCandidate[],
+  sourcePath: string,
+): readonly string[] {
+  const boundIndex = candidates.findIndex((candidate) => candidate.path === sourcePath)
+  const preceding = boundIndex === -1 ? [] : candidates.slice(0, boundIndex)
+  return preceding.map((candidate) => candidate.path)
 }
 
 /** `policy reloaded: <hash8> -> <hash8>` */
@@ -68,6 +90,14 @@ export function formatPolicyReloaded(event: PolicyReloadEvent): string {
 export function formatPolicyReloadFailure(failure: PolicyReloadFailure): string {
   const errors = failure.errors.join('; ')
   return `policy reload failed: ${failure.sourcePath}: ${errors}; keeping policy ${shortHash(failure.keptHash)}\n`
+}
+
+/** `policy shadowed: <path> now resolves first; still enforcing <bound> (<hash8>) — restart to switch` */
+export function formatPolicyShadowed(event: PolicyShadowedEvent): string {
+  return (
+    `policy shadowed: ${event.shadowingPath} now resolves first; ` +
+    `still enforcing ${event.sourcePath} (${shortHash(event.keptHash)}) — restart to switch\n`
+  )
 }
 
 function shortHash(hash: string): string {
