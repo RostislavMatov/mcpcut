@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { REDACTED_PLACEHOLDER } from '../../src/config.js'
 import { createJournalSink } from '../../src/journal/sink.js'
 import { createRecordBuilder } from '../../src/journal/record.js'
+import { journalProbe } from '../../src/probe/journal-probe.js'
 import { classify } from '../../src/protocol/classify.js'
 import { collectPersistedBytes } from '../support/persisted-bytes.js'
 
@@ -61,6 +62,32 @@ describe('journal redaction sweep: a secret never reaches journal.db', () => {
     if (fileNames.some((name) => name.endsWith('-wal'))) {
       expect(fileNames).toContain('journal.db-wal')
     }
+
+    for (const rendering of renderings) {
+      expect(rendering).not.toContain(SECRET_VALUE)
+    }
+    expect(renderings.some((rendering) => rendering.includes(REDACTED_PLACEHOLDER))).toBe(true)
+  })
+
+  test('the probe path — journalProbe() — never lands a secret in journal.db (M5.5 Task 5)', async () => {
+    // The probe engine already writes redacted messages; this pins the
+    // journal-side guarantee anyway: redaction is the ONLY path into the
+    // journal, probe records included, so even an error string that arrives
+    // carrying a bearer token must be scrubbed before persistence.
+    const outcome = await journalProbe({
+      serverName: 'github-live',
+      initiator: { trigger: 'refresh', adminName: 'alice' },
+      result: {
+        status: 'error',
+        message: `the server echoed Bearer ${SECRET_VALUE} in its failure body`,
+      },
+      dir: journalDir,
+    })
+    expect(outcome.written).toBe(true)
+
+    const { fileNames, renderings } = await collectPersistedBytes(journalDir)
+    // Positive sentinel first: the sweep actually reached the store.
+    expect(fileNames).toContain('journal.db')
 
     for (const rendering of renderings) {
       expect(rendering).not.toContain(SECRET_VALUE)
