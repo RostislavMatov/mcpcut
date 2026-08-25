@@ -4,6 +4,7 @@ import { RELAY_DRAIN_TIMEOUT_MS, SIGKILL_ESCALATION_MS } from '../config.js'
 import { createRecordBuilder, type JournalDirection } from '../journal/record.js'
 import { createJournalSink, type JournalSinkOptions } from '../journal/sink.js'
 import type { Policy } from '../policy/schema.js'
+import { guardDiagnostics } from './diagnostics.js'
 import type { GateAgentScope } from './gate.js'
 import {
   createJournalFailureController,
@@ -136,20 +137,25 @@ export async function runWrap(
   const sessionId = opts.sessionId ?? ulid()
   const recordBuilder = createRecordBuilder(sessionId, opts.now !== undefined ? { now: opts.now } : {})
   const clientStderr = opts.stderr ?? process.stderr
+  // The server's stderr is spliced into `clientStderr` raw; the proxy's OWN
+  // lines go through a guard, so a broken stderr reported as a diagnostic
+  // cannot re-enter stderr (see `diagnostics.ts`).
+  const diagnostics = guardDiagnostics(clientStderr)
   const killEscalationMs = opts.killEscalationMs ?? SIGKILL_ESCALATION_MS
   const relayDrainTimeoutMs = opts.relayDrainTimeoutMs ?? RELAY_DRAIN_TIMEOUT_MS
   const isFailClosed = failClosedOf(opts)
-  const journalFailure = createJournalFailureController({ diagnostics: clientStderr, killEscalationMs })
+  const journalFailure = createJournalFailureController({ diagnostics, killEscalationMs })
   const sink = createJournalSink(sessionId, sinkOptionsOf(opts, isFailClosed, journalFailure))
 
   const handle = spawnServer(command, args, opts.cwd !== undefined ? { cwd: opts.cwd } : {})
   const signalHandle = installSignalForwarding(handle, DEFAULT_FORWARDED_SIGNALS, { killEscalationMs })
-  const shutdown = createShutdownController(handle, { diagnostics: clientStderr, killEscalationMs })
+  const shutdown = createShutdownController(handle, { diagnostics, killEscalationMs })
   const wiring = wireRelay({
     handle,
     clientStdin: opts.stdin ?? process.stdin,
     clientStdout: opts.stdout ?? process.stdout,
     clientStderr,
+    diagnostics,
     recordBuilder,
     sink,
     reportError: (channel, error, origin) => shutdown.report(channel, error, origin),
@@ -163,7 +169,7 @@ export async function runWrap(
 
   try {
     const childExitCode = await handle.exitCode()
-    await drainRelay(wiring.relayed, relayDrainTimeoutMs, clientStderr)
+    await drainRelay(wiring.relayed, relayDrainTimeoutMs, diagnostics)
     // Before the writers go away in `dispose()`: a cancelled approval
     // answers the client with a timeout error, which still has to reach it.
     await wiring.cancelPending()

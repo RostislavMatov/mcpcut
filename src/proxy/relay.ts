@@ -31,6 +31,12 @@ export interface RelayArgs {
   readonly clientStdin: Readable
   readonly clientStdout: Writable
   readonly clientStderr: Writable
+  /**
+   * Where the relay's OWN lines (tap failures) go. Defaults to
+   * `clientStderr`; the wrap entry passes a guarded stream so a diagnostic
+   * about a broken stderr never re-enters it (see `diagnostics.ts`).
+   */
+  readonly diagnostics?: Writable
   readonly recordBuilder: RecordBuilder
   readonly sink: JournalSink
   /** Routes a stream/tap failure to the run's shutdown controller. */
@@ -58,6 +64,7 @@ export function wireRelay(args: RelayArgs): RelayWiring {
 /** Mode B: message pipelines around the policy gate. */
 function wirePipelines(args: RelayArgs, policy: Policy): RelayWiring {
   const { recordBuilder, sink, clientStderr } = args
+  const diagnostics = args.diagnostics ?? clientStderr
   return wirePolicyRelay({
     policy,
     serverName: args.serverName,
@@ -67,8 +74,8 @@ function wirePipelines(args: RelayArgs, policy: Policy): RelayWiring {
     clientStdout: args.clientStdout,
     clientStderr,
     sink,
-    tapLine: (line, direction) => tapMessage(recordBuilder, sink, line, direction, clientStderr),
-    tapStderrLine: (line) => tapStderr(recordBuilder, sink, line, clientStderr),
+    tapLine: (line, direction) => tapMessage(recordBuilder, sink, line, direction, diagnostics),
+    tapStderrLine: (line) => tapStderr(recordBuilder, sink, line, diagnostics),
     reportError: args.reportError,
     ...(args.journalDir !== undefined ? { journalDir: args.journalDir } : {}),
     ...(args.approvalsBaseDir !== undefined ? { approvalsBaseDir: args.approvalsBaseDir } : {}),
@@ -82,6 +89,7 @@ function wirePipelines(args: RelayArgs, policy: Policy): RelayWiring {
 /** Mode A: splices client stdio through the child in both directions, tapping each line into the journal. */
 function wireSplices(args: RelayArgs): RelayWiring {
   const { handle, clientStderr, recordBuilder, sink } = args
+  const diagnostics = args.diagnostics ?? clientStderr
   const errorsOf =
     (channel: JournalDirection) =>
     (error: unknown, origin: SpliceErrorOrigin): void =>
@@ -90,21 +98,21 @@ function wireSplices(args: RelayArgs): RelayWiring {
   const toServer = splice(
     args.clientStdin,
     handle.stdin,
-    (line) => tapMessage(recordBuilder, sink, line, 'client→server', clientStderr),
+    (line) => tapMessage(recordBuilder, sink, line, 'client→server', diagnostics),
     { onError: errorsOf('client→server') },
   )
 
   const toClient = splice(
     handle.stdout,
     args.clientStdout,
-    (line) => tapMessage(recordBuilder, sink, line, 'server→client', clientStderr),
+    (line) => tapMessage(recordBuilder, sink, line, 'server→client', diagnostics),
     { endDestination: false, onError: errorsOf('server→client') },
   )
 
   const stderrRelay = splice(
     handle.stderr,
     clientStderr,
-    (line) => tapStderr(recordBuilder, sink, line, clientStderr),
+    (line) => tapStderr(recordBuilder, sink, line, diagnostics),
     { endDestination: false, onError: errorsOf('server-stderr') },
   )
 
