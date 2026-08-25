@@ -169,6 +169,8 @@ interface UiRuntime {
   readonly hub: EventHub
   readonly watcher: QueueWatcher
   readonly adminStore: AdminStore
+  /** Waits for in-flight server probes (M5.5 п.1); starts nothing new. */
+  readonly closeProbes: () => Promise<void>
 }
 
 function buildRuntime(flags: UiFlags, io: UiCliIo, opts: UiCommandOptions): UiRuntime {
@@ -231,7 +233,7 @@ function buildRuntime(flags: UiFlags, io: UiCliIo, opts: UiCommandOptions): UiRu
     ...(opts.clock !== undefined ? { clock: opts.clock } : {}),
   })
 
-  return { server, hub, watcher, adminStore }
+  return { server, hub, watcher, adminStore, closeProbes: composed.closeProbes }
 }
 
 /**
@@ -308,10 +310,16 @@ export async function runUi(
   return 0
 }
 
-/** Teardown order: stop polling, end every SSE stream, then close the listener. */
+/**
+ * Teardown order: stop polling, end every SSE stream, wait out in-flight
+ * probes (their children must not outlive the run; a probe settling after
+ * `hub.close()` publishes into a closed hub, which is a no-op), then close
+ * the listener.
+ */
 async function closeRuntime(runtime: UiRuntime): Promise<void> {
   runtime.watcher.stop()
   runtime.hub.close()
+  await runtime.closeProbes()
   await runtime.server.close()
 }
 

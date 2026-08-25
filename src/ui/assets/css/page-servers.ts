@@ -105,7 +105,14 @@ export const CSS_PAGE_SERVERS = `
 .srv-swatch-vault { background: var(--fg); }
 .srv-swatch-literal { border: 1px dashed var(--line); }
 
-/* Actions: Edit (solid pixel) + Remove (outline), as the design's expanded card. */
+/* Status dot (M5.5 p.1, O7): white = alive, white blink = alive + fresh
+   traffic, gray = down, gray blink = probing, hollow = never checked. Blink
+   is the shared CSS animation (base.ts @keyframes blink), silenced globally
+   under prefers-reduced-motion; the tooltip is the native title attribute,
+   so it needs no JS and no extra markup. */
+.srv-dot { cursor: help; box-sizing: border-box; }
+
+/* Actions: Refresh (operator+) + Edit (solid pixel) + Remove (outline). */
 .srv-actions { display: flex; gap: 8px; padding-top: 4px; }
 a.btn.srv-edit {
   padding: 9px 14px;

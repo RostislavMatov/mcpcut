@@ -10,7 +10,14 @@ import {
   HTTP_STATUS_OK,
   HTTP_STATUS_SEE_OTHER,
 } from '../constants.js'
+import { roleSatisfies } from '../authz.js'
 import { parseBodyFields, headerValue, type UiHandler, type UiRequestContext, type UiResult } from '../routes.js'
+import {
+  probeInitiatorOf,
+  startProbe,
+  statusesViewOf,
+  type ServerStatusPort,
+} from './servers-status.js'
 import { echoableServerForm, serverRecordToForm, splitKeyValueLine, EMPTY_SERVER_FORM } from '../server-form.js'
 import type { CurrentAdmin } from '../pages/layout.js'
 import {
@@ -64,6 +71,14 @@ export interface ServersHandlersDeps {
    * core, as on the dashboard), never a page that silently shows no tools.
    */
   readonly readInventory?: () => Promise<InventoryStoreData>
+  /**
+   * Probe port (M5.5 п.1, ADR-0008), injected by `cli/ui-wiring.ts`. Optional
+   * and side-effectful by design: with it the servers page shows per-server
+   * status dots, lazily freshens stale statuses on every view (O2/O5) and
+   * fires the automatic registration probe after a confirmed add (O8);
+   * without it the page renders exactly as before M5.5.
+   */
+  readonly probes?: ServerStatusPort
 }
 
 export interface ServersHandlers {
@@ -144,13 +159,18 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
       deps.readInventory?.() ?? Promise.resolve(undefined),
     ])
     const query = ctx.query.get('q') ?? ''
+    const names = servers.map((record) => record.name)
     return {
       servers,
       canManage: ctx.session?.role === 'owner',
+      canRefresh: ctx.session !== undefined && roleSatisfies(ctx.session.role, 'operator'),
       csrfToken: csrfTokenOf(ctx),
       currentAdmin: currentAdminOf(ctx),
       viewMode: ctx.query.get('view') === 'list' ? 'list' : 'grid',
       ...(inventory !== undefined ? { tools: toServerToolsByName(inventory) } : {}),
+      ...(deps.probes !== undefined
+        ? { statuses: await statusesViewOf(deps.probes, names) }
+        : {}),
       ...(query !== '' ? { query } : {}),
     }
   }
@@ -180,6 +200,19 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
     const view = await baseView(ctx)
     const drawer = drawerFromQuery(ctx, view)
     const body = renderServersPage({ ...view, ...(drawer !== undefined ? { drawer } : {}) })
+    // Lazy trigger (O2/O5): ANY view — including a viewer's — freshens stale
+    // statuses, deliberately NOT awaited: the page answers from what is
+    // stored, the probe's outcome arrives over SSE or on the next load.
+    // `ensureFresh` contains per-server faults itself; the catch covers only
+    // a failed start (e.g. an unreadable status document).
+    if (deps.probes !== undefined) {
+      void deps.probes
+        .ensureFresh(
+          view.servers.map((record) => record.name),
+          probeInitiatorOf(ctx, 'lazy'),
+        )
+        .catch(() => undefined)
+    }
     return { kind: 'response', status: HTTP_STATUS_OK, body }
   }
 
@@ -246,6 +279,12 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
       return rejectedAdd(ctx, fields, error instanceof Error ? error.message : String(error))
     }
     audit(ctx, 'server.add', parsed.record.name)
+    // O8: ONE automatic probe (with tools/list) right after the human
+    // confirmed exactly this command line — never before the registry write,
+    // never awaited, attributed to the confirming admin.
+    if (deps.probes !== undefined) {
+      startProbe(deps.probes, parsed.record.name, probeInitiatorOf(ctx, 'registration'))
+    }
     return redirect('/servers')
   }
 

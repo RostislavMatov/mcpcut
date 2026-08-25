@@ -37,9 +37,16 @@ import { buildAsset, type Asset } from './asset.js'
  *     queue reads are bounded, and a badge built from the truncated count
  *     would under-report the backlog the page body admits to.
  *
+ *  Server status dots (M5.5 p.1, O7)
+ *   - the Servers page renders each card's dot with `data-server="<name>"`
+ *     (pages/servers-status.ts); a `server-status-changed` SSE event carries
+ *     JSON `{server, status, probedVia?, probedAt?, latencyMs?, error?}` and
+ *     `applyServerStatus` swaps the dot's class and `title` in place.
+ *
  *  Fallback
  *   - if SSE errors, the script polls `data-live-src` (or the page) every
- *     `data-poll-ms` (default 5000) until SSE recovers.
+ *     `data-poll-ms` (default 5000) until SSE recovers. Status-dot events have
+ *     no polling arm: a missed one is corrected by the next full page load.
  *
  *  Disclosure helpers (McpCut console; every one degrades to plain HTML)
  *   - `data-open-details="<id>"` on a link opens the `<details id>` and
@@ -161,6 +168,50 @@ const APP_JS_SOURCE = `"use strict";
     setTimeout(function () { toast.remove(); }, 6000);
   }
 
+  // --- Server status dots (M5.5 p.1, O7) ------------------------------------
+  // A "server-status-changed" SSE event carries JSON
+  // {server, status, probedVia?, probedAt?, latencyMs?, error?}; the handler
+  // finds the dot rendered by pages/servers-status.ts via its data-server
+  // hook and swaps class + tooltip in place — no reload. Class strings and
+  // tooltip wording mirror statusDotClassOf/statusTitleOf on the server so a
+  // live update reads like a fresh render. An SSE result knows nothing of the
+  // passive traffic signal, so it never sets the white-blink state; the next
+  // full render restores it. "title" is a text property — never parsed as
+  // HTML — so a hostile error cause stays inert.
+  function serverStatusDotClass(status) {
+    if (status === "alive") return "dot srv-dot";
+    if (status === "probing") return "dot srv-dot dot-off dot-blink";
+    if (status === "never-checked") return "dot srv-dot dot-hollow";
+    return "dot srv-dot dot-off";
+  }
+
+  function serverStatusTitle(detail) {
+    if (detail.status === "never-checked") return "never checked";
+    if (detail.status === "probing") {
+      return detail.probeStartedAt ? "probing\\u2026 \\u00b7 started " + detail.probeStartedAt : "probing\\u2026";
+    }
+    var parts = [String(detail.status)];
+    parts.push(detail.probedVia ? "probe (" + detail.probedVia + ")" : "probe");
+    if (detail.probedAt) parts.push(String(detail.probedAt));
+    if (typeof detail.latencyMs === "number") parts.push(Math.round(detail.latencyMs) + "ms");
+    if (detail.error) parts.push(String(detail.error));
+    return parts.join(" \\u00b7 ");
+  }
+
+  function applyServerStatus(detail) {
+    if (!detail || typeof detail.server !== "string" || typeof detail.status !== "string") return;
+    var dot = document.querySelector('.srv-dot[data-server="' + cssEscape(detail.server) + '"]');
+    if (!dot) return;
+    dot.className = serverStatusDotClass(detail.status);
+    dot.title = serverStatusTitle(detail);
+  }
+
+  function onServerStatusEvent(data) {
+    var detail = null;
+    try { detail = JSON.parse(data); } catch (err) { return; }
+    applyServerStatus(detail);
+  }
+
   // --- Transport: SSE with polling fallback --------------------------------
   var pollTimer = null;
 
@@ -194,6 +245,7 @@ const APP_JS_SOURCE = `"use strict";
     LIVE_TOPICS.forEach(function (topic) {
       source.addEventListener(topic, function () { handleEvent(topic); });
     });
+    source.addEventListener("server-status-changed", function (event) { onServerStatusEvent(event.data); });
   }
 
   // --- Disclosure helpers ---------------------------------------------------

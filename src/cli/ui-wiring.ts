@@ -5,10 +5,11 @@ import { createSessionIndexCache } from '../journal/index-cache.js'
 import { searchAllSessions, searchSession } from '../journal/search.js'
 import { approveTool, rejectTool } from '../policy/inventory.js'
 import { openInventoryStore } from '../policy/inventory-store.js'
+import type { ServerStatusChange } from '../probe/orchestrator.js'
 import { createApprovalQueue, type ApprovalQueue } from '../policy/approvals/queue.js'
 import type { RegistryStore } from '../registry/store.js'
 import type { VaultStore } from '../vault/store.js'
-import type { EventHub } from '../ui/events.js'
+import type { EventHub, UiEvent } from '../ui/events.js'
 import { createAdminsHandlers } from '../ui/handlers/admins.js'
 import { createAgentsHandlers, type UiAuditEvent } from '../ui/handlers/agents.js'
 import { createApprovalsHandlers, DASHBOARD_RECENT_DECISIONS } from '../ui/handlers/approvals.js'
@@ -21,7 +22,12 @@ import {
   type QuarantineAuditEvent,
 } from '../ui/handlers/quarantine.js'
 import { createServersHandlers } from '../ui/handlers/servers.js'
+import {
+  createServersStatusHandlers,
+  type ServerStatusPort,
+} from '../ui/handlers/servers-status.js'
 import type { UiHandlers } from '../ui/routes.js'
+import { composeProbeChain } from './probe-wiring.js'
 import type { UiCliWritable } from './ui-constants.js'
 
 /**
@@ -47,7 +53,14 @@ export interface UiCompositionDeps {
   readonly adminStore: AdminStore
   readonly agents: AgentsStore
   readonly registry: RegistryStore
-  readonly vault: Pick<VaultStore, 'listSecrets'>
+  /**
+   * `listSecrets` feeds the read-only vault page; `readSecretValues` is used
+   * EXCLUSIVELY here in the composition root, to bind the probe engine's
+   * `resolveRefs` (ADR-0008) — it is never handed to any `src/ui/**` handler
+   * (the architecture test forbids the UI that import, and the narrowing
+   * test in `tests/cli/ui-wiring.test.ts` pins it at runtime).
+   */
+  readonly vault: Pick<VaultStore, 'listSecrets' | 'readSecretValues'>
   /** SSE hub the `/events` handler registers streams with. */
   readonly hub: EventHub
   /** Diagnostics sink; receives the attribution lines for UI mutations. */
@@ -63,6 +76,8 @@ export interface UiComposition {
   readonly queue: ApprovalQueue
   /** Change-sensitive fingerprint of quarantine state, for the watcher. */
   quarantineSignature(): Promise<string>
+  /** Waits for every in-flight server probe to settle; starts nothing new. */
+  closeProbes(): Promise<void>
 }
 
 /**
@@ -99,6 +114,60 @@ function journalReadPort(): JournalReadPort {
     listSessions: (dir) => cache.listSessions(dir),
     searchSession: (sessionId, options) => searchSession(sessionId, options),
     searchAllSessions: (options) => searchAllSessions(options),
+  }
+}
+
+/** The SSE event one settled probe publishes (shape mirrored by `assets/app-js.ts`). */
+function statusEventOf(change: ServerStatusChange): UiEvent {
+  const { entry } = change
+  return {
+    event: 'server-status-changed',
+    data: {
+      server: change.serverName,
+      status: entry.status,
+      probedAt: entry.probedAt,
+      ...(entry.status === 'alive'
+        ? { probedVia: entry.probedVia, latencyMs: entry.initializeLatencyMs }
+        : { error: entry.error, ...(entry.probedVia !== undefined ? { probedVia: entry.probedVia } : {}) }),
+    },
+  }
+}
+
+interface ProbeComposition {
+  readonly port: ServerStatusPort
+  close(): Promise<void>
+}
+
+/**
+ * Composes the probe chain for the UI (M5.5 п.1, ADR-0008): the shared
+ * `composeProbeChain` (status store + passive activity + engine + inventory
+ * observe + journal fact — one definition for UI and CLI alike, see
+ * `probe-wiring.ts`) plus the UI's own SSE event. This is the ONLY place the
+ * vault's value-resolution is bound for the UI — the handlers see nothing
+ * but `ServerStatusPort`.
+ */
+function composeProbes(deps: UiCompositionDeps): ProbeComposition {
+  const chain = composeProbeChain({
+    journalDir: deps.journalDir,
+    inventoryStorePath: deps.inventoryStorePath,
+    registry: deps.registry,
+    readSecretValues: deps.vault.readSecretValues,
+    onDiagnostic: (line) => deps.stderr.write(line),
+    onStatusChanged: (change) => deps.hub.publish(statusEventOf(change)),
+    onError: (error) =>
+      deps.stderr.write(`[probe] ${error instanceof Error ? error.message : String(error)}\n`),
+    // The one injected clock drives the probe chain too (staleness, probing
+    // markers, blink windows) — same discipline as every other subsystem here.
+    ...(deps.clock !== undefined ? { now: deps.clock } : {}),
+  })
+  return {
+    port: {
+      ensureFresh: (names, initiator) => chain.orchestrator.ensureFresh(names, initiator),
+      probeNow: (name, initiator) => chain.orchestrator.probeNow(name, initiator),
+      listStatuses: () => chain.statusStore.listStatuses(),
+      lastSuccessfulActivity: (name) => chain.activity.lastSuccessfulActivity(name),
+    },
+    close: () => chain.orchestrator.close(),
   }
 }
 
@@ -153,6 +222,7 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
   // today, but the guarantee should not rest on that discipline holding
   // forever — building an object with only the granted methods makes the
   // Pick<> a runtime fact, not just a type-checker fact.
+  const probes = composeProbes(deps)
   const servers = createServersHandlers({
     registry: {
       listServers: () => deps.registry.listServers(),
@@ -168,6 +238,11 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
     },
     audit,
     readInventory: () => inventory.read(),
+    probes: probes.port,
+  })
+  const serversStatus = createServersStatusHandlers({
+    probes: probes.port,
+    hasServer: async (name) => (await deps.registry.getServer(name)) !== undefined,
   })
   const agents = createAgentsHandlers({ agentsStore: deps.agents, audit })
   const admins = createAdminsHandlers({ adminStore: deps.adminStore, audit })
@@ -180,6 +255,7 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
     ...approvals,
     ...quarantine,
     ...servers,
+    ...serversStatus,
     ...agents,
     ...admins,
   })
@@ -188,5 +264,6 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
     handlers,
     queue,
     quarantineSignature: () => quarantineSignatureOf(deps.inventoryStorePath),
+    closeProbes: probes.close,
   })
 }

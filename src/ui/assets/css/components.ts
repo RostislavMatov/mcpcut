@@ -124,6 +124,8 @@ export const CSS_COMPONENTS = `
 }
 .dot-s { width: 6px; height: 6px; }
 .dot-off { background: var(--fg-faint); }
+/* Neutral "never checked" state: an outline, neither white (alive) nor gray (down). */
+.dot-hollow { background: transparent; border: 1px solid var(--fg-dim); }
 .dot-blink { animation: blink 1s steps(1) infinite; }
 
 /* --- Buttons -------------------------------------------------------------- */
