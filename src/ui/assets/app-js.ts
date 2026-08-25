@@ -126,6 +126,14 @@ const APP_JS_SOURCE = `"use strict";
     return refreshRegion(region).then(function () { setBusy(el, false); });
   }
 
+  // The refusal's own words, when the server sent a JSON body with a
+  // "message" (a 409 "policy changed on disk" must not read as a bare code).
+  function failureMessage(res) {
+    return res.json()
+      .then(function (body) { return body && typeof body.message === "string" ? body.message : ""; })
+      .catch(function () { return ""; });
+  }
+
   function runAction(el) {
     var url = el.getAttribute("data-action");
     var method = (el.getAttribute("data-method") || "POST").toUpperCase();
@@ -145,8 +153,10 @@ const APP_JS_SOURCE = `"use strict";
         if (res.ok) {
           settleAction(el);
         } else {
-          announce("Action failed (" + res.status + ")");
-          setBusy(el, false);
+          return failureMessage(res).then(function (message) {
+            announce("Action failed (" + res.status + ")" + (message ? ": " + message : ""));
+            setBusy(el, false);
+          });
         }
       })
       .catch(function () {
