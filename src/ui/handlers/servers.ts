@@ -4,6 +4,7 @@ import type { RegistryStore } from '../../registry/store.js'
 import type { AgentsStore } from '../../agents/store.js'
 import type { VaultStore } from '../../vault/store.js'
 import type { InventoryStoreData } from '../../policy/inventory-store.js'
+import type { PolicyView } from '../../policy/edit/policy-view.js'
 import {
   HTTP_STATUS_BAD_REQUEST,
   HTTP_STATUS_NOT_FOUND,
@@ -79,6 +80,12 @@ export interface ServersHandlersDeps {
    * without it the page renders exactly as before M5.5.
    */
   readonly probes?: ServerStatusPort
+  /**
+   * The policy read for the UI (ADR-0009), injected by `cli/ui-wiring.ts`.
+   * Optional: with it every tool shows its effective rule and the owner gets
+   * the rule controls; without it the page renders exactly as before.
+   */
+  readonly readPolicyView?: () => Promise<PolicyView>
 }
 
 export interface ServersHandlers {
@@ -154,12 +161,14 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
    * per-server tools. Reads run concurrently; either failing fails the page.
    */
   async function baseView(ctx: UiRequestContext): Promise<ServersView> {
-    const [servers, inventory] = await Promise.all([
+    const [servers, inventory, policyView] = await Promise.all([
       deps.registry.listServers(),
       deps.readInventory?.() ?? Promise.resolve(undefined),
+      deps.readPolicyView?.() ?? Promise.resolve(undefined),
     ])
     const query = ctx.query.get('q') ?? ''
     const names = servers.map((record) => record.name)
+    const policy = policyView?.status === 'loaded' ? policyView.policy : undefined
     return {
       servers,
       canManage: ctx.session?.role === 'owner',
@@ -167,7 +176,8 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
       csrfToken: csrfTokenOf(ctx),
       currentAdmin: currentAdminOf(ctx),
       viewMode: ctx.query.get('view') === 'list' ? 'list' : 'grid',
-      ...(inventory !== undefined ? { tools: toServerToolsByName(inventory) } : {}),
+      ...(inventory !== undefined ? { tools: toServerToolsByName(inventory, policy) } : {}),
+      ...(policyView !== undefined ? { policyView } : {}),
       ...(deps.probes !== undefined
         ? { statuses: await statusesViewOf(deps.probes, names) }
         : {}),

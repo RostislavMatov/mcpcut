@@ -142,6 +142,26 @@ a.btn.srv-edit:hover { background: var(--bg); color: var(--fg); }
 .srv-tool .row { flex-wrap: wrap; }
 .srv-tool-rows .empty { padding: 14px; }
 
+/* --- Per-tool policy rule (ADR-0009) -------------------------------------
+   Pill = effective outcome (deny = alert, approval = on, allow = plain), the
+   source label beside it, and the owner's allow · approval · deny · reset
+   button-forms; the pressed one is solid. Disabled buttons keep the reason
+   as their native tooltip. */
+.srv-rule { text-transform: uppercase; }
+.srv-rule-src { letter-spacing: 0.02em; }
+.srv-rule-ctl { gap: 6px; padding-top: 2px; }
+.srv-rule-ctl form.inline { display: inline-flex; }
+button.srv-rule-btn { padding: 5px 9px; font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; }
+button.srv-rule-btn.is-on, button.srv-rule-btn[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+button.srv-rule-btn-clear { border-style: dashed; }
+.srv-tools-note { padding: 9px 11px; }
+
+/* Sources line above the grid + the page-top policy banner. */
+.srv-policy-sources { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; line-height: 1.6; }
+.srv-policy-src code { font-size: 11px; }
+.srv-policy-banner { margin-bottom: 12px; }
+.srv-policy-errors { margin: 6px 0 0 14px; display: flex; flex-direction: column; gap: 4px; }
+
 /* --- Modal drawer (register / edit) --------------------------------------- */
 .srv-drawer { border: none; padding: 0; }
 .srv-drawer > summary.srv-drawer-sum {

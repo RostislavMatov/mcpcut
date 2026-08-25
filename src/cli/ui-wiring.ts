@@ -5,6 +5,10 @@ import { createSessionIndexCache } from '../journal/index-cache.js'
 import { searchAllSessions, searchSession } from '../journal/search.js'
 import { approveTool, rejectTool } from '../policy/inventory.js'
 import { openInventoryStore } from '../policy/inventory-store.js'
+import { journalPolicyEdit } from '../policy/edit/journal-edit.js'
+import { defaultPolicyFileDeps, readPolicyFileForEdit, writePolicyFile } from '../policy/edit/policy-file.js'
+import { readPolicyView } from '../policy/edit/policy-view.js'
+import { resolvePolicyWriteTarget } from '../policy/edit/write-target.js'
 import type { ServerStatusChange } from '../probe/orchestrator.js'
 import { createApprovalQueue, type ApprovalQueue } from '../policy/approvals/queue.js'
 import type { RegistryStore } from '../registry/store.js'
@@ -22,6 +26,7 @@ import {
   type QuarantineAuditEvent,
 } from '../ui/handlers/quarantine.js'
 import { createServersHandlers } from '../ui/handlers/servers.js'
+import { createServersToolRuleHandlers } from '../ui/handlers/servers-tool-rule.js'
 import {
   createServersStatusHandlers,
   type ServerStatusPort,
@@ -67,6 +72,14 @@ export interface UiCompositionDeps {
   readonly stderr: UiCliWritable
   /** Clock (ms epoch) for approval countdowns. Defaults to `Date.now`. */
   readonly clock?: () => number
+  /**
+   * Environment and working directory the operator-launched sources panel
+   * resolves against (what `serve`/`wrap` started from here would load).
+   * Default to the process's own; injectable so tests never read the real
+   * `$MCP_JOURNAL_POLICY`.
+   */
+  readonly env?: NodeJS.ProcessEnv
+  readonly cwd?: string
 }
 
 export interface UiComposition {
@@ -239,6 +252,27 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
     audit,
     readInventory: () => inventory.read(),
     probes: probes.port,
+    readPolicyView: () => readPolicyView(policyEnv),
+  })
+  // Policy editing (ADR-0009): the read view feeds the page, the rule
+  // handler is the one HTTP path that writes `policy.json`. The write path
+  // is bound HERE — `<journalDir>/policy.json` via `resolvePolicyWriteTarget`
+  // — and never derived from a request; the journal record goes through the
+  // same sink the probe facts use.
+  const policyEnv = { journalDir: deps.journalDir, env: deps.env ?? process.env, cwd: deps.cwd ?? process.cwd() }
+  const serversToolRule = createServersToolRuleHandlers({
+    resolveWriteTarget: () => resolvePolicyWriteTarget(deps.journalDir),
+    readPolicyFile: (path) => readPolicyFileForEdit(path, defaultPolicyFileDeps),
+    writePolicyFile: (path, document, options) => writePolicyFile(path, document, options, defaultPolicyFileDeps),
+    readInventory: () => inventory.read(),
+    journal: (edit) =>
+      journalPolicyEdit({
+        edit,
+        dir: deps.journalDir,
+        diagnostics: (line) => deps.stderr.write(line),
+        ...(deps.clock !== undefined ? { clock: deps.clock } : {}),
+      }),
+    audit,
   })
   const serversStatus = createServersStatusHandlers({
     probes: probes.port,
@@ -255,6 +289,7 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
     ...approvals,
     ...quarantine,
     ...servers,
+    ...serversToolRule,
     ...serversStatus,
     ...agents,
     ...admins,
