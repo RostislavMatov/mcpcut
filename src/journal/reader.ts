@@ -20,6 +20,7 @@ export const JOURNAL_KINDS: readonly string[] = [
   'invalid',
   'stderr',
   'decision',
+  'probe',
 ]
 
 export interface SessionSummary {

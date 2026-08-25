@@ -25,8 +25,8 @@ export type ClientServerDirection = 'client→server' | 'server→client'
 /** Every direction a journal record can carry, including server stderr. */
 export type JournalDirection = ClientServerDirection | 'server-stderr'
 
-/** Journal-specific kind: classify()'s kinds plus synthetic 'stderr' and 'decision' kinds. */
-export type JournalKind = ClassifiedMessage['kind'] | 'stderr' | 'decision'
+/** Journal-specific kind: classify()'s kinds plus synthetic 'stderr', 'decision' and 'probe' kinds. */
+export type JournalKind = ClassifiedMessage['kind'] | 'stderr' | 'decision' | 'probe'
 
 export type {
   DecisionInfo,
@@ -36,6 +36,14 @@ export type {
   QuarantineState,
   ToolClass,
 } from './decision-info.js'
+
+export type {
+  ProbeRecordInfo,
+  ProbeRecordInitiator,
+  ProbeRecordOutcome,
+  ProbeRecordTrigger,
+  ProbeRecordVia,
+} from './probe-record.js'
 
 export interface JournalRecord {
   readonly id: string
