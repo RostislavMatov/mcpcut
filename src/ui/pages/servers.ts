@@ -7,6 +7,7 @@ import { csrfField } from './csrf-field.js'
 import { renderLayout, type CurrentAdmin } from './layout.js'
 import { renderServerDrawer, type ServerDrawerOptions } from './servers-form.js'
 import { renderServerCard, renderServerDetails, type ServerToolsByName } from './servers-parts.js'
+import type { ServerStatusesByName } from './servers-status.js'
 
 export {
   toServerToolsByName,
@@ -15,6 +16,16 @@ export {
   type ServerToolsView,
   type ServerToolView,
 } from './servers-parts.js'
+
+export {
+  REFRESH_ACTION,
+  SERVER_STATUS_KINDS,
+  toServerStatusesByName,
+  type ServerStatusesByName,
+  type ServerStatusKind,
+  type ServerStatusView,
+  type ServerStatusViewEntry,
+} from './servers-status.js'
 
 /**
  * Server-registry and vault pages in the McpCut console (Servers screen of
@@ -64,6 +75,15 @@ export interface ServersView {
    * inventory port — the page then renders no tools panels and no counts.
    */
   readonly tools?: ServerToolsByName
+  /**
+   * Per-server probe/traffic status for the dot + tooltip (M5.5 p.1, O7),
+   * built by the handler from `server-status.json` and the passive activity
+   * signal. Absent map or absent entry both render the neutral
+   * never-checked dot.
+   */
+  readonly statuses?: ServerStatusesByName
+  /** True when the viewer's role may POST `/servers/refresh` (operator+). */
+  readonly canRefresh?: boolean
   /** The `q` query, echoed into the search box (the client filter applies it on load). */
   readonly query?: string
 }
@@ -100,11 +120,14 @@ function renderGrid(view: ServersView, mode: ServersViewMode): Html {
   }
   const cards = view.servers.map((record) => {
     const tools = view.tools?.get(record.name)
+    const status = view.statuses?.get(record.name)
     return renderServerCard({
       record,
       ...(tools !== undefined ? { tools } : {}),
+      ...(status !== undefined ? { status } : {}),
       hasInventory: view.tools !== undefined,
       canManage: view.canManage,
+      ...(view.canRefresh !== undefined ? { canRefresh: view.canRefresh } : {}),
       csrfToken: view.csrfToken,
     })
   })

@@ -3,6 +3,7 @@ import type { ServerRecord } from '../../registry/schema.js'
 import type { InventoryStoreData } from '../../policy/inventory-store.js'
 import { html, join, safeUrl, type Html } from '../html.js'
 import { csrfField } from './csrf-field.js'
+import { renderRefreshForm, renderStatusDot, type ServerStatusView } from './servers-status.js'
 
 /**
  * Building blocks of the Servers screen (McpCut console): the server card,
@@ -186,15 +187,23 @@ export function renderLegend(): Html {
 }
 
 /**
- * The owner's card actions, as the design's expanded card: Edit (a link to
- * `/servers?edit=<name>` — the server prefills the modal drawer, so it works
- * without JavaScript) beside the Remove form.
+ * The card actions row, as the design's expanded card: Refresh (operator+,
+ * `canRefresh`) beside the owner's Edit (a link to `/servers?edit=<name>` —
+ * the server prefills the modal drawer, so it works without JavaScript) and
+ * Remove form. Empty when the viewer may do neither.
  */
-function renderCardActions(name: string, csrfToken: string): Html {
-  const editHref = `/servers?${new URLSearchParams({ edit: name }).toString()}#add-server`
+function renderCardActions(options: ServerCardOptions): Html {
+  const { record, canManage, csrfToken } = options
+  const canRefresh = options.canRefresh === true
+  if (!canManage && !canRefresh) return html``
+  const editHref = `/servers?${new URLSearchParams({ edit: record.name }).toString()}#add-server`
+  const manage = canManage
+    ? html`<a class="btn srv-edit" href="${safeUrl(editHref)}">Edit</a>
+    ${renderRemoveForm(record.name, csrfToken)}`
+    : html``
   return html`<div class="actions srv-actions">
-    <a class="btn srv-edit" href="${safeUrl(editHref)}">Edit</a>
-    ${renderRemoveForm(name, csrfToken)}
+    ${canRefresh ? renderRefreshForm(record.name, csrfToken) : html``}
+    ${manage}
   </div>`
 }
 
@@ -221,16 +230,19 @@ function summaryMetaOf(record: ServerRecord, tools: ServerToolsView | undefined)
   return `${base} · ${tools.tools.length} tools`
 }
 
-function renderSummary(record: ServerRecord, tools: ServerToolsView | undefined): Html {
+function renderSummary(
+  record: ServerRecord,
+  tools: ServerToolsView | undefined,
+  status: ServerStatusView | undefined,
+): Html {
   const quarantined = tools?.quarantinedCount ?? 0
-  const dot = quarantined > 0 ? 'dot dot-off dot-blink' : 'dot'
   const flag =
     quarantined > 0
       ? html`<span class="pill pill-pixel pill-on shimmer">${String(quarantined)} quarantined</span>`
       : html``
   const tpill = record.transport === 'stdio' ? 'tpill tpill-stdio' : 'tpill tpill-http'
   return html`<summary class="srv-sum">
-    <span class="row srv-sum-top"><span class="${dot}"></span><span class="name pixel ellipsis">${record.name}</span></span>
+    <span class="row srv-sum-top">${renderStatusDot(record.name, status)}<span class="name pixel ellipsis">${record.name}</span></span>
     <span class="srv-sum-badges"><span class="${tpill}">${record.transport}</span>${flag}</span>
     <span class="spacer-v"></span>
     <span class="srv-sum-target faint small ellipsis">${targetOf(record)}</span>
@@ -245,6 +257,10 @@ export interface ServerCardOptions {
   /** Whether the inventory was available at all (controls the tools panel). */
   readonly hasInventory: boolean
   readonly canManage: boolean
+  /** True when the viewer's role may force-probe (operator+; Task 6 sets it). */
+  readonly canRefresh?: boolean
+  /** Status dot state; absence renders the neutral never-checked dot. */
+  readonly status?: ServerStatusView
   readonly csrfToken: string
 }
 
@@ -255,15 +271,15 @@ export interface ServerCardOptions {
  * transport, so typing "http" or a command name narrows the grid.
  */
 export function renderServerCard(options: ServerCardOptions): Html {
-  const { record, tools, canManage, csrfToken } = options
+  const { record, tools } = options
   const filterText = `${record.name} ${targetOf(record)} ${record.transport}`
   return html`<details class="disclosure card srv-card" data-filter-item data-filter-text="${filterText}">
-    ${renderSummary(record, tools)}
+    ${renderSummary(record, tools, options.status)}
     <div class="srv-bd">
       ${renderServerDetails(record)}
       ${options.hasInventory ? renderToolsPanel(tools) : html``}
       ${renderLegend()}
-      ${canManage ? renderCardActions(record.name, csrfToken) : html``}
+      ${renderCardActions(options)}
     </div>
   </details>`
 }

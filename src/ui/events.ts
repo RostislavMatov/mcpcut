@@ -18,8 +18,13 @@ import {
   UI_SSE_HEARTBEAT_INTERVAL_MS,
 } from './constants.js'
 
-/** The three delta kinds the UI listens for; the client keys its DOM updates on these. */
-export type UiEventName = 'approval-pending' | 'approval-resolved' | 'quarantine-changed'
+/** The delta kinds the UI listens for; the client keys its DOM updates on these. */
+export type UiEventName =
+  | 'approval-pending'
+  | 'approval-resolved'
+  | 'quarantine-changed'
+  /** One probe settled (M5.5 п.1, O7): `{server, status, probedVia?, probedAt, latencyMs?, error?}`. */
+  | 'server-status-changed'
 
 /** A published event: a name plus a JSON-serializable data object. */
 export interface UiEvent {

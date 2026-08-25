@@ -63,6 +63,11 @@ export const ROUTE_TABLE: readonly RouteEntry[] = [
   // constant, so the CLI can never become a way around this row.
   { method: 'POST', pattern: '/approvals/:id/approve', minRole: APPROVAL_RESOLVE_MIN_ROLE, handler: 'approvalsApprove' },
   { method: 'POST', pattern: '/approvals/:id/deny', minRole: APPROVAL_RESOLVE_MIN_ROLE, handler: 'approvalsDeny' },
+  // Forced server probe (M5.5 п.1, ADR-0008 §5): bypassing the freshness
+  // threshold is an ACTION, not a read — same threshold as quarantine and the
+  // approvals queue. The lazy probe a `GET /servers` may start stays `viewer`
+  // by owner decision O5 (named in ADR-0008, not a new row here).
+  { method: 'POST', pattern: '/servers/refresh', minRole: 'operator', handler: 'serversRefresh' },
   { method: 'POST', pattern: '/quarantine/approve', minRole: 'operator', handler: 'quarantineApprove' },
   { method: 'POST', pattern: '/quarantine/reject', minRole: 'operator', handler: 'quarantineReject' },
   { method: 'POST', pattern: '/agents/create', minRole: 'operator', handler: 'agentsCreate' },
