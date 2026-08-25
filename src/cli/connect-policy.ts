@@ -142,6 +142,7 @@ export async function resolveConnectPolicy(
       initial: result.policy,
       sourcePath: result.sourcePath,
       loadOptions: source.loadOptions,
+      candidates: source.candidates,
       stderr: args.io.stderr,
     }),
   }

@@ -34,6 +34,60 @@ function input(overrides: Partial<EffectiveToolInput> & { policy: Policy }): Eff
 
 const QUARANTINE_ON = { enabled: true, onQuarantined: 'require-approval' }
 
+/**
+ * Drops block and line comments so a `rule:` mentioned in prose never counts
+ * as an emitted rule. String literals in `decide.ts` contain no `//` or `/*`.
+ */
+function stripComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+}
+
+/**
+ * A `rule:` object-literal property. The lookbehind excludes the one type
+ * member `readonly rule: string` on `PolicyDecision`, which is a shape, not
+ * an emitted rule. Shared by the scraper and its count self-check so the two
+ * can never disagree on what an occurrence is.
+ */
+const RULE_PROPERTY = /(?<!readonly\s)\brule:/g
+
+/** One captured expression per `rule:` occurrence, in source order. */
+function scrapeRuleExpressions(source: string): string[] {
+  return [...source.matchAll(RULE_PROPERTY)].map((match) =>
+    captureExpression(source, (match.index ?? 0) + match[0].length),
+  )
+}
+
+/**
+ * Captures from `start` to the first `,` or `}` at nesting depth 0 outside a
+ * string/template literal, across line breaks -- so a wrapped ternary or a
+ * multi-line template literal is captured whole, not truncated at the first
+ * newline. `${...}` inside a template is skipped as string content (no nested
+ * backticks in `decide.ts`). Whitespace is collapsed to keep the expected
+ * fixture independent of line wrapping.
+ */
+function captureExpression(source: string, start: number): string {
+  let depth = 0
+  let quote: string | null = null
+  for (let i = start; i < source.length; i += 1) {
+    const ch = source.charAt(i)
+    if (quote !== null) {
+      if (ch === '\\') i += 1
+      else if (ch === quote) quote = null
+      continue
+    }
+    if (ch === "'" || ch === '"' || ch === '`') quote = ch
+    else if ('({['.includes(ch)) depth += 1
+    else if (')]'.includes(ch)) depth -= 1
+    else if (ch === '}' && depth > 0) depth -= 1
+    else if ((ch === '}' || ch === ',') && depth === 0) return collapseWhitespace(source.slice(start, i))
+  }
+  return collapseWhitespace(source.slice(start))
+}
+
+function collapseWhitespace(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
+}
+
 describe('effectiveToolRule: source per rule', () => {
   test('exact tool rule -> explicit, with the config path and the pattern', () => {
     const result = effectiveToolRule(
@@ -259,11 +313,8 @@ describe('effectiveToolRule: exhaustive over the rule strings decide() can produ
    * added to `decide()` shows up here and fails the assertion below until it
    * is either mapped to a source or listed as unreachable for a plain view.
    */
-  const RULE_EXPRESSIONS_IN_DECIDE = readFileSync(new URL('../../src/policy/decide.ts', import.meta.url), 'utf8')
-    .split('\n')
-    .map((line) => /^\s*rule:\s*(.+?),?\s*$/.exec(line)?.[1])
-    .filter((expression): expression is string => expression !== undefined)
-    .sort()
+  const DECIDE_SOURCE = stripComments(readFileSync(new URL('../../src/policy/decide.ts', import.meta.url), 'utf8'))
+  const RULE_EXPRESSIONS_IN_DECIDE = scrapeRuleExpressions(DECIDE_SOURCE).sort()
 
   const MAPPED = [
     "'defaultDecision'",
@@ -279,6 +330,17 @@ describe('effectiveToolRule: exhaustive over the rule strings decide() can produ
     "'grant'",
     '`agent: no grant for ${input.serverName}/${input.toolName}`',
   ]
+
+  test('the scraper captured exactly one non-empty expression per rule: occurrence', () => {
+    // Guards the scraper itself: a `rule:` whose expression the capture could
+    // not read (a shape it does not understand) must fail here, never pass by
+    // being dropped from the list the assertion below compares against.
+    const occurrences = DECIDE_SOURCE.match(RULE_PROPERTY)?.length ?? 0
+
+    expect(occurrences).toBeGreaterThan(0)
+    expect(RULE_EXPRESSIONS_IN_DECIDE).toHaveLength(occurrences)
+    expect(RULE_EXPRESSIONS_IN_DECIDE.every((expression) => expression.length > 0)).toBe(true)
+  })
 
   test('every rule expression in decide.ts is either mapped or documented as unreachable', () => {
     expect(RULE_EXPRESSIONS_IN_DECIDE).toEqual([...MAPPED, ...UNREACHABLE_FOR_PLAIN_VIEW].sort())

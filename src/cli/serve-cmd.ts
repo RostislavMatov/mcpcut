@@ -243,6 +243,7 @@ async function resolvePolicy(
     initial: result.policy,
     sourcePath: result.sourcePath,
     loadOptions: source.loadOptions,
+    candidates: source.candidates,
     stderr: io.stderr,
   })
   return { policy: mapPolicyProvider(reloading, (policy) => applyFailClosed(policy, flags.failClosed)) }
