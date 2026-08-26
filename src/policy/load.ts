@@ -90,7 +90,7 @@ export async function loadPolicy(opts: LoadPolicyOptions = {}): Promise<PolicyLo
       return { status: 'error', sourcePath: candidate.path, errors: [attempt.message] }
     }
 
-    return parseSource(candidate.path, attempt.text)
+    return parsePolicyText(candidate.path, attempt.text)
   }
 
   return { status: 'disabled' }
@@ -214,7 +214,12 @@ async function readSource(
   }
 }
 
-function parseSource(path: string, text: string): PolicyLoadResult {
+/**
+ * Parses one policy document already read from `path`. Pure and synchronous:
+ * the hot-reload provider (`policy/reload.ts`) reads the bound file with the
+ * sync fs on the gate's hot path and must parse without an event-loop turn.
+ */
+export function parsePolicyText(path: string, text: string): PolicyLoadResult {
   let raw: unknown
   try {
     raw = JSON.parse(text)
