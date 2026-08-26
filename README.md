@@ -467,7 +467,13 @@ of the same file: they set one tool's rule (`allow` / `deny` /
 `require-approval`, or clear it), validate the result before writing, write
 atomically, refuse if the file changed on disk since the page was rendered, and
 record every edit in the journal with the admin's name and the policy hash
-before/after. Running proxies pick up rule changes without a restart. A few
+before/after. They edit **the file that entry point itself loaded** — the first
+source of the resolution order above, resolved from the shell the UI or the
+command was started in — and they say which entry points read it, because
+`connect` sessions resolve their policy differently (state directory only) and
+may be reading another file, or none at all. Neither ever creates a policy
+file: with no policy anywhere, enforcement is off and the controls stay
+disabled until you create one by hand. Running proxies pick up rule changes without a restart. A few
 settings are wired in at startup and still need a restart to change: approval
 timeouts, grant TTL, `journal.failClosed` and `quarantine.enabled`
 (`policy show` says which is which). The registry, the vault and the grant

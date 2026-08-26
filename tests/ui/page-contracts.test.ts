@@ -74,6 +74,7 @@ const POLICY_VIEW: PolicyView = {
   policy: POLICY,
   hash: policyHashOf(POLICY),
   sourcePath: '/state/policy.json',
+  readers: { kind: 'every-entry-point' },
 }
 
 /** The servers page with an inventory and a loaded policy: tools panels, rule pills and controls. */

@@ -17,9 +17,11 @@ import {
 } from '../policy/edit/policy-file.js'
 import { applyToolRuleToDocument } from '../policy/edit/set-tool-rule.js'
 import {
-  defaultPolicyWriteTargetDeps,
-  resolvePolicyWriteTarget,
-  type PolicyWriteTargetDeps,
+  describePolicyReaders,
+  policyReadersJson,
+  resolvePolicyEditTarget,
+  type PolicyEditTarget,
+  type PolicyEditTargetDeps,
 } from '../policy/edit/write-target.js'
 import { effectiveToolRule, type EffectiveToolRule } from '../policy/effective.js'
 import { INVENTORY_FILE_NAME } from '../policy/inventory.js'
@@ -36,11 +38,14 @@ import { toolFactsForEffectiveRule } from './policy-set-facts.js'
  * `owner` role — so the UI's role table cannot be stepped around from a
  * shell (ADR-0004 lesson).
  *
- * Writes ONLY `<journalDir>/policy.json`, the source `connect` loads; a
- * nested `<journalDir>/.mcp-journal/policy.json` that `connect` would load
- * FIRST makes the command refuse rather than write into nowhere (finding
- * 5a). A missing file is refused too (O4): enforcement is a mode the
- * operator switches on deliberately, never as a side effect of one rule.
+ * Edits the file THIS invocation would load — the first source of the
+ * operator-launched order resolved from the command's own env and cwd
+ * (ADR-0005; correction 2026-08-26 in ADR-0009). It then STATES which entry
+ * points read that file, including when `connect` reads another one or none
+ * at all; the statement replaced the old refusal, which blocked exactly the
+ * install that needed the edit. A missing file is still refused (O4):
+ * enforcement is a mode the operator switches on deliberately, never as a
+ * side effect of one rule.
  */
 
 /** Minimum role to change a rule — mirrors the `POST /servers/:name/tools/:tool/rule` row in `src/ui/authz.ts`. */
@@ -56,9 +61,11 @@ const RULE_WORDS: readonly string[] = ['allow', 'require-approval', 'deny', CLEA
 
 const SET_USAGE = `Usage:
   policy set <server> <tool> allow|require-approval|deny|clear [--json]
-                                Write (or clear) one exact per-tool rule in
-                                <journal dir>/policy.json (personal admin token via
-                                ${ADMIN_TOKEN_ENV_VAR}, role ${POLICY_SET_MIN_ROLE})
+                                Write (or clear) one exact per-tool rule in the
+                                policy file this shell resolves (the order of
+                                "policy show --entry-point ui"); prints the file
+                                and which entry points read it (personal admin
+                                token via ${ADMIN_TOKEN_ENV_VAR}, role ${POLICY_SET_MIN_ROLE})
 `
 
 const MISSING_TOKEN_MESSAGE =
@@ -94,16 +101,18 @@ const RELOAD_REMINDER = 'running proxies pick this up without restart (ADR-0009)
 /** Test seams; production uses the defaults. */
 export interface PolicySetDeps {
   readonly policyFile?: PolicyFileDeps
-  readonly writeTarget?: PolicyWriteTargetDeps
+  readonly editTarget?: PolicyEditTargetDeps
   /** Journal sink fault-injection seams (retry delay, commit). */
   readonly sink?: Pick<JournalSinkOptions, 'retryDelayMs' | 'commitBatchImpl'>
 }
 
 export interface PolicySetOptions {
-  /** Journal directory: holds `policy.json`, the admin store and `journal.db`. Defaults to `JOURNAL_DIR`. */
+  /** Journal directory: holds the admin store, `journal.db` and the last policy candidate. Defaults to `JOURNAL_DIR`. */
   readonly journalDir?: string
-  /** Environment to read `MCP_ADMIN_TOKEN` from. Defaults to `process.env`. */
+  /** Environment to read `MCP_ADMIN_TOKEN` and `$MCP_JOURNAL_POLICY` from. Defaults to `process.env`. */
   readonly env?: NodeJS.ProcessEnv
+  /** Working directory the command was started in — decides the project-level policy candidate. Defaults to `process.cwd()`. */
+  readonly cwd?: string
   /** Clock for the journal record. Defaults to `Date.now`. */
   readonly clock?: () => number
   readonly deps?: PolicySetDeps
@@ -176,17 +185,16 @@ async function resolveOwner(io: PolicyCliIo, opts: PolicySetOptions): Promise<Po
   return { adminName: resolved.name, role: resolved.role, via: 'cli' }
 }
 
-/** The flat file, or `undefined` with the shadowing explained (finding 5a). */
-async function resolveTargetPath(journalDir: string, io: PolicyCliIo, opts: PolicySetOptions): Promise<string | undefined> {
-  const target = await resolvePolicyWriteTarget(journalDir, opts.deps?.writeTarget ?? defaultPolicyWriteTargetDeps)
-  if (target.status === 'shadowed') {
-    io.stderr.write(
-      `Refusing to edit ${target.path}: connect loads ${target.shadowedBy} first, so a rule written here ` +
-        `would never reach an agent. Edit that file by hand or remove it, then re-run.\n`,
-    )
-    return undefined
-  }
-  return target.path
+/** The file this invocation would load, plus who else reads it. Never refuses: an edit reaches whoever loaded it. */
+async function resolveTarget(journalDir: string, opts: PolicySetOptions): Promise<PolicyEditTarget> {
+  return resolvePolicyEditTarget(
+    {
+      journalDir,
+      ...(opts.env !== undefined ? { env: opts.env } : {}),
+      ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+    },
+    ...(opts.deps?.editTarget !== undefined ? [opts.deps.editTarget] : []),
+  )
 }
 
 function absentFileMessage(path: string): string {
@@ -298,16 +306,30 @@ function auditLineOf(actor: PolicyEditActor, args: SetArgs, edit: WrittenEdit): 
   )
 }
 
-function reportHuman(args: SetArgs, edit: WrittenEdit, effective: EffectiveToolRule, io: PolicyCliIo): void {
-  const target = `${formatReadableField(args.serverName)}/${formatReadableField(args.toolName)}`
+function reportHuman(
+  args: SetArgs,
+  edit: WrittenEdit,
+  effective: EffectiveToolRule,
+  target: PolicyEditTarget,
+  io: PolicyCliIo,
+): void {
+  const tool = `${formatReadableField(args.serverName)}/${formatReadableField(args.toolName)}`
   io.stdout.write(
-    `policy ${previewOf(edit.hashBefore)} -> ${previewOf(edit.hashAfter)}: ${target} = ${ruleWordOf(args.rule)}; ` +
+    `policy ${previewOf(edit.hashBefore)} -> ${previewOf(edit.hashAfter)}: ${tool} = ${ruleWordOf(args.rule)}; ` +
       `effective now: ${effective.outcome} (${effective.source})\n`,
   )
+  io.stdout.write(`file: ${target.path}\n`)
+  io.stdout.write(`readers: ${describePolicyReaders(target.readers)}\n`)
   io.stdout.write(RELOAD_REMINDER)
 }
 
-function reportJson(args: SetArgs, edit: WrittenEdit, effective: EffectiveToolRule, sourcePath: string, io: PolicyCliIo): void {
+function reportJson(
+  args: SetArgs,
+  edit: WrittenEdit,
+  effective: EffectiveToolRule,
+  target: PolicyEditTarget,
+  io: PolicyCliIo,
+): void {
   io.stdout.write(
     `${JSON.stringify({
       server: args.serverName,
@@ -316,7 +338,9 @@ function reportJson(args: SetArgs, edit: WrittenEdit, effective: EffectiveToolRu
       hashBefore: edit.hashBefore,
       hashAfter: edit.hashAfter,
       effective: { outcome: effective.outcome, source: effective.source, rulePath: effective.rulePath },
-      sourcePath,
+      sourcePath: target.path,
+      // Additive (2026-08-26): who loads the edited file. Existing fields keep their shape.
+      readers: policyReadersJson(target.readers),
     })}\n`,
   )
 }
@@ -337,8 +361,8 @@ export async function runPolicySet(
   if (actor === undefined) return 1
 
   const journalDir = opts.journalDir ?? JOURNAL_DIR
-  const path = await resolveTargetPath(journalDir, io, opts)
-  if (path === undefined) return 1
+  const target = await resolveTarget(journalDir, opts)
+  const path = target.path
   const fileDeps = opts.deps?.policyFile ?? defaultPolicyFileDeps
   const loaded = await readEditable(path, io, fileDeps)
   if (loaded === undefined) return 1
@@ -351,9 +375,9 @@ export async function runPolicySet(
   const tool = await toolFactsForEffectiveRule(join(journalDir, INVENTORY_FILE_NAME), parsed.serverName, parsed.toolName, io)
   const effective = effectiveToolRule({ policy: edit.policy, serverName: parsed.serverName, tool })
   if (parsed.json) {
-    reportJson(parsed, edit, effective, path, io)
+    reportJson(parsed, edit, effective, target, io)
   } else {
-    reportHuman(parsed, edit, effective, io)
+    reportHuman(parsed, edit, effective, target, io)
   }
   return 0
 }

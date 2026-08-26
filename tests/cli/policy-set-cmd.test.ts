@@ -21,13 +21,22 @@ import { readJournalRecords } from '../support/journal-rows.js'
  */
 
 let journalDir: string
+/**
+ * The shell's cwd, deliberately NOT the state directory: since 2026-08-26 the
+ * command edits the file it would itself load, so cwd decides the
+ * project-level candidate. Leaving it at `process.cwd()` would aim the tests
+ * at the repository's own `.mcp-journal/policy.json`.
+ */
+let workDir: string
 
 beforeEach(async () => {
   journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-policy-set-'))
+  workDir = await mkdtemp(join(tmpdir(), 'mcp-journal-policy-set-cwd-'))
 })
 
 afterEach(async () => {
   await rm(journalDir, { recursive: true, force: true })
+  await rm(workDir, { recursive: true, force: true })
 })
 
 function fakeIo(): {
@@ -70,7 +79,7 @@ async function readPolicyDocument(): Promise<Record<string, unknown>> {
 /** Mints an admin through the production store and returns options carrying its token. */
 async function optsForAdmin(name: string, role: AdminRole): Promise<PolicySetOptions> {
   const { token } = await createAdminStore({ journalDir }).createAdmin(name, role)
-  return { journalDir, env: { [ADMIN_TOKEN_ENV_VAR]: token } }
+  return { journalDir, cwd: workDir, env: { [ADMIN_TOKEN_ENV_VAR]: token } }
 }
 
 async function ownerOpts(): Promise<PolicySetOptions> {
@@ -88,7 +97,7 @@ describe('runPolicySet -- admin attribution', () => {
     await writePolicy(MINIMAL_POLICY)
     const io = fakeIo()
 
-    const code = await runPolicySet(['github', 'create_issue', 'deny'], io, { journalDir, env: {} })
+    const code = await runPolicySet(['github', 'create_issue', 'deny'], io, { journalDir, cwd: workDir, env: {} })
 
     expect(code).toBe(1)
     expect(io.err()).toContain(ADMIN_TOKEN_ENV_VAR)
@@ -103,6 +112,7 @@ describe('runPolicySet -- admin attribution', () => {
 
     const code = await runPolicySet(['github', 'create_issue', 'deny'], io, {
       journalDir,
+      cwd: workDir,
       env: { [ADMIN_TOKEN_ENV_VAR]: 'mcpa_nope' },
     })
 
@@ -183,7 +193,12 @@ describe('runPolicySet -- arguments', () => {
 })
 
 describe('runPolicySet -- write target and file state', () => {
-  test('refuses when the nested connect-first file shadows the flat one, naming it (finding 5a)', async () => {
+  /**
+   * Correction 2026-08-26: a nested file `connect` reads first no longer
+   * refuses the edit — the edit reaches `ui`/`wrap`/`serve`, which load the
+   * file being written, and the command says so instead of blocking.
+   */
+  test('the nested connect-first file is stated, not refused: the state-dir file is still edited', async () => {
     await writePolicy(MINIMAL_POLICY)
     const nestedDir = join(journalDir, '.mcp-journal')
     await mkdir(nestedDir, { recursive: true })
@@ -192,11 +207,57 @@ describe('runPolicySet -- write target and file state', () => {
 
     const code = await runPolicySet(['github', 'create_issue', 'deny'], io, await ownerOpts())
 
-    expect(code).toBe(1)
-    expect(io.err()).toContain(join(nestedDir, 'policy.json'))
-    expect(io.err()).toContain('connect')
-    expect(await readPolicyDocument()).toEqual(MINIMAL_POLICY)
-    expect(await editRecords()).toEqual([])
+    expect(code).toBe(0)
+    expect(io.out()).toContain(`file: ${policyPath()}`)
+    expect(io.out()).toContain(`readers: connect reads ${join(nestedDir, 'policy.json')} first`)
+    expect(await readPolicyDocument()).toEqual({ version: 1, servers: { github: { tools: { create_issue: 'deny' } } } })
+    expect(await editRecords()).toHaveLength(1)
+  })
+
+  /**
+   * The live install of 2026-08-26: the state dir holds no policy, the plane
+   * enforces `<cwd>/.mcp-journal/policy.json`. The edit must land THERE, and
+   * the command must say that `connect` sessions are not covered by it.
+   */
+  test('edits the project-level file this shell would load, and states that connect has no policy', async () => {
+    const projectDir = join(workDir, '.mcp-journal')
+    await mkdir(projectDir, { recursive: true })
+    const projectPath = join(projectDir, 'policy.json')
+    await writeFile(projectPath, JSON.stringify(MINIMAL_POLICY), 'utf8')
+    const io = fakeIo()
+
+    const code = await runPolicySet(['github', 'create_issue', 'deny'], io, await ownerOpts())
+
+    expect(code).toBe(0)
+    expect(io.out()).toContain(`file: ${projectPath}`)
+    expect(io.out()).toContain('readers: ui/wrap/serve read this file; connect sessions have no policy right now')
+    expect(JSON.parse(await readFile(projectPath, 'utf8'))).toEqual({
+      version: 1,
+      servers: { github: { tools: { create_issue: 'deny' } } },
+    })
+    await expect(stat(policyPath())).rejects.toMatchObject({ code: 'ENOENT' })
+    const records = await editRecords()
+    expect(records).toHaveLength(1)
+    expect(records[0]?.['sourcePath']).toBe(projectPath)
+  })
+
+  test('$MCP_JOURNAL_POLICY names the file to edit, as it names the file the entry point loads', async () => {
+    const namedPath = join(workDir, 'named-policy.json')
+    await writeFile(namedPath, JSON.stringify(MINIMAL_POLICY), 'utf8')
+    const io = fakeIo()
+
+    const opts = await ownerOpts()
+    const code = await runPolicySet(['github', 'create_issue', 'deny'], io, {
+      ...opts,
+      env: { ...opts.env, MCP_JOURNAL_POLICY: namedPath },
+    })
+
+    expect(code).toBe(0)
+    expect(io.out()).toContain(`file: ${namedPath}`)
+    expect(JSON.parse(await readFile(namedPath, 'utf8'))).toEqual({
+      version: 1,
+      servers: { github: { tools: { create_issue: 'deny' } } },
+    })
   })
 
   test('policy show --entry-point connect makes the same shadowing visible: source is the nested file', async () => {
@@ -310,6 +371,8 @@ describe('runPolicySet -- writing rules', () => {
       expect(io.out()).toContain(
         `policy ${hashBefore} -> ${hashAfter}: github/create_issue = ${rule}; effective now: ${rule} (explicit)`,
       )
+      expect(io.out()).toContain(`file: ${policyPath()}`)
+      expect(io.out()).toContain('readers: every entry point reads this file')
       expect(io.out()).toContain('without restart')
     },
   )
@@ -375,6 +438,7 @@ describe('runPolicySet -- writing rules', () => {
       hashAfter: policyHashOf(after.policy),
       effective: { outcome: 'deny', source: 'explicit', rulePath: 'servers.github.tools.create_issue' },
       sourcePath: policyPath(),
+      readers: { connect: true, connectPath: null, operator: true },
     })
     expect(parsed['hashBefore']).not.toBe(parsed['hashAfter'])
   })
