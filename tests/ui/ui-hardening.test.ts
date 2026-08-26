@@ -636,10 +636,12 @@ describe('session lifecycle', () => {
     await before.text()
     mutableNow += 2000
     const after = await fetch(`${started.base}/journal`, { headers: { cookie }, redirect: 'manual' })
-    // An expired session is indistinguishable from none: uniform 403. Asserted
-    // on `/journal`, not `/` — the root path redirects to `/login` by design,
-    // which would prove nothing about the session either way.
-    expect(after.status).toBe(403)
+    // A cookie that no longer resolves is a session that died UNDER a signed-in
+    // browser, not an anonymous caller: it is sent back to `/login` (see the
+    // describe below). Asserted on `/journal`, not `/` — the root path
+    // redirects anonymously too, which would prove nothing about the session.
+    expect(after.status).toBe(303)
+    expect(after.headers.get('location')).toBe('/login')
   })
 
   test('rotate kills that admin session; other admins keep theirs', async () => {
@@ -652,7 +654,7 @@ describe('session lifecycle', () => {
       headers: { cookie: op.cookie },
       redirect: 'manual',
     })
-    expect(opRes.status).toBe(403)
+    expect(opRes.status).toBe(303)
     const viewerRes = await fetch(`${started.base}/journal`, {
       headers: { cookie: viewer.cookie },
       redirect: 'manual',
@@ -669,7 +671,7 @@ describe('session lifecycle', () => {
       headers: { cookie: op.cookie },
       redirect: 'manual',
     })
-    expect(res.status).toBe(403)
+    expect(res.status).toBe(303)
   })
 
   test('a role change kills the existing session (role mismatch)', async () => {
@@ -680,7 +682,125 @@ describe('session lifecycle', () => {
       headers: { cookie: viewer.cookie },
       redirect: 'manual',
     })
-    expect(res.status).toBe(403)
+    expect(res.status).toBe(303)
+  })
+})
+
+/**
+ * "The account slipped in the browser." A request that PRESENTS a session
+ * cookie which no longer resolves — expired, rotated, removed, demoted, or
+ * simply forged — is answered by CLEARING that cookie and sending the human
+ * back to `/login`, instead of the uniform 403 that reads as "the plane is
+ * broken" to someone who was signed in a minute ago (the same complaint the M4
+ * smoke raised about a bare 403 on the landing page).
+ *
+ * This does not weaken the uniform 403, which guards the ANONYMOUS caller:
+ * with no cookie at all every protected route still answers 403, listed or
+ * not — pinned by the matrix test above. And the answer here is identical for
+ * a listed and an unlisted path, so a caller who forges a cookie learns
+ * nothing about which routes exist either.
+ */
+describe('a session that died in the browser is sent back to /login', () => {
+  /** Signs in, then walks the clock past the session TTL. */
+  async function withDeadSession(): Promise<{ base: string; cookie: string }> {
+    mutableNow = Date.UTC(2026, 7, 11, 12, 0, 0)
+    const ui = await startUi({ sessionTtlMs: 1000, clock: () => mutableNow })
+    started = ui
+    const { cookie } = await ui.login(ui.tokens.viewer)
+    mutableNow += 2000
+    return { base: ui.base, cookie }
+  }
+
+  test('a GET clears the dead cookie and redirects to /login', async () => {
+    const { base, cookie } = await withDeadSession()
+
+    const res = await fetch(`${base}/journal`, { headers: { cookie }, redirect: 'manual' })
+
+    expect(res.status).toBe(303)
+    expect(res.headers.get('location')).toBe('/login')
+    // Without this the browser keeps presenting a dead id on every request,
+    // and the login page it lands on is reached with the corpse still attached.
+    expect(res.headers.get('set-cookie')).toContain('Max-Age=0')
+    await res.text()
+  })
+
+  test('an UNLISTED path answers exactly the same — no existence oracle', async () => {
+    const { base, cookie } = await withDeadSession()
+
+    const res = await fetch(`${base}/no-such-route`, { headers: { cookie }, redirect: 'manual' })
+
+    expect(res.status).toBe(303)
+    expect(res.headers.get('location')).toBe('/login')
+    await res.text()
+  })
+
+  test('a scripted fetch answers 401 so the page script can act on it', async () => {
+    const { base, cookie } = await withDeadSession()
+
+    // A redirect would be FOLLOWED by `fetch` and hand the script the login
+    // page under a 200: the action would report success it never had.
+    const res = await fetch(`${base}/quarantine/approve`, {
+      method: 'POST',
+      headers: {
+        cookie,
+        origin: UI_TEST_ORIGIN,
+        'content-type': 'application/json',
+        'x-requested-with': 'fetch',
+      },
+      body: JSON.stringify({ server: 'a', tool: 'b' }),
+      redirect: 'manual',
+    })
+
+    expect(res.status).toBe(401)
+    expect(await res.text()).toBe('{"error":"session-expired"}')
+    expect(res.headers.get('set-cookie')).toContain('Max-Age=0')
+  })
+
+  test('a native form POST redirects — the sign-out button is one', async () => {
+    const { base, cookie } = await withDeadSession()
+
+    // `POST /logout` in the shell is a real <form>, not a scripted action: the
+    // browser RENDERS whatever comes back, so a 401 would put a JSON blob on
+    // screen in exactly the moment the operator asked to be signed out.
+    const res = await fetch(`${base}/logout`, {
+      method: 'POST',
+      headers: { cookie, origin: UI_TEST_ORIGIN, 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'csrf_token=whatever',
+      redirect: 'manual',
+    })
+
+    expect(res.status).toBe(303)
+    expect(res.headers.get('location')).toBe('/login')
+    expect(res.headers.get('set-cookie')).toContain('Max-Age=0')
+    await res.text()
+  })
+
+  test('a cookie that never named a session is treated the same way', async () => {
+    started = await startUi()
+
+    const res = await fetch(`${started.base}/journal`, {
+      headers: { cookie: 'mcp_admin_session=deadbeefdeadbeefdeadbeefdeadbeef' },
+      redirect: 'manual',
+    })
+
+    expect(res.status).toBe(303)
+    expect(res.headers.get('location')).toBe('/login')
+    await res.text()
+  })
+
+  test('the public surface is untouched — the login page can still load its assets', async () => {
+    const { base, cookie } = await withDeadSession()
+
+    // The browser sends the dead cookie with every asset request too. Applying
+    // the redirect there would strip the page it just redirected to of its own
+    // stylesheet and script.
+    const asset = await fetch(`${base}/assets/app.js`, { headers: { cookie }, redirect: 'manual' })
+    expect(asset.status).toBe(200)
+    await asset.text()
+
+    const login = await fetch(`${base}/login`, { headers: { cookie }, redirect: 'manual' })
+    expect(login.status).toBe(200)
+    await login.text()
   })
 })
 

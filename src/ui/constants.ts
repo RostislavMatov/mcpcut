@@ -293,6 +293,22 @@ export const CONTENT_TYPE_HTML = 'text/html; charset=utf-8'
 /** Byte-identical for a missing, malformed, unknown or revoked credential. */
 export const BODY_UNAUTHORIZED = Buffer.from('{"error":"unauthorized"}', 'utf8')
 export const BODY_FORBIDDEN = Buffer.from('{"error":"forbidden"}', 'utf8')
+/**
+ * The one refusal that is deliberately NOT uniform: the caller presented a
+ * session cookie that no longer resolves. It says nothing about the path it
+ * was sent to (the answer is identical for a listed and an unlisted route) —
+ * only that the credential the browser is holding is dead, which the page
+ * script turns into a trip to `/login` instead of a meaningless toast.
+ */
+export const BODY_SESSION_EXPIRED = Buffer.from('{"error":"session-expired"}', 'utf8')
+
+/**
+ * How the page script tells the server "a `fetch()` is asking, not a browser
+ * navigation". It decides the SHAPE of the dead-session refusal only — never
+ * whether a request is allowed — so nothing is gained by forging it.
+ */
+export const SCRIPT_REQUEST_HEADER = 'x-requested-with'
+export const SCRIPT_REQUEST_VALUE = 'fetch'
 export const BODY_TOO_MANY_REQUESTS = Buffer.from('{"error":"too-many-requests"}', 'utf8')
 export const BODY_PAYLOAD_TOO_LARGE = Buffer.from('{"error":"payload-too-large"}', 'utf8')
 export const BODY_INTERNAL = Buffer.from('{"error":"internal"}', 'utf8')

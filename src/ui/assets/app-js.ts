@@ -56,6 +56,13 @@ import { buildAsset, type Asset } from './asset.js'
  *     JSON `{server, status, probedVia?, probedAt?, latencyMs?, error?}` and
  *     `applyServerStatus` swaps the dot's class and `title` in place.
  *
+ *  Signed out mid-session
+ *   - every scripted request carries `x-requested-with: fetch`, which a dead
+ *     session answers with 401 instead of the redirect a navigation gets.
+ *   - a 401 — or, belt and braces, a response that followed a redirect to
+ *     `/login` — means the session cookie is dead: the script replaces the
+ *     current location with `/login` rather than toasting a status code.
+ *
  *  Fallback
  *   - if SSE errors, the script polls `data-live-src` (or the page) every
  *     `data-poll-ms` (default 5000) until SSE recovers. Status-dot events have
@@ -77,6 +84,31 @@ const APP_JS_SOURCE = `"use strict";
   function csrfToken() {
     var meta = document.querySelector('meta[name="csrf-token"]');
     return meta ? meta.getAttribute("content") || "" : "";
+  }
+
+  // --- Signed out mid-session -----------------------------------------------
+  // The server answers a request that carries a DEAD session cookie by clearing
+  // it and pointing at /login: 401 for a script's fetch, a redirect for a
+  // navigation. Either way the page in front of the operator is a corpse — the
+  // buttons on it can only fail — so it goes to the sign-in screen instead of
+  // toasting a status code nobody can act on.
+  function isLoginUrl(url) {
+    try {
+      return new URL(url, window.location.href).pathname === "/login";
+    } catch (err) {
+      return false;
+    }
+  }
+
+  // Checked BEFORE res.ok: fetch follows a redirect transparently, so a
+  // navigation-shaped GET that landed on /login arrives here as a 200.
+  function isSignedOut(res) {
+    return res.status === 401 || (res.redirected === true && isLoginUrl(res.url));
+  }
+
+  function goToLogin() {
+    if (window.location.pathname === "/login") return;
+    window.location.replace("/login");
   }
 
   // --- CSRF-guarded actions -------------------------------------------------
@@ -134,6 +166,16 @@ const APP_JS_SOURCE = `"use strict";
       .catch(function () { return ""; });
   }
 
+  // The refusal in the operator's words. 403 is the one status a bare code
+  // cannot explain: a dead session is now a 401 of its own, so what is left is
+  // an insufficient role or a page whose CSRF token went stale — name both,
+  // because the operator's next move differs (ask an owner vs. reload).
+  function refusalText(res, message) {
+    if (message) return "Action failed (" + res.status + "): " + message;
+    if (res.status === 403) return "Not allowed: your role does not permit this, or the page went stale \u2014 reload and retry";
+    return "Action failed (" + res.status + ")";
+  }
+
   function runAction(el) {
     var url = el.getAttribute("data-action");
     var method = (el.getAttribute("data-method") || "POST").toUpperCase();
@@ -146,15 +188,20 @@ const APP_JS_SOURCE = `"use strict";
       headers: {
         "x-csrf-token": csrfToken(),
         "content-type": "application/json",
+        // "a script is asking": a dead session answers this with 401 rather
+        // than a redirect fetch would follow into a misleading 200.
+        "x-requested-with": "fetch",
       },
       body: payload || undefined,
     })
       .then(function (res) {
-        if (res.ok) {
+        if (isSignedOut(res)) {
+          goToLogin();
+        } else if (res.ok) {
           settleAction(el);
         } else {
           return failureMessage(res).then(function (message) {
-            announce("Action failed (" + res.status + ")" + (message ? ": " + message : ""));
+            announce(refusalText(res, message));
             setBusy(el, false);
           });
         }
@@ -185,7 +232,13 @@ const APP_JS_SOURCE = `"use strict";
     var generation = String((parseInt(region.getAttribute("data-live-generation") || "0", 10) || 0) + 1);
     region.setAttribute("data-live-generation", generation);
     return fetch(src, { credentials: "same-origin", headers: { "x-requested-with": "fetch" } })
-      .then(function (res) { return res.ok ? res.text() : Promise.reject(res.status); })
+      .then(function (res) {
+        // An idle tab whose session died: SSE drops, the poll arm keeps
+        // re-fetching, and every answer is the login page. Without this the
+        // operator watches a frozen queue that never says why.
+        if (isSignedOut(res)) { goToLogin(); return Promise.reject(res.status); }
+        return res.ok ? res.text() : Promise.reject(res.status);
+      })
       .then(function (htmlText) {
         if (region.getAttribute("data-live-generation") === generation) swapRegion(region, htmlText);
       })
