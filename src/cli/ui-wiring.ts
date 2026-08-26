@@ -236,6 +236,7 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
   // forever — building an object with only the granted methods makes the
   // Pick<> a runtime fact, not just a type-checker fact.
   const probes = composeProbes(deps)
+  const policyEnv = { journalDir: deps.journalDir, env: deps.env ?? process.env, cwd: deps.cwd ?? process.cwd() }
   const servers = createServersHandlers({
     registry: {
       listServers: () => deps.registry.listServers(),
@@ -259,7 +260,6 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
   // is bound HERE — `<journalDir>/policy.json` via `resolvePolicyWriteTarget`
   // — and never derived from a request; the journal record goes through the
   // same sink the probe facts use.
-  const policyEnv = { journalDir: deps.journalDir, env: deps.env ?? process.env, cwd: deps.cwd ?? process.cwd() }
   const serversToolRule = createServersToolRuleHandlers({
     resolveWriteTarget: () => resolvePolicyWriteTarget(deps.journalDir),
     readPolicyFile: (path) => readPolicyFileForEdit(path, defaultPolicyFileDeps),

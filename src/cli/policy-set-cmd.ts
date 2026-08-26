@@ -1,3 +1,4 @@
+import { POLICY_HASH_PREVIEW_CHARS } from '../policy/constants.js'
 import { join } from 'node:path'
 import { parseArgs } from 'node:util'
 import { roleSatisfies, type Role } from '../admin/authz.js'
@@ -52,7 +53,6 @@ const CLEAR_WORD = 'clear'
 const RULE_WORDS: readonly string[] = ['allow', 'require-approval', 'deny', CLEAR_WORD]
 
 /** Leading hex digits of a policy hash shown in the human line; the journal carries the full digest. */
-const HASH_PREVIEW_CHARS = 8
 
 const SET_USAGE = `Usage:
   policy set <server> <tool> allow|require-approval|deny|clear [--json]
@@ -282,7 +282,7 @@ async function journalEdit(
 }
 
 function previewOf(hash: string): string {
-  return hash.slice(0, HASH_PREVIEW_CHARS)
+  return hash.slice(0, POLICY_HASH_PREVIEW_CHARS)
 }
 
 function ruleWordOf(rule: PolicyOutcome | null): string {

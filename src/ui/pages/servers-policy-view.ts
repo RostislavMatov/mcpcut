@@ -1,3 +1,4 @@
+import { POLICY_HASH_PREVIEW_CHARS } from '../../policy/constants.js'
 import type { PolicyView } from '../../policy/edit/policy-view.js'
 import { html, join, type Html } from '../html.js'
 import type { ToolRuleControls } from './servers-tool-rule.js'
@@ -11,7 +12,6 @@ import type { ToolRuleControls } from './servers-tool-rule.js'
  */
 
 /** Characters of the policy hash shown in the sources line. */
-const HASH_DISPLAY_CHARS = 8
 
 const NO_POLICY_NOTE = 'no policy — enforcement off'
 const INVALID_POLICY_REASON = 'policy file on disk is invalid — fix it by hand'
@@ -56,7 +56,7 @@ export function renderPolicySources(view: PolicyView | undefined): Html {
   if (view === undefined) return html``
   const state =
     view.status === 'loaded'
-      ? html`<span class="num">${view.hash.slice(0, HASH_DISPLAY_CHARS)}</span>`
+      ? html`<span class="num">${view.hash.slice(0, POLICY_HASH_PREVIEW_CHARS)}</span>`
       : view.status === 'absent'
         ? html`<span>absent — enforcement off</span>`
         : html`<span class="pill pill-alert">invalid</span>`

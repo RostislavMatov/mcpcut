@@ -211,6 +211,13 @@ export const AGENT_NON_GRANTABLE_METHODS: readonly string[] = [
 export const AGENT_NON_GRANTABLE_RULE_PREFIX = 'agent: method not grantable in M3'
 
 /** Default file name looked up in the project/home policy directories. */
+/**
+ * Leading hex digits of a `policyHashOf` digest shown to a human (admin UI
+ * sources line, `policy set` output). The journal and the API responses always
+ * carry the full digest; this is only how much of it a person is asked to read.
+ */
+export const POLICY_HASH_PREVIEW_CHARS = 8
+
 export const POLICY_FILE_NAME = 'policy.json'
 
 /** Environment variable that can point at an explicit policy file path. */
