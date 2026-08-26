@@ -36,6 +36,7 @@ import {
   BODY_INTERNAL,
   BODY_NOT_IMPLEMENTED,
   BODY_PAYLOAD_TOO_LARGE,
+  BODY_SESSION_EXPIRED,
   CONTENT_TYPE_HTML,
   CONTENT_TYPE_JSON,
   CSRF_FIELD_NAME,
@@ -48,8 +49,11 @@ import {
   HTTP_STATUS_OK,
   HTTP_STATUS_PAYLOAD_TOO_LARGE,
   HTTP_STATUS_SEE_OTHER,
+  HTTP_STATUS_UNAUTHORIZED,
   MAX_UI_BODY_BYTES,
   NON_LOCALHOST_BIND_WARNING,
+  SCRIPT_REQUEST_HEADER,
+  SCRIPT_REQUEST_VALUE,
   SSE_HEADERS,
   WILDCARD_BIND_WARNING,
 } from './constants.js'
@@ -63,11 +67,18 @@ import {
  *  1. Host not naming this listener → 403 (DNS rebinding; before anything).
  *  2. Origin present and not allowed → the same 403; and on a POST, Origin
  *     ABSENT is also a 403 (a browser always sends it on a state change).
- *  3. Route match against the normative `ROUTE_TABLE`; no match → 403
- *     (deny-by-default: an unlisted route is denied to everyone, no oracle).
- *  4. Public routes (`/login`, assets) dispatch straight away.
- *  5. Protected routes: resolve+re-validate the session → authorize by role →
- *     CSRF-check state-changing POSTs → dispatch.
+ *  3. Route match against the normative `ROUTE_TABLE` (the outcome is not yet
+ *     acted on — see 4, which must not depend on whether the path exists).
+ *  4. Off the public surface: resolve+re-validate the presented session
+ *     cookie. A cookie that no longer resolves → clear it and send the caller
+ *     to `/login` (303, or 401 for the page script) — the ONE refusal that
+ *     varies by credential state, and identical for a listed and an unlisted
+ *     path so it stays no oracle. No cookie at all falls through unchanged.
+ *  5. No route match → 403 (deny-by-default: an unlisted route is denied to
+ *     everyone, no existence oracle).
+ *  6. Public routes (`/login`, assets) dispatch straight away.
+ *  7. Protected routes: authorize by role → CSRF-check state-changing POSTs →
+ *     dispatch.
  *
  * Every response — page, asset, error, redirect, SSE — carries the security
  * headers (`security-headers.ts`). Handler failures collapse to a detail-free
@@ -240,9 +251,9 @@ export function createUiServer(opts: UiServerOptions): UiServer {
     params: Readonly<Record<string, string>>,
     query: URLSearchParams,
     body: Buffer,
+    sessionId: string | undefined,
+    session: UiSession | undefined,
   ): Promise<void> {
-    const sessionId = parseSessionCookie(headerValue(req.headers, 'cookie'), { secure: behindTls })
-    const session = await sessions.resolve(sessionId, opts.adminStore)
     const decision = authorize(entry, session)
     const identity: StreamIdentity | undefined =
       sessionId !== undefined && session !== undefined
@@ -289,9 +300,78 @@ export function createUiServer(opts: UiServerOptions): UiServer {
     writeResult(res, await dispatchInjected(entry.handler, ctx), identity)
   }
 
+  /**
+   * The answer to a request whose session cookie no longer resolves — expired,
+   * rotated, removed, demoted, or forged. The cookie is cleared (otherwise the
+   * browser presents the corpse on every later request, including the ones the
+   * login page makes) and the caller is pointed at `/login`.
+   *
+   * The split is by WHO ASKED, not by method. A navigation — a typed URL, a
+   * link, and the sign-out `<form method="post">` in the shell, which is a real
+   * form and not a scripted action — renders whatever comes back, so it gets
+   * the redirect and the human lands on the sign-in screen. The page script
+   * announces itself with `x-requested-with: fetch` and gets a 401 instead:
+   * `fetch` FOLLOWS a redirect transparently, so a 303 would hand the script
+   * the login document under a 200 and let a dead action report success it
+   * never had.
+   *
+   * This is the only refusal that varies by credential state, and it is not an
+   * existence oracle: the answer is the same for a listed and an unlisted
+   * path, and a caller with NO cookie still gets the uniform 403 everywhere.
+   */
+  function sendSessionExpired(req: IncomingMessage, res: ServerResponse): void {
+    const setCookie = clearSessionCookie({ secure: behindTls })
+    if (headerValue(req.headers, SCRIPT_REQUEST_HEADER) === SCRIPT_REQUEST_VALUE) {
+      writeResult(res, {
+        kind: 'response',
+        status: HTTP_STATUS_UNAUTHORIZED,
+        headers: { 'content-type': CONTENT_TYPE_JSON, 'set-cookie': setCookie },
+        body: BODY_SESSION_EXPIRED,
+      })
+      return
+    }
+    writeResult(res, {
+      kind: 'response',
+      status: HTTP_STATUS_SEE_OTHER,
+      headers: { location: '/login', 'set-cookie': setCookie },
+    })
+  }
+
+  /** What the request's cookie turned out to be worth. */
+  interface PresentedSession {
+    /** The id the browser sent, or `undefined` when it sent none. */
+    readonly sessionId: string | undefined
+    /** The live session behind that id; `undefined` with an id present = dead. */
+    readonly session: UiSession | undefined
+  }
+
+  /**
+   * Resolves the cookie a request presents, ONCE per request and before the
+   * route's existence is allowed to matter — so a dead session is answered the
+   * same way whatever it was pointed at. The public surface is exempt: the
+   * browser attaches the same dead cookie to the stylesheet and script
+   * requests the login page itself makes, and redirecting those would strip
+   * the sign-in screen of its own assets.
+   */
+  async function presentedSession(
+    req: IncomingMessage,
+    isPublicRoute: boolean,
+  ): Promise<PresentedSession> {
+    if (isPublicRoute) return { sessionId: undefined, session: undefined }
+    const sessionId = parseSessionCookie(headerValue(req.headers, 'cookie'), { secure: behindTls })
+    if (sessionId === undefined) return { sessionId: undefined, session: undefined }
+    return { sessionId, session: await sessions.resolve(sessionId, opts.adminStore) }
+  }
+
   async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const parsed = parseTarget(req.url)
     const match = matchRoute(req.method ?? '', parsed.path)
+    const isPublicRoute = match !== null && match.entry.minRole === 'public'
+    const { sessionId, session } = await presentedSession(req, isPublicRoute)
+    if (sessionId !== undefined && session === undefined) {
+      sendSessionExpired(req, res)
+      return
+    }
     if (match === null) {
       // Deny-by-default: unlisted route → 403 for everyone (no existence oracle).
       sendPlan(res, HTTP_STATUS_FORBIDDEN, BODY_FORBIDDEN)
@@ -308,7 +388,7 @@ export function createUiServer(opts: UiServerOptions): UiServer {
       body = bodyResult.body
     }
     const { entry, params } = match
-    if (entry.minRole === 'public') {
+    if (isPublicRoute) {
       if (entry.handler === '@login') {
         const loginCtx = buildContext(req, parsed.path, params, parsed.query, undefined, body)
         writeResult(
@@ -335,7 +415,7 @@ export function createUiServer(opts: UiServerOptions): UiServer {
       writeResult(res, await dispatchInjected(entry.handler, ctx))
       return
     }
-    await handleProtected(entry, req, res, parsed.path, params, parsed.query, body)
+    await handleProtected(entry, req, res, parsed.path, params, parsed.query, body, sessionId, session)
   }
 
   function isRequestHostAllowed(req: IncomingMessage): boolean {

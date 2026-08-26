@@ -582,7 +582,108 @@ describe('scripted actions settle by refreshing an opted-in live region', () => 
     await expect(failureMessage({ json: () => Promise.resolve({ message: 'policy changed on disk' }) })).resolves.toBe('policy changed on disk')
     await expect(failureMessage({ json: () => Promise.reject(new Error('not json')) })).resolves.toBe('')
     await expect(failureMessage({ json: () => Promise.resolve({ message: 42 }) })).resolves.toBe('')
-    expect(JS_SOURCE).toMatch(/announce\("Action failed \(" \+ res\.status \+ "\)" \+ \(message \? ": " \+ message : ""\)\)/)
+    expect(JS_SOURCE).toMatch(/announce\(refusalText\(res, message\)\)/)
+  })
+
+  /**
+   * A bare "Action failed (403)" tells the operator nothing they can act on.
+   * A dead session is a 401 of its own now (the script leaves for `/login`),
+   * so a 403 that reaches the toast is an insufficient role or a page whose
+   * CSRF token went stale — and the next move differs: ask an owner, or
+   * reload. The toast names both instead of the number.
+   */
+  test('a 403 toast explains itself; other statuses keep the code', () => {
+    const source = /\n {2}function refusalText\(res, message\) \{[\s\S]*?\n {2}\}/.exec(JS_SOURCE)?.[0]
+    expect(source, 'refusalText not found in APP_JS').toBeDefined()
+    const refusalText = new Function(`${source ?? ''}\nreturn refusalText;`)() as (
+      res: { status: number },
+      message: string,
+    ) => string
+
+    const forbidden = refusalText({ status: 403 }, '')
+    expect(forbidden).toContain('role')
+    expect(forbidden).toContain('reload')
+    expect(forbidden).not.toContain('403')
+    // A server that bothered to explain itself is quoted verbatim.
+    expect(refusalText({ status: 409 }, 'policy changed on disk')).toContain('policy changed on disk')
+    expect(refusalText({ status: 500 }, '')).toBe('Action failed (500)')
+  })
+
+  /**
+   * The session died under an open tab (TTL, `admin rotate`, `admin remove`, a
+   * role change). The server clears the cookie and answers 401 to a script's
+   * fetch and a redirect to `/login` to a navigation; the script must act on
+   * BOTH — a redirect is followed transparently by `fetch`, so a signed-out
+   * region refresh arrives as a 200 carrying the login page.
+   */
+  describe('a dead session sends the page to /login', () => {
+    function loadSignedOut(): (res: unknown) => boolean {
+      const helpers = /\n {2}function isLoginUrl\(url\) \{[\s\S]*?\n {2}function isSignedOut\(res\) \{[\s\S]*?\n {2}\}/.exec(JS_SOURCE)?.[0]
+      expect(helpers, 'isSignedOut not found in APP_JS').toBeDefined()
+      return new Function(
+        'window',
+        `${helpers ?? ''}\nreturn isSignedOut;`,
+      )({ location: { href: 'http://ui.test/servers' } }) as (res: unknown) => boolean
+    }
+
+    test('401 and a redirect that landed on /login both count; a plain 200 does not', () => {
+      const isSignedOut = loadSignedOut()
+      expect(isSignedOut({ status: 401, redirected: false, url: 'http://ui.test/servers' })).toBe(true)
+      expect(isSignedOut({ status: 200, redirected: true, url: 'http://ui.test/login' })).toBe(true)
+      expect(isSignedOut({ status: 200, redirected: false, url: 'http://ui.test/servers' })).toBe(false)
+      // A redirect somewhere else is not a sign-out (and must not become one).
+      expect(isSignedOut({ status: 200, redirected: true, url: 'http://ui.test/servers' })).toBe(false)
+    })
+
+    test('goToLogin does not bounce a page that is already the login page', () => {
+      const source = /\n {2}function goToLogin\(\) \{[\s\S]*?\n {2}\}/.exec(JS_SOURCE)?.[0]
+      expect(source, 'goToLogin not found in APP_JS').toBeDefined()
+      const replaced: string[] = []
+      const load = (pathname: string): (() => void) =>
+        new Function('window', `${source ?? ''}\nreturn goToLogin;`)({
+          location: { pathname, replace: (url: string) => replaced.push(url) },
+        }) as () => void
+
+      load('/servers')()
+      expect(replaced).toEqual(['/login'])
+      load('/login')()
+      expect(replaced).toEqual(['/login'])
+    })
+
+    test('a signed-out action leaves for /login instead of toasting', () => {
+      // Ordering matters: the check precedes `res.ok`, because a followed
+      // redirect reaches the handler as a 200.
+      expect(JS_SOURCE).toMatch(/if \(isSignedOut\(res\)\) \{\s*goToLogin\(\);\s*\} else if \(res\.ok\)/)
+    })
+
+    test('a signed-out region refresh leaves for /login and swaps nothing', async () => {
+      const source = /\n {2}function refreshRegion\(region\) \{[\s\S]*?\n {2}\}/.exec(JS_SOURCE)?.[0]
+      expect(source, 'refreshRegion not found in APP_JS').toBeDefined()
+      const swaps: string[] = []
+      let departures = 0
+      const refreshRegion = new Function(
+        'fetch',
+        'swapRegion',
+        'window',
+        'isSignedOut',
+        'goToLogin',
+        `${source ?? ''}\nreturn refreshRegion;`,
+      )(
+        () => Promise.resolve({ ok: true, status: 200, redirected: true, url: 'http://ui.test/login', text: () => Promise.resolve('LOGIN PAGE') }),
+        (_r: unknown, text: string) => { swaps.push(text) },
+        { location: { href: 'http://ui.test/quarantine' } },
+        (res: { redirected: boolean }) => res.redirected,
+        () => { departures += 1 },
+      ) as (region: unknown) => Promise<void>
+      const attrs: Record<string, string> = {}
+      await refreshRegion({
+        getAttribute: (k: string) => attrs[k] ?? null,
+        setAttribute: (k: string, v: string) => { attrs[k] = v },
+      })
+
+      expect(departures).toBe(1)
+      expect(swaps).toEqual([])
+    })
   })
 
   test('runAction settles a 2xx through settleAction and never reloads directly', () => {
@@ -619,17 +720,23 @@ describe('scripted actions settle by refreshing an opted-in live region', () => 
     const swaps: string[] = []
     const pending: Array<(text: string) => void> = []
     const fetchStub = () =>
-      new Promise<{ ok: boolean; text: () => Promise<string> }>((resolve) => {
-        pending.push((text) => resolve({ ok: true, text: () => Promise.resolve(text) }))
+      new Promise<{ ok: boolean; status: number; text: () => Promise<string> }>((resolve) => {
+        pending.push((text) => resolve({ ok: true, status: 200, text: () => Promise.resolve(text) }))
       })
     const refreshRegion = new Function(
       'fetch',
       'swapRegion',
       'window',
+      'isSignedOut',
+      'goToLogin',
       `${source ?? ''}\nreturn refreshRegion;`,
-    )(fetchStub, (_r: unknown, text: string) => { swaps.push(text) }, { location: { href: '/quarantine' } }) as (
-      region: unknown,
-    ) => Promise<void>
+    )(
+      fetchStub,
+      (_r: unknown, text: string) => { swaps.push(text) },
+      { location: { href: '/quarantine' } },
+      () => false,
+      () => undefined,
+    ) as (region: unknown) => Promise<void>
     const attrs: Record<string, string> = {}
     const region = {
       getAttribute: (k: string) => attrs[k] ?? null,
