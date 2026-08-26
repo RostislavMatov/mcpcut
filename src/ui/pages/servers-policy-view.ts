@@ -51,15 +51,23 @@ export function renderPolicyBanner(view: PolicyView | undefined): Html {
     </div>`
 }
 
+/**
+ * Key of the live-text node carrying the policy hash. The sources line sits
+ * OUTSIDE every card's settle region, so without this a rule change would
+ * leave a stale digest on screen next to freshly-changed rules — and that
+ * digest is what an operator compares against the journal.
+ */
+const POLICY_HASH_LIVE_KEY = 'policy-hash'
+
 /** «policy · <path> · <hash8>» plus, when `serve`/`wrap` load another file first, the second line. */
 export function renderPolicySources(view: PolicyView | undefined): Html {
   if (view === undefined) return html``
   const state =
     view.status === 'loaded'
-      ? html`<span class="num">${view.hash.slice(0, POLICY_HASH_PREVIEW_CHARS)}</span>`
+      ? html`<span class="num" data-live-text="${POLICY_HASH_LIVE_KEY}">${view.hash.slice(0, POLICY_HASH_PREVIEW_CHARS)}</span>`
       : view.status === 'absent'
-        ? html`<span>absent — enforcement off</span>`
-        : html`<span class="pill pill-alert">invalid</span>`
+        ? html`<span data-live-text="${POLICY_HASH_LIVE_KEY}">absent — enforcement off</span>`
+        : html`<span class="pill pill-alert" data-live-text="${POLICY_HASH_LIVE_KEY}">invalid</span>`
   const operator =
     view.operatorSourcePath !== undefined
       ? html`<div class="srv-policy-src faint small">serve/wrap load <code>${view.operatorSourcePath}</code> first — edits here affect connect only</div>`

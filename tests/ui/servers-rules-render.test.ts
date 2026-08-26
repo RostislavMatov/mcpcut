@@ -136,7 +136,7 @@ describe('controls', () => {
     expect(document).toMatch(/<div class="callout srv-policy-banner" role="alert">/)
     expect(document).toContain('<li><code>version: expected 1</code></li>')
     expect(document).toContain('<li><code>servers: &lt;bad&gt;</code></li>')
-    expect(document).toContain('<span class="pill pill-alert">invalid</span>')
+    expect(document).toContain('<span class="pill pill-alert" data-live-text="policy-hash">invalid</span>')
     expect(ruleButtons(document)).toHaveLength(0)
   })
 
@@ -169,8 +169,22 @@ describe('sources panel', () => {
   test('shows the write path and the first 8 hash characters', () => {
     const policy = policyOf({ version: 1 })
     const document = page({ policyView: loadedView(policy) })
-    expect(document).toContain(`policy · <code>/state/policy.json</code> · <span class="num">${policyHashOf(policy).slice(0, 8)}</span>`)
+    expect(document).toContain(
+      `policy · <code>/state/policy.json</code> · <span class="num" data-live-text="policy-hash">${policyHashOf(policy).slice(0, 8)}</span>`,
+    )
     expect(document).not.toContain('serve/wrap load')
+  })
+
+  /**
+   * The line sits outside every card's settle region; without `data-live-text`
+   * a rule change would leave a stale digest next to freshly-changed rules —
+   * and that digest is what an operator compares against the journal.
+   */
+  test('the hash follows a settle swap (it is a live-text node in every state)', () => {
+    const loaded = page({ policyView: loadedView(policyOf({ version: 1 })) })
+    expect(loaded).toMatch(/<span class="num" data-live-text="policy-hash">[0-9a-f]{8}<\/span>/)
+    const absent = page({ policyView: { status: 'absent', sourcePath: '/state/policy.json' } })
+    expect(absent).toContain('data-live-text="policy-hash"')
   })
 
   test('names the file serve/wrap would load first when it differs', () => {
