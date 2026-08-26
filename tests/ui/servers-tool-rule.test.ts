@@ -72,6 +72,8 @@ interface HarnessOptions {
   readonly read?: PolicyFileReadResult
   readonly write?: PolicyFileWriteResult
   readonly inventory?: InventoryStoreData
+  /** Makes the display-only inventory read reject, as a corrupt or locked store does. */
+  readonly inventoryFails?: boolean
 }
 
 function makeHarness(options: HarnessOptions = {}): Harness {
@@ -88,7 +90,10 @@ function makeHarness(options: HarnessOptions = {}): Harness {
       if (!parsed.ok) throw new Error('unexpected: handler wrote an unparseable document')
       return { status: 'written', hashBefore: BASE_HASH, hashAfter: policyHashOf(parsed.policy) }
     },
-    readInventory: async () => options.inventory ?? INVENTORY,
+    readInventory: async () => {
+      if (options.inventoryFails === true) throw new Error('inventory store is corrupt')
+      return options.inventory ?? INVENTORY
+    },
     journal: async (edit) => {
       journal.push(edit)
     },
@@ -137,6 +142,24 @@ describe('route', () => {
     expect(entry).toMatchObject({ method: 'POST', minRole: 'owner', handler: 'serversToolRule' })
     const match = matchRoute('POST', '/servers/my%3Aserver/tools/create%20issue/rule')
     expect(match?.params).toEqual({ name: 'my%3Aserver', tool: 'create%20issue' })
+  })
+})
+
+/**
+ * The inventory read only refines the display-only `effective` line. It runs
+ * AFTER the edit is durably on disk, so a corrupt or lock-contended store must
+ * never leave a written rule unattributed (no journal record, no audit line) —
+ * the review's HIGH finding.
+ */
+describe('a completed write is attributed even when the inventory read fails', () => {
+  test('journals, audits and answers ok when readInventory rejects', async () => {
+    const harness = makeHarness({ inventoryFails: true })
+    const result = await harness.handler(post({ fields: { rule: 'deny', expected_hash: BASE_HASH } }))
+    expect(statusOf(result)).toBe(200)
+    expect(harness.writes).toHaveLength(1)
+    expect(harness.journal).toHaveLength(1)
+    expect(harness.audit).toHaveLength(1)
+    expect(jsonOf(result)).toMatchObject({ status: 'ok' })
   })
 })
 

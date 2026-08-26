@@ -184,6 +184,19 @@ function writeRefusal(written: Exclude<PolicyFileWriteResult, { status: 'written
   return refusal(HTTP_STATUS_INTERNAL_ERROR, { status: 'error', message: 'the policy file could not be written', errors: written.errors })
 }
 
+/**
+ * The inventory only refines the display-only `effective` line (quarantine
+ * state); a corrupt or locked store degrades to the empty inventory rather
+ * than failing a request whose edit already landed on disk.
+ */
+async function readInventoryOrDefault(deps: ServersToolRuleDeps): Promise<InventoryStoreData> {
+  try {
+    return (await deps.readInventory?.()) ?? DEFAULT_INVENTORY_STORE
+  } catch {
+    return DEFAULT_INVENTORY_STORE
+  }
+}
+
 export function createServersToolRuleHandlers(deps: ServersToolRuleDeps): ServersToolRuleHandlers {
   /** After the file is on disk: the attribution line, then the journal record — each exactly once. */
   async function recordEdit(
@@ -229,13 +242,15 @@ export function createServersToolRuleHandlers(deps: ServersToolRuleDeps): Server
       return jsonResult(refused.status, refused.payload)
     }
 
-    const inventory = (await deps.readInventory?.()) ?? DEFAULT_INVENTORY_STORE
+    // The file is on disk: attribute FIRST. Everything after this line is
+    // display-only and must never turn a completed edit into an unjournaled one.
+    await recordEdit(session, parsed, target.path, written)
+    const inventory = await readInventoryOrDefault(deps)
     const effective = effectiveToolRule({
       policy: applied.policy,
       serverName: parsed.serverName,
       tool: { name: parsed.toolName, quarantineState: quarantineStateOf(inventory, parsed.serverName, parsed.toolName) },
     })
-    await recordEdit(session, parsed, target.path, written)
     if (!wantsJson(ctx)) {
       return { kind: 'response', status: HTTP_STATUS_SEE_OTHER, headers: { location: '/servers' } }
     }
