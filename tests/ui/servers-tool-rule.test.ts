@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import type { PolicyEditInfo } from '../../src/journal/policy-edit-record.js'
 import type { PolicyFileReadResult, PolicyFileWriteResult } from '../../src/policy/edit/policy-file.js'
-import type { PolicyWriteTarget } from '../../src/policy/edit/write-target.js'
+import type { PolicyEditTarget } from '../../src/policy/edit/write-target.js'
 import type { InventoryStoreData } from '../../src/policy/inventory-store.js'
 import { parsePolicy, type Policy } from '../../src/policy/schema.js'
 import { policyHashOf } from '../../src/policy/provenance.js'
@@ -68,7 +68,7 @@ interface Harness {
 }
 
 interface HarnessOptions {
-  readonly target?: PolicyWriteTarget
+  readonly target?: PolicyEditTarget
   readonly read?: PolicyFileReadResult
   readonly write?: PolicyFileWriteResult
   readonly inventory?: InventoryStoreData
@@ -81,7 +81,7 @@ function makeHarness(options: HarnessOptions = {}): Harness {
   const journal: PolicyEditInfo[] = []
   const audit: UiAuditEvent[] = []
   const deps: ServersToolRuleDeps = {
-    resolveWriteTarget: async () => options.target ?? { status: 'ok', path: FLAT },
+    resolveEditTarget: async () => options.target ?? { path: FLAT, readers: { kind: 'every-entry-point' } },
     readPolicyFile: async () => options.read ?? LOADED,
     writePolicyFile: async (path, document, opts) => {
       writes.push({ path, document, expectedHash: opts.expectedHash })
@@ -208,16 +208,20 @@ describe('refusals never write, journal or audit', () => {
     expect(h.writes).toEqual([])
   })
 
-  test('a shadowing nested file → 409 with the explanation (finding 5a)', async () => {
-    const h = makeHarness({ target: { status: 'shadowed', path: FLAT, shadowedBy: NESTED } })
+  /**
+   * Correction 2026-08-26: the target is the file this process loaded, so an
+   * edit always reaches whoever loaded it. A file `connect` does not read is
+   * a displayed statement, never a refusal — the write goes through.
+   */
+  test('a target connect does not read is written all the same, and journaled with that path', async () => {
+    const h = makeHarness({ target: { path: NESTED, readers: { kind: 'connect-unset' } } })
+
     const result = await h.handler(post())
-    expect(statusOf(result)).toBe(409)
-    const body = jsonOf(result)
-    expect(body.status).toBe('shadowed')
-    expect(String(body.message)).toContain(NESTED)
-    expect(String(body.message)).toContain('connect')
-    expect(h.writes).toEqual([])
-    expect(h.journal).toEqual([])
+
+    expect(result.kind === 'response' && result.status).toBe(200)
+    expect(h.writes).toHaveLength(1)
+    expect(h.writes[0]?.path).toBe(NESTED)
+    expect(h.journal[0]?.sourcePath).toBe(NESTED)
   })
 
   test('no policy file → 409 "no policy — enforcement off" and the file is NOT created (O4)', async () => {

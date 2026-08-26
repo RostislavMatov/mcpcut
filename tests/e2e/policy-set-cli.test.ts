@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
@@ -31,11 +31,15 @@ afterEach(async () => {
   await rm(tempDir, { recursive: true, force: true })
 })
 
-/** The `policy` seam: pinned to the temp dir so the repository's own policy is never discovered. */
-function policySeam(token?: string): DispatchOptions {
+/**
+ * The `policy` seam: pinned to the temp dir so the repository's own policy is
+ * never discovered. `cwd` matters since 2026-08-26 — it decides the
+ * project-level candidate, and therefore the file an edit lands in.
+ */
+function policySeam(token?: string, cwd: string = tempDir): DispatchOptions {
   return {
     policy: {
-      cwd: tempDir,
+      cwd,
       journalDir: tempDir,
       env: token === undefined ? {} : { [ADMIN_TOKEN_ENV_VAR]: token },
     },
@@ -61,6 +65,8 @@ describe('policy set (e2e)', () => {
     expect(set.err, set.err).toMatch(/^\[audit\] policy set by alice \(owner\): github\/delete_repo = deny/m)
     expect(set.code).toBe(0)
     expect(set.out).toMatch(/^policy [0-9a-f]{8} -> [0-9a-f]{8}: github\/delete_repo = deny; effective now: deny \(explicit\)$/m)
+    expect(set.out).toContain(`file: ${policyPath}`)
+    expect(set.out).toContain('readers: every entry point reads this file')
     expect(set.out).toContain('without restart')
 
     // The written file: the operator's minimal document plus exactly one rule.
@@ -88,6 +94,37 @@ describe('policy set (e2e)', () => {
       rule: 'deny',
       sourcePath: policyPath,
     })
+  })
+
+  /**
+   * The live install of 2026-08-26: no policy in the state dir, a project one
+   * under the operator's cwd — the file `wrap`/`serve`/`ui` really enforce.
+   * The edit must land there, and the command must say `connect` is uncovered.
+   */
+  test('with a project-level policy and an empty state dir, the edit lands in the project file', async () => {
+    const workDir = await mkdtemp(join(tmpdir(), 'mcp-journal-policy-set-e2e-cwd-'))
+    try {
+      const projectPath = join(workDir, '.mcp-journal', 'policy.json')
+      await mkdir(join(workDir, '.mcp-journal'), { recursive: true })
+      await writeFile(projectPath, '{"version": 1}\n', 'utf8')
+      const token = await mintAdminToken('alice', 'owner')
+
+      const set = await plane.run(['policy', 'set', 'github', 'delete_repo', 'deny'], policySeam(token, workDir))
+
+      expect(set.code, set.err).toBe(0)
+      expect(set.out).toContain(`file: ${projectPath}`)
+      expect(set.out).toContain('readers: ui/wrap/serve read this file; connect sessions have no policy right now')
+      expect(JSON.parse(await readFile(projectPath, 'utf8'))).toEqual({
+        version: 1,
+        servers: { github: { tools: { delete_repo: 'deny' } } },
+      })
+      await expect(readFile(join(tempDir, 'policy.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+      const records = await readJournalRecords(tempDir, POLICY_EDIT_SESSION_ID)
+      expect(records).toHaveLength(1)
+      expect(records[0]?.payload).toMatchObject({ sourcePath: projectPath })
+    } finally {
+      await rm(workDir, { recursive: true, force: true })
+    }
   })
 
   test('clear removes the rule again and policy show no longer lists it', async () => {

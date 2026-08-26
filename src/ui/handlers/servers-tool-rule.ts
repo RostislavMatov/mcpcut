@@ -2,7 +2,7 @@ import type { PolicyEditInfo } from '../../journal/policy-edit-record.js'
 import { RESERVED_OBJECT_KEYS, TOOL_RULE_NAME_PATTERN } from '../../policy/constants.js'
 import type { PolicyFileReadResult, PolicyFileWriteResult, WritePolicyFileOptions } from '../../policy/edit/policy-file.js'
 import { applyToolRuleToDocument } from '../../policy/edit/set-tool-rule.js'
-import type { PolicyWriteTarget } from '../../policy/edit/write-target.js'
+import type { PolicyEditTarget } from '../../policy/edit/write-target.js'
 import { effectiveToolRule } from '../../policy/effective.js'
 import { DEFAULT_INVENTORY_STORE, type InventoryStoreData } from '../../policy/inventory-store.js'
 import { SERVER_NAME_PATTERN, type PolicyOutcome } from '../../policy/schema.js'
@@ -26,15 +26,17 @@ import type { UiAuditEvent } from './servers.js'
  * `ROUTE_TABLE` row (and re-checked here). The threat model of writing a
  * security boundary from a browser request, and how each item is met:
  *
- *  - the PATH is fixed by the composition root (`resolveWriteTarget`); no
- *    field of the request is ever a file path;
+ *  - the PATH is fixed by the composition root (`resolveEditTarget`): the
+ *    file this process itself loaded (correction 2026-08-26 — see ADR-0009,
+ *    "Поправка 2026-08-26"); no field of the request is ever a file path;
  *  - both names are percent-decoded exactly once and validated against the
  *    schema's own patterns (`SERVER_NAME_PATTERN`, exact
  *    `TOOL_RULE_NAME_PATTERN`) before anything is read;
  *  - the write is compare-and-swap on the `policyHashOf` the page rendered
  *    with (`expected_hash`) — a file that moved on since yields 409, never a
  *    lost update (finding 6);
- *  - a nested file `connect` would load first refuses the edit (finding 5a);
+ *  - who ELSE reads that file is DISPLAYED by the card, never a refusal: an
+ *    edit always reaches the entry points that loaded the file it changes;
  *  - no policy on disk is never turned into one (O4); an invalid file is a
  *    409 with its errors, never a write target (O3);
  *  - a success is journaled (`kind: 'policy-edit'`, `via: 'ui'`) and audited
@@ -46,8 +48,8 @@ import type { UiAuditEvent } from './servers.js'
  */
 
 export interface ServersToolRuleDeps {
-  /** The one file edits may write, or the shadowing file that forbids it. */
-  readonly resolveWriteTarget: () => Promise<PolicyWriteTarget>
+  /** The file THIS process loaded its policy from — bound by the composition root, never by a request. */
+  readonly resolveEditTarget: () => Promise<PolicyEditTarget>
   readonly readPolicyFile: (path: string) => Promise<PolicyFileReadResult>
   readonly writePolicyFile: (
     path: string,
@@ -152,17 +154,11 @@ function wantsJson(ctx: UiRequestContext): boolean {
   return contentType.includes('application/json') || accept.includes('application/json')
 }
 
-/** The write target and the file it names, both refusable before an edit is even computed. */
+/** The file this process loaded, read for edit; refusable before an edit is even computed. */
 async function loadTarget(
   deps: ServersToolRuleDeps,
 ): Promise<{ readonly path: string; readonly read: Extract<PolicyFileReadResult, { status: 'loaded' }> } | Refusal> {
-  const target = await deps.resolveWriteTarget()
-  if (target.status === 'shadowed') {
-    return refusal(HTTP_STATUS_CONFLICT, {
-      status: 'shadowed',
-      message: `connect loads ${target.shadowedBy} first — edit or remove it; ${target.path} is not what agents read`,
-    })
-  }
+  const target = await deps.resolveEditTarget()
   const read = await deps.readPolicyFile(target.path)
   if (read.status === 'absent') {
     return refusal(HTTP_STATUS_CONFLICT, { status: 'no-policy', message: 'no policy — enforcement off; nothing to edit' })

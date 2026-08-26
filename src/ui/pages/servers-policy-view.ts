@@ -1,5 +1,6 @@
 import { POLICY_HASH_PREVIEW_CHARS } from '../../policy/constants.js'
 import type { PolicyView } from '../../policy/edit/policy-view.js'
+import { describePolicyReaders } from '../../policy/edit/write-target.js'
 import { html, join, type Html } from '../html.js'
 import type { ToolRuleControls } from './servers-tool-rule.js'
 
@@ -7,8 +8,12 @@ import type { ToolRuleControls } from './servers-tool-rule.js'
  * The page-level projection of `PolicyView` (ADR-0009, the ADR-0005 sources
  * panel): the state of the rule controls for this viewer, the tools-panel
  * note, the sources line above the card grid and the page-top banner for a
- * policy that cannot be edited (invalid on disk — O3; shadowed by the nested
- * file `connect` loads first — finding 5a).
+ * policy that cannot be edited (invalid on disk — O3).
+ *
+ * Correction 2026-08-26: the card edits the file this process loaded, so who
+ * ELSE reads that file is a statement under the sources line, not a reason to
+ * disable the controls. Editing is refused only where a write cannot be
+ * attributed or validated: no policy at all (O4) and an unparseable file.
  */
 
 /** Characters of the policy hash shown in the sources line. */
@@ -16,15 +21,10 @@ import type { ToolRuleControls } from './servers-tool-rule.js'
 const NO_POLICY_NOTE = 'no policy — enforcement off'
 const INVALID_POLICY_REASON = 'policy file on disk is invalid — fix it by hand'
 
-function shadowedReasonOf(shadowedBy: string): string {
-  return `connect loads ${shadowedBy} first — edit or remove it`
-}
-
 /** How the rule controls render: hidden for non-owners / no policy port, else enabled or disabled with a reason. */
 export function ruleControlsOf(view: PolicyView | undefined, isOwner: boolean): ToolRuleControls | undefined {
   if (view === undefined) return undefined
   if (!isOwner) return { mode: 'hidden' }
-  if (view.shadowedBy !== undefined) return { mode: 'disabled', reason: shadowedReasonOf(view.shadowedBy) }
   if (view.status === 'loaded') return { mode: 'enabled', expectedHash: view.hash }
   if (view.status === 'absent') return { mode: 'disabled', reason: NO_POLICY_NOTE }
   return { mode: 'disabled', reason: INVALID_POLICY_REASON }
@@ -37,13 +37,7 @@ export function toolsNoteOf(view: PolicyView | undefined): string | undefined {
 
 /** The page-top banner: only when the policy cannot be edited from here. */
 export function renderPolicyBanner(view: PolicyView | undefined): Html {
-  if (view === undefined) return html``
-  if (view.shadowedBy !== undefined) {
-    return html`<div class="callout srv-policy-banner" role="alert">
-      <p>${shadowedReasonOf(view.shadowedBy)}; edits to <code>${view.sourcePath}</code> would never reach an agent.</p>
-    </div>`
-  }
-  if (view.status !== 'error') return html``
+  if (view === undefined || view.status !== 'error') return html``
   const errors = join(view.errors.map((error) => html`<li><code>${error}</code></li>`))
   return html`<div class="callout srv-policy-banner" role="alert">
       <p>policy file on disk is invalid — running proxies keep their last valid version; rule editing is off until it is fixed by hand:</p>
@@ -59,7 +53,7 @@ export function renderPolicyBanner(view: PolicyView | undefined): Html {
  */
 const POLICY_HASH_LIVE_KEY = 'policy-hash'
 
-/** «policy · <path> · <hash8>» plus, when `serve`/`wrap` load another file first, the second line. */
+/** «policy · <path> · <hash8>» and, under it, which entry points read that file. */
 export function renderPolicySources(view: PolicyView | undefined): Html {
   if (view === undefined) return html``
   const state =
@@ -68,12 +62,8 @@ export function renderPolicySources(view: PolicyView | undefined): Html {
       : view.status === 'absent'
         ? html`<span data-live-text="${POLICY_HASH_LIVE_KEY}">absent — enforcement off</span>`
         : html`<span class="pill pill-alert" data-live-text="${POLICY_HASH_LIVE_KEY}">invalid</span>`
-  const operator =
-    view.operatorSourcePath !== undefined
-      ? html`<div class="srv-policy-src faint small">serve/wrap load <code>${view.operatorSourcePath}</code> first — edits here affect connect only</div>`
-      : html``
   return html`<div class="srv-policy-sources">
     <div class="srv-policy-src dim small">policy · <code>${view.sourcePath}</code> · ${state}</div>
-    ${operator}
+    <div class="srv-policy-src faint small">${describePolicyReaders(view.readers)}</div>
   </div>`
 }

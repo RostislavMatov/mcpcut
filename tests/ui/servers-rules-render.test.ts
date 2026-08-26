@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import type { PolicyView } from '../../src/policy/edit/policy-view.js'
+import type { PolicyTargetReaders } from '../../src/policy/edit/write-target.js'
 import type { InventoryStoreData } from '../../src/policy/inventory-store.js'
 import { policyHashOf } from '../../src/policy/provenance.js'
 import { parsePolicy, type Policy } from '../../src/policy/schema.js'
@@ -23,8 +24,17 @@ function policyOf(raw: unknown): Policy {
   return parsed.policy
 }
 
+const EVERY_ENTRY_POINT: PolicyTargetReaders = { kind: 'every-entry-point' }
+
 function loadedView(policy: Policy, extra: Partial<PolicyView> = {}): PolicyView {
-  return { status: 'loaded', policy, hash: policyHashOf(policy), sourcePath: '/state/policy.json', ...extra }
+  return {
+    status: 'loaded',
+    policy,
+    hash: policyHashOf(policy),
+    sourcePath: '/state/policy.json',
+    readers: EVERY_ENTRY_POINT,
+    ...extra,
+  }
 }
 
 function inventoryWith(tools: readonly string[], quarantined: readonly string[] = []): InventoryStoreData {
@@ -123,7 +133,7 @@ describe('controls', () => {
   })
 
   test('absent policy: buttons disabled, no CAS token, the O4 note in the panel, and no data-action', () => {
-    const document = page({ policyView: { status: 'absent', sourcePath: '/state/policy.json' } })
+    const document = page({ policyView: { status: 'absent', sourcePath: '/state/policy.json', readers: EVERY_ENTRY_POINT } })
     // No policy → no outcome to show → no rule rows at all; the note says why.
     expect(document).toContain('<div class="srv-tools-note faint small">no policy — enforcement off</div>')
     expect(document).toContain('absent — enforcement off')
@@ -132,7 +142,7 @@ describe('controls', () => {
   })
 
   test('invalid policy: page-top banner lists the errors and the file stays uneditable', () => {
-    const document = page({ policyView: { status: 'error', errors: ['version: expected 1', 'servers: <bad>'], sourcePath: '/state/policy.json' } })
+    const document = page({ policyView: { status: 'error', errors: ['version: expected 1', 'servers: <bad>'], sourcePath: '/state/policy.json', readers: EVERY_ENTRY_POINT } })
     expect(document).toMatch(/<div class="callout srv-policy-banner" role="alert">/)
     expect(document).toContain('<li><code>version: expected 1</code></li>')
     expect(document).toContain('<li><code>servers: &lt;bad&gt;</code></li>')
@@ -140,17 +150,22 @@ describe('controls', () => {
     expect(ruleButtons(document)).toHaveLength(0)
   })
 
-  test('shadowed by the nested file connect loads first: buttons disabled with the reason, banner explains', () => {
-    const view = loadedView(policyOf({ version: 1 }), { shadowedBy: '/state/.mcp-journal/policy.json' })
+  /**
+   * Correction 2026-08-26: a file other entry points read differently is a
+   * STATEMENT, not a refusal — the edit reaches whoever loaded this file.
+   */
+  test('a file connect does not read: controls stay enabled, the readers line says who is affected', () => {
+    const view = loadedView(policyOf({ version: 1 }), {
+      sourcePath: '/work/.mcp-journal/policy.json',
+      readers: { kind: 'connect-elsewhere', connectPath: '/state/policy.json', shadowsTarget: false },
+    })
     const document = page({ policyView: view })
     const buttons = ruleButtons(document)
     expect(buttons).toHaveLength(3)
-    for (const button of buttons) {
-      expect(button).toContain('disabled')
-      expect(button).toContain('title="connect loads /state/.mcp-journal/policy.json first — edit or remove it"')
-    }
-    expect(document).not.toContain('data-action="/servers/')
-    expect(document).toMatch(/srv-policy-banner[^>]*>\s*<p>connect loads \/state\/\.mcp-journal\/policy\.json first/)
+    for (const button of buttons) expect(button).not.toContain('disabled')
+    expect(document).toContain('data-action="/servers/')
+    expect(document).not.toContain('srv-policy-banner')
+    expect(document).toContain('ui/wrap/serve read this file; connect sessions read /state/policy.json')
   })
 
   test('a non-owner keeps the pills but gets no controls at all', () => {
@@ -172,7 +187,6 @@ describe('sources panel', () => {
     expect(document).toContain(
       `policy · <code>/state/policy.json</code> · <span class="num" data-live-text="policy-hash">${policyHashOf(policy).slice(0, 8)}</span>`,
     )
-    expect(document).not.toContain('serve/wrap load')
   })
 
   /**
@@ -183,13 +197,37 @@ describe('sources panel', () => {
   test('the hash follows a settle swap (it is a live-text node in every state)', () => {
     const loaded = page({ policyView: loadedView(policyOf({ version: 1 })) })
     expect(loaded).toMatch(/<span class="num" data-live-text="policy-hash">[0-9a-f]{8}<\/span>/)
-    const absent = page({ policyView: { status: 'absent', sourcePath: '/state/policy.json' } })
+    const absent = page({ policyView: { status: 'absent', sourcePath: '/state/policy.json', readers: EVERY_ENTRY_POINT } })
     expect(absent).toContain('data-live-text="policy-hash"')
   })
 
-  test('names the file serve/wrap would load first when it differs', () => {
-    const document = page({ policyView: loadedView(policyOf({ version: 1 }), { operatorSourcePath: '/work/.mcp-journal/policy.json' }) })
-    expect(document).toContain('serve/wrap load <code>/work/.mcp-journal/policy.json</code> first — edits here affect connect only')
+  test('states that every entry point reads the file when it is the one connect loads', () => {
+    const document = page({ policyView: loadedView(policyOf({ version: 1 })) })
+    expect(document).toContain('<div class="srv-policy-src faint small">every entry point reads this file</div>')
+  })
+
+  test('states that connect reads the nested file first when it shadows the state-dir file', () => {
+    const document = page({
+      policyView: loadedView(policyOf({ version: 1 }), {
+        readers: { kind: 'connect-elsewhere', connectPath: '/state/.mcp-journal/policy.json', shadowsTarget: true },
+      }),
+    })
+    expect(document).toContain('connect reads /state/.mcp-journal/policy.json first — rules here reach ui/wrap/serve only')
+  })
+
+  /** The live install of 2026-08-26: the plane enforces a project file, the state dir holds none. */
+  test('states that connect sessions have no policy at all when nothing resolves for them', () => {
+    const document = page({
+      policyView: loadedView(policyOf({ version: 1 }), {
+        sourcePath: '/work/.mcp-journal/policy.json',
+        readers: { kind: 'connect-unset' },
+      }),
+    })
+    expect(document).toContain('policy · <code>/work/.mcp-journal/policy.json</code>')
+    expect(document).toContain(
+      'ui/wrap/serve read this file; connect sessions have no policy right now (journaling only) — rules here do not reach them',
+    )
+    expect(ruleButtons(document)).toHaveLength(3)
   })
 })
 

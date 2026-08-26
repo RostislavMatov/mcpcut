@@ -8,7 +8,7 @@ import { openInventoryStore } from '../policy/inventory-store.js'
 import { journalPolicyEdit } from '../policy/edit/journal-edit.js'
 import { defaultPolicyFileDeps, readPolicyFileForEdit, writePolicyFile } from '../policy/edit/policy-file.js'
 import { readPolicyView } from '../policy/edit/policy-view.js'
-import { resolvePolicyWriteTarget } from '../policy/edit/write-target.js'
+import { resolvePolicyEditTarget } from '../policy/edit/write-target.js'
 import type { ServerStatusChange } from '../probe/orchestrator.js'
 import { createApprovalQueue, type ApprovalQueue } from '../policy/approvals/queue.js'
 import type { RegistryStore } from '../registry/store.js'
@@ -255,13 +255,14 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
     probes: probes.port,
     readPolicyView: () => readPolicyView(policyEnv),
   })
-  // Policy editing (ADR-0009): the read view feeds the page, the rule
-  // handler is the one HTTP path that writes `policy.json`. The write path
-  // is bound HERE — `<journalDir>/policy.json` via `resolvePolicyWriteTarget`
-  // — and never derived from a request; the journal record goes through the
-  // same sink the probe facts use.
+  // Policy editing (ADR-0009, corrected 2026-08-26): the read view feeds the
+  // page, the rule handler is the one HTTP path that writes `policy.json`.
+  // The path is bound HERE — the file THIS process resolved through the
+  // operator-launched source order (`resolvePolicyEditTarget`, same env/cwd
+  // as the view) — and never derived from a request; the journal record goes
+  // through the same sink the probe facts use.
   const serversToolRule = createServersToolRuleHandlers({
-    resolveWriteTarget: () => resolvePolicyWriteTarget(deps.journalDir),
+    resolveEditTarget: () => resolvePolicyEditTarget(policyEnv),
     readPolicyFile: (path) => readPolicyFileForEdit(path, defaultPolicyFileDeps),
     writePolicyFile: (path, document, options) => writePolicyFile(path, document, options, defaultPolicyFileDeps),
     readInventory: () => inventory.read(),
