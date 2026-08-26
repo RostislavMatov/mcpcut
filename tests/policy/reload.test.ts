@@ -87,6 +87,16 @@ function createStand(opts: StandOptions = {}): Stand {
       return Promise.resolve(file.text)
     },
   }
+  /** One version source for both the sync (hot path) and async (`refresh()`) seams. */
+  const statSync = (path: string): PolicyFileVersion => {
+    if (path !== SOURCE_PATH) {
+      if (shadowing.has(path)) return { mtimeMs: 1, size: 1 }
+      throw enoent()
+    }
+    statCalls += 1
+    if (file.text === null) throw enoent()
+    return file.version
+  }
   const provider = createPolicyProvider({
     initial: policyOf(initialDocument),
     sourcePath: SOURCE_PATH,
@@ -94,12 +104,17 @@ function createStand(opts: StandOptions = {}): Stand {
     ...(opts.precedingCandidates !== undefined ? { precedingCandidates: opts.precedingCandidates } : {}),
     now: () => clock.now,
     stat: (path) => {
-      if (path !== SOURCE_PATH) {
-        return shadowing.has(path) ? Promise.resolve({ mtimeMs: 1, size: 1 }) : Promise.reject(enoent())
+      try {
+        return Promise.resolve(statSync(path))
+      } catch (error: unknown) {
+        return Promise.reject(error)
       }
-      statCalls += 1
-      if (file.text === null) return Promise.reject(enoent())
-      return Promise.resolve(file.version)
+    },
+    statSync,
+    readFileSync: (path) => {
+      readCalls += 1
+      if (path !== SOURCE_PATH || file.text === null) throw enoent()
+      return file.text
     },
     onReload: (event) => reloads.push(event),
     onError: (failure) => failures.push(failure),
@@ -209,16 +224,66 @@ describe('createPolicyProvider — the contract the gate relies on', () => {
     expect(stand.statCalls()).toBe(2)
   })
 
-  test('the swap lands when the read completes; current() in between is the previous policy', async () => {
+  test('maybeRefresh() swaps SYNCHRONOUSLY: the very next current() is the edited policy', () => {
     const stand = createStand()
     editFile(stand, DENY_ALL)
 
     stand.provider.maybeRefresh()
-    // The check is in flight: the gate keeps deciding under the old rules.
-    expect(stand.provider.current().defaultDecision).toBe('allow')
 
-    await stand.provider.refresh()
     expect(stand.provider.current().defaultDecision).toBe('deny')
+    expect(stand.reloads).toHaveLength(1)
+    expect(stand.readCalls()).toBe(1)
+  })
+
+  test('the sync hot path reads only on a version change: stat every check, read once per edit', () => {
+    const stand = createStand()
+    stand.provider.maybeRefresh()
+    const readsAfterBaseline = stand.readCalls()
+
+    stand.clock.now += POLICY_RECHECK_MIN_MS
+    stand.provider.maybeRefresh()
+    stand.clock.now += POLICY_RECHECK_MIN_MS
+    stand.provider.maybeRefresh()
+
+    expect(stand.statCalls()).toBe(3)
+    expect(stand.readCalls()).toBe(readsAfterBaseline)
+  })
+
+  test('a broken edit on the sync path keeps the policy and reports once; the fix lands on the next check', () => {
+    const stand = createStand()
+    editFile(stand, '{ not json')
+    stand.provider.maybeRefresh()
+    stand.clock.now += POLICY_RECHECK_MIN_MS
+    stand.provider.maybeRefresh()
+
+    expect(stand.provider.current().defaultDecision).toBe('allow')
+    expect(stand.failures).toHaveLength(1)
+
+    editFile(stand, DENY_ALL)
+    stand.clock.now += POLICY_RECHECK_MIN_MS
+    stand.provider.maybeRefresh()
+    expect(stand.provider.current().defaultDecision).toBe('deny')
+  })
+
+  test('a stale async read can never swap back over a newer sync swap', async () => {
+    const stand = createStand()
+    // An explicit async check is in flight and has already read the OLD text...
+    const pending = stand.provider.refresh()
+    // ...when an edit lands and the hot path swaps synchronously.
+    editFile(stand, DENY_ALL)
+    stand.clock.now += POLICY_RECHECK_MIN_MS
+    stand.provider.maybeRefresh()
+    expect(stand.provider.current().defaultDecision).toBe('deny')
+
+    await pending
+    expect(stand.provider.current().defaultDecision).toBe('deny')
+  })
+
+  test('a preceding candidate is noticed on the sync path too', () => {
+    const stand = createStand({ precedingCandidates: ['/plane/.mcp-journal/policy.json'] })
+    stand.shadowing.add('/plane/.mcp-journal/policy.json')
+    stand.provider.maybeRefresh()
+    expect(stand.shadowed).toHaveLength(1)
   })
 
   test('concurrent refresh() calls share at most one follow-up behind the in-flight check', async () => {

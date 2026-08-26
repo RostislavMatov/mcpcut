@@ -143,7 +143,7 @@ describe('composeUi: the rule handler writes <journalDir>/policy.json with CAS',
     })
     const html = bodyOf(page)
     expect(html).toContain(`policy · <code>${join(dir, POLICY_FILE_NAME)}</code>`)
-    expect(html).toContain(`<span class="num">${(await currentHash()).slice(0, 8)}</span>`)
+    expect(html).toContain(`<span class="num" data-live-text="policy-hash">${(await currentHash()).slice(0, 8)}</span>`)
     // The inventory has no tools yet, so no rule rows; the region is there for the settle.
     expect(html).toContain('data-live-region="server-tools:github"')
   })

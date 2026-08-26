@@ -24,11 +24,10 @@ import {
  * reported exactly once.
  *
  * Timing: the provider checks the file at most once per
- * `POLICY_RECHECK_MIN_MS`, and the swap lands asynchronously after the check
- * that noticed the change. A call that merely TRIGGERS the check is still
- * decided under the old rules, so each scenario waits out the cooldown, sends
- * one triggering call, and then waits for the reload to be announced on
- * stderr — never a fixed sleep for the swap itself.
+ * `POLICY_RECHECK_MIN_MS`, synchronously, before the decision that asked. So
+ * each scenario edits the file, waits out ONE cooldown (nothing else — no
+ * priming call), and asserts on the FIRST call after the edit: that is the
+ * wave gate (plan Summary, ADR-0009).
  */
 
 const SERVER_NAME = 'policysrv'
@@ -88,18 +87,16 @@ describe('policy hot reload through a live connect session', () => {
 
       await writePolicyFile(plane, denyEcho())
       await waitOutRecheckCooldown()
-      // This call triggers the check and is still decided under the OLD rules.
-      await callEcho(live, 2)
-      await waitUntil(() => plane.allErr().includes('policy reloaded: '))
-
-      expect(await callEcho(live, 3)).toMatchObject({
-        id: 3,
+      // The FIRST call after the edit is already decided under the new rules.
+      expect(await callEcho(live, 2)).toMatchObject({
+        id: 2,
         error: { data: { reason: 'policy_denied', rule: `servers.${SERVER_NAME}.tools.echo` } },
       })
+      expect(plane.allErr()).toContain('policy reloaded: ')
 
-      live.stdio.clientOutbox.write(requestLine(4, 'tools/list'))
-      await waitUntil(() => live.stdio.lineCount() >= 4)
-      const catalog = live.stdio.messages()[3] as { result: { tools: Array<{ name: string }> } }
+      live.stdio.clientOutbox.write(requestLine(3, 'tools/list'))
+      await waitUntil(() => live.stdio.lineCount() >= 3)
+      const catalog = live.stdio.messages()[2] as { result: { tools: Array<{ name: string }> } }
       expect(catalog.result.tools.map((tool) => tool.name)).not.toContain('echo')
       expect(catalog.result.tools.length).toBeGreaterThan(0)
 
@@ -121,25 +118,23 @@ describe('policy hot reload through a live connect session', () => {
 
       await writeFile(join(plane.journalDir, 'policy.json'), '{ "version": 1, "defaultDecision": ', 'utf8')
       await waitOutRecheckCooldown()
-      await callEcho(live, 2)
-      await waitUntil(() => plane.allErr().includes('policy reload failed: '))
+      // The FIRST call after the broken edit: still allowed, and the failure already reported.
+      expect(await callEcho(live, 2)).toMatchObject({ id: 2, result: expect.anything() })
+      expect(plane.allErr()).toContain('policy reload failed: ')
 
       // Several more checks against the same broken version: still allowed, still one report.
       for (const id of [3, 4]) {
         await waitOutRecheckCooldown()
-        await callEcho(live, id)
-      }
-      for (const message of live.stdio.messages()) {
-        expect(message).toMatchObject({ result: expect.anything() })
+        expect(await callEcho(live, id)).toMatchObject({ id, result: expect.anything() })
       }
       expect(plane.allErr().match(/policy reload failed: /g)).toHaveLength(1)
       expect(plane.allErr()).toMatch(/keeping policy [0-9a-f]{8}/)
 
       await writePolicyFile(plane, denyEcho())
       await waitOutRecheckCooldown()
-      await callEcho(live, 5)
-      await waitUntil(() => plane.allErr().includes('policy reloaded: '))
-      expect(await callEcho(live, 6)).toMatchObject({ id: 6, error: { data: { reason: 'policy_denied' } } })
+      // The FIRST call after the fix is denied.
+      expect(await callEcho(live, 5)).toMatchObject({ id: 5, error: { data: { reason: 'policy_denied' } } })
+      expect(plane.allErr()).toContain('policy reloaded: ')
 
       live.stdio.clientOutbox.end()
       await live.done
@@ -160,8 +155,9 @@ describe('policy hot reload through a live connect session', () => {
       await mkdir(nestedDir, { recursive: true })
       await writeFile(nestedPath, JSON.stringify({ version: 1, ...denyEcho() }), 'utf8')
       await waitOutRecheckCooldown()
+      // Reported by the FIRST call after the file appeared.
       await callEcho(live, 2)
-      await waitUntil(() => plane.allErr().includes('policy shadowed: '))
+      expect(plane.allErr()).toContain('policy shadowed: ')
 
       // Still the bound policy: the nested deny never applies to this session.
       for (const id of [3, 4]) {
@@ -180,7 +176,7 @@ describe('policy hot reload through a live connect session', () => {
       await writeFile(nestedPath, JSON.stringify({ version: 1, ...denyEcho() }), 'utf8')
       await waitOutRecheckCooldown()
       await callEcho(live, 6)
-      await waitUntil(() => (plane.allErr().match(/policy shadowed: /g) ?? []).length === 2)
+      expect(plane.allErr().match(/policy shadowed: /g)).toHaveLength(2)
 
       live.stdio.clientOutbox.end()
       await live.done

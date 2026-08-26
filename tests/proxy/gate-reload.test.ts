@@ -8,6 +8,7 @@ import { createApprovalQueue } from '../../src/policy/approvals/queue.js'
 import { createApprovalWaiter } from '../../src/policy/approvals/waiter.js'
 import { createGrantRegistry } from '../../src/policy/approvals/grants.js'
 import { policyHashOf } from '../../src/policy/provenance.js'
+import { POLICY_RECHECK_MIN_MS } from '../../src/policy/constants.js'
 import { createPolicyProvider, type PolicyProvider } from '../../src/policy/reload.js'
 import { parsePolicy, type Policy } from '../../src/policy/schema.js'
 import { createPolicyGate, type PolicyGate } from '../../src/proxy/gate.js'
@@ -17,11 +18,12 @@ import type { OrderedWriter } from '../../src/proxy/writer.js'
 
 /**
  * Hot reload at the gate (policy-tool-rules-ui plan, wave 2). The gate is
- * built on a `PolicyProvider` whose file is a fake; each test edits the fake,
- * lets the provider re-read, and checks that the NEXT decision runs under the
- * new rules and that the decision record names the new `policyHash` — the
- * point where the fingerprint used to be computed once and would have gone
- * stale. The plain-`Policy` path is pinned by every other gate test.
+ * built on a `PolicyProvider` whose file is a fake; each test edits the fake
+ * and checks that the VERY NEXT decision — no warm-up call, nothing awaited
+ * on the provider — runs under the new rules and that its record names the
+ * new `policyHash` (the point where the fingerprint used to be computed once
+ * and would have gone stale). The plain-`Policy` path is pinned by every
+ * other gate test. The clock is injected so one edit = one lapsed cooldown.
  */
 
 const SERVER_NAME = 'testsrv'
@@ -77,35 +79,53 @@ function trustedInventory(): GateInventory {
   }
 }
 
-/** A provider over a fake file the test can edit between calls. */
+/** A provider over a fake file the test can edit between calls. Editing lets one cooldown lapse. */
 interface EditablePolicy {
   readonly provider: PolicyProvider
-  edit(document: Record<string, unknown>): Promise<void>
+  edit(document: Record<string, unknown> | string, opts?: EditOptions): void
+  /** Advances the injected clock past `POLICY_RECHECK_MIN_MS`, so the next call checks the file. */
+  lapseCooldown(): void
   readonly reloads: number
+}
+
+interface EditOptions {
+  /** `false` leaves the clock where it is, so the next call is still inside the cooldown window. */
+  readonly lapseCooldown?: boolean
 }
 
 function editablePolicy(initialDocument: Record<string, unknown>): EditablePolicy {
   const initial = policyOf(initialDocument)
   let text = JSON.stringify({ version: 1, quarantine: { enabled: false }, ...initialDocument })
   let version = 1
+  let clock = 1_000_000
   const state = { reloads: 0 }
   const provider = createPolicyProvider({
     initial,
     sourcePath: SOURCE_PATH,
     loadOptions: { explicitPath: SOURCE_PATH, readFile: () => Promise.resolve(text) },
     stat: () => Promise.resolve({ mtimeMs: version, size: text.length }),
+    statSync: () => ({ mtimeMs: version, size: text.length }),
+    readFileSync: () => text,
+    now: () => clock,
     onReload: () => {
       state.reloads += 1
     },
     onError: (failure) => errors.push(new Error(failure.errors.join('; '))),
   })
+  const lapseCooldown = (): void => {
+    clock += POLICY_RECHECK_MIN_MS
+  }
   return {
     provider,
-    edit: async (document) => {
-      text = JSON.stringify({ version: 1, quarantine: { enabled: false }, ...document })
+    edit: (document, opts) => {
+      text =
+        typeof document === 'string'
+          ? document
+          : JSON.stringify({ version: 1, quarantine: { enabled: false }, ...document })
       version += 1
-      await provider.refresh()
+      if (opts?.lapseCooldown !== false) lapseCooldown()
     },
+    lapseCooldown,
     get reloads() {
       return state.reloads
     },
@@ -175,11 +195,12 @@ describe('hot reload at the gate', () => {
     expect(await harness.gate.gateClientMessage(toolCall(1, 'read_file'))).toEqual({ action: 'forward' })
     expect(lastDecision(harness)).toMatchObject({ outcome: 'allow', policyHash: hashBefore })
 
-    await file.edit({ defaultDecision: 'allow', servers: { [SERVER_NAME]: { tools: { read_file: 'deny' } } } })
+    file.edit({ defaultDecision: 'allow', servers: { [SERVER_NAME]: { tools: { read_file: 'deny' } } } })
+
+    // The FIRST call after the edit — nothing primed the provider.
+    expect(await harness.gate.gateClientMessage(toolCall(2, 'read_file'))).toEqual({ action: 'drop' })
     const hashAfter = policyHashOf(file.provider.current())
     expect(hashAfter).not.toBe(hashBefore)
-
-    expect(await harness.gate.gateClientMessage(toolCall(2, 'read_file'))).toEqual({ action: 'drop' })
     expect(lastDecision(harness)).toMatchObject({
       outcome: 'deny',
       rule: `servers.${SERVER_NAME}.tools.read_file`,
@@ -197,8 +218,9 @@ describe('hot reload at the gate', () => {
     const before = await harness.gate.gateServerMessage(toolsListResponse(1, ['read_file', 'write_file']))
     expect(before).toEqual({ action: 'forward' })
 
-    await file.edit({ defaultDecision: 'allow', servers: { [SERVER_NAME]: { tools: { write_file: 'deny' } } } })
+    file.edit({ defaultDecision: 'allow', servers: { [SERVER_NAME]: { tools: { write_file: 'deny' } } } })
 
+    // The FIRST tools/list after the edit hides the tool.
     await harness.gate.gateClientMessage(toolsListRequest(2))
     const after = await harness.gate.gateServerMessage(toolsListResponse(2, ['read_file', 'write_file']))
     expect(after.action).toBe('emit')
@@ -214,7 +236,7 @@ describe('hot reload at the gate', () => {
     await harness.gate.gateClientMessage(toolCall(1, 'read_file'))
     expect(lastDecision(harness)).toMatchObject({ toolClass: 'write' })
 
-    await file.edit({
+    file.edit({
       defaultDecision: 'allow',
       servers: { [SERVER_NAME]: { classOverrides: { read_file: 'destructive' } } },
     })
@@ -228,7 +250,7 @@ describe('hot reload at the gate', () => {
     const harness = createHarness(file.provider)
     const hash = policyHashOf(file.provider.current())
 
-    await file.edit({ defaultDecision: 'no-such-outcome' })
+    file.edit({ defaultDecision: 'no-such-outcome' })
 
     expect(await harness.gate.gateClientMessage(toolCall(1, 'read_file'))).toEqual({ action: 'forward' })
     expect(lastDecision(harness)).toMatchObject({ outcome: 'allow', policyHash: hash })
@@ -236,28 +258,22 @@ describe('hot reload at the gate', () => {
     expect(file.reloads).toBe(0)
   })
 
-  test('the gate schedules the check itself: an edit is seen without anyone calling refresh()', async () => {
-    let text = JSON.stringify({ version: 1, quarantine: { enabled: false }, defaultDecision: 'allow' })
-    let version = 1
-    let clock = 1_000_000
-    const provider = createPolicyProvider({
-      initial: policyOf({ defaultDecision: 'allow' }),
-      sourcePath: SOURCE_PATH,
-      loadOptions: { explicitPath: SOURCE_PATH, readFile: () => Promise.resolve(text) },
-      stat: () => Promise.resolve({ mtimeMs: version, size: text.length }),
-      now: () => clock,
-    })
-    const harness = createHarness(provider)
+  test('within the cooldown the check is skipped; once it lapses the next call sees the edit', async () => {
+    const file = editablePolicy({ defaultDecision: 'allow' })
+    const harness = createHarness(file.provider)
 
+    // The first call performs the baseline check and opens the cooldown window.
     await harness.gate.gateClientMessage(toolCall(1, 'read_file'))
-    text = JSON.stringify({ version: 1, quarantine: { enabled: false }, defaultDecision: 'deny' })
-    version += 1
-    clock += 1_000
+    file.edit({ defaultDecision: 'deny' }, { lapseCooldown: false })
 
-    // This call schedules the check (and still runs under the old rules).
+    // Still inside the window: the file is not stat'ed, so the edit is not seen yet.
     expect(await harness.gate.gateClientMessage(toolCall(2, 'read_file'))).toEqual({ action: 'forward' })
-    await provider.refresh()
+    expect(file.reloads).toBe(0)
+
+    // The moment it lapses, the very next call is decided under the new rules.
+    file.lapseCooldown()
     expect(await harness.gate.gateClientMessage(toolCall(3, 'read_file'))).toEqual({ action: 'drop' })
+    expect(file.reloads).toBe(1)
   })
 
   test('a plain Policy value behaves exactly as before', async () => {
