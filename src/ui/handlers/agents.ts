@@ -9,7 +9,11 @@ import {
   type AgentsStore,
   type MethodGrantsInput,
 } from '../../agents/store.js'
+import type { AgentGrant, AgentRecord } from '../../agents/schema.js'
+import { effectiveGrantsOf } from '../../agents/effective.js'
+import type { GroupRecord } from '../../groups/schema.js'
 import type { GroupsStore } from '../../groups/store.js'
+import { StoreWriteRejectedError } from '../../policy/store.js'
 import type { UiSession } from '../auth.js'
 import {
   BODY_FORBIDDEN,
@@ -19,6 +23,7 @@ import {
   HTTP_STATUS_OK,
 } from '../constants.js'
 import { renderAgentNotice, renderAgentsPage, renderAgentTokenOnce } from '../pages/agents.js'
+import { renderUngrantConfirm } from '../pages/agents-ungrant.js'
 import { internalErrorResult, isKnownStoreError, type ErrorClass } from './store-errors.js'
 import { headerValue, parseBodyFields, type UiHandler, type UiRequestContext, type UiResult } from '../routes.js'
 
@@ -78,6 +83,10 @@ function fields(ctx: UiRequestContext): Readonly<Record<string, string>> {
  * Agent-store errors caused by what the operator typed. `AgentsFileInvalidError`
  * is deliberately ABSENT: a corrupt `agents.json` is a broken plane, not a bad
  * form, and must not be reported as the operator's mistake.
+ *
+ * `StoreWriteRejectedError` IS here: it is raised BEFORE the write when the
+ * value would fail the document schema — a `MAX_*` cap reached, say — which is
+ * a fact about what the operator asked for, not about a broken store.
  */
 const AGENT_INPUT_ERRORS: readonly ErrorClass[] = [
   AgentExistsError,
@@ -87,6 +96,7 @@ const AGENT_INPUT_ERRORS: readonly ErrorClass[] = [
   InvalidToolPatternError,
   InvalidResourcePatternError,
   InvalidPromptPatternError,
+  StoreWriteRejectedError,
 ]
 
 /**
@@ -179,6 +189,13 @@ export function createAgentsHandlers(deps: AgentsHandlersDeps): AgentsHandlers {
     }
   }
 
+  /**
+   * Removing a PERSONAL grant that shadows a group grant widens effective
+   * access instead of narrowing it (ADR-0010 §2), so it is confirmed first
+   * (U1) and, once confirmed, attributed as what it is: the audit target
+   * names the groups the agent falls back to, so the sink line cannot be read
+   * as plain de-escalation.
+   */
   async function agentsUngrant(ctx: UiRequestContext): Promise<UiResult> {
     const session = ctx.session
     if (session === undefined) return FORBIDDEN
@@ -189,12 +206,40 @@ export function createAgentsHandlers(deps: AgentsHandlersDeps): AgentsHandlers {
       return htmlResult(HTTP_STATUS_BAD_REQUEST, renderAgentNotice({ message: 'agent and server are required', ok: false, session }))
     }
     try {
+      const shadowed = await shadowedFallback(agent, server)
+      if (shadowed !== undefined && form.confirm !== 'true') {
+        return htmlResult(
+          HTTP_STATUS_OK,
+          renderUngrantConfirm({ agent, server, groups: shadowed.groups, fallback: shadowed.grant, session }),
+        )
+      }
       await agentsStore.ungrantServer(agent, server)
-      record(session, 'agents.ungrant', `${agent}/${server}`)
+      record(session, 'agents.ungrant', ungrantTarget(agent, server, shadowed?.groups))
       return htmlResult(HTTP_STATUS_OK, renderAgentNotice({ message: `removed ${server} from ${agent}`, ok: true, session }))
     } catch (error) {
       return storeFailure(error, session)
     }
+  }
+
+  /**
+   * The group grant `agent` would fall back to if its personal grant for
+   * `server` were removed, or `undefined` when the removal is a plain
+   * narrowing (no personal grant, no membership, or no group granting it).
+   *
+   * The fallback is not recomputed by hand: the record is re-resolved WITHOUT
+   * the server, so whatever `effectiveGrantsOf` would then hand the traffic
+   * path is exactly what the panel shows — one merge rule, not two.
+   */
+  async function shadowedFallback(
+    agent: string,
+    server: string,
+  ): Promise<{ readonly groups: readonly string[]; readonly grant: AgentGrant } | undefined> {
+    const record = await agentsStore.getAgent(agent)
+    if (record === undefined) return undefined
+    const groupList = await groups.listGroups()
+    const source = effectiveGrantsOf(record, groupList).sources[server]
+    if (source?.kind !== 'agent' || source.shadowedGroups.length === 0) return undefined
+    return fallbackAfterRemoval(record, groupList, server)
   }
 
   async function agentsRevoke(ctx: UiRequestContext): Promise<UiResult> {
@@ -214,4 +259,30 @@ export function createAgentsHandlers(deps: AgentsHandlersDeps): AgentsHandlers {
   }
 
   return { agentsPage, agentsCreate, agentsGrant, agentsUngrant, agentsRevoke }
+}
+
+/** The audit target: plain, or annotated with what the agent now inherits. */
+function ungrantTarget(agent: string, server: string, groups: readonly string[] | undefined): string {
+  const target = `${agent}/${server}`
+  if (groups === undefined || groups.length === 0) return target
+  return `${target} (inherits ${groups.map((name) => `group:${name}`).join(', ')})`
+}
+
+/** The record as it would be with `server` dropped from its personal grants. */
+function withoutServer(record: AgentRecord, server: string): AgentRecord {
+  const grants = Object.fromEntries(Object.entries(record.grants).filter(([name]) => name !== server))
+  return { ...record, grants }
+}
+
+/** Re-resolves the agent without the personal grant and reads the inherited one back. */
+function fallbackAfterRemoval(
+  record: AgentRecord,
+  groupList: readonly GroupRecord[],
+  server: string,
+): { readonly groups: readonly string[]; readonly grant: AgentGrant } | undefined {
+  const after = effectiveGrantsOf(withoutServer(record, server), groupList)
+  const source = after.sources[server]
+  const grant = after.grants[server]
+  if (source?.kind !== 'group' || grant === undefined) return undefined
+  return { groups: source.groups, grant }
 }

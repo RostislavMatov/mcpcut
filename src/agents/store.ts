@@ -2,6 +2,7 @@ import { join } from 'node:path'
 import { z } from 'zod'
 import { JOURNAL_DIR } from '../config.js'
 import { RESERVED_OBJECT_KEYS, TOOL_RULE_NAME_PATTERN } from '../policy/constants.js'
+import { compareAsText } from './effective.js'
 import { createJsonStore, type JsonStore } from '../policy/store.js'
 import {
   AGENT_NAME_PATTERN,
@@ -308,7 +309,9 @@ export function createAgentsStore(opts: AgentsStoreOptions = {}): AgentsStore {
       }
       return affected.length === 0 ? current : { ...current, agents }
     })
-    return [...affected].sort((a, b) => a.localeCompare(b))
+    // Code-unit order, like every array that ends up in an `access-edit`
+    // record: locale collation varies with the runtime's ICU data.
+    return [...affected].sort(compareAsText)
   }
 
   async function getAgent(name: string): Promise<AgentRecord | undefined> {

@@ -10,6 +10,7 @@ import {
   type AgentsStore,
 } from '../../src/agents/store.js'
 import { createGroupsStore, type GroupsStore } from '../../src/groups/store.js'
+import { StoreWriteRejectedError } from '../../src/policy/store.js'
 import type { GroupRecord } from '../../src/groups/schema.js'
 import type { UiSession } from '../../src/ui/auth.js'
 import {
@@ -55,6 +56,11 @@ function getCtx(sess: UiSession | undefined): UiRequestContext {
     body: Buffer.alloc(0),
     headers: {},
   }
+}
+
+function asResponseStatus(result: UiResult): number {
+  if (result.kind !== 'response') throw new Error('expected a buffered response, got a stream')
+  return result.status
 }
 
 function bodyOf(result: UiResult): string {
@@ -290,6 +296,16 @@ describe('store failures are classified, not flattened to 400 (T-2)', () => {
     if (result.kind === 'response') expect(result.status).toBe(500)
   })
 
+  test('a capped write (StoreWriteRejectedError) is a readable 400, not a 500 (U6)', async () => {
+    const rejected = new StoreWriteRejectedError('/tmp/agents.json', new Error('too many agents'))
+    const failing = createAgentsHandlers({ agentsStore: brokenStore(rejected), groups })
+
+    const result = await failing.agentsCreate(postCtx({ name: 'bot' }, session('operator')))
+
+    expect(asResponseStatus(result)).toBe(400)
+    expect(bodyOf(result)).toMatch(/Refusing to write/)
+  })
+
   test('known validation errors still yield a 400 carrying their message', async () => {
     await store.createAgent('bot')
     const duplicate = await handlers.agentsCreate(postCtx({ name: 'bot' }, session('operator')))
@@ -299,6 +315,109 @@ describe('store failures are classified, not flattened to 400 (T-2)', () => {
     const missing = await handlers.agentsRevoke(postCtx({ agent: 'ghost' }, session('operator')))
     if (missing.kind === 'response') expect(missing.status).toBe(400)
     expect(bodyOf(missing)).toMatch(/ghost|not/i)
+  })
+})
+
+/**
+ * U1 — "Ungrant" on a row whose PERSONAL grant overrides a group grant is not
+ * de-escalation: dropping it hands the agent back the (wider) group grant. The
+ * operator must see that before it happens, and the audit line must not read
+ * like a plain removal afterwards.
+ */
+describe('ungrant of an overriding personal grant (U1)', () => {
+  async function seedShadowed(): Promise<void> {
+    await store.createAgent('bot')
+    await store.grantServer('bot', 'github', ['read_file'])
+    await groups.createGroup('analytics')
+    await groups.createGroup('ops')
+    await groups.grantServer('analytics', 'github', ['read_file', 'create_issue'])
+    await groups.grantServer('ops', 'github', '*')
+    await groups.addMember('analytics', 'bot')
+    await groups.addMember('ops', 'bot')
+  }
+
+  test('with no group behind it the ungrant happens immediately, as before', async () => {
+    await store.createAgent('bot')
+    await store.grantServer('bot', 'github', ['read_file'])
+    await groups.createGroup('analytics')
+    await groups.grantServer('analytics', 'other', ['x'])
+    await groups.addMember('analytics', 'bot')
+
+    const result = await handlers.agentsUngrant(postCtx({ agent: 'bot', server: 'github' }, session('operator')))
+
+    expect(asResponseStatus(result)).toBe(200)
+    expect((await store.getAgent('bot'))?.grants.github).toBeUndefined()
+    expect(audit).toEqual([
+      { actor: 'ui', adminName: 'op-admin', action: 'agents.ungrant', target: 'bot/github' },
+    ])
+  })
+
+  test('a shadowed group turns the ungrant into a confirmation, writing nothing', async () => {
+    await seedShadowed()
+
+    const result = await handlers.agentsUngrant(postCtx({ agent: 'bot', server: 'github' }, session('operator')))
+
+    expect(asResponseStatus(result)).toBe(200)
+    const body = bodyOf(result)
+    expect(body).toContain('analytics')
+    expect(body).toContain('ops')
+    // The grant it would fall back to: the UNION of both groups, i.e. all tools.
+    expect(body).toMatch(/all|\*/)
+    expect(body).toContain('name="confirm" value="true"')
+    expect(body).toContain('name="agent" value="bot"')
+    expect(body).toContain('name="server" value="github"')
+    // Nothing written, nothing attributed.
+    expect((await store.getAgent('bot'))?.grants.github).toEqual({ tools: ['read_file'] })
+    expect(audit).toEqual([])
+  })
+
+  test('confirming writes, and the audit target names what the agent now inherits', async () => {
+    await seedShadowed()
+
+    const result = await handlers.agentsUngrant(
+      postCtx({ agent: 'bot', server: 'github', confirm: 'true' }, session('operator')),
+    )
+
+    expect(asResponseStatus(result)).toBe(200)
+    expect((await store.getAgent('bot'))?.grants.github).toBeUndefined()
+    expect(audit).toEqual([
+      {
+        actor: 'ui',
+        adminName: 'op-admin',
+        action: 'agents.ungrant',
+        target: 'bot/github (inherits group:analytics, group:ops)',
+      },
+    ])
+  })
+
+  test('an unknown agent is still the store\'s 400, not a confirmation', async () => {
+    const result = await handlers.agentsUngrant(postCtx({ agent: 'ghost', server: 'github' }, session('operator')))
+
+    expect(asResponseStatus(result)).toBe(400)
+  })
+
+  test('the interstitial escapes a hostile group name', async () => {
+    await store.createAgent('bot')
+    await store.grantServer('bot', 'github', ['read_file'])
+    const forged: GroupRecord = {
+      name: 'evil<script>',
+      createdAt: '2026-08-31T00:00:00.000Z',
+      members: ['bot'],
+      grants: { github: { tools: ['t<img>'] } },
+    } as GroupRecord
+    const forgedHandlers = createAgentsHandlers({
+      agentsStore: store,
+      groups: { listGroups: async () => [forged] },
+      audit: (event) => audit.push(event),
+    })
+
+    const body = bodyOf(
+      await forgedHandlers.agentsUngrant(postCtx({ agent: 'bot', server: 'github' }, session('operator'))),
+    )
+
+    expect(body).not.toContain('<script>')
+    expect(body).not.toContain('<img>')
+    expect(body).toContain('evil&lt;script&gt;')
   })
 })
 

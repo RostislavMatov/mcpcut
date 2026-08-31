@@ -58,47 +58,60 @@ export interface EffectiveGrants {
   readonly sources: Readonly<Record<string, GrantSource>>
 }
 
-/** The grant fields that hold a pattern list. */
-type PatternField = 'tools' | 'resources' | 'prompts'
+/** The grant fields a group may leave out; `tools` is always present. */
+type OptionalPatternField = 'resources' | 'prompts'
 
-const OPTIONAL_FIELDS: readonly PatternField[] = ['resources', 'prompts']
+/** One pattern list exactly as a grant carries it (`AgentGrant.tools`'s own type). */
+type PatternList = AgentGrant['tools']
 
-function compareAsText(left: string, right: string): number {
+/**
+ * Order by UTF-16 code unit, never `localeCompare`. Shared with the stores
+ * (`agents/store.ts`, `groups/store.ts`) because the arrays they sort end up
+ * fingerprinted or written into `access-edit` journal records, and locale
+ * collation varies with the ICU data a runtime was built against — the same
+ * reason `policy/provenance.ts` sorts this way.
+ */
+export function compareAsText(left: string, right: string): number {
   if (left < right) return -1
   return left > right ? 1 : 0
 }
 
-/**
- * Union of one field across contributing grants: `'*'` absorbs, otherwise a
- * sorted, deduplicated copy. `undefined` means "no group declared this field",
- * which the caller turns into an ABSENT key rather than an empty list.
- */
-function unionField(
-  grants: readonly AgentGrant[],
-  field: PatternField,
-): readonly string[] | '*' | undefined {
+/** Union of declared pattern lists: `'*'` absorbs, otherwise sorted and deduplicated. */
+function unionValues(values: readonly PatternList[]): PatternList {
   const names = new Set<string>()
-  let isDeclared = false
-  for (const grant of grants) {
-    const value = grant[field]
-    if (value === undefined) continue
-    isDeclared = true
+  for (const value of values) {
     if (value === '*') return '*'
     for (const pattern of value) names.add(pattern)
   }
-  if (!isDeclared) return undefined
   return [...names].sort(compareAsText)
+}
+
+/**
+ * Union of an OPTIONAL field across contributing grants. `undefined` means
+ * "no group declared this field", which the caller turns into an ABSENT key
+ * rather than an empty list — an absent field is the fail-closed denial.
+ */
+function unionOptional(
+  grants: readonly AgentGrant[],
+  field: OptionalPatternField,
+): PatternList | undefined {
+  const declared = grants
+    .map((grant) => grant[field])
+    .filter((value): value is PatternList => value !== undefined)
+  return declared.length === 0 ? undefined : unionValues(declared)
 }
 
 /** One merged grant from every group grant for the same server. */
 function mergeGrants(grants: readonly AgentGrant[]): AgentGrant {
-  const tools = unionField(grants, 'tools')
-  const merged: Record<string, unknown> = { tools: tools ?? [] }
-  for (const field of OPTIONAL_FIELDS) {
-    const value = unionField(grants, field)
-    if (value !== undefined) merged[field] = value
+  const resources = unionOptional(grants, 'resources')
+  const prompts = unionOptional(grants, 'prompts')
+  return {
+    // `tools` is required on every grant, so it needs no "was it declared?"
+    // branch — unlike the two optional fields below.
+    tools: unionValues(grants.map((grant) => grant.tools)),
+    ...(resources !== undefined ? { resources } : {}),
+    ...(prompts !== undefined ? { prompts } : {}),
   }
-  return merged as AgentGrant
 }
 
 /** Server name -> the grants of the member groups that cover it, in input order. */

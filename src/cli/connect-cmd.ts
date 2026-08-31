@@ -1,39 +1,32 @@
 import type { Readable, Writable } from 'node:stream'
 import { parseArgs } from 'node:util'
 import { ulid } from 'ulid'
-import { createEffectiveAgentReader } from '../agents/effective-reader.js'
 import type { AgentRecord } from '../agents/schema.js'
-import { createAgentsStore, type AgentsStore } from '../agents/store.js'
+import type { AgentsStore } from '../agents/store.js'
 import { JOURNAL_DIR } from '../config.js'
-import { createGroupsStore, type GroupsStore } from '../groups/store.js'
+import type { GroupsStore } from '../groups/store.js'
 import type { LoadPolicyOptions } from '../policy/load.js'
 import type { PolicyProvider } from '../policy/reload.js'
 import { guardDiagnostics } from '../proxy/diagnostics.js'
 import { EXIT_CODE_JOURNAL_FAILURE } from '../proxy/wrap.js'
 import { createOrderedWriter } from '../proxy/writer.js'
-import type { ServerRecord } from '../registry/schema.js'
-import { createRegistryStore, type RegistryStore } from '../registry/store.js'
+import type { RegistryStore } from '../registry/store.js'
 import { preflightDatabases } from '../store/preflight.js'
 import type { AgentRecordReader } from '../session/agent-watch.js'
 import type { SessionEndReason, SessionEndpoints } from '../session/core.js'
 import { createStdioMessageSink } from '../transport/stdio-adapter.js'
-import { resolveVaultRefs } from '../vault/resolve.js'
-import { createVaultStore } from '../vault/store.js'
 import { CONNECT_USAGE, DIAGNOSTIC_PREFIX, EXIT_CODE_REFUSED } from './connect-constants.js'
 import { createMismatchGuard } from './connect-mismatch.js'
 import { resolveConnectPolicy } from './connect-policy.js'
 import { resolveConnectTarget } from './connect-resolve.js'
+import { buildConnectStores, sessionOptionsOf, upstreamArgsOf } from './connect-stores.js'
 import {
   startConnectSession,
   type ConnectSessionHandle,
   type StartConnectSessionArgs,
 } from './connect-session.js'
 import { createReadableMessageSource } from './connect-source.js'
-import {
-  prepareUpstream,
-  type PrepareUpstreamArgs,
-  type PreparedUpstream,
-} from './connect-upstream.js'
+import { prepareUpstream, type PreparedUpstream } from './connect-upstream.js'
 
 /**
  * `mcp-journal connect <server> --agent <name>` — the command an agent's own
@@ -212,15 +205,7 @@ export async function runConnect(
     diagnostics.write(line)
   }
 
-  const agents =
-    deps.agentsStore ?? createAgentsStore(journalDir !== undefined ? { journalDir } : {})
-  const groups =
-    deps.groupsStore ?? createGroupsStore(journalDir !== undefined ? { journalDir } : {})
-  // Every read of an agent record on this path — the pre-traffic checks below
-  // and the session's revocation watch — goes through the reader, so a grant
-  // held through a group is indistinguishable from a personal one (G2/G5).
-  const agentReader = createEffectiveAgentReader({ agents, groups })
-  const registry = deps.registryStore ?? createRegistryStore(journalDir)
+  const { agentReader, registry } = buildConnectStores(deps)
 
   const target = await resolveConnectTarget({
     serverName: flags.server,
@@ -265,51 +250,6 @@ export async function runConnect(
     policy: policyOutcome.policy,
     prepared: prepared.upstream,
   })
-}
-
-/**
- * Assembles `prepareUpstream`'s arguments, forwarding only the overrides that
- * were actually given so each keeps its own default. The vault store is built
- * here because this is the only thing that needs it: `resolveRefs` is the one
- * path a decrypted value ever travels.
- */
-function upstreamArgsOf(args: {
-  readonly deps: ConnectDeps
-  readonly env: NodeJS.ProcessEnv
-  readonly record: ServerRecord
-  readonly onDiagnostic: (line: string) => void
-}): PrepareUpstreamArgs {
-  const { deps } = args
-  const vault = createVaultStore(deps.journalDir !== undefined ? { journalDir: deps.journalDir } : {})
-  return {
-    record: args.record,
-    processEnv: args.env,
-    resolveRefs: (record) => resolveVaultRefs(record, vault.readSecretValues),
-    onDiagnostic: args.onDiagnostic,
-    ...(deps.cwd !== undefined ? { cwd: deps.cwd } : {}),
-    ...(deps.stderr !== undefined ? { stderr: deps.stderr } : {}),
-    ...(deps.systemEnvAllowlist !== undefined ? { systemEnvAllowlist: deps.systemEnvAllowlist } : {}),
-    ...(deps.childExitGraceMs !== undefined ? { childExitGraceMs: deps.childExitGraceMs } : {}),
-    ...(deps.killEscalationMs !== undefined ? { killEscalationMs: deps.killEscalationMs } : {}),
-  }
-}
-
-/** The optional half of a session's arguments; same forward-only-what-was-given rule. */
-function sessionOptionsOf(deps: ConnectDeps): Partial<StartConnectSessionArgs> {
-  return {
-    ...(deps.journalDir !== undefined ? { journalDir: deps.journalDir } : {}),
-    ...(deps.approvalsBaseDir !== undefined ? { approvalsBaseDir: deps.approvalsBaseDir } : {}),
-    ...(deps.inventoryStorePath !== undefined
-      ? { inventoryStorePath: deps.inventoryStorePath }
-      : {}),
-    ...(deps.now !== undefined ? { now: deps.now } : {}),
-    ...(deps.revocationPollIntervalMs !== undefined
-      ? { revocationPollIntervalMs: deps.revocationPollIntervalMs }
-      : {}),
-    ...(deps.journalCommitBatchImpl !== undefined
-      ? { journalCommitBatchImpl: deps.journalCommitBatchImpl }
-      : {}),
-  }
 }
 
 interface ExitCodeArgs {

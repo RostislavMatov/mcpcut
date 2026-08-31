@@ -58,6 +58,15 @@ export const CSS_PAGE_MATRIX = `
 .ag-notice, .ad-notice { display: flex; flex-direction: column; gap: 10px; padding: 16px; }
 .ag-notice p, .ad-notice p { font-size: 12px; }
 
+/* --- "this ungrant widens access" interstitial ------------------------------ */
+.ag-confirm { max-width: 720px; }
+.ag-confirm .callout p { margin: 0; }
+.ag-confirm .callout [role='alert'] { border: none; padding: 0; }
+.ag-confirm .actions { display: flex; gap: 10px; justify-content: flex-end; }
+.ag-holders { margin-top: 4px; }
+.ag-fallback th { text-align: left; white-space: nowrap; width: 1%; }
+.ag-fallback td code { margin: 1px 0; display: inline-block; }
+
 /* --- Admins ---------------------------------------------------------------- */
 .ad-add-grid .choice { flex-direction: row; }
 .ad-add-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr); gap: 14px; align-items: end; }

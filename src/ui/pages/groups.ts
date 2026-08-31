@@ -8,6 +8,7 @@ import { renderGroupDrawers, type GroupDrawerId } from './groups-form.js'
 import { renderDrawerLink, renderGroupCard, renderNameList } from './groups-parts.js'
 import { renderInterstitial } from './interstitial.js'
 import { renderLayout, type CurrentAdmin } from './layout.js'
+import { plural } from './plural.js'
 
 /**
  * The `/groups` page of the McpCut console (M5.5 п.2): one disclosure card per
@@ -45,10 +46,6 @@ export interface GroupsView {
 
 function currentAdmin(session: UiSession): CurrentAdmin {
   return { name: session.adminName, role: session.role }
-}
-
-function plural(count: number, noun: string): string {
-  return `${String(count)} ${noun}${count === 1 ? '' : 's'}`
 }
 
 /** "N groups · M members" — the tab-bar meta; members are counted once each. */

@@ -647,9 +647,34 @@ describe('serversRemove — cascade into grants and groups (G6, Task 10)', () =>
     expect(body).toContain('research-bot')
     expect(body).toContain('analytics')
     expect(body).not.toContain('idle')
-    expect(body).toContain('1 agent grants and 1 groups')
+    // U3/U7: the count names the set the interstitial actually listed (active
+    // agents), says out loud that the cascade reaches further, and agrees with
+    // itself on number.
+    expect(body).toContain('1 active agent grant')
+    expect(body).toContain('and 1 group:')
+    expect(body).toContain('revoked')
+    expect(body).not.toContain('1 groups')
     expect((await h.registry.listServers()).map((s) => s.name)).toEqual(['github'])
     expect(h.accessEdits).toHaveLength(0)
+  })
+
+  test('a revoked agent is not counted, and the wording says the cascade still reaches it', async () => {
+    h = makeHarness()
+    await h.registry.addServer({ name: 'github', transport: 'stdio', command: 'node' })
+    await h.agents.createAgent('gone-bot')
+    await h.agents.grantServer('gone-bot', 'github', ['read_file'])
+    await h.agents.revokeAgent('gone-bot')
+    await h.groups.createGroup('analytics')
+    await h.groups.grantServer('analytics', 'github', ['read_file'])
+
+    const res = asResponse(
+      await h.handlers.serversRemove(formPost({ csrf_token: OWNER.csrfToken, name: 'github' }, '/servers/remove')),
+    )
+
+    const body = String(res.body)
+    expect(body).toContain('0 active agent grants')
+    expect(body).toContain("revoked agents\u2019 dangling grants are dropped too")
+    expect(body).not.toContain('gone-bot')
   })
 
   test('a group grant alone is enough to earn the interstitial', async () => {
@@ -693,6 +718,7 @@ describe('serversRemove — cascade into grants and groups (G6, Task 10)', () =>
         server: 'github',
         affectedAgents: ['research-bot'],
         affectedGroups: ['analytics'],
+        cascade: { agents: 'done', groups: 'done' },
       },
     ])
   })
@@ -726,6 +752,139 @@ describe('serversRemove — cascade into grants and groups (G6, Task 10)', () =>
     )
     expect(res.status).toBe(303)
     expect(await h.registry.listServers()).toHaveLength(0)
+  })
+})
+
+describe('serversRemove — a half-failed cascade still lands the record (U2)', () => {
+  /**
+   * The removal ALREADY HAPPENED by the time a cascade half runs. Losing the
+   * journal record because the second half threw would leave the one write
+   * that is supposed to be evidentiary undone, so each half is contained and
+   * the record says which half landed.
+   */
+  interface Broken {
+    readonly handlers: ServersHandlers
+    readonly audit: UiAuditEvent[]
+    readonly accessEdits: AccessEditInfo[]
+    readonly diagnostics: string[]
+  }
+
+  function brokenHalf(which: 'agents' | 'groups'): Broken {
+    if (h === null) throw new Error('harness not built')
+    const audit: UiAuditEvent[] = []
+    const accessEdits: AccessEditInfo[] = []
+    const diagnostics: string[] = []
+    const boom = (): Promise<never> => Promise.reject(new Error('store unreachable'))
+    const handlers = createServersHandlers({
+      registry: h.registry,
+      agents: {
+        listAgents: () => h.agents.listAgents(),
+        ungrantServerEverywhere:
+          which === 'agents' ? boom : (name: string) => h.agents.ungrantServerEverywhere(name),
+      },
+      groups: {
+        listGroups: () => h.groups.listGroups(),
+        ungrantServerEverywhere:
+          which === 'groups' ? boom : (name: string) => h.groups.ungrantServerEverywhere(name),
+      },
+      vault: h.vault,
+      audit: (event) => audit.push(event),
+      journalAccessEdit: async (info) => {
+        accessEdits.push(info)
+      },
+      diagnostics: (line) => diagnostics.push(line),
+    })
+    return { handlers, audit, accessEdits, diagnostics }
+  }
+
+  async function seed(): Promise<void> {
+    if (h === null) throw new Error('harness not built')
+    await h.registry.addServer({ name: 'github', transport: 'stdio', command: 'node' })
+    await h.agents.createAgent('research-bot')
+    await h.agents.grantServer('research-bot', 'github', ['read_file'])
+    await h.groups.createGroup('analytics')
+    await h.groups.grantServer('analytics', 'github', ['read_file'])
+  }
+
+  test('a failing group half still removes, audits, journals and redirects', async () => {
+    h = makeHarness()
+    await seed()
+    const broken = brokenHalf('groups')
+
+    const res = asResponse(
+      await broken.handlers.serversRemove(
+        formPost({ csrf_token: OWNER.csrfToken, name: 'github', confirm: 'true' }, '/servers/remove'),
+      ),
+    )
+
+    expect(res.status).toBe(303)
+    expect(await h.registry.listServers()).toHaveLength(0)
+    expect(broken.audit).toEqual([
+      { actor: 'ui', adminName: 'alice', action: 'server.remove', target: 'github' },
+    ])
+    expect(broken.accessEdits).toHaveLength(1)
+    expect(broken.accessEdits[0]).toMatchObject({
+      action: 'server.remove',
+      server: 'github',
+      // What LANDED: the personal grants were dropped, the group half was not.
+      affectedAgents: ['research-bot'],
+      affectedGroups: [],
+      cascade: { agents: 'done', groups: 'failed' },
+    })
+    expect(broken.diagnostics.join('')).toContain('github')
+  })
+
+  test('a failing agent half does not stop the group half', async () => {
+    h = makeHarness()
+    await seed()
+    const broken = brokenHalf('agents')
+
+    const res = asResponse(
+      await broken.handlers.serversRemove(
+        formPost({ csrf_token: OWNER.csrfToken, name: 'github', confirm: 'true' }, '/servers/remove'),
+      ),
+    )
+
+    expect(res.status).toBe(303)
+    expect((await h.groups.listGroups()).map((group) => Object.keys(group.grants))).toEqual([[]])
+    expect(broken.accessEdits[0]).toMatchObject({
+      affectedAgents: [],
+      affectedGroups: ['analytics'],
+      cascade: { agents: 'failed', groups: 'done' },
+    })
+  })
+
+  test('a fully successful cascade is recorded as done on both halves', async () => {
+    h = makeHarness()
+    await seed()
+
+    await h.handlers.serversRemove(
+      formPost({ csrf_token: OWNER.csrfToken, name: 'github', confirm: 'true' }, '/servers/remove'),
+    )
+
+    expect(h.accessEdits[0]).toMatchObject({ cascade: { agents: 'done', groups: 'done' } })
+  })
+
+  test('without a diagnostics port a failing half is still contained (no throw)', async () => {
+    h = makeHarness()
+    await seed()
+    const handlers = createServersHandlers({
+      registry: h.registry,
+      agents: h.agents,
+      groups: {
+        listGroups: () => h.groups.listGroups(),
+        ungrantServerEverywhere: () => Promise.reject(new Error('store unreachable')),
+      },
+      vault: h.vault,
+    })
+
+    const res = asResponse(
+      await handlers.serversRemove(
+        formPost({ csrf_token: OWNER.csrfToken, name: 'github', confirm: 'true' }, '/servers/remove'),
+      ),
+    )
+
+    expect(res.status).toBe(303)
   })
 })
 

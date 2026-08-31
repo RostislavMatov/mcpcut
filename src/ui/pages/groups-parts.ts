@@ -2,6 +2,7 @@ import type { AgentGrant } from '../../agents/schema.js'
 import type { GroupRecord } from '../../groups/schema.js'
 import { html, join, safeUrl, type Html } from '../html.js'
 import { csrfField } from './csrf-field.js'
+import { plural } from './plural.js'
 
 /**
  * The group card of the `/groups` page (M5.5 п.2, decision G4): the group's
@@ -109,10 +110,6 @@ function removeForm(group: GroupRecord, ctx: GroupCardContext): Html {
     <input type="hidden" name="name" value="${group.name}">
     <button type="submit" class="danger">Remove group</button>
   </form></div>`
-}
-
-function plural(count: number, noun: string): string {
-  return `${String(count)} ${noun}${count === 1 ? '' : 's'}`
 }
 
 /**

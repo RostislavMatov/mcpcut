@@ -32,9 +32,16 @@ const EMPTY_RESOURCES_MESSAGE =
 const EMPTY_PROMPTS_MESSAGE =
   '--prompts was given but contains no prompt patterns (expected e.g. --prompts greet*)\n'
 
-/** No flag → `'*'`; a flag that boils down to zero patterns → `'empty'` (an error). */
+/**
+ * No flag → `'*'`; a lone `*` VALUE means the same wildcard (parity with
+ * `--resources '*'` and with the UI, where an operator types the star out
+ * loud), so it becomes the grant's `'*'` rather than a one-element list that
+ * happens to hold it. A flag that boils down to zero patterns → `'empty'`
+ * (an error).
+ */
 export function parseToolsFlag(value: string | undefined): readonly string[] | '*' | 'empty' {
   if (value === undefined) return '*'
+  if (value.trim() === '*') return '*'
   return splitPatterns(value)
 }
 

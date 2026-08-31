@@ -2,7 +2,7 @@ import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/p
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
-import { StoreCorruptError, createJsonStore } from '../../src/policy/store.js'
+import { StoreCorruptError, StoreWriteRejectedError, createJsonStore } from '../../src/policy/store.js'
 import { openSqlite } from '../../src/store/sqlite.js'
 
 interface Counter {
@@ -333,5 +333,180 @@ describe('createJsonStore: legacy JSON migration', () => {
     await expect(
       rereadStore.update((current) => ({ count: current.count + 1 })),
     ).rejects.toBeInstanceOf(StoreCorruptError)
+  })
+})
+
+describe('createJsonStore: write-time validation', () => {
+  test('refuses a value the validator rejects and leaves the document unchanged', async () => {
+    // Arrange
+    const store = createJsonStore<Counter>(filePath, {
+      validate: validateCounter,
+      defaultValue: defaultCounter,
+    })
+    await store.update(() => ({ count: 1 }))
+
+    // Act
+    const refused = store.update(() => ({ nope: true }) as unknown as Counter)
+
+    // Assert — the refusal is an expected boundary error, never corruption,
+    // and the document a later read sees is the one that was already there.
+    await expect(refused).rejects.toBeInstanceOf(StoreWriteRejectedError)
+    await expect(refused).rejects.not.toBeInstanceOf(StoreCorruptError)
+    expect(await store.read()).toEqual({ count: 1 })
+  })
+
+  test('a refused first-ever write leaves no row behind', async () => {
+    // Arrange
+    const store = createJsonStore<Counter>(filePath, {
+      validate: validateCounter,
+      defaultValue: defaultCounter,
+    })
+
+    // Act
+    const refused = store.update(() => ({ nope: true }) as unknown as Counter)
+
+    // Assert
+    await expect(refused).rejects.toBeInstanceOf(StoreWriteRejectedError)
+    expect(await store.read()).toEqual(defaultCounter)
+  })
+
+  test('names the document path so the operator knows which store refused', async () => {
+    // Arrange
+    const store = createJsonStore<Counter>(filePath, {
+      validate: validateCounter,
+      defaultValue: defaultCounter,
+    })
+
+    // Act
+    const refused = store.update(() => ({ nope: true }) as unknown as Counter)
+
+    // Assert
+    await expect(refused).rejects.toThrow(filePath)
+  })
+
+  test('a valid write still lands after a refused one', async () => {
+    // Arrange
+    const store = createJsonStore<Counter>(filePath, {
+      validate: validateCounter,
+      defaultValue: defaultCounter,
+    })
+    await expect(
+      store.update(() => ({ nope: true }) as unknown as Counter),
+    ).rejects.toBeInstanceOf(StoreWriteRejectedError)
+
+    // Act
+    const value = await store.update((current) => ({ count: current.count + 5 }))
+
+    // Assert
+    expect(value).toEqual({ count: 5 })
+    expect(await store.read()).toEqual({ count: 5 })
+  })
+})
+
+describe('createJsonStore: rev-keyed read memo', () => {
+  /** A validator that counts how often it ran, to observe the memo. */
+  function countingValidate(): { validate: (raw: unknown) => Counter; count: () => number } {
+    let calls = 0
+    return {
+      validate: (raw: unknown) => {
+        calls += 1
+        return validateCounter(raw)
+      },
+      count: () => calls,
+    }
+  }
+
+  test('a second read of an unchanged row reuses the parsed value', async () => {
+    // Arrange
+    const spy = countingValidate()
+    const store = createJsonStore<Counter>(filePath, {
+      validate: spy.validate,
+      defaultValue: defaultCounter,
+    })
+    await store.update(() => ({ count: 1 }))
+    const before = spy.count()
+
+    // Act
+    const first = await store.read()
+    const second = await store.read()
+
+    // Assert — `groups.json` is read on every authentication; re-running zod
+    // for a row that did not move is pure overhead.
+    expect(spy.count()).toBe(before + 1)
+    expect(second).toEqual({ count: 1 })
+    // Still a value nobody else holds: the memo caches the PARSE, and each
+    // read hands out its own copy, so a caller that mutates what it read
+    // cannot poison the next reader.
+    expect(second).not.toBe(first)
+  })
+
+  test('a write by another store instance on the same path is seen', async () => {
+    // Arrange
+    const store = createJsonStore<Counter>(filePath, {
+      validate: validateCounter,
+      defaultValue: defaultCounter,
+    })
+    await store.update(() => ({ count: 1 }))
+    expect(await store.read()).toEqual({ count: 1 })
+
+    // Act — a second process, modelled as a second store over the same file.
+    const other = createJsonStore<Counter>(filePath, {
+      validate: validateCounter,
+      defaultValue: defaultCounter,
+    })
+    await other.update(() => ({ count: 9 }))
+
+    // Assert
+    expect(await store.read()).toEqual({ count: 9 })
+  })
+
+  test("the store's own write invalidates the memo", async () => {
+    // Arrange
+    const store = createJsonStore<Counter>(filePath, {
+      validate: validateCounter,
+      defaultValue: defaultCounter,
+    })
+    await store.update(() => ({ count: 1 }))
+    expect(await store.read()).toEqual({ count: 1 })
+
+    // Act
+    await store.update((current) => ({ count: current.count + 1 }))
+
+    // Assert
+    expect(await store.read()).toEqual({ count: 2 })
+  })
+
+  test('mutating a memoised read does not affect what the next read sees', async () => {
+    // Arrange
+    const store = createJsonStore<Counter>(filePath, {
+      validate: validateCounter,
+      defaultValue: defaultCounter,
+    })
+    await store.update(() => ({ count: 1 }))
+
+    // Act
+    const first = (await store.read()) as { count: number }
+    first.count = 99
+
+    // Assert
+    expect(await store.read()).toEqual({ count: 1 })
+  })
+
+  test('a refused write does not poison the memo', async () => {
+    // Arrange
+    const store = createJsonStore<Counter>(filePath, {
+      validate: validateCounter,
+      defaultValue: defaultCounter,
+    })
+    await store.update(() => ({ count: 1 }))
+    expect(await store.read()).toEqual({ count: 1 })
+
+    // Act
+    await expect(
+      store.update(() => ({ nope: true }) as unknown as Counter),
+    ).rejects.toBeInstanceOf(StoreWriteRejectedError)
+
+    // Assert
+    expect(await store.read()).toEqual({ count: 1 })
   })
 })

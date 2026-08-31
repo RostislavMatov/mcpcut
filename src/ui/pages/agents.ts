@@ -10,6 +10,7 @@ import {
   renderGroupGrantDrawer,
 } from './agents-parts.js'
 import { type CurrentAdmin, renderLayout } from './layout.js'
+import { plural } from './plural.js'
 
 /**
  * Server-rendered agent permission matrix (M4 Task 14; McpCut front
@@ -54,10 +55,6 @@ function byGroupDrawer(
 ): Html {
   const canManageGroups = roleSatisfies(session.role, 'owner')
   return canManageGroups ? renderGroupGrantDrawer(GROUP_DRAWER_ID, { groups, agents, session }) : html``
-}
-
-function plural(count: number, noun: string): string {
-  return `${String(count)} ${noun}${count === 1 ? '' : 's'}`
 }
 
 /** "N agents · M active" — the tab-bar meta. */

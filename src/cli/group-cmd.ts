@@ -16,7 +16,7 @@ import {
 } from '../groups/store.js'
 import { formatReadableField } from '../journal/format.js'
 import type { JournalSinkOptions } from '../journal/sink.js'
-import { StoreCorruptError, StoreLockError } from '../policy/store.js'
+import { StoreCorruptError, StoreLockError, StoreWriteRejectedError } from '../policy/store.js'
 import { createRegistryStore } from '../registry/store.js'
 import {
   hasPositionals,
@@ -96,6 +96,7 @@ const EXPECTED_ERRORS = [
   InvalidToolPatternError,
   StoreCorruptError,
   StoreLockError,
+  StoreWriteRejectedError,
 ] as const
 
 function isExpectedError(error: unknown): error is Error {

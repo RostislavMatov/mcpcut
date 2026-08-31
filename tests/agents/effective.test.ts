@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { effectiveGrantsOf, materializeAgent } from '../../src/agents/effective.js'
+import { compareAsText, effectiveGrantsOf, materializeAgent } from '../../src/agents/effective.js'
 import type { AgentRecord } from '../../src/agents/schema.js'
 import type { GroupRecord } from '../../src/groups/schema.js'
 import { grantsHashOf } from '../../src/policy/provenance.js'
@@ -261,5 +261,25 @@ describe('materializeAgent', () => {
 
     // Assert
     expect(grantsHashOf(materialized.grants)).not.toBe(grantsHashOf(agent.grants))
+  })
+})
+
+describe('compareAsText', () => {
+  test('orders by UTF-16 code unit, not by locale collation', () => {
+    // Arrange — a set locale collation reorders: `localeCompare` puts the
+    // lowercase letter first, code-unit order puts every uppercase first.
+    const names = ['b', 'A', 'a', 'B']
+
+    // Act
+    const sorted = [...names].sort(compareAsText)
+
+    // Assert — code-unit order is stable across ICU builds, which is why
+    // every array that ends up fingerprinted or journalled uses it.
+    expect(sorted).toEqual(['A', 'B', 'a', 'b'])
+    expect([...names].sort((left, right) => left.localeCompare(right))).not.toEqual(sorted)
+  })
+
+  test('reports equality as 0', () => {
+    expect(compareAsText('same', 'same')).toBe(0)
   })
 })

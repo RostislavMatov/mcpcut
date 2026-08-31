@@ -1,9 +1,17 @@
 import { parseArgs } from 'node:util'
 import { formatReadableField } from '../journal/format.js'
+import { ADD_USAGE, buildCandidate, parseAddArgs } from './server-add-args.js'
+import { warnAboutExistingGrants } from './server-grant-refs.js'
 import { formatPolicyErrors } from '../policy/load.js'
 import { parseServerRecord, type ServerRecord } from '../registry/schema.js'
 import { createRegistryStore, type RegistryStore } from '../registry/store.js'
-import { cascadeServerRemoval, cascadeSummary } from './server-remove-cascade.js'
+import {
+  cascadeGrants,
+  cascadeServerRemoval,
+  cascadeSummary,
+  cascadeTouchedAnything,
+  reportCascade,
+} from './server-remove-cascade.js'
 import {
   printProbedStatus,
   printRegistrationProbe,
@@ -55,13 +63,6 @@ const DEFAULT_IO: ServerCliIo = { stdout: process.stdout, stderr: process.stderr
 /** Max characters of the command/url column in `server list` before shortening. */
 const MAX_LIST_TARGET_CHARS = 48
 
-const ADD_USAGE = `Usage:
-  server add <name> --transport stdio|http
-    stdio:  --command <cmd> [--args a,b,c] [--env K=V]...
-    http:   --url <url> [--header K=V]... [--protocol sessionful|stateless|auto]
-  Env/header values are either non-secret literals or vault references (vault:<name>).
-`
-
 const LIST_USAGE = `Usage:
   server list   List registered servers with live status (stale servers are probed)
 `
@@ -80,134 +81,6 @@ function describeError(error: unknown): string {
 
 function makeStore(opts: ServerCliOptions): RegistryStore {
   return createRegistryStore(opts.journalDir)
-}
-
-/** Flag values `server add` accepts, straight out of `parseArgs`. */
-interface AddFlagValues {
-  readonly transport?: string | undefined
-  readonly command?: string | undefined
-  readonly args?: string | undefined
-  readonly env?: string[] | undefined
-  readonly url?: string | undefined
-  readonly header?: string[] | undefined
-  readonly protocol?: string | undefined
-}
-
-/** Flags of `server add` that take a value (used by `normalizeInlineValues`). */
-const ADD_VALUE_FLAGS: ReadonlySet<string> = new Set([
-  '--transport',
-  '--command',
-  '--args',
-  '--env',
-  '--url',
-  '--header',
-  '--protocol',
-])
-
-/**
- * Rewrites `--flag value` into `--flag=value` for known value-taking flags.
- * `parseArgs` rejects a space-separated value that starts with a dash
- * (`--args -y,...` → "argument is ambiguous"), but that is exactly how the
- * documented onboarding script passes stdio args. Joining the pair is
- * semantically identical for every non-dash value and simply also accepts
- * dash-leading ones.
- */
-function normalizeInlineValues(args: readonly string[]): string[] {
-  const normalized: string[] = []
-  for (let i = 0; i < args.length; i += 1) {
-    const current = args[i]
-    const next = args[i + 1]
-    if (current !== undefined && ADD_VALUE_FLAGS.has(current) && next !== undefined) {
-      normalized.push(`${current}=${next}`)
-      i += 1
-      continue
-    }
-    if (current !== undefined) {
-      normalized.push(current)
-    }
-  }
-  return normalized
-}
-
-type PairsResult =
-  | { readonly ok: true; readonly map: Record<string, string> | undefined }
-  | { readonly ok: false; readonly message: string }
-
-/**
- * Parses repeatable `K=V` flag values into a map. The accumulator has a null
- * prototype so a `__proto__` key becomes an own property (which the schema
- * pre-scan then rejects loudly) instead of silently rewiring the prototype.
- */
-function parseKeyValuePairs(values: readonly string[] | undefined, flag: string): PairsResult {
-  if (values === undefined || values.length === 0) {
-    return { ok: true, map: undefined }
-  }
-  const map: Record<string, string> = Object.create(null) as Record<string, string>
-  for (const pair of values) {
-    const separatorIndex = pair.indexOf('=')
-    if (separatorIndex <= 0) {
-      return { ok: false, message: `invalid ${flag} value "${formatReadableField(pair)}": expected K=V` }
-    }
-    const key = pair.slice(0, separatorIndex)
-    if (Object.hasOwn(map, key)) {
-      return { ok: false, message: `duplicate ${flag} key "${formatReadableField(key)}"` }
-    }
-    map[key] = pair.slice(separatorIndex + 1)
-  }
-  return { ok: true, map }
-}
-
-type CandidateResult =
-  | { readonly ok: true; readonly candidate: Record<string, unknown> }
-  | { readonly ok: false; readonly message: string }
-
-/**
- * Assembles the raw record from CLI flags. Every provided flag is included —
- * even ones that do not belong to the chosen transport — so the strict
- * schema reports a precise "unrecognized key" error instead of this function
- * silently dropping, say, `--url` on a stdio server.
- */
-function buildCandidate(name: string, values: AddFlagValues): CandidateResult {
-  if (values.transport === undefined) {
-    return { ok: false, message: '--transport is required (stdio|http)' }
-  }
-  const env = parseKeyValuePairs(values.env, '--env')
-  if (!env.ok) return env
-  const headers = parseKeyValuePairs(values.header, '--header')
-  if (!headers.ok) return headers
-
-  const candidate: Record<string, unknown> = { name, transport: values.transport }
-  if (values.command !== undefined) candidate['command'] = values.command
-  if (values.args !== undefined) candidate['args'] = values.args.split(',')
-  if (env.map !== undefined) candidate['env'] = env.map
-  if (values.url !== undefined) candidate['url'] = values.url
-  if (headers.map !== undefined) candidate['headers'] = headers.map
-  if (values.protocol !== undefined) candidate['protocol'] = values.protocol
-  return { ok: true, candidate }
-}
-
-/** Parses `server add` argv into the name positional and flag values; `undefined` on any shape error. */
-function parseAddArgs(args: string[]): { name: string; values: AddFlagValues } | undefined {
-  try {
-    const parsed = parseArgs({
-      args: normalizeInlineValues(args),
-      options: {
-        transport: { type: 'string' },
-        command: { type: 'string' },
-        args: { type: 'string' },
-        env: { type: 'string', multiple: true },
-        url: { type: 'string' },
-        header: { type: 'string', multiple: true },
-        protocol: { type: 'string' },
-      },
-      allowPositionals: true,
-      strict: true,
-    })
-    const name = parsed.positionals.length === 1 ? parsed.positionals[0] : undefined
-    return name !== undefined ? { name, values: parsed.values } : undefined
-  } catch {
-    return undefined
-  }
 }
 
 /** `server add <name> --transport ... `: validates and persists a new record. */
@@ -243,6 +116,9 @@ export async function runServerAdd(
     return 1
   }
   io.stdout.write(`added server "${result.record.name}" (${result.record.transport})\n`)
+  // M3a: the name may still be granted by agents or groups from an earlier
+  // registration, which would silently hand them access to this new server.
+  await warnAboutExistingGrants(result.record.name, io, opts)
   // One forced probe with `tools/list` right after registration (O8,
   // ADR-0008): liveness — or why the plane could not even try — without a
   // single agent call. The record is already written; exit stays 0.
@@ -377,11 +253,37 @@ export async function runServerShow(
 }
 
 /**
+ * The `not-found` branch of `server remove` doubles as the REPAIR path: the
+ * three documents share no transaction, so a crash (or a half-failed cascade)
+ * can leave grants pointing at a name the registry no longer knows. Both
+ * cascade halves are idempotent, so running them again either prunes what
+ * dangled — reported, audited and journalled like any other removal — or
+ * finds nothing, which is the plain "unknown server" of before.
+ */
+async function repairDanglingGrants(
+  name: string,
+  io: ServerCliIo,
+  opts: ServerCliOptions,
+): Promise<number> {
+  const cascade = await cascadeGrants(name, io, opts)
+  if (!cascadeTouchedAnything(cascade)) {
+    io.stderr.write(`unknown server "${formatReadableField(name)}"\n`)
+    return 1
+  }
+  await reportCascade(name, cascade, io, opts)
+  io.stdout.write(
+    `server "${formatReadableField(name)}" was not registered; ` +
+      `pruned dangling grants: ${cascadeSummary(cascade)}\n`,
+  )
+  return 0
+}
+
+/**
  * `server remove <name>`. The registry write comes first, then the cascade
  * that strips the server from agent grants and groups (G6), then the audit
  * line, the journal record and the report. Exit stays 0 once the server is
- * gone — including when the journal dropped the record, which is reported
- * rather than hidden.
+ * gone — including when the journal dropped the record or one cascade half
+ * failed, both of which are reported rather than hidden.
  */
 export async function runServerRemove(
   args: string[],
@@ -393,18 +295,22 @@ export async function runServerRemove(
     return 1
   }
 
+  let removed: string
   try {
     const result = await makeStore(opts).removeServer(name)
     if (result.status === 'not-found') {
-      io.stderr.write(`unknown server "${formatReadableField(name)}"\n`)
-      return 1
+      return await repairDanglingGrants(name, io, opts)
     }
-    const removed = result.record.name
-    const cascade = await cascadeServerRemoval(removed, io, opts)
-    io.stdout.write(`removed server "${removed}"; cascaded: ${cascadeSummary(cascade)}\n`)
-    return 0
+    removed = result.record.name
   } catch (error: unknown) {
     io.stderr.write(`${describeError(error)}\n`)
     return 1
   }
+
+  // Past this point the registry write has LANDED: nothing may turn the
+  // command into a failure, and the cascade — which never throws — always
+  // leaves an audit line and an `access-edit` record behind.
+  const cascade = await cascadeServerRemoval(removed, io, opts)
+  io.stdout.write(`removed server "${removed}"; cascaded: ${cascadeSummary(cascade)}\n`)
+  return 0
 }

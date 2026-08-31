@@ -12,7 +12,7 @@ import {
   type AdminStoreOptions,
 } from '../admin/store.js'
 import { formatReadableField } from '../journal/format.js'
-import { StoreCorruptError, StoreLockError } from '../policy/store.js'
+import { StoreCorruptError, StoreLockError, StoreWriteRejectedError } from '../policy/store.js'
 import {
   ADMIN_USAGE,
   TOKEN_ONCE_NOTICE,
@@ -52,6 +52,7 @@ const EXPECTED_ERRORS = [
   LastOwnerError,
   StoreCorruptError,
   StoreLockError,
+  StoreWriteRejectedError,
 ] as const
 
 /**
