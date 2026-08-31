@@ -304,24 +304,39 @@ export function renderAddConfirm(view: AddConfirmView): string {
 export interface RemoveWarningView {
   readonly serverName: string
   readonly agents: readonly string[]
+  /**
+   * Groups holding a grant for the server (G6). Optional so a caller that
+   * predates groups still renders the agent half unchanged; the handler
+   * always passes it.
+   */
+  readonly groups?: readonly string[]
   readonly csrfToken: string
   readonly currentAdmin: CurrentAdmin
 }
 
+/** One labelled list of holders, or nothing when that half is empty. */
+function holderList(label: string, names: readonly string[]): Html {
+  if (names.length === 0) return html``
+  const items = join(names.map((name) => html`<li><code>${name}</code></li>`))
+  return html`<p class="small muted">${label}</p>
+    <ul class="rows srv-holders">${items}</ul>`
+}
+
 /**
- * The confirmation page shown when a server still has active agent grants:
- * it names every affected agent and requires an explicit confirm before the
- * grant-orphaning removal proceeds.
+ * The confirmation page shown when a server is still granted to agents or
+ * groups: it names every affected holder and requires an explicit confirm,
+ * because confirming CASCADES (G6) — the grants are dropped with the server,
+ * not left pointing at something that no longer exists.
  */
 export function renderRemoveWarning(view: RemoveWarningView): string {
-  const items = join(view.agents.map((name) => html`<li><code>${name}</code></li>`))
+  const groups = view.groups ?? []
   const content = renderInterstitial({
     heading: html`Remove server “${view.serverName}”?`,
     warning: html`<p role="alert">
-        ${view.agents.length} agent(s) still hold grants for this server. Removing it leaves
-        those grants pointing at a server that no longer exists:
+        Removing this server also removes it from
+        ${String(view.agents.length)} agent grants and ${String(groups.length)} groups:
       </p>`,
-    details: html`<ul class="rows srv-holders">${items}</ul>`,
+    details: html`${holderList('Agents', view.agents)}${holderList('Groups', groups)}`,
     form: html`<form method="post" action="/servers/remove">
         ${csrfField(view.csrfToken)}
         <input type="hidden" name="name" value="${view.serverName}" />

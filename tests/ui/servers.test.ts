@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
 import { createAgentsStore } from '../../src/agents/store.js'
+import { createGroupsStore } from '../../src/groups/store.js'
+import type { AccessEditInfo } from '../../src/journal/record.js'
 import { createRegistryStore } from '../../src/registry/store.js'
 import { createVaultStore } from '../../src/vault/store.js'
 import type { InventoryStoreData } from '../../src/policy/inventory-store.js'
@@ -26,7 +28,10 @@ interface Harness {
   readonly audit: UiAuditEvent[]
   readonly registry: ReturnType<typeof createRegistryStore>
   readonly agents: ReturnType<typeof createAgentsStore>
+  readonly groups: ReturnType<typeof createGroupsStore>
   readonly vault: ReturnType<typeof createVaultStore>
+  /** Every `access-edit` the handlers handed to the injected journal port. */
+  readonly accessEdits: AccessEditInfo[]
   dispose(): void
 }
 
@@ -38,21 +43,29 @@ function makeHarness(inventory?: InventoryStoreData): Harness {
   const dir = mkdtempSync(join(tmpdir(), 'mcp-ui-servers-'))
   const registry = createRegistryStore(dir)
   const agents = createAgentsStore({ journalDir: dir })
+  const groups = createGroupsStore({ journalDir: dir })
   const vault = createVaultStore({ journalDir: dir })
   const audit: UiAuditEvent[] = []
+  const accessEdits: AccessEditInfo[] = []
   const handlers = createServersHandlers({
     registry,
     agents,
+    groups,
     vault,
     audit: (event) => audit.push(event),
+    journalAccessEdit: async (info) => {
+      accessEdits.push(info)
+    },
     ...(inventory !== undefined ? { readInventory: async () => inventory } : {}),
   })
   return {
     dir,
     handlers,
     audit,
+    accessEdits,
     registry,
     agents,
+    groups,
     vault,
     dispose: () => rmSync(dir, { recursive: true, force: true }),
   }
@@ -601,6 +614,118 @@ describe('serversRemove', () => {
       await h.handlers.serversRemove(formPost({ csrf_token: OWNER.csrfToken, name: 'ghost' }, '/servers/remove')),
     )
     expect(res.status).toBe(404)
+  })
+
+  test('an empty body is an unknown server (404), never a 500', async () => {
+    h = makeHarness()
+    const res = asResponse(await h.handlers.serversRemove(formPost({}, '/servers/remove')))
+    expect(res.status).toBe(404)
+    expect(h.accessEdits).toHaveLength(0)
+  })
+})
+
+describe('serversRemove — cascade into grants and groups (G6, Task 10)', () => {
+  /** A server granted by one agent and one group, plus a group that does not grant it. */
+  async function seedHolders(): Promise<void> {
+    if (h === null) throw new Error('harness not built')
+    await h.registry.addServer({ name: 'github', transport: 'stdio', command: 'node' })
+    await h.agents.createAgent('research-bot')
+    await h.agents.grantServer('research-bot', 'github', ['read_file'])
+    await h.groups.createGroup('analytics')
+    await h.groups.createGroup('idle')
+    await h.groups.grantServer('analytics', 'github', ['read_file'])
+  }
+
+  test('the interstitial names the groups granting the server and counts both holders', async () => {
+    h = makeHarness()
+    await seedHolders()
+    const res = asResponse(
+      await h.handlers.serversRemove(formPost({ csrf_token: OWNER.csrfToken, name: 'github' }, '/servers/remove')),
+    )
+    expect(res.status).toBe(200)
+    const body = String(res.body)
+    expect(body).toContain('research-bot')
+    expect(body).toContain('analytics')
+    expect(body).not.toContain('idle')
+    expect(body).toContain('1 agent grants and 1 groups')
+    expect((await h.registry.listServers()).map((s) => s.name)).toEqual(['github'])
+    expect(h.accessEdits).toHaveLength(0)
+  })
+
+  test('a group grant alone is enough to earn the interstitial', async () => {
+    h = makeHarness()
+    await h.registry.addServer({ name: 'github', transport: 'stdio', command: 'node' })
+    await h.groups.createGroup('analytics')
+    await h.groups.grantServer('analytics', 'github', '*')
+    const res = asResponse(
+      await h.handlers.serversRemove(formPost({ csrf_token: OWNER.csrfToken, name: 'github' }, '/servers/remove')),
+    )
+    expect(res.status).toBe(200)
+    expect(String(res.body)).toContain('analytics')
+  })
+
+  test('confirming strips the server from every agent grant and every group', async () => {
+    h = makeHarness()
+    await seedHolders()
+    const res = asResponse(
+      await h.handlers.serversRemove(
+        formPost({ csrf_token: OWNER.csrfToken, name: 'github', confirm: 'true' }, '/servers/remove'),
+      ),
+    )
+    expect(res.status).toBe(303)
+    expect(Object.keys((await h.agents.getAgent('research-bot'))?.grants ?? {})).toEqual([])
+    expect((await h.groups.listGroups()).map((group) => Object.keys(group.grants))).toEqual([[], []])
+    expect(h.audit).toEqual([
+      { actor: 'ui', adminName: 'alice', action: 'server.remove', target: 'github' },
+    ])
+  })
+
+  test('the cascade is journalled once, attributed to the signed-in admin', async () => {
+    h = makeHarness()
+    await seedHolders()
+    await h.handlers.serversRemove(
+      formPost({ csrf_token: OWNER.csrfToken, name: 'github', confirm: 'true' }, '/servers/remove'),
+    )
+    expect(h.accessEdits).toEqual([
+      {
+        actor: { adminName: 'alice', role: 'owner', via: 'ui' },
+        action: 'server.remove',
+        server: 'github',
+        affectedAgents: ['research-bot'],
+        affectedGroups: ['analytics'],
+      },
+    ])
+  })
+
+  test('a removal that touched nothing still journals, with empty cascade lists', async () => {
+    h = makeHarness()
+    await h.registry.addServer({ name: 'solo', transport: 'stdio', command: 'node' })
+    const res = asResponse(
+      await h.handlers.serversRemove(formPost({ csrf_token: OWNER.csrfToken, name: 'solo' }, '/servers/remove')),
+    )
+    expect(res.status).toBe(303)
+    expect(h.accessEdits).toHaveLength(1)
+    expect(h.accessEdits[0]).toMatchObject({ affectedAgents: [], affectedGroups: [] })
+  })
+
+  test('a journal port that rejects cannot turn a completed removal into a 500', async () => {
+    h = makeHarness()
+    const dir = h.dir
+    const handlers = createServersHandlers({
+      registry: h.registry,
+      agents: h.agents,
+      groups: h.groups,
+      vault: h.vault,
+      journalAccessEdit: async () => {
+        throw new Error('journal unreachable')
+      },
+    })
+    await createRegistryStore(dir).addServer({ name: 'solo', transport: 'stdio', command: 'node' })
+    const res = asResponse(
+      await handlers.serversRemove(formPost({ csrf_token: OWNER.csrfToken, name: 'solo' }, '/servers/remove')),
+    )
+    expect(res.status).toBe(303)
+    expect(await h.registry.listServers()).toHaveLength(0)
   })
 })
 

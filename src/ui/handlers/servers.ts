@@ -2,6 +2,8 @@ import { formatPolicyErrors } from '../../policy/load.js'
 import { parseServerRecord } from '../../registry/schema.js'
 import type { RegistryStore } from '../../registry/store.js'
 import type { AgentsStore } from '../../agents/store.js'
+import type { GroupsStore } from '../../groups/store.js'
+import type { AccessEditInfo } from '../../journal/record.js'
 import type { VaultStore } from '../../vault/store.js'
 import type { InventoryStoreData } from '../../policy/inventory-store.js'
 import type { PolicyView } from '../../policy/edit/policy-view.js'
@@ -61,7 +63,9 @@ export interface UiAuditEvent {
 
 export interface ServersHandlersDeps {
   readonly registry: Pick<RegistryStore, 'listServers' | 'addServer' | 'updateServer' | 'removeServer'>
-  readonly agents: Pick<AgentsStore, 'listAgents'>
+  readonly agents: Pick<AgentsStore, 'listAgents' | 'ungrantServerEverywhere'>
+  /** Group store port for the `server remove` cascade and its interstitial (G6). */
+  readonly groups: Pick<GroupsStore, 'listGroups' | 'ungrantServerEverywhere'>
   readonly vault: Pick<VaultStore, 'listSecrets'>
   /** Receives an attributed record of each successful mutation. Optional. */
   readonly audit?: (event: UiAuditEvent) => void
@@ -87,6 +91,12 @@ export interface ServersHandlersDeps {
    * the rule controls; without it the page renders exactly as before.
    */
   readonly readPolicyView?: () => Promise<PolicyView>
+  /**
+   * Journal port for access changes (G6), injected by `cli/ui-wiring.ts`.
+   * Optional: without it a removal still cascades and is still attributed on
+   * the audit sink, it simply leaves no journal record.
+   */
+  readonly journalAccessEdit?: (info: AccessEditInfo) => Promise<unknown>
 }
 
 export interface ServersHandlers {
@@ -339,16 +349,29 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
     return redirect('/servers')
   }
 
+  /**
+   * Removes a server and cascades: the same removal drops the server from
+   * every personal grant and every group grant (owner decision G6). The
+   * registry write goes FIRST — it is the source of truth, and a grant left
+   * pointing at a gone server is today's tolerated state, while the reverse
+   * is not. Three documents mean three independent CAS writes with no shared
+   * transaction; a crash between them leaves a dangling grant that repeating
+   * the removal repairs (both cascade calls are idempotent).
+   */
   async function serversRemove(ctx: UiRequestContext): Promise<UiResult> {
     const fields = fieldsOf(ctx)
     const name = fields.name ?? ''
     const confirmed = fields.confirm === 'true'
     if (!confirmed) {
-      const holders = await agentsGranting(deps.agents, name)
-      if (holders.length > 0) {
+      const [holders, holdingGroups] = await Promise.all([
+        agentsGranting(deps.agents, name),
+        groupsGranting(deps.groups, name),
+      ])
+      if (holders.length > 0 || holdingGroups.length > 0) {
         const body = renderRemoveWarning({
           serverName: name,
           agents: holders,
+          groups: holdingGroups,
           csrfToken: csrfTokenOf(ctx),
           currentAdmin: currentAdminOf(ctx),
         })
@@ -359,8 +382,46 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
     if (result.status === 'not-found') {
       return { kind: 'response', status: HTTP_STATUS_NOT_FOUND, body: 'unknown server' }
     }
-    audit(ctx, 'server.remove', result.record.name)
+    const server = result.record.name
+    const affectedAgents = await deps.agents.ungrantServerEverywhere(server)
+    const affectedGroups = await deps.groups.ungrantServerEverywhere(server)
+    audit(ctx, 'server.remove', server)
+    await journalRemoval(ctx, server, affectedAgents, affectedGroups)
     return redirect('/servers')
+  }
+
+  /**
+   * Records the cascade in the journal. The removal has already happened when
+   * this runs, so a journal that cannot be reached must not turn a completed
+   * removal into a 500: the injected writer never throws by contract
+   * (`groups/journal-access-edit.ts` returns a drop indicator instead), and
+   * this guard keeps that true for ANY injected port.
+   */
+  async function journalRemoval(
+    ctx: UiRequestContext,
+    server: string,
+    affectedAgents: readonly string[],
+    affectedGroups: readonly string[],
+  ): Promise<void> {
+    const write = deps.journalAccessEdit
+    if (write === undefined) return
+    try {
+      await write({
+        actor: {
+          adminName: ctx.session?.adminName ?? null,
+          role: ctx.session?.role ?? null,
+          via: 'ui',
+        },
+        action: 'server.remove',
+        server,
+        affectedAgents,
+        affectedGroups,
+      })
+    } catch {
+      // Deliberately contained, not swallowed silently: the audit sink above
+      // already recorded the attributed removal, and the writer's own
+      // diagnostics report the drop.
+    }
   }
 
   async function vaultPage(ctx: UiRequestContext): Promise<UiResult> {
@@ -378,6 +439,15 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
   }
 
   return { serversPage, serversAdd, serversEdit, serversRemove, vaultPage }
+}
+
+/** Names of the groups holding a grant for `serverName`, in store order. */
+async function groupsGranting(
+  groups: Pick<GroupsStore, 'listGroups'>,
+  serverName: string,
+): Promise<readonly string[]> {
+  const all = await groups.listGroups()
+  return all.filter((group) => Object.hasOwn(group.grants, serverName)).map((group) => group.name)
 }
 
 /** Names of active (non-revoked) agents holding a grant for `serverName`. */

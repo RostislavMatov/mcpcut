@@ -1,5 +1,7 @@
 import type { AgentsStore } from '../agents/store.js'
 import type { AdminStore } from '../admin/store.js'
+import { createGroupsStore } from '../groups/store.js'
+import { journalAccessEdit } from '../groups/journal-access-edit.js'
 import { formatReadableField } from '../journal/format.js'
 import { createSessionIndexCache } from '../journal/index-cache.js'
 import { searchAllSessions, searchSession } from '../journal/search.js'
@@ -237,6 +239,9 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
   // Pick<> a runtime fact, not just a type-checker fact.
   const probes = composeProbes(deps)
   const policyEnv = { journalDir: deps.journalDir, env: deps.env ?? process.env, cwd: deps.cwd ?? process.cwd() }
+  // The one group store of this process: the servers handlers cascade through
+  // it on removal (G6) and the groups surfaces read and write it.
+  const groups = createGroupsStore({ journalDir: deps.journalDir })
   const servers = createServersHandlers({
     registry: {
       listServers: () => deps.registry.listServers(),
@@ -246,6 +251,11 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
     },
     agents: {
       listAgents: () => deps.agents.listAgents(),
+      ungrantServerEverywhere: (name) => deps.agents.ungrantServerEverywhere(name),
+    },
+    groups: {
+      listGroups: () => groups.listGroups(),
+      ungrantServerEverywhere: (name) => groups.ungrantServerEverywhere(name),
     },
     vault: {
       listSecrets: () => deps.vault.listSecrets(),
@@ -254,6 +264,13 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
     readInventory: () => inventory.read(),
     probes: probes.port,
     readPolicyView: () => readPolicyView(policyEnv),
+    journalAccessEdit: (info) =>
+      journalAccessEdit({
+        info,
+        dir: deps.journalDir,
+        diagnostics: (line) => deps.stderr.write(line),
+        ...(deps.clock !== undefined ? { clock: deps.clock } : {}),
+      }),
   })
   // Policy editing (ADR-0009, corrected 2026-08-26): the read view feeds the
   // page, the rule handler is the one HTTP path that writes `policy.json`.

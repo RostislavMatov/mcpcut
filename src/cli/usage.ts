@@ -28,6 +28,16 @@ export const USAGE = `Usage:
                                          Grant a server (optionally specific tools) to an agent
   mcp-journal agent ungrant <agent> <server> | revoke <name> | list
                                          Edit or inspect agent identities and grants
+  mcp-journal group create <name>|remove <name>|list|show <name>
+                                         Manage server groups: a group carries per-server grants
+                                         and the agents that inherit them (owner token via
+                                         MCP_ADMIN_TOKEN; list and show need none)
+  mcp-journal group grant <group> <server> [--tools a,b,prefix*] [--resources ...|*] [--prompts ...|*]
+                                         Grant a server to a group (same asymmetric defaults as
+                                         agent grant); ungrant <group> <server> removes it
+  mcp-journal group join <group> <agent> | leave <group> <agent>
+                                         Add or remove a member; a personal grant for the same
+                                         server overrides the group's
   mcp-journal sessions                  List journaled sessions
   mcp-journal show <sessionId> [--method X] [--direction Y] [--kind Z] [--json]
                                          Print one session's journal records

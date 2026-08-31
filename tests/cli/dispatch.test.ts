@@ -195,7 +195,7 @@ describe('dispatch: M3 commands route to their modules', () => {
     const exitCode = await dispatch(['--help'], io)
 
     expect(exitCode).toBe(0)
-    for (const name of ['connect', 'serve', 'server add', 'vault init', 'agent create']) {
+    for (const name of ['connect', 'serve', 'server add', 'vault init', 'agent create', 'group create']) {
       expect(io.out()).toContain(name)
     }
   })
@@ -233,6 +233,24 @@ describe('dispatch: M3 commands route to their modules', () => {
     const exitCode = await dispatch(['agent', 'list'], io, { agent: { journalDir: tempDir } })
 
     expect(exitCode).toBe(0)
+  })
+
+  test('group list routes with an isolated store', async () => {
+    const io = fakeIo()
+
+    const exitCode = await dispatch(['group', 'list'], io, { group: { journalDir: tempDir, env: {} } })
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain('(no groups)')
+  })
+
+  test('group: an unknown subcommand prints the group usage with exit 1', async () => {
+    const io = fakeIo()
+
+    const exitCode = await dispatch(['group', 'bogus'], io, { group: { journalDir: tempDir, env: {} } })
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('group create <name>')
   })
 
   test('connect without MCP_AGENT_TOKEN refuses before any traffic', async () => {

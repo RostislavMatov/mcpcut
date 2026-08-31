@@ -2,7 +2,9 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { createEffectiveAgentReader } from '../../src/agents/effective-reader.js'
 import type { AgentRecord } from '../../src/agents/schema.js'
+import type { GroupRecord } from '../../src/groups/schema.js'
 import { createJournalSink, type JournalSink } from '../../src/journal/sink.js'
 import type { JournalRecord } from '../../src/journal/record.js'
 import {
@@ -396,6 +398,44 @@ describe('a live agent-watch drives grantsHash on the next record', () => {
     const stamped = (await readDecisions()).map((record) => record.decision?.grantsHash)
     expect(stamped).toEqual([grantsHashOf(before.grants), grantsHashOf(after.grants)])
     expect(stamped[0]).not.toBe(stamped[1])
+    expect(errors).toEqual([])
+  })
+
+  test('a grant held through a group is fingerprinted EXPANDED, not as the empty personal matrix', async () => {
+    // M5.5 п.2 decision G5: the watch reads through the effective-agent
+    // reader, so what the record names is what the agent could actually do at
+    // that moment -- an auditor reading `grantsHash` must not have to know
+    // whether the access came from a personal grant or a group.
+    const personal: AgentRecord = { ...agentRecordOf([]), grants: {} }
+    const group: GroupRecord = {
+      name: 'analytics',
+      createdAt: '2026-08-31T00:00:00.000Z',
+      grants: { [SERVER_NAME]: { tools: ['read_file'] } },
+      members: [personal.name],
+    }
+    const reader = createEffectiveAgentReader({
+      agents: {
+        getAgent: () => Promise.resolve(personal),
+        findAgentByToken: () => Promise.resolve(personal),
+      },
+      groups: { groupsOf: () => Promise.resolve([group]) },
+    })
+
+    const watch = startAgentWatch({
+      record: (await reader.getAgent(personal.name)) as AgentRecord,
+      serverName: SERVER_NAME,
+      store: reader,
+      pollIntervalMs: 5,
+      onRevoked: () => errors.push(new Error('unexpected revocation')),
+      onError: (error) => errors.push(error),
+    })
+    const { gate } = createHarness({ agentScope: watch.scope })
+
+    await gate.gateClientMessage(toolCall(1, 'read_file'))
+
+    const stamped = (await readDecisions()).map((record) => record.decision?.grantsHash)
+    expect(stamped).toEqual([grantsHashOf({ [SERVER_NAME]: { tools: ['read_file'] } })])
+    expect(stamped[0]).not.toBe(grantsHashOf(personal.grants))
     expect(errors).toEqual([])
   })
 })

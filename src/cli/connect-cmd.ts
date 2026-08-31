@@ -1,9 +1,11 @@
 import type { Readable, Writable } from 'node:stream'
 import { parseArgs } from 'node:util'
 import { ulid } from 'ulid'
+import { createEffectiveAgentReader } from '../agents/effective-reader.js'
 import type { AgentRecord } from '../agents/schema.js'
 import { createAgentsStore, type AgentsStore } from '../agents/store.js'
 import { JOURNAL_DIR } from '../config.js'
+import { createGroupsStore, type GroupsStore } from '../groups/store.js'
 import type { LoadPolicyOptions } from '../policy/load.js'
 import type { PolicyProvider } from '../policy/reload.js'
 import { guardDiagnostics } from '../proxy/diagnostics.js'
@@ -103,6 +105,8 @@ export interface ConnectDeps {
   readonly killEscalationMs?: number
   /** Store overrides, for tests that need a fake rather than a temp directory. */
   readonly agentsStore?: Pick<AgentsStore, 'findAgentByToken' | 'getAgent'>
+  /** Group source for effective grants (M5.5 п.2); defaults to `<journalDir>/state.db`. */
+  readonly groupsStore?: Pick<GroupsStore, 'groupsOf'>
   readonly registryStore?: Pick<RegistryStore, 'getServer' | 'listServers'>
   /** @internal test-only seam for exercising fail-closed without an unwritable disk. */
   readonly journalCommitBatchImpl?: StartConnectSessionArgs['journalCommitBatchImpl']
@@ -210,13 +214,19 @@ export async function runConnect(
 
   const agents =
     deps.agentsStore ?? createAgentsStore(journalDir !== undefined ? { journalDir } : {})
+  const groups =
+    deps.groupsStore ?? createGroupsStore(journalDir !== undefined ? { journalDir } : {})
+  // Every read of an agent record on this path — the pre-traffic checks below
+  // and the session's revocation watch — goes through the reader, so a grant
+  // held through a group is indistinguishable from a personal one (G2/G5).
+  const agentReader = createEffectiveAgentReader({ agents, groups })
   const registry = deps.registryStore ?? createRegistryStore(journalDir)
 
   const target = await resolveConnectTarget({
     serverName: flags.server,
     agentName: flags.agent,
     env,
-    agents,
+    agents: agentReader,
     registry,
   })
   if (target.status === 'refused') {
@@ -250,7 +260,7 @@ export async function runConnect(
     deps,
     flags,
     onDiagnostic,
-    agentStore: agents,
+    agentStore: agentReader,
     agent: target.agent,
     policy: policyOutcome.policy,
     prepared: prepared.upstream,
