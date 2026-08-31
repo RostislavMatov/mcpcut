@@ -353,6 +353,10 @@ mcp-journal server list | show <name> | remove <name>
 mcp-journal vault init | set <name> | list | remove <name> | rekey
 mcp-journal agent create <name> | list | revoke <name>
 mcp-journal agent grant <agent> <server> [--tools a,b,prefix*] | ungrant <agent> <server>
+mcp-journal group create <name> | remove <name> | list | show <name>
+mcp-journal group grant <group> <server> [--tools a,b,prefix*] [--resources ...|*] [--prompts ...|*]
+mcp-journal group ungrant <group> <server>
+mcp-journal group join <group> <agent> | leave <group> <agent>   # mutations need MCP_ADMIN_TOKEN (owner)
 mcp-journal sessions
 mcp-journal show <sessionId> [--method X] [--direction Y] [--kind Z] [--json]
 mcp-journal policy validate [path]
@@ -454,7 +458,7 @@ Its state lives in `~/.mcp-journal/`:
 
 | File | Holds | Changed by |
 |---|---|---|
-| `state.db` | Control-plane state, one document/table per store: server registry, agent identities & grant matrix, admin accounts, tool inventory (quarantine baselines), approvals queue. Supersedes the legacy `registry.json`/`agents.json`/`admins.json`/`tool-inventory.json`/`approvals/` files below (M4.5, ADR-0006) | `mcp-journal server/agent/admin/quarantine/approvals ...` |
+| `state.db` | Control-plane state, one document/table per store: server registry, agent identities & grant matrix, server groups, admin accounts, tool inventory (quarantine baselines), approvals queue. Supersedes the legacy `registry.json`/`agents.json`/`admins.json`/`tool-inventory.json`/`approvals/` files below (M4.5, ADR-0006) | `mcp-journal server/agent/group/admin/quarantine/approvals ...` |
 | `journal.db` | The journal (`journal_records` table), plus a marker of which legacy `*.jsonl` files have been imported | the proxy; `mcp-journal migrate` |
 | `registry.json`, `agents.json`, `admins.json`, `tool-inventory.json`, `approvals/` | Legacy pre-M4.5 files — read once into `state.db` (by `migrate`, or lazily on first touch), then left untouched as a cold backup | — (historical; no longer written) |
 | `vault.enc`, `vault.key` | Secrets encrypted with AES-256-GCM, plus the master key | `mcp-journal vault ...` |
@@ -538,6 +542,55 @@ the plane's environment. (`wrap` keeps full inheritance, as before.)
 Policies compose on top of grants, they do not replace them: a granted tool
 still goes through classification, quarantine, deny rules and approvals
 exactly as described above. Deny always wins.
+
+### Server groups
+
+A group is a named set of per-server grants plus the agents that inherit them.
+It exists so a typical set of servers ("analytics" = postgres + clickhouse +
+grafana) is described once instead of being repeated for every agent:
+
+```
+mcp-journal group create analytics
+mcp-journal group grant analytics clickhouse --tools "query,describe_*"
+mcp-journal group grant analytics postgres --tools "*"
+mcp-journal group join analytics research-bot
+mcp-journal group show analytics
+```
+
+`create`, `remove`, `grant`, `ungrant`, `join` and `leave` need a personal
+admin token of role `owner` in `MCP_ADMIN_TOKEN` (the same bar as
+`agent grant`); `list` and `show` need none. Every mutation prints an audit
+line on stderr and writes an `access-edit` record into the journal with the
+admin's name — the same treatment `policy set` gets.
+
+**A group is not a login.** There is no group key and no shared token: the
+agent still authenticates with its own token, and journal records still name
+the agent. A group hands out *permissions* in bulk, nothing else — see
+[ADR-0010](docs/adr/0010-server-groups.md).
+
+**How grants merge.** Per server, not per field:
+
+- if the agent has its own grant for a server, that grant wins **wholesale** —
+  the groups' grants for that server are ignored, including the fields the
+  personal grant leaves out. Narrowing one agent's access to one server is
+  therefore never undone by a group;
+- otherwise every group the agent belongs to that grants the server
+  contributes, and the contributions are unioned: `*` anywhere wins, lists are
+  merged and deduplicated, and `resources`/`prompts` stay **absent** (that is,
+  denied) unless some group declares them.
+
+Editing a group's members or grants changes access immediately: live sessions
+pick it up on their next revocation poll (≤ 5 s), and the `grantsHash` in each
+decision record is computed from the expanded matrix, so "which edition of the
+permissions allowed this" stays reproducible. An installation with no groups
+produces exactly the hashes it produced before groups existed.
+
+Removing a group that still has members is refused, and the refusal lists them.
+`mcp-journal server remove <name>` cascades: the server is dropped from every
+personal grant and every group grant, and the cascade is journaled
+(`removed server "x"; cascaded: 2 agent grants, 1 groups`). Without an admin
+token the removal still happens, and the record says the change was
+unattributed.
 
 ### Revoking access
 

@@ -3,6 +3,11 @@ import { APP_JS } from '../../src/ui/assets/app-js.js'
 import { matchRoute } from '../../src/ui/authz.js'
 import { renderAdminsPage } from '../../src/ui/pages/admins.js'
 import { renderAgentsPage } from '../../src/ui/pages/agents.js'
+import {
+  renderGroupRemoveConfirm,
+  renderGroupRemoveRefusal,
+  renderGroupsPage,
+} from '../../src/ui/pages/groups.js'
 import { renderApprovalsPage, type ApprovalCardView } from '../../src/ui/pages/approvals.js'
 import { renderLoginPage } from '../../src/ui/pages/login.js'
 import { renderQuarantinePage, type QuarantineCardView } from '../../src/ui/pages/quarantine.js'
@@ -14,6 +19,8 @@ import {
   type ServersView,
 } from '../../src/ui/pages/servers.js'
 import { serverToolsRegionKey } from '../../src/ui/pages/servers-tool-rule.js'
+import type { AgentRecord } from '../../src/agents/schema.js'
+import type { GroupRecord } from '../../src/groups/schema.js'
 import type { UiSession } from '../../src/ui/auth.js'
 import type { PolicyView } from '../../src/policy/edit/policy-view.js'
 import { parsePolicy } from '../../src/policy/schema.js'
@@ -75,6 +82,21 @@ const POLICY_VIEW: PolicyView = {
   hash: policyHashOf(POLICY),
   sourcePath: '/state/policy.json',
   readers: { kind: 'every-entry-point' },
+}
+
+/** One group with a grant and a member — enough to render every card region. */
+const GROUP: GroupRecord = {
+  name: 'analytics',
+  createdAt: '2026-08-31T00:00:00.000Z',
+  grants: { notes: { tools: ['read_note'] } },
+  members: ['research-bot'],
+}
+
+const GROUP_MEMBER: AgentRecord = {
+  name: 'research-bot',
+  createdAt: '2026-08-31T00:00:00.000Z',
+  tokenHash: 'a'.repeat(64),
+  grants: {},
 }
 
 /** The servers page with an inventory and a loaded policy: tools panels, rule pills and controls. */
@@ -151,6 +173,35 @@ function allPages(): ReadonlyArray<{ readonly name: string; readonly html: strin
       }),
     },
     { name: 'agents', html: renderAgentsPage({ agents: [], session: SESSION }) },
+    {
+      name: 'groups',
+      html: renderGroupsPage({
+        groups: [GROUP],
+        agents: [GROUP_MEMBER],
+        servers: [{ name: 'notes', transport: 'stdio', command: 'notes-mcp' }],
+        session: SESSION,
+        canManage: true,
+        drawer: 'create-group',
+      }),
+    },
+    {
+      name: 'groups-empty',
+      html: renderGroupsPage({
+        groups: [],
+        agents: [],
+        servers: [],
+        session: SESSION,
+        canManage: false,
+      }),
+    },
+    {
+      name: 'groups-remove-confirm',
+      html: renderGroupRemoveConfirm({ group: GROUP, session: SESSION }),
+    },
+    {
+      name: 'groups-remove-refusal',
+      html: renderGroupRemoveRefusal({ group: GROUP, session: SESSION }),
+    },
     { name: 'admins', html: renderAdminsPage({ admins: [], session: SESSION }) },
     { name: 'login', html: renderLoginPage() },
   ]

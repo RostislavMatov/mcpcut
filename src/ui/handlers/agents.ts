@@ -9,6 +9,7 @@ import {
   type AgentsStore,
   type MethodGrantsInput,
 } from '../../agents/store.js'
+import type { GroupsStore } from '../../groups/store.js'
 import type { UiSession } from '../auth.js'
 import {
   BODY_FORBIDDEN,
@@ -44,6 +45,12 @@ export type UiAuditSink = (event: UiAuditEvent) => void
 
 export interface AgentsHandlersDeps {
   readonly agentsStore: AgentsStore
+  /**
+   * Read side of the groups store. The page needs the whole list to derive
+   * each agent's effective grants (M5.5 п.2, G2); nothing here writes groups —
+   * membership is edited on `/groups` only.
+   */
+  readonly groups: Pick<GroupsStore, 'listGroups'>
   readonly audit?: UiAuditSink
 }
 
@@ -123,7 +130,7 @@ function methodGrantsFrom(form: Readonly<Record<string, string>>): MethodGrantsI
 }
 
 export function createAgentsHandlers(deps: AgentsHandlersDeps): AgentsHandlers {
-  const { agentsStore, audit } = deps
+  const { agentsStore, groups, audit } = deps
 
   function record(session: UiSession, action: string, target: string): void {
     audit?.({ actor: 'ui', adminName: session.adminName, action, target })
@@ -132,8 +139,8 @@ export function createAgentsHandlers(deps: AgentsHandlersDeps): AgentsHandlers {
   async function agentsPage(ctx: UiRequestContext): Promise<UiResult> {
     const session = ctx.session
     if (session === undefined) return FORBIDDEN
-    const agents = await agentsStore.listAgents()
-    return htmlResult(HTTP_STATUS_OK, renderAgentsPage({ agents, session }))
+    const [agents, groupList] = await Promise.all([agentsStore.listAgents(), groups.listGroups()])
+    return htmlResult(HTTP_STATUS_OK, renderAgentsPage({ agents, groups: groupList, session }))
   }
 
   async function agentsCreate(ctx: UiRequestContext): Promise<UiResult> {

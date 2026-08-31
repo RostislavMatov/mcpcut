@@ -1,7 +1,14 @@
 import type { AgentRecord } from '../../agents/schema.js'
+import type { GroupRecord } from '../../groups/schema.js'
 import type { UiSession } from '../auth.js'
+import { roleSatisfies } from '../authz.js'
 import { html, type Html, join, safeUrl } from '../html.js'
-import { renderAgentCard, renderCreateDrawer, renderGrantDrawer } from './agents-parts.js'
+import {
+  renderAgentCard,
+  renderCreateDrawer,
+  renderGrantDrawer,
+  renderGroupGrantDrawer,
+} from './agents-parts.js'
 import { type CurrentAdmin, renderLayout } from './layout.js'
 
 /**
@@ -22,6 +29,9 @@ function currentAdmin(session: UiSession): CurrentAdmin {
 /** The `<details>` id of the create form — also the nav `+` target. */
 const CREATE_DRAWER_ID = 'create-agent'
 
+/** The `<details>` id of the owner-only "add an agent to a group" form. */
+const GROUP_DRAWER_ID = 'grant-group'
+
 /**
  * The owner-only link to the admin-management page. `operator`/`viewer` never
  * see it (nor can they reach the route — ROUTE_TABLE pins `/admins` to owner);
@@ -31,6 +41,19 @@ function ownerAdminsLink(session: UiSession): Html {
   return session.role === 'owner'
     ? html`<a class="btn-ghost" href="${safeUrl('/admins')}">Manage admins</a>`
     : html``
+}
+
+/**
+ * Membership is an owner-only edit (G4), so `operator`/`viewer` are not shown
+ * a form the route would refuse anyway.
+ */
+function byGroupDrawer(
+  groups: readonly GroupRecord[],
+  agents: readonly AgentRecord[],
+  session: UiSession,
+): Html {
+  const canManageGroups = roleSatisfies(session.role, 'owner')
+  return canManageGroups ? renderGroupGrantDrawer(GROUP_DRAWER_ID, { groups, agents, session }) : html``
 }
 
 function plural(count: number, noun: string): string {
@@ -43,16 +66,23 @@ function agentsMeta(agents: readonly AgentRecord[]): string {
   return `${plural(agents.length, 'agent')} · ${String(active)} active`
 }
 
-/** Full-page render of the agent matrix and its edit drawers. */
+/**
+ * Full-page render of the agent matrix and its edit drawers. `groups` is the
+ * whole group list; each card derives its own effective rows from it. It
+ * defaults to none so a caller with no groups store (and every pre-groups
+ * render path) keeps producing exactly the personal matrix.
+ */
 export function renderAgentsPage(view: {
   readonly agents: readonly AgentRecord[]
+  readonly groups?: readonly GroupRecord[]
   readonly session: UiSession
 }): string {
   const { agents, session } = view
+  const groups = view.groups ?? []
   const list =
     agents.length === 0
       ? html`<p class="empty">no agents yet</p>`
-      : html`<div class="stack ag-list">${join(agents.map((agent) => renderAgentCard(agent, session)))}</div>`
+      : html`<div class="stack ag-list">${join(agents.map((agent) => renderAgentCard(agent, groups, session)))}</div>`
   const content = html`<section class="panel ag-panel" aria-label="Agent permissions">
     <div class="panel-hd">
       <h1>Agent permissions</h1>
@@ -62,6 +92,7 @@ export function renderAgentsPage(view: {
       <div class="grid-2 ag-drawers">
         ${renderCreateDrawer(CREATE_DRAWER_ID, session)}
         ${renderGrantDrawer('grant-server', session)}
+        ${byGroupDrawer(groups, agents, session)}
       </div>
       ${list}
     </div>
