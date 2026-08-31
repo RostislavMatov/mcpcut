@@ -70,12 +70,11 @@ import {
  *  3. Route match against the normative `ROUTE_TABLE` (the outcome is not yet
  *     acted on — see 4, which must not depend on whether the path exists).
  *  4. Off the public surface: resolve+re-validate the presented session
- *     cookie. A cookie that no longer resolves → clear it and send the caller
- *     to `/login` (303, or 401 for the page script) — the ONE refusal that
- *     varies by credential state, and identical for a listed and an unlisted
- *     path so it stays no oracle. No cookie at all falls through unchanged.
- *  5. No route match → 403 (deny-by-default: an unlisted route is denied to
- *     everyone, no existence oracle).
+ *     cookie. NOT SIGNED IN — no cookie, or one that no longer resolves (then
+ *     it is cleared) — → `/login` (303, or 401 for the page script),
+ *     identical for a listed and an unlisted path so it is no oracle.
+ *  5. No route match → 403 for a signed-in caller (deny-by-default: an
+ *     unlisted route is denied to everyone).
  *  6. Public routes (`/login`, assets) dispatch straight away.
  *  7. Protected routes: authorize by role → CSRF-check state-changing POSTs →
  *     dispatch.
@@ -259,27 +258,15 @@ export function createUiServer(opts: UiServerOptions): UiServer {
       sessionId !== undefined && session !== undefined
         ? { sessionId, adminName: session.adminName }
         : undefined
-    // No existence oracle: a missing session, an insufficient role and an
-    // unlisted route all collapse to the SAME byte-identical 403. Redirecting
-    // an anonymous GET to `/login` would let anyone enumerate real routes
-    // (302 for a listed path vs 403 for an unlisted one). The login page is
-    // still reachable directly at `GET /login` (public).
-    if (decision.kind !== 'allow' || session === undefined) {
-      // One exception to the uniform 403: an anonymous GET of the ROOT path is
-      // sent to `/login`. `/` is not a secret — every visitor types it — so the
-      // redirect leaks nothing, while a bare 403 on the landing page reads as
-      // "the plane is broken" to an operator who simply is not signed in yet
-      // (manual M4 smoke). The exception is exactly `/` and nothing else:
-      // redirecting any other protected path would restore the enumeration
-      // oracle (303 for a listed route vs 403 for an unlisted one).
-      if (session === undefined && req.method === 'GET' && path === '/') {
-        writeResult(res, {
-          kind: 'response',
-          status: HTTP_STATUS_SEE_OTHER,
-          headers: { location: '/login' },
-        })
-        return
-      }
+    // Not signed in → the sign-in screen, whatever was asked for (`sendToLogin`
+    // explains the shape). Signed in but short of the role → the uniform 403,
+    // byte-identical to an unlisted route: the two must stay indistinguishable,
+    // or a viewer could enumerate the owner-only surface.
+    if (session === undefined) {
+      sendToLogin(req, res, false)
+      return
+    }
+    if (decision.kind !== 'allow') {
       sendPlan(res, HTTP_STATUS_FORBIDDEN, BODY_FORBIDDEN)
       return
     }
@@ -301,31 +288,40 @@ export function createUiServer(opts: UiServerOptions): UiServer {
   }
 
   /**
-   * The answer to a request whose session cookie no longer resolves — expired,
-   * rotated, removed, demoted, or forged. The cookie is cleared (otherwise the
-   * browser presents the corpse on every later request, including the ones the
-   * login page makes) and the caller is pointed at `/login`.
+   * The answer to a request that is NOT SIGNED IN: either it presented a
+   * session cookie that no longer resolves (expired, rotated, removed,
+   * demoted, forged — then the cookie is cleared, otherwise the browser
+   * presents the corpse on every later request, including the ones the login
+   * page makes), or it presented none at all. Both are pointed at `/login`:
+   * the bare `{"error":"forbidden"}` blob a browser window used to render
+   * reads as "the plane is broken" to someone who is simply signed out — the
+   * complaint the M4 smoke raised about the landing page, which every other
+   * page shared until the answer stopped depending on the path.
    *
    * The split is by WHO ASKED, not by method. A navigation — a typed URL, a
-   * link, and the sign-out `<form method="post">` in the shell, which is a real
-   * form and not a scripted action — renders whatever comes back, so it gets
-   * the redirect and the human lands on the sign-in screen. The page script
-   * announces itself with `x-requested-with: fetch` and gets a 401 instead:
-   * `fetch` FOLLOWS a redirect transparently, so a 303 would hand the script
-   * the login document under a 200 and let a dead action report success it
-   * never had.
+   * link, a bookmark, and the sign-out `<form method="post">` in the shell,
+   * which is a real form and not a scripted action — renders whatever comes
+   * back, so it gets the redirect and the human lands on the sign-in screen.
+   * The page script announces itself with `x-requested-with: fetch` and gets a
+   * 401 instead: `fetch` FOLLOWS a redirect transparently, so a 303 would hand
+   * the script the login document under a 200 and let a dead action report
+   * success it never had.
    *
-   * This is the only refusal that varies by credential state, and it is not an
-   * existence oracle: the answer is the same for a listed and an unlisted
-   * path, and a caller with NO cookie still gets the uniform 403 everywhere.
+   * No existence oracle: the answer does not depend on whether the path is in
+   * the route table — an unlisted path answers exactly the same — so it says
+   * only "you are not signed in", which the caller already knew. What stays
+   * uniform is the refusal that DOES depend on the path's role: a signed-in
+   * caller below the bar and an unlisted route are one byte-identical 403.
    */
-  function sendSessionExpired(req: IncomingMessage, res: ServerResponse): void {
-    const setCookie = clearSessionCookie({ secure: behindTls })
+  function sendToLogin(req: IncomingMessage, res: ServerResponse, hadCookie: boolean): void {
+    // Nothing to clear when no cookie was presented; sending the header anyway
+    // would make the two cases distinguishable for no gain.
+    const setCookie = hadCookie ? { 'set-cookie': clearSessionCookie({ secure: behindTls }) } : {}
     if (headerValue(req.headers, SCRIPT_REQUEST_HEADER) === SCRIPT_REQUEST_VALUE) {
       writeResult(res, {
         kind: 'response',
         status: HTTP_STATUS_UNAUTHORIZED,
-        headers: { 'content-type': CONTENT_TYPE_JSON, 'set-cookie': setCookie },
+        headers: { 'content-type': CONTENT_TYPE_JSON, ...setCookie },
         body: BODY_SESSION_EXPIRED,
       })
       return
@@ -333,7 +329,7 @@ export function createUiServer(opts: UiServerOptions): UiServer {
     writeResult(res, {
       kind: 'response',
       status: HTTP_STATUS_SEE_OTHER,
-      headers: { location: '/login', 'set-cookie': setCookie },
+      headers: { location: '/login', ...setCookie },
     })
   }
 
@@ -369,11 +365,18 @@ export function createUiServer(opts: UiServerOptions): UiServer {
     const isPublicRoute = match !== null && match.entry.minRole === 'public'
     const { sessionId, session } = await presentedSession(req, isPublicRoute)
     if (sessionId !== undefined && session === undefined) {
-      sendSessionExpired(req, res)
+      sendToLogin(req, res, true)
       return
     }
     if (match === null) {
-      // Deny-by-default: unlisted route → 403 for everyone (no existence oracle).
+      // Deny-by-default. A caller who is not signed in is sent to `/login` here
+      // too — the answer must not turn on whether the path exists; for everyone
+      // else an unlisted route is a 403, the same one an over-privileged path
+      // gives (no existence oracle).
+      if (session === undefined) {
+        sendToLogin(req, res, false)
+        return
+      }
       sendPlan(res, HTTP_STATUS_FORBIDDEN, BODY_FORBIDDEN)
       return
     }
