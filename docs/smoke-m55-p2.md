@@ -1,7 +1,7 @@
 # Смок: группы серверов (M5.5 п. 2) — CLI, трафик, `/groups`, колонка Source, каскад `server remove`
 
 **Статус: ПРОЙДЕН** (прогон 2026-08-31, ветка `feat/m55-server-groups`, HEAD `b76a7f1`; 4317 тестов зелёные, `npm run lint` чист — оба **после** правки, найденной в смоке).
-Поверхности — по ADR-0010 §6 и плану `.claude/PRPs/plans/m55-server-groups.plan.md` §«Ручная проверка». Скриншоты — `docs/design/mcpcut/groups-page.png`, `groups-drawer.png`, `agents-source-column.png`, `servers-remove-cascade.png`, `journal-access-edit.png`.
+Поверхности — по ADR-0010 §6 и плану `.claude/PRPs/plans/completed/m55-server-groups.plan.md` §«Ручная проверка». Скриншоты — `docs/design/mcpcut/groups-page.png`, `groups-drawer.png`, `agents-source-column.png`, `servers-remove-cascade.png`, `journal-access-edit.png`.
 
 **Чем прогоняли:** живой стенд на подменённом `HOME` (реальный `~/.mcp-journal` не тронут), UI на порту 8098; управляемая stdio-фикстура `tests/fixtures/probe-server.mjs` (тулзы `read_note`/`write_note`) под двумя именами — `notes` и `other`; настоящий трафик через `connect` со сценарным JSON-RPC по stdin; браузер — headless Chromium скриптом (playwright из npx-кеша + `executablePath`, см. память `browser-smoke-without-mcp-gate`), в двух контекстах: **с JavaScript** и **с полностью выключенным JavaScript**; роли — тремя именными админами через `curl` (CSRF + `Origin`).
 
