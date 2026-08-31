@@ -1,0 +1,81 @@
+# Two containers, one per long-running process of the plane:
+#
+#   ui     — the admin console (approvals, quarantine, servers, agents, journal)
+#   serve  — the HTTP front agents talk MCP to
+#
+# There is deliberately no database container: the store is the built-in
+# `node:sqlite` (ADR-0006), so `state.db` and `journal.db` are files opened
+# in-process, not a service. Both containers therefore mount the SAME volume
+# and are two writers of the same files — which is what the code already
+# assumes (WAL, the O_EXCL policy lock, the `statSync` hot reload). That holds
+# because a named volume is one filesystem on one host; it would NOT hold if
+# these two services were scheduled onto different machines.
+#
+# `connect`, the stdio proxy, is not here on purpose: the agent's own client
+# spawns it and speaks to it over stdin/stdout, so it has no container shape.
+#
+# Policy resolution (ADR-0005) tries, in order: --policy, $MCP_JOURNAL_POLICY,
+# <cwd>/.mcp-journal/policy.json, <journalDir>/policy.json. The image's WORKDIR
+# (/app) holds no `.mcp-journal`, so both processes land on the file in the
+# volume — the same one the UI writes. Do NOT bind-mount a checkout over /app:
+# a `.mcp-journal/policy.json` in it would shadow the volume's policy, and the
+# console would then be editing rules the proxies do not enforce.
+#
+# First start prints a one-time bootstrap token for the `owner` admin to the
+# ui container's stderr:  docker compose logs ui
+# If it is missed:        docker compose run --rm ui admin rotate owner
+
+name: mcp-control-plane
+
+x-plane: &plane
+  build:
+    context: .
+  image: mcp-control-plane:local
+  volumes:
+    # Mounted at $HOME/.mcp-journal, which is what src/config.ts derives
+    # JOURNAL_DIR from. Both databases, the vault, policy.json and the
+    # installation signing key live here.
+    - mcp-data:/home/node/.mcp-journal
+  restart: unless-stopped
+  # The CLI installs SIGINT/SIGTERM handlers and shuts down gracefully; give
+  # in-flight batches room to commit before the daemon is killed.
+  stop_grace_period: 30s
+
+services:
+  ui:
+    <<: *plane
+    # 0.0.0.0 inside the container is the only way the published port reaches
+    # it; the port itself is published to host loopback below, so the console
+    # is no more exposed than it was running bare. Host screening still admits
+    # only localhost names — reach it at http://localhost:8091.
+    command: ["ui", "--host", "0.0.0.0", "--port", "8091"]
+    ports:
+      - "127.0.0.1:8091:8091"
+    healthcheck:
+      # GET /login is the one public route, so it exercises the whole stack
+      # (listener, router, renderer) rather than just the socket.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8091/login').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  serve:
+    <<: *plane
+    command: ["serve", "--host", "0.0.0.0", "--port", "8090"]
+    ports:
+      - "127.0.0.1:8090:8090"
+    # `serve` spawns registry MCP servers as child processes; PID 1 must reap
+    # them or the container accumulates zombies.
+    init: true
+    healthcheck:
+      # Every route of the agent front is authenticated, so there is no public
+      # response to assert on: this checks that the listener is accepting.
+      test: ["CMD", "node", "-e", "require('node:net').connect(8090, '127.0.0.1').on('connect', () => process.exit(0)).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  mcp-data:
