@@ -13,5 +13,36 @@
   },
   "journal": {
     "failClosed": true
+  },
+  "servers": {
+    "memory": {
+      "tools": {
+        "add_observations": "allow",
+        "create_entities": "allow",
+        "create_relations": "allow",
+        "delete_entities": "allow",
+        "delete_observations": "allow",
+        "delete_relations": "allow",
+        "open_nodes": "allow",
+        "read_graph": "allow",
+        "search_nodes": "allow"
+      }
+    },
+    "playwright": {
+      "tools": {
+        "browser_click": "allow",
+        "browser_close": "allow",
+        "browser_console_messages": "allow",
+        "browser_drag": "allow",
+        "browser_drop": "allow",
+        "browser_evaluate": "allow",
+        "browser_file_upload": "allow",
+        "browser_fill_form": "allow",
+        "browser_find": "allow",
+        "browser_handle_dialog": "allow",
+        "browser_hover": "allow",
+        "browser_navigate": "allow"
+      }
+    }
   }
 }
