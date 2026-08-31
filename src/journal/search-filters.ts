@@ -17,8 +17,24 @@ export interface JournalFilters {
   readonly toolName?: string
   /** Policy outcome of a `decision` record. */
   readonly outcome?: string
+  /** Agent name of a `decision` record; matched whole, never as a prefix. */
+  readonly agentName?: string
+  /**
+   * Inclusive day bounds (`YYYY-MM-DD`) over the record's own day. Day
+   * granularity, not instant granularity: this is what the period control
+   * emits and what an operator means by "the 11th". `ts` is fixed-width ISO
+   * UTC (`record.ts` builds it with `toISOString()`), so the day is its first
+   * ten characters and the comparison is a lexicographic one.
+   */
+  readonly from?: string
+  readonly to?: string
   /** Case-insensitive substring over payload, method and decision fields. */
   readonly text?: string
+}
+
+/** The `YYYY-MM-DD` day a record belongs to, read off its fixed-width ISO `ts`. */
+export function dayOf(record: JournalRecord): string {
+  return record.ts.slice(0, 10)
 }
 
 /** True when `record` satisfies every filter that was supplied. */
@@ -55,6 +71,17 @@ export function matchesWithNeedle(
     return false
   }
   if (filters.outcome !== undefined && record.decision?.outcome !== filters.outcome) {
+    return false
+  }
+  // A record with no agent is not "any agent": an agent filter asks for that
+  // agent's decisions, so traffic records and agent-less decisions drop out.
+  if (filters.agentName !== undefined && record.decision?.agentName !== filters.agentName) {
+    return false
+  }
+  if (filters.from !== undefined && dayOf(record) < filters.from) {
+    return false
+  }
+  if (filters.to !== undefined && dayOf(record) > filters.to) {
     return false
   }
   if (textNeedle !== undefined && !searchableText(record).includes(textNeedle)) {
