@@ -76,7 +76,7 @@ export const CSS_PAGE_SERVERS = `
 }
 
 /* Args: one argument per row, numbered by counter so the markup stays <li><code>. */
-.srv-args { counter-reset: arg; display: flex; flex-direction: column; gap: 4px; }
+.srv-args { counter-reset: arg -1; display: flex; flex-direction: column; gap: 4px; }
 .srv-args > li {
   counter-increment: arg;
   display: grid;
@@ -128,13 +128,34 @@ a.btn.srv-edit {
 a.btn.srv-edit:hover { background: var(--bg); color: var(--fg); }
 .srv-remove { margin-left: 0; }
 
-/* --- Tools sub-panel ------------------------------------------------------ */
-.srv-tools { border: 2px solid var(--fg); border-radius: var(--radius); overflow: hidden; }
-.srv-tools-sum { display: flex; align-items: center; gap: 12px; padding: 11px 12px; }
-.srv-tools-sum:hover { background: var(--select-bg); }
-.srv-tools-sum .pixel { font-size: 10px; }
-.srv-tools[open] > .srv-tools-sum { border-bottom: 2px solid var(--rule); }
-.srv-tool-rows { border: none; border-radius: 0; max-height: 420px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--fg) var(--hair); }
+/* --- Tools row + modal ----------------------------------------------------
+   The card body carries a single full-width control (tools, the exposed and
+   quarantined counts, "view") ; the list itself lives in the modal it opens. */
+a.srv-tools-open {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 11px 12px;
+  border: 2px solid var(--fg);
+  border-bottom: 2px solid var(--fg);
+  border-radius: var(--radius);
+  color: var(--fg);
+  text-decoration: none;
+}
+a.srv-tools-open:hover { background: var(--select-bg); }
+.srv-tools-open .pixel { font-size: 10px; }
+.srv-tools-action { white-space: nowrap; }
+.srv-modal-bd { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.srv-probing {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px;
+  border: 1px dashed var(--line);
+  border-radius: 5px;
+}
+.srv-tool-rows { border: 1px solid var(--rule); border-radius: 5px; max-height: 420px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--fg) var(--hair); }
 .srv-tool { display: flex; flex-direction: column; gap: 6px; }
 .srv-tool:hover { background: var(--hover-bg); }
 .srv-tool-name { font-size: 12px; word-break: break-all; }
@@ -156,15 +177,56 @@ button.srv-rule-btn.is-on, button.srv-rule-btn[aria-pressed="true"] { background
 button.srv-rule-btn-clear { border-style: dashed; }
 .srv-tools-note { padding: 9px 11px; }
 
+/* The state word beside the transport pill (the design's stateLabel). */
+.srv-state { letter-spacing: 0.14em; white-space: nowrap; }
+
+/* --- Release from quarantine (operator+, inside the tools modal) ----------
+   A nested disclosure, so the confirmation needs no JavaScript: the summary
+   IS the button, the body is the interstitial. */
+.srv-release { border: none; padding: 0; margin-top: 3px; }
+summary.srv-release-open {
+  display: inline-flex;
+  align-self: flex-start;
+  padding: 6px 11px;
+  border: 2px solid var(--fg);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-pixel);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+summary.srv-release-open:hover { background: var(--fg); color: var(--bg); }
+summary.srv-release-open::marker, summary.srv-release-open::-webkit-details-marker { content: none; display: none; }
+.srv-release-bd {
+  margin-top: 8px;
+  border: 2px solid var(--fg);
+  border-radius: 6px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: row-in 160ms steps(4);
+}
+.srv-release-hd { font-size: 10px; }
+.srv-release-bd p { margin: 0; line-height: 1.6; }
+.srv-release-bd .actions { display: flex; gap: 10px; align-items: center; }
+
 /* Sources line above the grid + the page-top policy banner. */
 .srv-policy-sources { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; line-height: 1.6; }
 .srv-policy-src code { font-size: 11px; }
 .srv-policy-banner { margin-bottom: 12px; }
 .srv-policy-errors { margin: 6px 0 0 14px; display: flex; flex-direction: column; gap: 4px; }
 
-/* --- Modal drawer (register / edit) --------------------------------------- */
-.srv-drawer { border: none; padding: 0; }
-.srv-drawer > summary.srv-drawer-sum {
+/* --- Modal drawers (register / edit, and the tools list) ------------------ */
+/* The details.drawer rule in components.ts is more specific than a bare class, so
+   both overlay drawers must out-specify it or a CLOSED one leaves a 2px
+   bordered sliver on the page (its summary is visually hidden). */
+details.srv-drawer, details.srv-tools-modal { border: none; border-radius: 0; padding: 0; background: none; overflow: visible; }
+details.srv-drawer:not([open]), details.srv-tools-modal:not([open]) { display: none; }
+.srv-drawer > summary.srv-drawer-sum, .srv-tools-modal > summary.srv-drawer-sum {
   padding: 0;
   margin: 0;
   border: 0;
@@ -175,7 +237,7 @@ button.srv-rule-btn-clear { border-style: dashed; }
   clip-path: inset(50%);
   white-space: nowrap;
 }
-.srv-drawer[open] {
+.srv-drawer[open], .srv-tools-modal[open] {
   position: fixed;
   inset: 0;
   z-index: 40;
@@ -187,6 +249,7 @@ button.srv-rule-btn-clear { border-style: dashed; }
   justify-content: center;
   padding: 32px;
 }
+.srv-tools-modal[open] { z-index: 45; }
 .srv-modal {
   width: 100%;
   max-width: 520px;
@@ -245,6 +308,8 @@ a.icon.srv-modal-x:hover { border-color: var(--fg); }
 .srv-form legend { padding: 0 4px; }
 .srv-form:has(input[name='transport'][value='http']:checked) .grp-stdio { display: none; }
 .srv-form:has(input[name='transport'][value='stdio']:checked) .grp-http { display: none; }
+.srv-form:has(input[name='transport'][value='http']:checked) .note-stdio { display: none; }
+.srv-form:has(input[name='transport'][value='stdio']:checked) .note-http { display: none; }
 .srv-form .choices { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .srv-form .grp-http .choices { grid-template-columns: repeat(3, 1fr); }
 .srv-form .choices .choice { justify-content: center; }

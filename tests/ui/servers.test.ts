@@ -235,6 +235,30 @@ describe('serversPage — McpCut structure', () => {
     expect(body).not.toContain('tools ·')
   })
 
+  test('?tools=<name> renders that server\'s tools modal open — the no-JS path of "view →"', async () => {
+    h = makeHarness(githubInventory())
+    await h.registry.addServer({ name: 'github', transport: 'stdio', command: 'gh-mcp' })
+    const closed = String(asResponse(await h.handlers.serversPage(getCtx())).body)
+    expect(closed).toContain('<details class="drawer srv-tools-modal" id="tools-github">')
+
+    const ctx = getCtx({ query: new URLSearchParams({ tools: 'github' }) })
+    const body = String(asResponse(await h.handlers.serversPage(ctx)).body)
+    expect(body).toContain('<details class="drawer srv-tools-modal" id="tools-github" open>')
+  })
+
+  test('the release control follows the /quarantine/approve role: operator+, never a viewer', async () => {
+    h = makeHarness(githubInventory())
+    await h.registry.addServer({ name: 'github', transport: 'stdio', command: 'gh-mcp' })
+    const operator = { adminName: 'ops', role: 'operator' as const, csrfToken: 'csrf-token-xyz' }
+    const viewer = { adminName: 'bob', role: 'viewer' as const, csrfToken: 'csrf-token-xyz' }
+
+    const asOperator = String(asResponse(await h.handlers.serversPage(getCtx({ session: operator }))).body)
+    expect(asOperator).toContain('action="/quarantine/approve"')
+
+    const asViewer = String(asResponse(await h.handlers.serversPage(getCtx({ session: viewer }))).body)
+    expect(asViewer).not.toContain('/quarantine/approve')
+  })
+
   test('an owner gets the register drawer, the nav + action and the server count', async () => {
     h = makeHarness()
     await h.registry.addServer({ name: 'a', transport: 'stdio', command: 'node' })

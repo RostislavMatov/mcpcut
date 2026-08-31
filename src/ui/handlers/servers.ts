@@ -27,6 +27,7 @@ import {
   renderServersPage,
   renderVaultPage,
   toServerToolsByName,
+  TOOLS_QUERY_PARAM,
   type ServerDrawerState,
   type ServersView,
   type VaultView,
@@ -167,12 +168,14 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
       deps.readPolicyView?.() ?? Promise.resolve(undefined),
     ])
     const query = ctx.query.get('q') ?? ''
+    const openTools = ctx.query.get(TOOLS_QUERY_PARAM) ?? ''
     const names = servers.map((record) => record.name)
     const policy = policyView?.status === 'loaded' ? policyView.policy : undefined
     return {
       servers,
       canManage: ctx.session?.role === 'owner',
       canRefresh: ctx.session !== undefined && roleSatisfies(ctx.session.role, 'operator'),
+      canRelease: ctx.session !== undefined && roleSatisfies(ctx.session.role, 'operator'),
       csrfToken: csrfTokenOf(ctx),
       currentAdmin: currentAdminOf(ctx),
       viewMode: ctx.query.get('view') === 'list' ? 'list' : 'grid',
@@ -182,6 +185,7 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
         ? { statuses: await statusesViewOf(deps.probes, names) }
         : {}),
       ...(query !== '' ? { query } : {}),
+      ...(openTools !== '' ? { openTools } : {}),
     }
   }
 

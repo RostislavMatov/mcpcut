@@ -7,13 +7,21 @@ import { EMPTY_SERVER_FORM, type ServerFormValues } from '../server-form.js'
 import { csrfField } from './csrf-field.js'
 import { renderLayout, type CurrentAdmin } from './layout.js'
 import { renderServerDrawer, type ServerDrawerOptions } from './servers-form.js'
-import { renderServerCard, renderServerDetails, type ServerToolsByName } from './servers-parts.js'
+import {
+  renderServerCard,
+  renderServerDetails,
+  renderServerToolsModal,
+  type ServerCardOptions,
+  type ServerToolsByName,
+} from './servers-parts.js'
 import { renderPolicyBanner, renderPolicySources, ruleControlsOf, toolsNoteOf } from './servers-policy-view.js'
 import type { ServerStatusesByName } from './servers-status.js'
 
 export {
+  serverToolsModalId,
   toServerToolsByName,
   TOOL_DESCRIPTION_MAX_CHARS,
+  TOOLS_QUERY_PARAM,
   type ServerToolsByName,
   type ServerToolsView,
   type ServerToolView,
@@ -86,6 +94,13 @@ export interface ServersView {
   readonly statuses?: ServerStatusesByName
   /** True when the viewer's role may POST `/servers/refresh` (operator+). */
   readonly canRefresh?: boolean
+  /** True when the viewer's role may POST `/quarantine/approve` (operator+). */
+  readonly canRelease?: boolean
+  /**
+   * The server named by `?tools=<name>`: its tools modal renders open, which
+   * is the no-JS path behind the card's `view →` row.
+   */
+  readonly openTools?: string
   /** The `q` query, echoed into the search box (the client filter applies it on load). */
   readonly query?: string
   /**
@@ -125,28 +140,36 @@ function renderGrid(view: ServersView, mode: ServersViewMode): Html {
   if (view.servers.length === 0) {
     return html`<p class="empty">No servers registered.</p>`
   }
+  const options = cardOptionsOf(view)
+  const viewClass = mode === 'list' ? 'srv-grid view-list' : 'srv-grid view-grid'
+  return html`<section class="${viewClass}" aria-label="Servers">
+    ${join(options.map(renderServerCard))}
+    <p class="empty srv-no-match" data-filter-empty hidden>No server matches this search.</p>
+  </section>
+  ${join(options.map(renderServerToolsModal))}`
+}
+
+/** One `ServerCardOptions` per registered server, shared by the card and its modal. */
+function cardOptionsOf(view: ServersView): readonly ServerCardOptions[] {
   const ruleControls = ruleControlsOf(view.policyView, view.canManage)
   const toolsNote = toolsNoteOf(view.policyView)
-  const cards = view.servers.map((record) => {
+  return view.servers.map((record) => {
     const tools = view.tools?.get(record.name)
     const status = view.statuses?.get(record.name)
-    return renderServerCard({
+    return {
       record,
       ...(tools !== undefined ? { tools } : {}),
       ...(status !== undefined ? { status } : {}),
       hasInventory: view.tools !== undefined,
       canManage: view.canManage,
       ...(view.canRefresh !== undefined ? { canRefresh: view.canRefresh } : {}),
+      ...(view.canRelease !== undefined ? { canRelease: view.canRelease } : {}),
+      ...(view.openTools !== undefined ? { toolsOpen: view.openTools === record.name } : {}),
       csrfToken: view.csrfToken,
       ...(ruleControls !== undefined ? { ruleControls } : {}),
       ...(toolsNote !== undefined ? { toolsNote } : {}),
-    })
+    }
   })
-  const viewClass = mode === 'list' ? 'srv-grid view-list' : 'srv-grid view-grid'
-  return html`<section class="${viewClass}" aria-label="Servers">
-    ${join(cards)}
-    <p class="empty srv-no-match" data-filter-empty hidden>No server matches this search.</p>
-  </section>`
 }
 
 /**

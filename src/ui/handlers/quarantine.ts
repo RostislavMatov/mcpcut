@@ -4,6 +4,7 @@ import {
   HTTP_STATUS_FORBIDDEN,
   HTTP_STATUS_NOT_FOUND,
   HTTP_STATUS_OK,
+  HTTP_STATUS_SEE_OTHER,
 } from '../constants.js'
 import { headerValue, parseBodyFields, type UiHandler, type UiRequestContext, type UiResult } from '../routes.js'
 import { renderQuarantinePage, toQuarantineCards } from '../pages/quarantine.js'
@@ -49,6 +50,23 @@ function jsonResult(status: number, payload: unknown): UiResult {
   return { kind: 'response', status, body: Buffer.from(JSON.stringify(payload), 'utf8') }
 }
 
+/**
+ * Where a NATIVE form submission is sent after a successful mutation. The
+ * client script posts these actions with `fetch` and consumes the JSON, so the
+ * default stays JSON; only a form that explicitly asks — the release control
+ * inside the Servers screen's tools modal, which has no JavaScript path — gets
+ * a redirect, and only to one of these two pages.
+ *
+ * An ALLOWLIST, deliberately: an open `return_to` is an open redirect, and
+ * this endpoint is reachable with a session cookie.
+ */
+const RETURN_TO_PATHS: ReadonlySet<string> = new Set(['/servers', '/quarantine'])
+
+function returnToOf(fields: Readonly<Record<string, string>>): string | undefined {
+  const target = fields.return_to
+  return target !== undefined && RETURN_TO_PATHS.has(target) ? target : undefined
+}
+
 function currentAdminOf(session: UiSession | undefined): { name: string; role: string } | undefined {
   return session === undefined ? undefined : { name: session.adminName, role: session.role }
 }
@@ -92,6 +110,10 @@ async function mutateAction(
     })
   }
   deps.audit?.({ action, serverName, toolName, adminName: session.adminName })
+  const returnTo = returnToOf(fields)
+  if (returnTo !== undefined) {
+    return { kind: 'response', status: HTTP_STATUS_SEE_OTHER, headers: { location: returnTo } }
+  }
   return jsonResult(HTTP_STATUS_OK, { status: 'ok', action, serverName, toolName })
 }
 

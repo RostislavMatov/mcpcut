@@ -81,6 +81,17 @@ function renderHttpGroup(form: ServerFormValues): Html {
     </fieldset>`
 }
 
+/**
+ * What each transport asks for (the design's `transportNote`). Both notes are
+ * rendered; CSS shows the one whose radio is checked, the same `:has()` switch
+ * that shows the matching field group — so the note cannot drift out of sync
+ * with the visible fields, and there is nothing for JavaScript to keep right.
+ */
+function renderTransportNote(): Html {
+  return html`<span class="field-hint note-stdio">stdio asks for command, args and env. url, protocol and headers are not part of this shape.</span>
+    <span class="field-hint note-http">http asks for url, protocol and headers. command, args and env are not part of this shape.</span>`
+}
+
 function renderNameField(form: ServerFormValues, options: ServerDrawerOptions): Html {
   if (options.mode === 'edit') {
     return html`<div class="field">
@@ -124,6 +135,7 @@ export function renderServerDrawer(
         <div class="field">
           <span class="label">transport</span>
           ${choices('transport', TRANSPORT_VALUES, form.transport, DEFAULT_TRANSPORT)}
+          ${renderTransportNote()}
         </div>
         ${renderStdioGroup(form)}
         ${renderHttpGroup(form)}
