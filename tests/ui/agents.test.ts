@@ -9,6 +9,8 @@ import {
   createAgentsStore,
   type AgentsStore,
 } from '../../src/agents/store.js'
+import { createGroupsStore, type GroupsStore } from '../../src/groups/store.js'
+import type { GroupRecord } from '../../src/groups/schema.js'
 import type { UiSession } from '../../src/ui/auth.js'
 import {
   createAgentsHandlers,
@@ -62,14 +64,16 @@ function bodyOf(result: UiResult): string {
 
 let journalDir: string
 let store: AgentsStore
+let groups: GroupsStore
 let audit: UiAuditEvent[]
 let handlers: AgentsHandlers
 
 beforeEach(() => {
   journalDir = mkdtempSync(join(tmpdir(), 'mcp-ui-agents-'))
   store = createAgentsStore({ journalDir })
+  groups = createGroupsStore({ journalDir })
   audit = []
-  handlers = createAgentsHandlers({ agentsStore: store, audit: (event) => audit.push(event) })
+  handlers = createAgentsHandlers({ agentsStore: store, groups, audit: (event) => audit.push(event) })
 })
 
 afterEach(() => {
@@ -260,7 +264,7 @@ describe('store failures are classified, not flattened to 400 (T-2)', () => {
 
   test('an unrecognized store error is a detail-free 500, not a 400 echoing it', async () => {
     const secretish = 'EACCES: /home/alice/.mcp-journal/agents.json.lock held by pid 4242'
-    const failing = createAgentsHandlers({ agentsStore: brokenStore(new Error(secretish)) })
+    const failing = createAgentsHandlers({ agentsStore: brokenStore(new Error(secretish)), groups })
     const admin = session('operator')
 
     for (const result of [
@@ -280,6 +284,7 @@ describe('store failures are classified, not flattened to 400 (T-2)', () => {
       agentsStore: brokenStore(
         new AgentsFileInvalidError(new ZodError([{ code: 'custom', path: [], message: 'corrupt' }])),
       ),
+      groups,
     })
     const result = await failing.agentsCreate(postCtx({ name: 'bot' }, session('operator')))
     if (result.kind === 'response') expect(result.status).toBe(500)
@@ -361,5 +366,142 @@ describe('McpCut agents page structure', () => {
     await store.createAgent('n-bot')
     const good = bodyOf(await handlers.agentsRevoke(postCtx({ agent: 'n-bot' }, session('operator'))))
     expect(good).toContain('class="notice ok')
+  })
+})
+
+describe('group-derived rows and the by-group drawer (M5.5 п.2, Task 14)', () => {
+  /** A hand-built group record — used where the store would reject the name. */
+  const group = (name: string, extra: Partial<GroupRecord> = {}): GroupRecord =>
+    ({
+      name,
+      createdAt: '2026-08-31T00:00:00.000Z',
+      grants: {},
+      members: [],
+      ...extra,
+    }) as GroupRecord
+
+  const bot = (name: string, extra: Partial<AgentRecord> = {}): AgentRecord =>
+    ({
+      name,
+      tokenHash: 'a'.repeat(64),
+      createdAt: '2026-08-11T00:00:00.000Z',
+      grants: {},
+      ...extra,
+    }) as AgentRecord
+
+  test('the matrix carries a Source column between Prompts and the action column', async () => {
+    await store.createAgent('bot')
+    await store.grantServer('bot', 'github', ['x'])
+
+    const html = bodyOf(await handlers.agentsPage(getCtx(session('operator'))))
+
+    expect(html).toContain('<th>Prompts</th><th>Source</th><th></th>')
+    expect(html).toContain('<td class="ag-source">agent')
+  })
+
+  test('the empty matrix row spans every column', async () => {
+    await store.createAgent('bare')
+
+    const html = bodyOf(await handlers.agentsPage(getCtx(session('operator'))))
+
+    expect(html).toContain('<td colspan="6" class="faint">no grants</td>')
+  })
+
+  test('a server held only through a group renders as group:<name> with no ungrant form', async () => {
+    await store.createAgent('bot')
+    await groups.createGroup('analytics')
+    await groups.grantServer('analytics', 'postgres', ['select'])
+    await groups.addMember('analytics', 'bot')
+
+    const html = bodyOf(await handlers.agentsPage(getCtx(session('operator'))))
+
+    expect(html).toContain('<tr data-server="postgres">')
+    expect(html).toContain('group:analytics')
+    expect(html).not.toContain('action="/agents/ungrant"')
+    expect(html).toContain('href="/groups#group-analytics"')
+    expect(html).toContain('manage in groups')
+    // The group's grant is what the row shows.
+    expect(html).toContain('select')
+  })
+
+  test('a personal grant on the same server wins and names the group it overrides', async () => {
+    await store.createAgent('bot')
+    await store.grantServer('bot', 'postgres', ['personal_tool'])
+    await groups.createGroup('analytics')
+    await groups.grantServer('analytics', 'postgres', ['group_tool'])
+    await groups.addMember('analytics', 'bot')
+
+    const html = bodyOf(await handlers.agentsPage(getCtx(session('operator'))))
+
+    expect(html).toContain('overrides group:analytics')
+    expect(html).toContain('personal_tool')
+    expect(html).not.toContain('group_tool')
+    // The personal row keeps its ungrant control.
+    expect(html).toContain('action="/agents/ungrant"')
+  })
+
+  test('two contributing groups are both named on the row', async () => {
+    await store.createAgent('bot')
+    for (const name of ['analytics', 'reporting']) {
+      await groups.createGroup(name)
+      await groups.grantServer(name, 'clickhouse', ['q'])
+      await groups.addMember(name, 'bot')
+    }
+
+    const html = bodyOf(await handlers.agentsPage(getCtx(session('operator'))))
+
+    expect(html).toContain('group:analytics, group:reporting')
+  })
+
+  test('an agent in no group renders exactly the personal matrix', async () => {
+    await store.createAgent('lonely')
+    await store.grantServer('lonely', 'gh', ['a'])
+    await groups.createGroup('other')
+    await groups.grantServer('other', 'postgres', ['b'])
+
+    const html = bodyOf(await handlers.agentsPage(getCtx(session('operator'))))
+
+    expect(html).toContain('<tr data-server="gh">')
+    expect(html).not.toContain('postgres')
+    expect(html).not.toContain('group:other')
+  })
+
+  test('the by-group drawer is owner-only and lists groups and live agents', () => {
+    const view = {
+      agents: [bot('live'), bot('dead', { revokedAt: '2026-08-12T00:00:00.000Z' })],
+      groups: [group('analytics')],
+    }
+    const asOwner = renderAgentsPage({ ...view, session: session('owner') })
+    const asOperator = renderAgentsPage({ ...view, session: session('operator') })
+
+    expect(asOwner).toContain('<details class="drawer" id="grant-group">')
+    expect(asOwner).toContain('action="/groups/join"')
+    expect(asOwner).toContain('<option value="analytics">analytics</option>')
+    expect(asOwner).toContain('<option value="live">live</option>')
+    expect(asOwner).not.toContain('<option value="dead">dead</option>')
+
+    expect(asOperator).not.toContain('id="grant-group"')
+    expect(asOperator).not.toContain('/groups/join')
+  })
+
+  test('with no groups the owner drawer explains where to create one and offers no select', () => {
+    const html = renderAgentsPage({ agents: [bot('live')], groups: [], session: session('owner') })
+
+    expect(html).toContain('id="grant-group"')
+    expect(html).toContain('no groups yet')
+    expect(html).not.toContain('name="group"')
+  })
+
+  test('a hostile group name is escaped everywhere it appears', () => {
+    const evil = group('g<script>', { grants: { srv: { tools: ['t'] } }, members: ['bot'] })
+    const html = renderAgentsPage({
+      agents: [bot('bot')],
+      groups: [evil],
+      session: session('owner'),
+    })
+
+    expect(html).not.toContain('<script>')
+    expect(html).toContain('group:g&lt;script&gt;')
+    expect(html).toContain('<option value="g&lt;script&gt;">')
   })
 })

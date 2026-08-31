@@ -50,6 +50,8 @@ export const CSS_PAGE_MATRIX = `
 .ag-card { gap: 12px; }
 .ag-card .table-wrap { border-color: var(--hair); }
 .ag-matrix th:last-child, .ag-matrix td.ag-ungrant { width: 1%; white-space: nowrap; text-align: right; }
+.ag-matrix td.ag-source { white-space: nowrap; }
+.ag-matrix td.ag-source .small { margin-left: 8px; }
 .ag-matrix td.ag-server { font-family: var(--font-pixel); font-size: 11px; letter-spacing: 0.04em; }
 .ag-matrix td code { margin: 1px 0; display: inline-block; }
 .ag-foot { display: flex; justify-content: flex-end; align-items: center; gap: 10px; }

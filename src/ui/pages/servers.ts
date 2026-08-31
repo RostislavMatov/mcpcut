@@ -5,6 +5,7 @@ import type { PolicyView } from '../../policy/edit/policy-view.js'
 import { html, join, safeUrl, type Html } from '../html.js'
 import { EMPTY_SERVER_FORM, type ServerFormValues } from '../server-form.js'
 import { csrfField } from './csrf-field.js'
+import { renderInterstitial } from './interstitial.js'
 import { renderLayout, type CurrentAdmin } from './layout.js'
 import { renderServerDrawer, type ServerDrawerOptions } from './servers-form.js'
 import {
@@ -225,24 +226,6 @@ export function renderServersPage(view: ServersView): string {
   })
 }
 
-/** A confirmation interstitial: one strong panel with warning, details, confirm form and a way back. */
-function renderInterstitial(options: {
-  readonly heading: Html
-  readonly warning: Html
-  readonly details: Html
-  readonly form: Html
-}): Html {
-  return html`<section class="panel panel-strong srv-confirm">
-    <div class="panel-hd"><h1>${options.heading}</h1></div>
-    <div class="panel-bd">
-      <div class="callout">${options.warning}</div>
-      ${options.details}
-      ${options.form}
-      <p><a href="${safeUrl('/servers')}">Cancel</a></p>
-    </div>
-  </section>`
-}
-
 /** View model for the add-server confirmation interstitial. */
 export interface AddConfirmView {
   /** The record as the registry schema accepted it — already validated. */
@@ -277,6 +260,8 @@ export function renderAddConfirm(view: AddConfirmView): string {
     ? html`Save changes to “${view.record.name}”?`
     : html`Register server “${view.record.name}”?`
   const content = renderInterstitial({
+    panelClass: 'srv-confirm',
+    cancelHref: '/servers',
     heading,
     warning: html`<p role="alert">
         The control plane will use this definition to reach the server. A
@@ -331,6 +316,8 @@ function holderList(label: string, names: readonly string[]): Html {
 export function renderRemoveWarning(view: RemoveWarningView): string {
   const groups = view.groups ?? []
   const content = renderInterstitial({
+    panelClass: 'srv-confirm',
+    cancelHref: '/servers',
     heading: html`Remove server “${view.serverName}”?`,
     warning: html`<p role="alert">
         Removing this server also removes it from

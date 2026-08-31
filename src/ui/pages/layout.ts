@@ -118,6 +118,7 @@ const NAV_ITEMS: readonly NavItem[] = [
   { href: '/journal', key: 'journal', label: 'Journal' },
   { href: '/quarantine', key: 'quarantine', label: 'Quarantine' },
   { href: '/servers', key: 'servers', label: 'Servers' },
+  { href: '/groups', key: 'groups', label: 'Groups' },
   { href: '/agents', key: 'agents', label: 'Agents' },
   { href: '/vault', key: 'vault', label: 'Vault', roles: ['owner'] },
   { href: '/admins', key: 'admins', label: 'Admins', roles: ['owner'] },

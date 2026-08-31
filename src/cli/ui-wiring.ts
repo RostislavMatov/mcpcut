@@ -2,6 +2,7 @@ import type { AgentsStore } from '../agents/store.js'
 import type { AdminStore } from '../admin/store.js'
 import { createGroupsStore } from '../groups/store.js'
 import { journalAccessEdit } from '../groups/journal-access-edit.js'
+import type { AccessEditInfo } from '../journal/record.js'
 import { formatReadableField } from '../journal/format.js'
 import { createSessionIndexCache } from '../journal/index-cache.js'
 import { searchAllSessions, searchSession } from '../journal/search.js'
@@ -21,6 +22,7 @@ import { createAgentsHandlers, type UiAuditEvent } from '../ui/handlers/agents.j
 import { createApprovalsHandlers, DASHBOARD_RECENT_DECISIONS } from '../ui/handlers/approvals.js'
 import { createAssetsHandler } from '../ui/handlers/assets.js'
 import { createEventsHandler } from '../ui/handlers/events.js'
+import { createGroupsHandlers } from '../ui/handlers/groups.js'
 import { createJournalHandler, type JournalReadPort } from '../ui/handlers/journal.js'
 import { createLoginPage } from '../ui/handlers/login.js'
 import {
@@ -242,6 +244,16 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
   // The one group store of this process: the servers handlers cascade through
   // it on removal (G6) and the groups surfaces read and write it.
   const groups = createGroupsStore({ journalDir: deps.journalDir })
+  // One writer for every `access-edit` record this process produces (G6): the
+  // servers cascade and the six group actions share it, so attribution and the
+  // drop diagnostic are defined once.
+  const writeAccessEdit = (info: AccessEditInfo): Promise<unknown> =>
+    journalAccessEdit({
+      info,
+      dir: deps.journalDir,
+      diagnostics: (line) => deps.stderr.write(line),
+      ...(deps.clock !== undefined ? { clock: deps.clock } : {}),
+    })
   const servers = createServersHandlers({
     registry: {
       listServers: () => deps.registry.listServers(),
@@ -264,13 +276,7 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
     readInventory: () => inventory.read(),
     probes: probes.port,
     readPolicyView: () => readPolicyView(policyEnv),
-    journalAccessEdit: (info) =>
-      journalAccessEdit({
-        info,
-        dir: deps.journalDir,
-        diagnostics: (line) => deps.stderr.write(line),
-        ...(deps.clock !== undefined ? { clock: deps.clock } : {}),
-      }),
+    journalAccessEdit: writeAccessEdit,
   })
   // Policy editing (ADR-0009, corrected 2026-08-26): the read view feeds the
   // page, the rule handler is the one HTTP path that writes `policy.json`.
@@ -296,7 +302,24 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
     probes: probes.port,
     hasServer: async (name) => (await deps.registry.getServer(name)) !== undefined,
   })
-  const agents = createAgentsHandlers({ agentsStore: deps.agents, audit })
+  const groupHandlers = createGroupsHandlers({
+    groups,
+    agents: {
+      listAgents: () => deps.agents.listAgents(),
+      getAgent: (name) => deps.agents.getAgent(name),
+    },
+    registry: {
+      listServers: () => deps.registry.listServers(),
+      getServer: (name) => deps.registry.getServer(name),
+    },
+    audit,
+    journalAccessEdit: writeAccessEdit,
+  })
+  const agents = createAgentsHandlers({
+    agentsStore: deps.agents,
+    groups: { listGroups: () => groups.listGroups() },
+    audit,
+  })
   const admins = createAdminsHandlers({ adminStore: deps.adminStore, audit })
 
   const handlers: UiHandlers = Object.freeze({
@@ -313,6 +336,7 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
     ...approvals,
     ...quarantine,
     ...servers,
+    ...groupHandlers,
     ...serversToolRule,
     ...serversStatus,
     ...agents,

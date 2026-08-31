@@ -641,7 +641,7 @@ describe('runUi: composed handlers', () => {
     const token = tokensIn(fixture.io.errText())[0] as string
     const cookie = await login(fixture.base, token)
 
-    for (const path of ['/', '/quarantine', '/servers', '/agents', '/journal', '/vault', '/admins']) {
+    for (const path of ['/', '/quarantine', '/servers', '/groups', '/agents', '/journal', '/vault', '/admins']) {
       const response = await httpCall(fixture.base, path, { headers: { cookie } })
       expect([path, response.status]).toEqual([path, 200])
     }

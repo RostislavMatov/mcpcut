@@ -53,6 +53,7 @@ export const ROUTE_TABLE: readonly RouteEntry[] = [
   { method: 'GET', pattern: '/', minRole: 'viewer', handler: 'approvalsPage' },
   { method: 'GET', pattern: '/quarantine', minRole: 'viewer', handler: 'quarantinePage' },
   { method: 'GET', pattern: '/servers', minRole: 'viewer', handler: 'serversPage' },
+  { method: 'GET', pattern: '/groups', minRole: 'viewer', handler: 'groupsPage' },
   { method: 'GET', pattern: '/agents', minRole: 'viewer', handler: 'agentsPage' },
   { method: 'GET', pattern: '/journal', minRole: 'viewer', handler: 'journalPage' },
   { method: 'GET', pattern: '/api/approvals', minRole: 'viewer', handler: 'approvalsApi' },
@@ -84,6 +85,15 @@ export const ROUTE_TABLE: readonly RouteEntry[] = [
   // boundary — the same threshold as registering a server. The two `:params`
   // arrive percent-encoded; the handler decodes each exactly once.
   { method: 'POST', pattern: '/servers/:name/tools/:tool/rule', minRole: 'owner', handler: 'serversToolRule' },
+  // Server groups (M5.5 п.2, decision G4): `viewer` reads the page, only
+  // `owner` writes — the same threshold grants themselves carry, because a
+  // group IS a grant handed to every member at once.
+  { method: 'POST', pattern: '/groups/create', minRole: 'owner', handler: 'groupsCreate' },
+  { method: 'POST', pattern: '/groups/remove', minRole: 'owner', handler: 'groupsRemove' },
+  { method: 'POST', pattern: '/groups/grant', minRole: 'owner', handler: 'groupsGrant' },
+  { method: 'POST', pattern: '/groups/ungrant', minRole: 'owner', handler: 'groupsUngrant' },
+  { method: 'POST', pattern: '/groups/join', minRole: 'owner', handler: 'groupsJoin' },
+  { method: 'POST', pattern: '/groups/leave', minRole: 'owner', handler: 'groupsLeave' },
   { method: 'GET', pattern: '/admins', minRole: 'owner', handler: 'adminsPage' },
   { method: 'POST', pattern: '/admins/add', minRole: 'owner', handler: 'adminsAdd' },
   { method: 'POST', pattern: '/admins/remove', minRole: 'owner', handler: 'adminsRemove' },

@@ -1,6 +1,8 @@
+import { effectiveGrantsOf, type EffectiveGrants, type GrantSource } from '../../agents/effective.js'
 import type { AgentGrant, AgentRecord } from '../../agents/schema.js'
+import type { GroupRecord } from '../../groups/schema.js'
 import type { UiSession } from '../auth.js'
-import { html, type Html, join } from '../html.js'
+import { html, type Html, join, safeUrl } from '../html.js'
 import { csrfField } from './csrf-field.js'
 
 /**
@@ -29,26 +31,84 @@ function ungrantForm(agentName: string, server: string, session: UiSession): Htm
   </form>`
 }
 
-/** One row of an agent's server × (tools/resources/prompts) matrix. */
-function grantRow(agentName: string, server: string, grant: AgentGrant, session: UiSession): Html {
+/** "group:a, group:b" — one label per contributing group, escaped. */
+function groupLabels(names: readonly string[]): Html {
+  return join(
+    names.map((name) => html`group:${name}`),
+    html`, `,
+  )
+}
+
+/**
+ * The provenance cell (G2): a personal grant reads `agent` and, when it took a
+ * server the agent also inherits, names the groups it overrode; an inherited
+ * row names every group that contributed to the union.
+ */
+function sourceCell(source: GrantSource): Html {
+  if (source.kind === 'group') {
+    return html`<td class="ag-source">${groupLabels(source.groups)}</td>`
+  }
+  const hint =
+    source.shadowedGroups.length === 0
+      ? html``
+      : html`<span class="small dim">overrides ${groupLabels(source.shadowedGroups)}</span>`
+  return html`<td class="ag-source">agent${hint}</td>`
+}
+
+/**
+ * The trailing action cell. An inherited row has nothing to ungrant HERE — the
+ * grant belongs to the group — so it links to the group's card instead of
+ * offering a control that would silently do nothing.
+ */
+function actionCell(agentName: string, server: string, source: GrantSource, session: UiSession): Html {
+  if (source.kind === 'agent') {
+    return html`<td class="ag-ungrant">${ungrantForm(agentName, server, session)}</td>`
+  }
+  const group = source.groups[0] ?? ''
+  return html`<td class="ag-ungrant"><a class="small" href="${safeUrl(`/groups#group-${group}`)}">manage in groups</a></td>`
+}
+
+/** One row of an agent's server × (tools/resources/prompts/source) matrix. */
+function grantRow(row: {
+  readonly agentName: string
+  readonly server: string
+  readonly grant: AgentGrant
+  readonly source: GrantSource
+  readonly session: UiSession
+}): Html {
+  const { agentName, server, grant, source, session } = row
   return html`<tr data-server="${server}">
     <td class="ag-server">${server}</td>
     <td class="tools">${displayGrant(grant.tools)}</td>
     <td class="resources">${displayGrant(grant.resources)}</td>
     <td class="prompts">${displayGrant(grant.prompts)}</td>
-    <td class="ag-ungrant">${ungrantForm(agentName, server, session)}</td>
+    ${sourceCell(source)}
+    ${actionCell(agentName, server, source, session)}
   </tr>`
 }
 
-/** The whole grant table for one agent (or an empty-state row). */
-function grantTable(agent: AgentRecord, session: UiSession): Html {
-  const servers = Object.keys(agent.grants).sort()
+/** A server present in the matrix but not in `sources` can only be personal. */
+const PERSONAL_SOURCE: GrantSource = { kind: 'agent', shadowedGroups: [] }
+
+/** The whole effective grant table for one agent (or an empty-state row). */
+function grantTable(agentName: string, effective: EffectiveGrants, session: UiSession): Html {
+  const servers = Object.keys(effective.grants).sort()
   const rows =
     servers.length === 0
-      ? html`<tr><td colspan="5" class="faint">no grants</td></tr>`
-      : join(servers.map((server) => grantRow(agent.name, server, agent.grants[server] as AgentGrant, session)))
+      ? html`<tr><td colspan="6" class="faint">no grants</td></tr>`
+      : join(
+          servers.map((server) =>
+            grantRow({
+              agentName,
+              server,
+              grant: effective.grants[server] as AgentGrant,
+              source: effective.sources[server] ?? PERSONAL_SOURCE,
+              session,
+            }),
+          ),
+        )
   return html`<div class="table-wrap"><table class="grant-matrix ag-matrix">
-    <thead><tr><th>Server</th><th>Tools</th><th>Resources</th><th>Prompts</th><th></th></tr></thead>
+    <thead><tr><th>Server</th><th>Tools</th><th>Resources</th><th>Prompts</th><th>Source</th><th></th></tr></thead>
     <tbody>${rows}</tbody>
   </table></div>`
 }
@@ -62,11 +122,21 @@ function revokeForm(agentName: string, session: UiSession): Html {
   </form>`
 }
 
-/** One agent card: name, revoked badge, its matrix, and its revoke action. */
-export function renderAgentCard(agent: AgentRecord, session: UiSession): Html {
+/**
+ * One agent card: name, revoked badge, its EFFECTIVE matrix (personal grants
+ * widened by the groups it belongs to) and its revoke action. `groups` may be
+ * every group of the installation — `effectiveGrantsOf` ignores the ones this
+ * agent is not a member of.
+ */
+export function renderAgentCard(
+  agent: AgentRecord,
+  groups: readonly GroupRecord[],
+  session: UiSession,
+): Html {
   const revoked = agent.revokedAt !== undefined
   const badge = revoked ? html`<span class="badge revoked">revoked</span>` : html``
-  const grantCount = Object.keys(agent.grants).length
+  const effective = effectiveGrantsOf(agent, groups)
+  const grantCount = Object.keys(effective.grants).length
   const footer = revoked
     ? html`<span class="faint small num" title="${agent.revokedAt ?? ''}">revoked ${agent.revokedAt ?? ''}</span>`
     : revokeForm(agent.name, session)
@@ -76,7 +146,7 @@ export function renderAgentCard(agent: AgentRecord, session: UiSession): Html {
       ${badge}
       <span class="muted small num">${String(grantCount)} server${grantCount === 1 ? '' : 's'} granted</span>
     </div>
-    ${grantTable(agent, session)}
+    ${grantTable(agent.name, effective, session)}
     <div class="ag-foot">${footer}</div>
   </section>`
 }
@@ -118,6 +188,49 @@ export function renderGrantDrawer(id: string, session: UiSession): Html {
         </div>
         <p class="field-hint">A lone <code>*</code> grants everything in that dimension; an empty field leaves it denied.</p>
         <div class="form-actions"><button type="submit">Grant</button></div>
+      </form>
+    </div>
+  </details>`
+}
+
+/** `<option>` list for a native select; every value is escaped by `html`. */
+function options(values: readonly string[]): Html {
+  return join(values.map((value) => html`<option value="${value}">${value}</option>`))
+}
+
+/**
+ * The owner-only "grant by group" drawer. It does not edit grants at all — it
+ * adds an agent to a group, so the single membership path stays `POST
+ * /groups/join` (no second way to join from the agents page). With no group to
+ * pick, the select is replaced by a pointer to `/groups`: an empty select would
+ * be a control that cannot succeed.
+ */
+export function renderGroupGrantDrawer(
+  id: string,
+  view: {
+    readonly groups: readonly GroupRecord[]
+    readonly agents: readonly AgentRecord[]
+    readonly session: UiSession
+  },
+): Html {
+  const groupField =
+    view.groups.length === 0
+      ? html`<p class="field-hint">no groups yet — create one on <a href="${safeUrl('/groups')}">/groups</a></p>`
+      : html`<label><span>Group</span><select name="group" required>${options(view.groups.map((group) => group.name))}</select></label>`
+  const agentNames = view.agents
+    .filter((agent) => agent.revokedAt === undefined)
+    .map((agent) => agent.name)
+  return html`<details class="drawer" id="${id}">
+    <summary>Grant by group</summary>
+    <div class="drawer-bd">
+      <form method="post" action="/groups/join" class="stacked">
+        ${csrfField(view.session.csrfToken)}
+        <div class="ag-grant-who">
+          ${groupField}
+          <label><span>Agent</span><select name="agent" required>${options(agentNames)}</select></label>
+        </div>
+        <p class="field-hint">The agent inherits every server the group grants, unless it holds its own grant for that server.</p>
+        <div class="form-actions"><button type="submit">Add to group</button></div>
       </form>
     </div>
   </details>`

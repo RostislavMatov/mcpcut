@@ -1,4 +1,5 @@
 import { CSS_PAGE_DASHBOARD } from './page-dashboard.js'
+import { CSS_PAGE_GROUPS } from './page-groups.js'
 import { CSS_PAGE_JOURNAL } from './page-journal.js'
 import { CSS_PAGE_LOGIN } from './page-login.js'
 import { CSS_PAGE_MATRIX } from './page-matrix.js'
@@ -17,4 +18,5 @@ export const CSS_PAGES = [
   CSS_PAGE_SERVERS,
   CSS_PAGE_JOURNAL,
   CSS_PAGE_MATRIX,
+  CSS_PAGE_GROUPS,
 ].join('\n')
