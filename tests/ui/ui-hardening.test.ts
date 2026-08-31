@@ -156,18 +156,23 @@ afterEach(async () => {
 })
 
 describe('deny-by-default role matrix (every route × every role × no session)', () => {
-  test('unlisted routes are 403 for everyone including owner and no session', async () => {
+  test('unlisted routes are 403 for a signed-in caller and /login for a visitor', async () => {
     started = await startUi()
     const { cookie } = await started.login(started.tokens.owner)
     for (const target of ['/nope', '/admins/nope', '/api/secret']) {
-      const anon = await fetch(`${started.base}${target}`)
-      expect(anon.status).toBe(403)
+      // A visitor with no session is sent to sign in — the SAME answer a
+      // listed route gives them, so the redirect is not an existence oracle.
+      const anon = await fetch(`${started.base}${target}`, { redirect: 'manual' })
+      expect(anon.status).toBe(303)
+      expect(anon.headers.get('location')).toBe('/login')
+      await anon.text()
       const asOwner = await fetch(`${started.base}${target}`, { headers: { cookie } })
       expect(asOwner.status).toBe(403)
+      await asOwner.text()
     }
   })
 
-  test('protected routes: role below minRole → 403, at/above → not 403, no session → 403', async () => {
+  test('protected routes: role below minRole → 403, at/above → not 403, no session → /login', async () => {
     started = await startUi()
     const cookies: Record<Role, { cookie: string; csrf: string }> = {
       owner: await started.login(started.tokens.owner),
@@ -182,14 +187,20 @@ describe('deny-by-default role matrix (every route × every role × no session)'
       const path = pathFor(entry)
       const minRole = entry.minRole
 
-      // No session. Oracle fix: a missing session yields the SAME byte-identical
-      // 403 as an unlisted route (no more 302→/login for GET vs 403 for
-      // unlisted), so a protected route cannot be enumerated without a session.
-      // The single exception is the root path, which is not a secret.
-      if (!(entry.method === 'GET' && entry.pattern === '/')) {
-        const anon = await fetch(`${started.base}${path}`, { method: entry.method, redirect: 'manual' })
-        expect(anon.status, `no session → ${entry.method} ${path}`).toBe(403)
-      }
+      // No session. A caller who is not signed in is sent to `/login` —
+      // whatever it asked for, listed or unlisted (pinned above), so this
+      // cannot be used to enumerate routes.
+      // A browser attaches Origin to every POST, and the server refuses a
+      // state change without one BEFORE it looks at credentials (that guard is
+      // pinned by the CSRF describe).
+      const anon = await fetch(`${started.base}${path}`, {
+        method: entry.method,
+        redirect: 'manual',
+        ...(entry.method === 'POST' ? { headers: { origin: UI_TEST_ORIGIN } } : {}),
+      })
+      expect(anon.status, `no session → ${entry.method} ${path}`).toBe(303)
+      expect(anon.headers.get('location'), `no session → ${entry.method} ${path}`).toBe('/login')
+      await anon.text()
 
       // Each role.
       for (const role of ROLES) {
@@ -252,21 +263,38 @@ describe('deny-by-default role matrix (every route × every role × no session)'
 })
 
 describe('no session', () => {
-  test('every protected route (incl. POST) is a uniform 403 without a cookie', async () => {
+  test('every protected route (incl. POST) sends a cookie-less caller to /login', async () => {
     started = await startUi()
     for (const entry of ROUTE_TABLE) {
       if (entry.minRole === 'public') continue
-      // `GET /` is the one deliberate exception: it redirects to `/login`.
-      // The path is not a secret (every visitor types it), so it leaks nothing
-      // — see the landing-page describe above.
-      if (entry.method === 'GET' && entry.pattern === '/') continue
       const res = await fetch(`${started.base}${pathFor(entry)}`, {
         method: entry.method,
         redirect: 'manual',
+        ...(entry.method === 'POST' ? { headers: { origin: UI_TEST_ORIGIN } } : {}),
       })
-      // Same 403 as an unlisted route: no existence oracle for the anonymous.
-      expect(res.status, `no session → ${entry.method} ${entry.pattern}`).toBe(403)
+      // The same answer an unlisted route gives: no existence oracle.
+      expect(res.status, `no session → ${entry.method} ${entry.pattern}`).toBe(303)
+      expect(res.headers.get('location')).toBe('/login')
+      // Nothing to clear: no cookie was presented.
+      expect(res.headers.get('set-cookie')).toBeNull()
+      await res.text()
     }
+  })
+
+  test('the page script gets a 401 instead of the redirect', async () => {
+    started = await startUi()
+
+    // `fetch` follows a 303 transparently, so a script would receive the login
+    // page under a 200 and report a dead action as a success. Byte-identical
+    // to the dead-cookie 401 below: never having signed in and holding a
+    // corpse are indistinguishable from the outside.
+    const res = await fetch(`${started.base}/api/approvals`, {
+      headers: { 'x-requested-with': 'fetch' },
+      redirect: 'manual',
+    })
+
+    expect(res.status).toBe(401)
+    expect(await res.json()).toEqual({ error: 'session-expired' })
   })
 
   test('public routes are reachable without a session', async () => {
@@ -488,16 +516,16 @@ describe('the unauthenticated landing page (smoke M4: a bare 403)', () => {
     await res.text()
   })
 
-  test('every OTHER protected route still answers the byte-identical 403', async () => {
+  test('every other path — listed or not — answers exactly the same', async () => {
     started = await startUi()
 
-    // The redirect is scoped to exactly `/` and nothing else. Redirecting any
-    // protected path would restore the enumeration oracle the 403 exists to
-    // close: 303 for a listed route vs 403 for an unlisted one tells an
-    // anonymous caller which routes exist.
+    // What closes the enumeration oracle is that the answer does not DEPEND on
+    // whether the path exists: `/vault` (owner-only) and `/nope` (unlisted)
+    // are indistinguishable to a visitor with no session.
     for (const path of ['/journal', '/servers', '/agents', '/vault', '/nope']) {
       const res = await fetch(`${started.base}${path}`, { redirect: 'manual' })
-      expect(res.status, `anonymous GET ${path}`).toBe(403)
+      expect(res.status, `anonymous GET ${path}`).toBe(303)
+      expect(res.headers.get('location'), `anonymous GET ${path}`).toBe('/login')
       await res.text()
     }
   })
@@ -590,14 +618,15 @@ describe('cookie and transport hardening behind TLS', () => {
 
     // The same session id under the unprefixed name must NOT authenticate: a
     // subdomain can set that one, and accepting both would hand back exactly
-    // the fixation `__Host-` exists to prevent.
-    // Asserted on `/journal`: the root path redirects an unauthenticated
-    // visitor to `/login` by design, which would pass for the wrong reason.
+    // the fixation `__Host-` exists to prevent. Unread cookie ⇒ no session ⇒
+    // the sign-in screen, and above all NOT the page (200) the prefixed name
+    // just returned.
     const stripped = await fetch(`${started.base}/journal`, {
       headers: { cookie: `mcp_admin_session=${value}` },
       redirect: 'manual',
     })
-    expect(stripped.status).toBe(403)
+    expect(stripped.status).toBe(303)
+    expect(stripped.headers.get('location')).toBe('/login')
     await stripped.text()
   })
 
@@ -694,11 +723,11 @@ describe('session lifecycle', () => {
  * broken" to someone who was signed in a minute ago (the same complaint the M4
  * smoke raised about a bare 403 on the landing page).
  *
- * This does not weaken the uniform 403, which guards the ANONYMOUS caller:
- * with no cookie at all every protected route still answers 403, listed or
- * not — pinned by the matrix test above. And the answer here is identical for
- * a listed and an unlisted path, so a caller who forges a cookie learns
- * nothing about which routes exist either.
+ * A caller with NO cookie is answered the same way (see the `no session`
+ * describe above) minus the clearing header: the two are indistinguishable
+ * from the outside. And the answer is identical for a listed and an unlisted
+ * path, so a caller who forges a cookie learns nothing about which routes
+ * exist either.
  */
 describe('a session that died in the browser is sent back to /login', () => {
   /** Signs in, then walks the clock past the session TTL. */

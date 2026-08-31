@@ -629,10 +629,10 @@ describe('runUi: composed handlers', () => {
     expect(loginPage.status).toBe(200)
     expect(loginPage.body).toContain('<form')
 
-    // The landing page sends an unauthenticated visitor to the login form; any
-    // OTHER protected page keeps the uniform, oracle-free 403.
+    // Every protected page sends an unauthenticated visitor to the login form
+    // — the landing page and the rest alike, so the answer is no oracle.
     expect((await httpCall(fixture.base, '/')).status).toBe(303)
-    expect((await httpCall(fixture.base, '/journal')).status).toBe(403)
+    expect((await httpCall(fixture.base, '/journal')).status).toBe(303)
     expect(fixture.io.outText()).toBe('')
   })
 
