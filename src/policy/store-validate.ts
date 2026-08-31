@@ -1,4 +1,5 @@
 import { StoreCorruptError, StoreWriteRejectedError, type DocumentRow } from './store-backend.js'
+import { cloneKeepingPrototypes } from './store-clone.js'
 
 /**
  * The domain validator at the store boundary, on both sides of it, plus the
@@ -24,16 +25,22 @@ import { StoreCorruptError, StoreWriteRejectedError, type DocumentRow } from './
  * stale value, and a write by another process is caught by the mismatch.
  *
  * The memo caches the PARSE, not the object handed out: every `parseRow`
- * returns a `structuredClone` of it, so `read()` keeps its original contract
- * — the caller owns a value nobody else holds a reference to, and a caller
- * that mutates what it read cannot poison the next reader. A clone is still
- * far cheaper than `JSON.parse` plus a zod schema. The owning store must
- * `invalidate()` on every commit.
+ * returns a copy of it, so `read()` keeps its original contract — the caller
+ * owns a value nobody else holds a reference to, and a caller that mutates
+ * what it read cannot poison the next reader. A clone is still far cheaper
+ * than `JSON.parse` plus a zod schema. The owning store must `invalidate()`
+ * on every commit.
+ *
+ * That copy is `cloneKeepingPrototypes`, NOT `structuredClone`: the validator
+ * may build null-prototype maps on purpose (`policy/inventory-store.ts` does,
+ * for every map keyed by a name a server chooses), and a clone that rebuilds
+ * them with `Object.prototype` would hand the read side back the very
+ * prototype-chain lookups those maps exist to prevent.
  */
 export interface DocumentValidator<T> {
   /** Parses and validates raw document text; `StoreCorruptError` on either failure. */
   parseText(text: string): T
-  /** Same, memoised on the row's revision and bytes; always a fresh deep copy. */
+  /** Same, memoised on the row's revision and bytes; a fresh deep copy, prototypes intact. */
   parseRow(row: DocumentRow): T
   /** Refuses a value the schema rejects with `StoreWriteRejectedError`, before any write. */
   assertWritable(next: T): void
@@ -65,7 +72,7 @@ export function createDocumentValidator<T>(
     if (memo === null || memo.rev !== row.rev || memo.doc !== row.doc) {
       memo = { rev: row.rev, doc: row.doc, value: parseText(row.doc) }
     }
-    return structuredClone(memo.value)
+    return cloneKeepingPrototypes(memo.value)
   }
 
   function assertWritable(next: T): void {

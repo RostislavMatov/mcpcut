@@ -7,7 +7,6 @@ import {
   InvalidServerNameError,
   InvalidToolPatternError,
   type AgentsStore,
-  type MethodGrantsInput,
 } from '../../agents/store.js'
 import type { AgentGrant, AgentRecord } from '../../agents/schema.js'
 import { effectiveGrantsOf } from '../../agents/effective.js'
@@ -24,6 +23,7 @@ import {
 } from '../constants.js'
 import { renderAgentNotice, renderAgentsPage, renderAgentTokenOnce } from '../pages/agents.js'
 import { renderUngrantConfirm } from '../pages/agents-ungrant.js'
+import { methodGrantsFrom, parseGrantValue } from './grant-fields.js'
 import { internalErrorResult, isKnownStoreError, type ErrorClass } from './store-errors.js'
 import { headerValue, parseBodyFields, type UiHandler, type UiRequestContext, type UiResult } from '../routes.js'
 
@@ -107,36 +107,6 @@ function storeFailure(error: unknown, session: UiSession): UiResult {
   if (!isKnownStoreError(error, AGENT_INPUT_ERRORS)) return internalErrorResult()
   const message = error instanceof Error ? error.message : 'unexpected error'
   return htmlResult(HTTP_STATUS_BAD_REQUEST, renderAgentNotice({ message, ok: false, session }))
-}
-
-/** Splits a whitespace/comma-separated pattern field into trimmed non-empty entries. */
-function parseList(value: string | undefined): string[] {
-  if (value === undefined) return []
-  return value
-    .split(/[\s,]+/)
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0)
-}
-
-/**
- * Interprets one grant-dimension field: absent/empty → `undefined` (leave the
- * dimension unset, keeping the M3 fail-closed denial); a lone `*` → `'*'`;
- * otherwise the explicit pattern list.
- */
-function parseGrantValue(value: string | undefined): '*' | string[] | undefined {
-  const list = parseList(value)
-  if (list.length === 0) return undefined
-  if (list.length === 1 && list[0] === '*') return '*'
-  return list
-}
-
-function methodGrantsFrom(form: Readonly<Record<string, string>>): MethodGrantsInput {
-  const resources = parseGrantValue(form.resources)
-  const prompts = parseGrantValue(form.prompts)
-  return {
-    ...(resources !== undefined ? { resources } : {}),
-    ...(prompts !== undefined ? { prompts } : {}),
-  }
 }
 
 export function createAgentsHandlers(deps: AgentsHandlersDeps): AgentsHandlers {

@@ -12,6 +12,8 @@ import {
   type AgentsStoreOptions,
 } from '../agents/store.js'
 import type { AgentRecord } from '../agents/schema.js'
+import { effectiveGrantsOf, type GrantSource } from '../agents/effective.js'
+import type { GroupRecord } from '../groups/schema.js'
 import { createGroupsStore } from '../groups/store.js'
 import { formatReadableField } from '../journal/format.js'
 import { resolveGrantFlags } from './grant-flags.js'
@@ -91,7 +93,7 @@ export async function runAgentCommand(
       case 'create':
         return await runCreate(rest, io, store)
       case 'list':
-        return await runList(io, store)
+        return await runList(io, store, opts)
       case 'grant':
         return await runGrant(rest, io, store)
       case 'ungrant':
@@ -128,16 +130,27 @@ async function runCreate(args: string[], io: AgentCliIo, store: AgentsStore): Pr
   return 0
 }
 
-async function runList(io: AgentCliIo, store: AgentsStore): Promise<number> {
+async function runList(
+  io: AgentCliIo,
+  store: AgentsStore,
+  options: AgentCliOptions,
+): Promise<number> {
   const agents = await store.listAgents()
   if (agents.length === 0) {
     io.stdout.write('(no agents)\n')
     return 0
   }
 
+  // The matrix an operator reads here must be the one the traffic path
+  // decides against (G2), so the group half is read and merged in. A groups
+  // document that cannot be read is NOT swallowed: rendering the personal
+  // half alone would understate every member agent's access, which is the
+  // one direction this listing must never be wrong in.
+  const groups = await createGroupsStore(options).listGroups()
+
   for (const agent of agents) {
     io.stdout.write(`${formatAgentLine(agent)}\n`)
-    for (const line of formatGrantLines(agent)) {
+    for (const line of formatGrantLines(agent, groups)) {
       io.stdout.write(`${line}\n`)
     }
   }
@@ -154,18 +167,29 @@ function formatAgentLine(agent: AgentRecord): string {
 }
 
 /**
- * Indented lines per granted server: `<server>: tool, tool` (or `* (all
- * tools)`), plus one extra line each for the resources/prompts dimensions
- * when present (M4 Task 6) — absent fields print nothing, so pre-M4 grants
- * render exactly as before.
+ * Indented lines per EFFECTIVE granted server: `<server>: tool, tool` (or
+ * `* (all tools)`), plus one extra line each for the resources/prompts
+ * dimensions when present (M4 Task 6) — absent fields print nothing, so
+ * pre-M4 grants render exactly as before.
+ *
+ * Rows carry their provenance when a group is involved: ` (via group:…)` for
+ * a server the agent only reaches through its groups, ` (overrides group:…)`
+ * for a personal grant that takes a server the groups also grant (G2 — the
+ * personal grant wins WHOLESALE, so the tools shown are the personal ones).
+ * An agent in no group has neither suffix and renders byte-identically to
+ * before groups existed.
  */
-function formatGrantLines(agent: AgentRecord): string[] {
-  const entries = Object.entries(agent.grants)
+function formatGrantLines(agent: AgentRecord, groups: readonly GroupRecord[]): string[] {
+  const effective = effectiveGrantsOf(agent, groups)
+  const entries = Object.entries(effective.grants)
   if (entries.length === 0) {
     return ['  (no grants)']
   }
   return entries.flatMap(([server, grant]) => {
-    const lines = [`  ${formatReadableField(server)}: ${formatPatterns(grant.tools, 'all tools')}`]
+    const origin = formatOrigin(effective.sources, server)
+    const lines = [
+      `  ${formatReadableField(server)}: ${formatPatterns(grant.tools, 'all tools')}${origin}`,
+    ]
     if (grant.resources !== undefined) {
       lines.push(`    resources: ${formatPatterns(grant.resources, 'all resources')}`)
     }
@@ -174,6 +198,20 @@ function formatGrantLines(agent: AgentRecord): string[] {
     }
     return lines
   })
+}
+
+/**
+ * The provenance suffix of one row, or `''` when no group is involved.
+ * `Object.hasOwn` because the key is a server name read off a document.
+ */
+function formatOrigin(sources: Readonly<Record<string, GrantSource>>, server: string): string {
+  const source = Object.hasOwn(sources, server) ? sources[server] : undefined
+  if (source === undefined) return ''
+  const names = source.kind === 'group' ? source.groups : source.shadowedGroups
+  if (names.length === 0) return ''
+  const label = source.kind === 'group' ? 'via' : 'overrides'
+  const list = names.map((name) => `group:${formatReadableField(name)}`).join(', ')
+  return ` (${label} ${list})`
 }
 
 /** `'*'` → `* (all …)`; array → sanitized, comma-joined patterns. */
@@ -285,7 +323,15 @@ async function warnIfGroupsUncovered(
     inheritedFrom = memberships
       .filter((group) => Object.hasOwn(group.grants, serverName))
       .map((group) => group.name)
-  } catch {
+  } catch (error: unknown) {
+    // Advisory, but never silent: "I could not look" must be distinguishable
+    // from "there is nothing to warn about" — same shape as
+    // `server-grant-refs.ts`'s failed lookup. The ungrant itself already
+    // landed, so the exit code stays 0.
+    const reason = error instanceof Error ? error.message : String(error)
+    io.stderr.write(
+      `[warn] could not check group grants for ${formatReadableField(agentName)}: ${reason}\n`,
+    )
     return
   }
   if (inheritedFrom.length === 0) return

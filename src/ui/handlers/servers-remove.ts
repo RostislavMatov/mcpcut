@@ -1,6 +1,9 @@
+import { GRANT_SERVER_NAME_PATTERN } from '../../agents/constants.js'
 import type { AgentsStore } from '../../agents/store.js'
 import type { GroupsStore } from '../../groups/store.js'
+import type { CascadeHalfStatus } from '../../journal/access-edit-record.js'
 import type { AccessEditInfo } from '../../journal/record.js'
+import { RESERVED_OBJECT_KEYS } from '../../policy/constants.js'
 import type { RegistryStore } from '../../registry/store.js'
 import { HTTP_STATUS_NOT_FOUND, HTTP_STATUS_OK } from '../constants.js'
 import { renderRemoveWarning } from '../pages/servers.js'
@@ -20,6 +23,12 @@ import { csrfTokenOf, currentAdminOf, fieldsOf, redirect } from './request-helpe
  * 303 either way. A half that failed leaves a dangling grant, which is
  * today's tolerated state and which repeating the removal repairs (both
  * cascade calls are idempotent) — the diagnostic says so out loud.
+ *
+ * Which is why the `not-found` branch is a REPAIR path, exactly like the
+ * CLI's (`cli/server-cmd.ts`, `repairDanglingGrants`): a name the registry no
+ * longer knows may still be granted, and answering a bare 404 would leave the
+ * browser with no way to prune what a crashed cascade left behind. It runs
+ * only when something actually dangles; otherwise the 404 stands.
  */
 
 /** One attributed UI mutation, for the audit sink. */
@@ -28,19 +37,6 @@ export interface ServerRemoveAuditEvent {
   readonly adminName: string
   readonly action: string
   readonly target: string
-}
-
-/** Whether one half of the cascade completed. */
-export type CascadeHalfStatus = 'done' | 'failed'
-
-/**
- * The cascade outcome as the journal will carry it. Declared here as well as
- * on `AccessEditInfo` so this module compiles both before and after the
- * journal side adds the field; the shapes are identical by contract.
- */
-export interface CascadeOutcome {
-  readonly agents: CascadeHalfStatus
-  readonly groups: CascadeHalfStatus
 }
 
 export interface ServersRemoveDeps {
@@ -107,7 +103,7 @@ export function createServersRemoveHandler(deps: ServersRemoveDeps): UiHandler {
   ): Promise<void> {
     const write = deps.journalAccessEdit
     if (write === undefined) return
-    const info: AccessEditInfo & { readonly cascade?: CascadeOutcome } = {
+    const info: AccessEditInfo = {
       actor: {
         adminName: ctx.session?.adminName ?? null,
         role: ctx.session?.role ?? null,
@@ -145,16 +141,45 @@ export function createServersRemoveHandler(deps: ServersRemoveDeps): UiHandler {
       if (interstitial !== undefined) return interstitial
     }
     const result = await deps.registry.removeServer(name)
-    if (result.status === 'not-found') {
-      return { kind: 'response', status: HTTP_STATUS_NOT_FOUND, body: 'unknown server' }
+    const server = result.status === 'not-found' ? name : result.record.name
+    if (result.status === 'not-found' && !canDangle(server)) {
+      return NOT_FOUND
     }
-    const server = result.record.name
     const agentsHalf = await runHalf('agents', server, () => deps.agents.ungrantServerEverywhere(server))
     const groupsHalf = await runHalf('groups', server, () => deps.groups.ungrantServerEverywhere(server))
+    // Nothing was registered AND nothing dangled: there was no such server,
+    // which is the plain 404 of before. Nothing is audited or journalled,
+    // because nothing changed.
+    if (result.status === 'not-found' && !touchedAnything(agentsHalf, groupsHalf)) {
+      return NOT_FOUND
+    }
     audit(ctx, 'server.remove', server)
     await journalRemoval(ctx, server, agentsHalf, groupsHalf)
     return redirect('/servers')
   }
+}
+
+/** The 404 for a name that is neither registered nor granted anywhere. */
+const NOT_FOUND: UiResult = {
+  kind: 'response',
+  status: HTTP_STATUS_NOT_FOUND,
+  body: 'unknown server',
+}
+
+/**
+ * Whether `name` could be a grant key at all. A name outside the grant shape,
+ * or a reserved object key every store refuses, can never appear in
+ * `agents.json` or `groups.json` — asking would only raise
+ * `InvalidServerNameError` and emit a "repeat the removal" diagnostic the
+ * operator can never satisfy. Same guard as `cli/server-remove-cascade.ts`.
+ */
+function canDangle(name: string): boolean {
+  return GRANT_SERVER_NAME_PATTERN.test(name) && !RESERVED_OBJECT_KEYS.includes(name)
+}
+
+/** True when either half actually pruned a grant. */
+function touchedAnything(agentsHalf: HalfResult, groupsHalf: HalfResult): boolean {
+  return agentsHalf.names.length > 0 || groupsHalf.names.length > 0
 }
 
 /**

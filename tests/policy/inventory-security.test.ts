@@ -246,3 +246,69 @@ describe('TS-C1: a tool literally named __proto__ does not corrupt the shared st
     expect(again.failed).toBe(false)
   })
 })
+
+describe('TS-C1 (read path): a reserved tool name never resolves through the prototype', () => {
+  test('a second read of the same document still yields null-prototype maps', async () => {
+    // Arrange — one store instance, read twice: the second read is served by
+    // the rev-keyed memo, which is where a `structuredClone` used to rebuild
+    // the validator's null-prototype maps with `Object.prototype`.
+    const inventory = createInventory('srv', { storePath })
+    await inventory.observeToolsList([{ name: 'normal' }])
+    const store = openInventoryStore(storePath)
+    await store.read()
+
+    // Act
+    const data = await store.read()
+
+    // Assert
+    expect(Object.getPrototypeOf(data.servers)).toBeNull()
+    const entry = data.servers['srv']
+    expect(entry).toBeDefined()
+    expect(Object.getPrototypeOf(entry?.quarantined ?? {})).toBeNull()
+    expect(Object.getPrototypeOf(entry?.approved ?? {})).toBeNull()
+  })
+
+  test('`quarantine show`-style lookups for constructor/toString read as absent after a second read', async () => {
+    // Arrange
+    const inventory = createInventory('srv', { storePath })
+    await inventory.observeToolsList([{ name: 'normal' }])
+    const store = openInventoryStore(storePath)
+    await store.read()
+
+    // Act — exactly the bracket lookups `cli/quarantine-cmd.ts` and
+    // `ui/pages/quarantine.ts` perform, keyed by a name the SERVER chooses.
+    const data = await store.read()
+    const byConstructor = data.servers['srv']?.quarantined['constructor']
+    const byToString = data.servers['srv']?.quarantined['toString']
+    const serverByConstructor = data.servers['constructor']
+
+    // Assert
+    expect(byConstructor).toBeUndefined()
+    expect(byToString).toBeUndefined()
+    expect(serverByConstructor).toBeUndefined()
+  })
+
+  test('a tool actually named constructor is still found on a memoised read', async () => {
+    // Arrange
+    const inventory = createInventory('srv', { storePath })
+    await inventory.observeToolsList([{ name: 'constructor' }, { name: 'toString' }])
+    const store = openInventoryStore(storePath)
+    await store.read()
+
+    // Act
+    const data = await store.read()
+
+    // Assert
+    expect(data.servers['srv']?.quarantined['constructor']?.state).toBe('new')
+    expect(data.servers['srv']?.quarantined['toString']?.state).toBe('new')
+  })
+
+  test('an empty store reads back as null-prototype maps too', async () => {
+    // Act — the default-value branch of `read()`, which cloned the same way.
+    const data = await openInventoryStore(storePath).read()
+
+    // Assert
+    expect(Object.getPrototypeOf(data.servers)).toBeNull()
+    expect(data.servers['constructor']).toBeUndefined()
+  })
+})

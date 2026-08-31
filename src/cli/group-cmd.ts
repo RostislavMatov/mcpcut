@@ -271,7 +271,16 @@ async function runUngrant(
   const actor = await requireOwner(io, opts)
   if (actor === undefined) return 1
 
-  await store.ungrantServer(group, server)
+  // Nothing removed → nothing to attribute: an `access-edit` record for a
+  // change that did not happen would show an auditor a phantom `group.ungrant`.
+  const result = await store.ungrantServer(group, server)
+  if (result.status === 'absent') {
+    io.stderr.write(
+      `group "${formatReadableField(group)}" has no grant for "${formatReadableField(server)}"\n`,
+    )
+    return 1
+  }
+
   io.stdout.write(
     `removed grant ${formatReadableField(server)} from group ${formatReadableField(group)}\n`,
   )
@@ -334,7 +343,16 @@ async function runLeave(
 
   // Deliberately NOT checked against the agents store: taking access away must
   // work even for a member whose agent no longer exists.
-  await store.removeMember(group, agentName)
+  // Same rule as `ungrant`: a `group.leave` record is only written for a
+  // membership that actually ended.
+  const result = await store.removeMember(group, agentName)
+  if (result.status === 'absent') {
+    io.stderr.write(
+      `group "${formatReadableField(group)}" has no member "${formatReadableField(agentName)}"\n`,
+    )
+    return 1
+  }
+
   io.stdout.write(
     `removed ${formatReadableField(agentName)} from group ${formatReadableField(group)}\n`,
   )

@@ -5,13 +5,14 @@ import {
   InvalidServerNameError,
   InvalidToolPatternError,
   type AgentsStore,
-  type MethodGrantsInput,
 } from '../../agents/store.js'
 import {
   GroupExistsError,
   GroupNotFoundError,
   InvalidGroupNameError,
   type GroupsStore,
+  type RemoveMemberResult,
+  type UngrantServerResult,
 } from '../../groups/store.js'
 import type { GroupRecord } from '../../groups/schema.js'
 import type { AccessEditInfo } from '../../journal/record.js'
@@ -25,7 +26,6 @@ import {
   HTTP_STATUS_FORBIDDEN,
   HTTP_STATUS_NOT_FOUND,
   HTTP_STATUS_OK,
-  HTTP_STATUS_SEE_OTHER,
 } from '../constants.js'
 import {
   renderGroupRemoveConfirm,
@@ -34,8 +34,10 @@ import {
   type GroupDrawerId,
 } from '../pages/groups.js'
 import { renderNotice } from '../pages/notice.js'
-import { headerValue, parseBodyFields, type UiHandler, type UiRequestContext, type UiResult } from '../routes.js'
+import type { UiHandler, UiRequestContext, UiResult } from '../routes.js'
 import type { UiAuditSink } from './agents.js'
+import { methodGrantsFrom, parseGrantValue } from './grant-fields.js'
+import { fieldsOf, redirect } from './request-helpers.js'
 import { internalErrorResult, isKnownStoreError, type ErrorClass } from './store-errors.js'
 
 /**
@@ -86,14 +88,6 @@ function htmlResult(status: number, body: string): UiResult {
 /** Uniform 403 for the (server-guaranteed-impossible) missing-session case. */
 const FORBIDDEN: UiResult = { kind: 'response', status: HTTP_STATUS_FORBIDDEN, body: BODY_FORBIDDEN }
 
-function fieldsOf(ctx: UiRequestContext): Readonly<Record<string, string>> {
-  return parseBodyFields(ctx.body, headerValue(ctx.headers, 'content-type'))
-}
-
-function redirect(location: string): UiResult {
-  return { kind: 'response', status: HTTP_STATUS_SEE_OTHER, headers: { location } }
-}
-
 /** A readable refusal: 400 with the reason and a way back to `/groups`. */
 function refusal(message: string, session: UiSession): UiResult {
   return htmlResult(
@@ -131,36 +125,6 @@ const GROUP_INPUT_ERRORS: readonly ErrorClass[] = [
 function storeFailure(error: unknown, session: UiSession): UiResult {
   if (!isKnownStoreError(error, GROUP_INPUT_ERRORS)) return internalErrorResult()
   return refusal(error instanceof Error ? error.message : 'unexpected error', session)
-}
-
-/** Splits a whitespace/comma-separated pattern field into trimmed non-empty entries. */
-function parseList(value: string | undefined): string[] {
-  if (value === undefined) return []
-  return value
-    .split(/[\s,]+/)
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0)
-}
-
-/**
- * Interprets one grant-dimension field exactly as the agents grant does:
- * absent/empty → `undefined` (leave the dimension unset, keeping the M3
- * fail-closed denial); a lone `*` → `'*'`; otherwise the explicit list.
- */
-function parseGrantValue(value: string | undefined): '*' | string[] | undefined {
-  const list = parseList(value)
-  if (list.length === 0) return undefined
-  if (list.length === 1 && list[0] === '*') return '*'
-  return list
-}
-
-function methodGrantsFrom(form: Readonly<Record<string, string>>): MethodGrantsInput {
-  const resources = parseGrantValue(form.resources)
-  const prompts = parseGrantValue(form.prompts)
-  return {
-    ...(resources !== undefined ? { resources } : {}),
-    ...(prompts !== undefined ? { prompts } : {}),
-  }
 }
 
 /** Which drawer a `?add=1` / `?grant=1` / `?join=1` asked to open, if any. */
@@ -315,10 +279,17 @@ export function createGroupsHandlers(deps: GroupsHandlersDeps): GroupsHandlers {
     const group = form.group?.trim() ?? ''
     const server = form.server?.trim() ?? ''
     if (group === '' || server === '') return refusal('group and server are required', session)
+    let outcome: UngrantServerResult
     try {
-      await groups.ungrantServer(group, server)
+      outcome = await groups.ungrantServer(group, server)
     } catch (error) {
       return storeFailure(error, session)
+    }
+    // Nothing removed → nothing to attribute: an `access-edit` record for a
+    // change that did not happen would show an auditor a phantom
+    // `group.ungrant`.
+    if (outcome.status === 'absent') {
+      return refusal(`group "${group}" has no grant for "${server}"`, session)
     }
     audit(session, 'group.ungrant', `${group}/${server}`)
     await journal(session, { action: 'group.ungrant', group, server })
@@ -356,10 +327,16 @@ export function createGroupsHandlers(deps: GroupsHandlersDeps): GroupsHandlers {
     const group = form.group?.trim() ?? ''
     const agentName = form.agent?.trim() ?? ''
     if (group === '' || agentName === '') return refusal('group and agent are required', session)
+    let outcome: RemoveMemberResult
     try {
-      await groups.removeMember(group, agentName)
+      outcome = await groups.removeMember(group, agentName)
     } catch (error) {
       return storeFailure(error, session)
+    }
+    // Same rule as `groupsUngrant`: only a membership that actually ended is
+    // attributed and journalled.
+    if (outcome.status === 'absent') {
+      return refusal(`group "${group}" has no member "${agentName}"`, session)
     }
     audit(session, 'group.leave', `${group}/${agentName}`)
     await journal(session, { action: 'group.leave', group, agent: agentName })
