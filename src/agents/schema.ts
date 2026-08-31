@@ -28,11 +28,11 @@ import {
  * "синтаксис паттернов — тот же, что в policy").
  */
 
-const agentNameSchema = z
+export const agentNameSchema = z
   .string()
   .regex(AGENT_NAME_PATTERN, 'agent name must match ^[a-z0-9][a-z0-9-]{0,63}$')
 
-const grantServerNameSchema = z
+export const grantServerNameSchema = z
   .string()
   .regex(GRANT_SERVER_NAME_PATTERN, 'server name must match ^[a-z0-9][a-z0-9-]{0,63}$')
 
@@ -79,7 +79,7 @@ const resourcePatternSchema = z
  * are out of this task's ownership — same precedent as `classify-tool.ts`
  * mirroring `match.ts`).
  */
-function withMaxEntries<V extends z.ZodTypeAny>(
+export function withMaxEntries<V extends z.ZodTypeAny>(
   keySchema: z.ZodString,
   valueSchema: V,
   max: number,
@@ -101,7 +101,7 @@ function withMaxEntries<V extends z.ZodTypeAny>(
     })
 }
 
-const agentGrantSchema = z.strictObject({
+export const agentGrantSchema = z.strictObject({
   /** `'*'` — every tool granted; array — exact names / trailing-`*` prefixes. */
   tools: z.union([z.literal('*'), z.array(toolPatternSchema).max(MAX_TOOLS_PER_GRANT)]),
   /**
@@ -186,7 +186,7 @@ export function parseAgentsFile(value: unknown): ParseAgentsResult {
 const RESERVED_SCAN_MAX_DEPTH = 32
 
 /** Depth-bounded scan for a reserved own-key anywhere in `value`; returns its path or null. */
-function findReservedKeyPath(
+export function findReservedKeyPath(
   value: unknown,
   path: readonly (string | number)[],
 ): (string | number)[] | null {
