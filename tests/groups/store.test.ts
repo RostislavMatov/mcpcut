@@ -202,13 +202,56 @@ describe('grantServer', () => {
 })
 
 describe('ungrantServer', () => {
-  test('removes the grant and is idempotent', async () => {
+  test('removes the grant and reports it as removed', async () => {
+    // Arrange
     await store.createGroup('analytics')
     await store.grantServer('analytics', 'postgres', '*')
 
-    expect((await store.ungrantServer('analytics', 'postgres')).grants).toEqual({})
-    expect((await store.ungrantServer('analytics', 'postgres')).grants).toEqual({})
+    // Act
+    const result = await store.ungrantServer('analytics', 'postgres')
+
+    // Assert
+    expect(result.status).toBe('removed')
+    expect(result.status === 'removed' ? result.record.grants : undefined).toEqual({})
   })
+
+  test('a repeat reports absent instead of committing an unchanged document', async () => {
+    // Arrange — the caller writes an `access-edit` record off this verdict, so
+    // "nothing was there" must be distinguishable from "a grant was dropped".
+    await store.createGroup('analytics')
+    await store.grantServer('analytics', 'postgres', '*')
+    await store.ungrantServer('analytics', 'postgres')
+
+    // Act
+    const result = await store.ungrantServer('analytics', 'postgres')
+
+    // Assert
+    expect(result.status).toBe('absent')
+  })
+
+  test('a server the group never granted reports absent', async () => {
+    // Arrange
+    await store.createGroup('analytics')
+
+    // Act
+    const result = await store.ungrantServer('analytics', 'postgres')
+
+    // Assert
+    expect(result.status).toBe('absent')
+  })
+
+  test.each(['Postgres', 'with space', '__proto__', 'constructor', ''])(
+    'invalid server name %j → InvalidServerNameError, like grantServer',
+    async (server) => {
+      // Arrange
+      await store.createGroup('analytics')
+
+      // Act + Assert
+      await expect(store.ungrantServer('analytics', server)).rejects.toBeInstanceOf(
+        InvalidServerNameError,
+      )
+    },
+  )
 
   test('an unknown group → GroupNotFoundError', async () => {
     await expect(store.ungrantServer('nope', 'postgres')).rejects.toBeInstanceOf(GroupNotFoundError)
@@ -235,13 +278,34 @@ describe('addMember / removeMember', () => {
     expect(record.members).toEqual(['bot-a'])
   })
 
-  test('removeMember drops the member and is idempotent', async () => {
+  test('removeMember drops the member and reports it as removed', async () => {
+    // Arrange
     await store.createGroup('analytics')
     await store.addMember('analytics', 'bot-a')
     await store.addMember('analytics', 'bot-b')
 
-    expect((await store.removeMember('analytics', 'bot-a')).members).toEqual(['bot-b'])
-    expect((await store.removeMember('analytics', 'bot-a')).members).toEqual(['bot-b'])
+    // Act
+    const result = await store.removeMember('analytics', 'bot-a')
+
+    // Assert
+    expect(result.status).toBe('removed')
+    expect(result.status === 'removed' ? result.record.members : undefined).toEqual(['bot-b'])
+  })
+
+  test('removeMember on a non-member reports absent instead of writing', async () => {
+    // Arrange
+    await store.createGroup('analytics')
+    await store.addMember('analytics', 'bot-b')
+
+    // Act
+    const first = await store.removeMember('analytics', 'bot-a')
+    const second = await store.removeMember('analytics', 'bot-b')
+    const third = await store.removeMember('analytics', 'bot-b')
+
+    // Assert
+    expect(first.status).toBe('absent')
+    expect(second.status).toBe('removed')
+    expect(third.status).toBe('absent')
   })
 
   test.each(['Bot', 'with space', '__proto__', ''])(

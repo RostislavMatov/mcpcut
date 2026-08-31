@@ -464,6 +464,38 @@ describe('group ungrant', () => {
     expect(code).toBe(1)
     expect((await groups().getGroup('analytics'))?.grants['github']).toBeDefined()
   })
+
+  test('a grant the group never held: exit 1, no audit line, nothing journaled', async () => {
+    // Arrange — nothing to remove, so there is no access change to record.
+    await seedGroup('analytics')
+    const io = fakeIo()
+
+    // Act
+    const code = await runGroupCommand(['ungrant', 'analytics', 'github'], io, await ownerOpts())
+
+    // Assert
+    expect(code).toBe(1)
+    expect(io.err()).toContain('group "analytics" has no grant for "github"')
+    expect(io.err()).not.toContain('[audit]')
+    expect(io.out()).toBe('')
+    expect(await accessRecords()).toEqual([])
+  })
+
+  test('a repeated ungrant journals exactly once', async () => {
+    // Arrange
+    await seedGroup('analytics')
+    await groups().grantServer('analytics', 'github', '*')
+    const opts = await ownerOpts()
+
+    // Act
+    const first = await runGroupCommand(['ungrant', 'analytics', 'github'], fakeIo(), opts)
+    const second = await runGroupCommand(['ungrant', 'analytics', 'github'], fakeIo(), opts)
+
+    // Assert
+    expect(first).toBe(0)
+    expect(second).toBe(1)
+    expect(await accessRecords()).toHaveLength(1)
+  })
 })
 
 describe('group join / leave', () => {
@@ -521,6 +553,22 @@ describe('group join / leave', () => {
     expect(code).toBe(0)
     expect((await groups().getGroup('analytics'))?.members).toEqual([])
     expect((await accessRecords())[0]?.['action']).toBe('group.leave')
+  })
+
+  test('leave for a non-member: exit 1, no audit line, nothing journaled', async () => {
+    // Arrange
+    await seedGroup('analytics')
+    const io = fakeIo()
+
+    // Act
+    const code = await runGroupCommand(['leave', 'analytics', 'bot-a'], io, await ownerOpts())
+
+    // Assert
+    expect(code).toBe(1)
+    expect(io.err()).toContain('group "analytics" has no member "bot-a"')
+    expect(io.err()).not.toContain('[audit]')
+    expect(io.out()).toBe('')
+    expect(await accessRecords()).toEqual([])
   })
 
   test('leave does NOT require the agent to still exist (a member can be stale)', async () => {

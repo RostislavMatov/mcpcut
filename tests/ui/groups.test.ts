@@ -360,6 +360,22 @@ describe('POST /groups/ungrant', () => {
     expect(edits[0]).toMatchObject({ action: 'group.ungrant', group: 'analytics', server: 'notes' })
   })
 
+  test('a grant the group never held is a 400 notice — nothing attributed, nothing journaled', async () => {
+    // Arrange
+    await groups.createGroup('analytics')
+
+    // Act
+    const result = asResponse(
+      await handlers.groupsUngrant(postCtx({ group: 'analytics', server: 'notes' }, session('owner'))),
+    )
+
+    // Assert
+    expect(result.status).toBe(400)
+    expect(bodyOf(result)).toContain('has no grant for')
+    expect(audit).toEqual([])
+    expect(edits).toEqual([])
+  })
+
   test('an empty body is a 400', async () => {
     expect(asResponse(await handlers.groupsUngrant(emptyPost(session('owner')))).status).toBe(400)
   })
@@ -426,6 +442,23 @@ describe('POST /groups/leave', () => {
     expect((await groups.getGroup('analytics'))?.members).toEqual([])
     expect(audit[0]).toMatchObject({ action: 'group.leave', target: 'analytics/bot-a' })
     expect(edits[0]).toMatchObject({ action: 'group.leave', group: 'analytics', agent: 'bot-a' })
+  })
+
+  test('an agent who is not a member is a 400 notice — nothing attributed, nothing journaled', async () => {
+    // Arrange
+    await groups.createGroup('analytics')
+    await agents.createAgent('bot-a')
+
+    // Act
+    const result = asResponse(
+      await handlers.groupsLeave(postCtx({ group: 'analytics', agent: 'bot-a' }, session('owner'))),
+    )
+
+    // Assert
+    expect(result.status).toBe(400)
+    expect(bodyOf(result)).toContain('has no member')
+    expect(audit).toEqual([])
+    expect(edits).toEqual([])
   })
 
   test('an empty body is a 400', async () => {

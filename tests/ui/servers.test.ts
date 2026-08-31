@@ -32,6 +32,8 @@ interface Harness {
   readonly vault: ReturnType<typeof createVaultStore>
   /** Every `access-edit` the handlers handed to the injected journal port. */
   readonly accessEdits: AccessEditInfo[]
+  /** Operator-facing diagnostic lines the handlers emitted. */
+  readonly diagnostics: string[]
   dispose(): void
 }
 
@@ -47,6 +49,7 @@ function makeHarness(inventory?: InventoryStoreData): Harness {
   const vault = createVaultStore({ journalDir: dir })
   const audit: UiAuditEvent[] = []
   const accessEdits: AccessEditInfo[] = []
+  const diagnostics: string[] = []
   const handlers = createServersHandlers({
     registry,
     agents,
@@ -56,6 +59,7 @@ function makeHarness(inventory?: InventoryStoreData): Harness {
     journalAccessEdit: async (info) => {
       accessEdits.push(info)
     },
+    diagnostics: (line) => diagnostics.push(line),
     ...(inventory !== undefined ? { readInventory: async () => inventory } : {}),
   })
   return {
@@ -63,6 +67,7 @@ function makeHarness(inventory?: InventoryStoreData): Harness {
     handlers,
     audit,
     accessEdits,
+    diagnostics,
     registry,
     agents,
     groups,
@@ -621,6 +626,118 @@ describe('serversRemove', () => {
     const res = asResponse(await h.handlers.serversRemove(formPost({}, '/servers/remove')))
     expect(res.status).toBe(404)
     expect(h.accessEdits).toHaveLength(0)
+  })
+
+  test('a reserved object key stays a 404 and never reaches the cascade', async () => {
+    h = makeHarness()
+    const res = asResponse(
+      await h.handlers.serversRemove(
+        formPost({ csrf_token: OWNER.csrfToken, name: 'constructor', confirm: 'true' }, '/servers/remove'),
+      ),
+    )
+    expect(res.status).toBe(404)
+    expect(h.accessEdits).toHaveLength(0)
+    expect(h.diagnostics).toEqual([])
+  })
+})
+
+describe('serversRemove — repair of dangling grants from the browser (F2c parity)', () => {
+  /** Grants a server name to one agent and one group, with NO registry record. */
+  async function seedDangling(name: string): Promise<void> {
+    if (h === null) throw new Error('harness not built')
+    await h.registry.addServer({ name, transport: 'stdio', command: 'node' })
+    await h.agents.createAgent('research-bot')
+    await h.agents.grantServer('research-bot', name, ['read_file'])
+    await h.groups.createGroup('analytics')
+    await h.groups.grantServer('analytics', name, ['read_file'])
+    await h.registry.removeServer(name)
+  }
+
+  test('an unregistered name that still dangles is pruned, audited, journalled and redirected', async () => {
+    // Arrange — the registry write landed but the cascade did not (a crash
+    // between three documents that share no transaction). The CLI repairs this
+    // on a repeat `server remove`; the browser used to answer a bare 404.
+    h = makeHarness()
+    await seedDangling('github')
+
+    // Act
+    const res = asResponse(
+      await h.handlers.serversRemove(
+        formPost({ csrf_token: OWNER.csrfToken, name: 'github', confirm: 'true' }, '/servers/remove'),
+      ),
+    )
+
+    // Assert
+    expect(res.status).toBe(303)
+    expect(res.headers?.location).toBe('/servers')
+    expect((await h.agents.getAgent('research-bot'))?.grants).toEqual({})
+    expect((await h.groups.getGroup('analytics'))?.grants).toEqual({})
+    expect(h.audit).toEqual([
+      { actor: 'ui', adminName: 'alice', action: 'server.remove', target: 'github' },
+    ])
+    expect(h.accessEdits).toHaveLength(1)
+    expect(h.accessEdits[0]).toMatchObject({
+      action: 'server.remove',
+      server: 'github',
+      affectedAgents: ['research-bot'],
+      affectedGroups: ['analytics'],
+      cascade: { agents: 'done', groups: 'done' },
+    })
+  })
+
+  test('the interstitial still shows the holders before the repair runs', async () => {
+    // Arrange
+    h = makeHarness()
+    await seedDangling('github')
+
+    // Act — no `confirm`, so the holders are named first.
+    const res = asResponse(
+      await h.handlers.serversRemove(
+        formPost({ csrf_token: OWNER.csrfToken, name: 'github' }, '/servers/remove'),
+      ),
+    )
+
+    // Assert
+    expect(res.status).toBe(200)
+    expect(String(res.body)).toContain('research-bot')
+    expect(String(res.body)).toContain('analytics')
+    expect(h.accessEdits).toHaveLength(0)
+  })
+
+  test('an unregistered name with nothing dangling is still a 404', async () => {
+    // Arrange
+    h = makeHarness()
+    await h.agents.createAgent('research-bot')
+    await h.groups.createGroup('analytics')
+
+    // Act
+    const res = asResponse(
+      await h.handlers.serversRemove(
+        formPost({ csrf_token: OWNER.csrfToken, name: 'ghost', confirm: 'true' }, '/servers/remove'),
+      ),
+    )
+
+    // Assert
+    expect(res.status).toBe(404)
+    expect(h.audit).toEqual([])
+    expect(h.accessEdits).toHaveLength(0)
+  })
+
+  test('a repeated repair journals exactly once', async () => {
+    // Arrange
+    h = makeHarness()
+    await seedDangling('github')
+    const post = (): UiRequestContext =>
+      formPost({ csrf_token: OWNER.csrfToken, name: 'github', confirm: 'true' }, '/servers/remove')
+
+    // Act
+    const first = asResponse(await h.handlers.serversRemove(post()))
+    const second = asResponse(await h.handlers.serversRemove(post()))
+
+    // Assert
+    expect(first.status).toBe(303)
+    expect(second.status).toBe(404)
+    expect(h.accessEdits).toHaveLength(1)
   })
 })
 

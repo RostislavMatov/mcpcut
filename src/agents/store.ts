@@ -1,17 +1,32 @@
 import { join } from 'node:path'
 import { z } from 'zod'
 import { JOURNAL_DIR } from '../config.js'
-import { RESERVED_OBJECT_KEYS, TOOL_RULE_NAME_PATTERN } from '../policy/constants.js'
 import { compareAsText } from './effective.js'
 import { createJsonStore, type JsonStore } from '../policy/store.js'
+import { AGENTS_FILE_NAME } from './constants.js'
 import {
-  AGENT_NAME_PATTERN,
-  AGENTS_FILE_NAME,
-  GRANT_SERVER_NAME_PATTERN,
-} from './constants.js'
-import { MAX_RESOURCE_PATTERN_CHARS, RESOURCE_GRANT_PATTERN } from './method-grants.js'
+  assertValidAgentName,
+  assertValidServerName,
+  buildGrant,
+  type MethodGrantsInput,
+} from './grant-input.js'
 import { parseAgentsFile, type AgentGrant, type AgentRecord, type AgentsFile } from './schema.js'
 import { generateToken, verifyToken } from './tokens.js'
+
+/**
+ * The grant-input vocabulary is re-exported so every existing import site
+ * (`from '../agents/store.js'`) keeps working: the assertions and their error
+ * classes moved to `grant-input.ts` when the group store started sharing
+ * them, and neither store imports the other.
+ */
+export {
+  InvalidAgentNameError,
+  InvalidPromptPatternError,
+  InvalidResourcePatternError,
+  InvalidServerNameError,
+  InvalidToolPatternError,
+  type MethodGrantsInput,
+} from './grant-input.js'
 
 /**
  * CLI-managed store for agent identities and their grant matrix, backed by
@@ -35,48 +50,6 @@ export class AgentNotFoundError extends Error {
   constructor(name: string) {
     super(`agent "${name}" does not exist`)
     this.name = 'AgentNotFoundError'
-  }
-}
-
-/** Raised for an agent name outside `^[a-z0-9][a-z0-9-]{0,63}$` (or a reserved word). */
-export class InvalidAgentNameError extends Error {
-  constructor(name: string) {
-    super(`invalid agent name "${name}": must match ^[a-z0-9][a-z0-9-]{0,63}$`)
-    this.name = 'InvalidAgentNameError'
-  }
-}
-
-/** Raised for a grant server name outside the registry name format (or a reserved word). */
-export class InvalidServerNameError extends Error {
-  constructor(server: string) {
-    super(`invalid server name "${server}": must match ^[a-z0-9][a-z0-9-]{0,63}$`)
-    this.name = 'InvalidServerNameError'
-  }
-}
-
-/** Raised for a tool pattern that is not an exact name or single trailing-`*` prefix. */
-export class InvalidToolPatternError extends Error {
-  constructor(pattern: string) {
-    super(`invalid tool pattern "${pattern}": must be an exact name or end with a single "*"`)
-    this.name = 'InvalidToolPatternError'
-  }
-}
-
-/** Raised for a resource URI pattern outside `RESOURCE_GRANT_PATTERN` (M4 Task 6). */
-export class InvalidResourcePatternError extends Error {
-  constructor(pattern: string) {
-    super(
-      `invalid resource pattern "${pattern}": must be an exact URI or end with a single "*" (no whitespace)`,
-    )
-    this.name = 'InvalidResourcePatternError'
-  }
-}
-
-/** Raised for a prompt name pattern that is not an exact name or single trailing-`*` prefix. */
-export class InvalidPromptPatternError extends Error {
-  constructor(pattern: string) {
-    super(`invalid prompt pattern "${pattern}": must be an exact name or end with a single "*"`)
-    this.name = 'InvalidPromptPatternError'
   }
 }
 
@@ -151,52 +124,6 @@ function validateAgentsFile(raw: unknown): AgentsFile {
   return result.file
 }
 
-function assertValidAgentName(name: string): void {
-  if (!AGENT_NAME_PATTERN.test(name) || RESERVED_OBJECT_KEYS.includes(name)) {
-    throw new InvalidAgentNameError(name)
-  }
-}
-
-function assertValidServerName(server: string): void {
-  if (!GRANT_SERVER_NAME_PATTERN.test(server) || RESERVED_OBJECT_KEYS.includes(server)) {
-    throw new InvalidServerNameError(server)
-  }
-}
-
-function assertValidToolPatterns(tools: readonly string[]): void {
-  for (const pattern of tools) {
-    if (!TOOL_RULE_NAME_PATTERN.test(pattern) || RESERVED_OBJECT_KEYS.includes(pattern)) {
-      throw new InvalidToolPatternError(pattern)
-    }
-  }
-}
-
-/** The optional resources/prompts dimension of one grant (M4 Task 6). */
-export interface MethodGrantsInput {
-  readonly resources?: '*' | readonly string[]
-  readonly prompts?: '*' | readonly string[]
-}
-
-function assertValidResourcePatterns(patterns: readonly string[]): void {
-  for (const pattern of patterns) {
-    if (
-      pattern.length > MAX_RESOURCE_PATTERN_CHARS ||
-      !RESOURCE_GRANT_PATTERN.test(pattern) ||
-      RESERVED_OBJECT_KEYS.includes(pattern)
-    ) {
-      throw new InvalidResourcePatternError(pattern)
-    }
-  }
-}
-
-function assertValidPromptPatterns(patterns: readonly string[]): void {
-  for (const pattern of patterns) {
-    if (!TOOL_RULE_NAME_PATTERN.test(pattern) || RESERVED_OBJECT_KEYS.includes(pattern)) {
-      throw new InvalidPromptPatternError(pattern)
-    }
-  }
-}
-
 /** New file value with `record` upserted under its name (input untouched). */
 function withAgent(file: AgentsFile, record: AgentRecord): AgentsFile {
   return { ...file, agents: { ...file.agents, [record.name]: record } }
@@ -250,22 +177,7 @@ export function createAgentsStore(opts: AgentsStoreOptions = {}): AgentsStore {
     methods: MethodGrantsInput = {},
   ): Promise<AgentRecord> {
     assertValidServerName(serverName)
-    if (tools !== '*') assertValidToolPatterns(tools)
-    if (methods.resources !== undefined && methods.resources !== '*') {
-      assertValidResourcePatterns(methods.resources)
-    }
-    if (methods.prompts !== undefined && methods.prompts !== '*') {
-      assertValidPromptPatterns(methods.prompts)
-    }
-    const grant: AgentGrant = {
-      tools: tools === '*' ? '*' : [...tools],
-      ...(methods.resources !== undefined
-        ? { resources: methods.resources === '*' ? ('*' as const) : [...methods.resources] }
-        : {}),
-      ...(methods.prompts !== undefined
-        ? { prompts: methods.prompts === '*' ? ('*' as const) : [...methods.prompts] }
-        : {}),
-    }
+    const grant: AgentGrant = buildGrant(tools, methods)
 
     const next = await store.update((current) => {
       const record = requireAgent(current, agentName)

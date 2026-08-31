@@ -3,6 +3,7 @@ import { createAgentsStore } from '../agents/store.js'
 import { journalAccessEdit } from '../groups/journal-access-edit.js'
 import { createGroupsStore } from '../groups/store.js'
 import { formatReadableField } from '../journal/format.js'
+import { RESERVED_OBJECT_KEYS } from '../policy/constants.js'
 import type { CascadeHalfStatus, CascadeVerdict } from '../journal/access-edit-record.js'
 import type { AccessEditActor } from '../journal/record.js'
 import { adminFromEnv } from './admin-token.js'
@@ -92,10 +93,12 @@ export async function cascadeGrants(
   io: ServerCliIo,
   opts: ServerCliOptions,
 ): Promise<CascadeResult> {
-  // A name outside the grant shape can never appear as a grant key, so there
-  // is nothing to prune and nothing to warn about — asking the agents store
-  // would only raise `InvalidServerNameError` on a plain typo.
-  if (!GRANT_SERVER_NAME_PATTERN.test(name)) {
+  // A name no grant key can hold — outside the grant shape, or a reserved
+  // object key every store refuses — has nothing to prune and nothing to warn
+  // about. Asking the stores anyway would raise `InvalidServerNameError` and
+  // turn a plain typo into a "fix it and re-run" diagnostic the operator can
+  // never satisfy.
+  if (!GRANT_SERVER_NAME_PATTERN.test(name) || RESERVED_OBJECT_KEYS.includes(name)) {
     return { affectedAgents: [], affectedGroups: [], verdict: { agents: 'done', groups: 'done' } }
   }
   const storeOpts = opts.journalDir !== undefined ? { journalDir: opts.journalDir } : {}

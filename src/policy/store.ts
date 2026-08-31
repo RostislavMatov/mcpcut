@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from 'node:timers/promises'
 import { isSqliteBusy, type SqliteHandle } from '../store/sqlite.js'
+import { cloneKeepingPrototypes } from './store-clone.js'
 import { createDocumentValidator } from './store-validate.js'
 import {
   StoreCorruptError,
@@ -60,7 +61,7 @@ export interface JsonStoreLockOptions {
 export interface JsonStoreOptions<T> {
   /** Parses/validates the raw JSON value read from storage. Must throw on any invalid shape. */
   readonly validate: (raw: unknown) => T
-  /** Returned (as a deep copy) when the document does not exist yet. */
+  /** Returned (as a prototype-preserving deep copy) when the document does not exist yet. */
   readonly defaultValue: T
   /**
    * Overrides for the write budgets. A one-shot CLI and a long-lived `serve`
@@ -91,6 +92,13 @@ export interface JsonStore<T> {
    * would yield. If the current document is corrupt, the update is rejected
    * rather than silently overwriting it with a fresh default.
    *
+   * An `fn` that returns the very value it was handed is a NO-OP: nothing is
+   * validated, serialized, written or version-bumped, no memo is invalidated,
+   * and on a fresh install no document row is created. Many callers express a
+   * refusal or an idempotent edit that way (`removeGroup` on an unknown name,
+   * a repeated `addMember`, a cascade with nothing to prune), and none of them
+   * should leave a revision behind for an auditor to explain.
+   *
    * `fn` MUST be a pure function of the value it is handed, and MUST tolerate
    * being called more than once: when a concurrent writer commits between our
    * read and our conditional write, the whole cycle re-runs against the value
@@ -110,9 +118,15 @@ const RETRY_BACKOFF_CAP_MS = 32
 /** Straight CAS losses before one attempt runs under `BEGIN IMMEDIATE` to force progress. */
 const CAS_LOSSES_BEFORE_PESSIMISTIC = 4
 
-/** One update attempt's outcome; `fnError` is boxed so `undefined` thrown by `fn` survives. */
-type AttemptResult =
+/**
+ * One update attempt's outcome; `fnError` is boxed so `undefined` thrown by
+ * `fn` survives. `unchanged` is a SUCCESS that wrote nothing: `fn` handed back
+ * the very value it was given, so there is no new document to validate,
+ * serialize or CAS — see the identity short-circuit in `attemptOptimistic`.
+ */
+type AttemptResult<T> =
   | { readonly kind: 'committed'; readonly text: string }
+  | { readonly kind: 'unchanged'; readonly value: T }
   | { readonly kind: 'conflict'; readonly fnError?: readonly [unknown] }
 
 /**
@@ -204,7 +218,7 @@ export function createJsonStore<T>(filePath: string, opts: JsonStoreOptions<T>):
 
       guarded(() => assertNotPreviouslyMigrated(handle.db, documentName, filePath))
       const legacyText = await legacyImportCandidate()
-      if (legacyText === null) return structuredClone(defaultValue)
+      if (legacyText === null) return cloneKeepingPrototypes(defaultValue)
 
       // Import races with concurrent writers are benign: if someone landed a
       // row first, the insert is skipped and their (current) row is read back.
@@ -212,7 +226,7 @@ export function createJsonStore<T>(filePath: string, opts: JsonStoreOptions<T>):
         guarded(() => insertDocumentFirstWrite(handle, documentName, filePath, legacyText, true)),
       )
       const imported = guarded(() => selectDocument(handle.db, documentName, filePath))
-      return imported === null ? structuredClone(defaultValue) : document.parseRow(imported)
+      return imported === null ? cloneKeepingPrototypes(defaultValue) : document.parseRow(imported)
     } catch (error: unknown) {
       rethrowClassified(filePath, error)
     }
@@ -222,18 +236,24 @@ export function createJsonStore<T>(filePath: string, opts: JsonStoreOptions<T>):
   async function attemptOptimistic(
     handle: SqliteHandle,
     fn: (current: T) => T,
-  ): Promise<AttemptResult> {
+  ): Promise<AttemptResult<T>> {
     const db = handle.db
     const row = guarded(() => selectDocument(db, documentName, filePath))
 
     if (row === null) {
       guarded(() => assertNotPreviouslyMigrated(db, documentName, filePath))
       const legacyText = await legacyImportCandidate()
-      const current = legacyText === null ? structuredClone(defaultValue) : document.parseText(legacyText)
+      const current = legacyText === null ? cloneKeepingPrototypes(defaultValue) : document.parseText(legacyText)
 
       let next: T
       try {
         next = fn(current)
+        // `fn` handed back what it was given: there is nothing to persist. On a
+        // fresh install that means no row is created at all — a refusal (an
+        // unknown name to remove) must not bring a document into existence.
+        // A legacy file is the one exception: importing it IS a state change
+        // (it writes the migration marker), so that insert still runs below.
+        if (next === current && legacyText === null) return { kind: 'unchanged', value: current }
         // Inside the same try as `fn` on purpose: a refusal computed against a
         // snapshot a concurrent writer has already superseded is stale — the
         // staleness check below re-runs the cycle instead of reporting it.
@@ -257,6 +277,10 @@ export function createJsonStore<T>(filePath: string, opts: JsonStoreOptions<T>):
     let next: T
     try {
       next = fn(current)
+      // Same identity short-circuit as above: no validation, no stringify, no
+      // CAS, no revision bump, no memo invalidation. `current` is this
+      // attempt's own parse, so it is already a value nobody else holds.
+      if (next === current) return { kind: 'unchanged', value: current }
       document.assertWritable(next)
     } catch (error: unknown) {
       const nowRev = guarded(() => selectDocument(db, documentName, filePath))?.rev ?? null
@@ -276,11 +300,13 @@ export function createJsonStore<T>(filePath: string, opts: JsonStoreOptions<T>):
    * genuine and propagates (rolling the transaction back). A missing row is
    * left to the optimistic path — it owns the legacy-import logic.
    */
-  function attemptPessimistic(handle: SqliteHandle, fn: (current: T) => T): AttemptResult {
+  function attemptPessimistic(handle: SqliteHandle, fn: (current: T) => T): AttemptResult<T> {
     return handle.transaction((db) => {
       const row = selectDocument(db, documentName, filePath)
       if (row === null) return { kind: 'conflict' as const }
-      const next = fn(document.parseText(row.doc))
+      const current = document.parseText(row.doc)
+      const next = fn(current)
+      if (next === current) return { kind: 'unchanged' as const, value: current }
       // Under the write lock the snapshot cannot be stale, so a refusal here
       // is genuine: it propagates and rolls the transaction back.
       document.assertWritable(next)
@@ -297,7 +323,7 @@ export function createJsonStore<T>(filePath: string, opts: JsonStoreOptions<T>):
     let lastFnError: readonly [unknown] | undefined
 
     for (;;) {
-      let outcome: AttemptResult
+      let outcome: AttemptResult<T>
       try {
         if (conflicts >= CAS_LOSSES_BEFORE_PESSIMISTIC) {
           outcome = attemptPessimistic(handle, fn)
@@ -316,6 +342,10 @@ export function createJsonStore<T>(filePath: string, opts: JsonStoreOptions<T>):
         if (!isSqliteBusy(error)) throw error
         outcome = { kind: 'conflict' }
       }
+
+      // Nothing moved on disk, so the memo is still valid and there is no
+      // persisted text to round-trip: hand back the snapshot `fn` accepted.
+      if (outcome.kind === 'unchanged') return outcome.value
 
       if (outcome.kind === 'committed') {
         // The document moved under the memo, and this attempt does not know

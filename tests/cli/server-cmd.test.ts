@@ -13,6 +13,7 @@ import {
   type ServerCliOptions,
 } from '../../src/cli/server-cmd.js'
 import { runServerRefresh, type ServerProbeOptions } from '../../src/cli/server-status-cmd.js'
+import { AGENTS_FILE_NAME } from '../../src/agents/constants.js'
 import { GROUPS_FILE_NAME } from '../../src/groups/constants.js'
 import { ACCESS_EDIT_SESSION_ID } from '../../src/journal/access-edit-record.js'
 import type { DecisionInfo, JournalRecord } from '../../src/journal/record.js'
@@ -24,6 +25,7 @@ import { PROBING_MARKER_FRESH_FOR_MS, type RunProbeFn } from '../../src/probe/or
 import { createServerStatusStore } from '../../src/probe/status-store.js'
 import { REGISTRY_FILE_NAME } from '../../src/registry/constants.js'
 import { createRegistryStore } from '../../src/registry/store.js'
+import { openSqlite } from '../../src/store/sqlite.js'
 
 let journalDir: string
 
@@ -709,7 +711,49 @@ describe('server remove — repair of a dangling cascade (F2c)', () => {
     expect(io.err()).toContain('unknown server "github"')
     expect(await accessEditRecords()).toHaveLength(1)
   })
+
+  test('a reserved object key is refused plainly, with no unsatisfiable cascade diagnostic', async () => {
+    // Arrange — `constructor` matches the grant name shape but can never BE a
+    // grant key (every store refuses it), so there is nothing to prune and
+    // nothing an operator could fix by re-running.
+    const io = fakeIo()
+
+    // Act
+    const exitCode = await runServerRemove(['constructor'], io, opts())
+
+    // Assert
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('unknown server "constructor"')
+    expect(io.err()).not.toContain('[cascade]')
+    expect(io.err()).not.toContain('re-run')
+  })
+
+  test('removing an unknown server on a fresh install creates no grant documents', async () => {
+    // Arrange — nothing seeded at all: the cascade has nothing to prune, so it
+    // must not bring `agents.json` / `groups.json` rows into existence.
+    const io = fakeIo()
+
+    // Act
+    const exitCode = await runServerRemove(['ghost'], io, opts())
+
+    // Assert
+    expect(exitCode).toBe(1)
+    const names = await documentNames()
+    expect(names).not.toContain(AGENTS_FILE_NAME)
+    expect(names).not.toContain(GROUPS_FILE_NAME)
+  })
 })
+
+/** Every `documents` row name in the journal dir's `state.db` (empty when there is no database). */
+async function documentNames(): Promise<string[]> {
+  const raw = await openSqlite(join(journalDir, 'state.db'), { synchronous: 'normal' })
+  try {
+    const rows = raw.db.prepare('SELECT name FROM documents').all() as Array<{ name: string }>
+    return rows.map((row) => row.name)
+  } finally {
+    raw.close()
+  }
+}
 
 /** ISO timestamp of a moment `ms` before now. */
 function isoAgo(ms: number): string {

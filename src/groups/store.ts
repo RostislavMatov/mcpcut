@@ -1,10 +1,10 @@
 import type { z } from 'zod'
 import { compareAsText } from '../agents/effective.js'
-import type { MethodGrantsInput } from '../agents/store.js'
+import type { MethodGrantsInput } from '../agents/grant-input.js'
 import { RESERVED_OBJECT_KEYS } from '../policy/constants.js'
 import { createJsonStore, type JsonStore } from '../policy/store.js'
+import { assertValidAgentName, assertValidServerName, buildGrant } from '../agents/grant-input.js'
 import { GROUP_NAME_PATTERN, groupsFilePath } from './constants.js'
-import { assertValidAgentName, assertValidServerName, buildGrant } from './grant-input.js'
 import { parseGroupsFile, type GroupRecord, type GroupsFile } from './schema.js'
 
 /**
@@ -72,6 +72,25 @@ export type RemoveGroupResult =
   | { readonly status: 'not-found' }
   | { readonly status: 'has-members'; readonly members: readonly string[] }
 
+/**
+ * Result of `ungrantServer` and of `removeMember`, in `RemoveGroupResult`'s
+ * shape and for the same reason: the caller writes an `access-edit` journal
+ * record off this verdict (ADR-0010 §5), and "the grant/membership was
+ * dropped" must be distinguishable from "there was nothing to drop". Reporting
+ * a phantom `group.ungrant` / `group.leave` would show an auditor an access
+ * change that never happened.
+ *
+ * `absent` is a plain answer, not a failure: both calls stay idempotent, they
+ * simply say so.
+ */
+export type UngrantServerResult =
+  | { readonly status: 'removed'; readonly record: GroupRecord }
+  | { readonly status: 'absent' }
+
+export type RemoveMemberResult =
+  | { readonly status: 'removed'; readonly record: GroupRecord }
+  | { readonly status: 'absent' }
+
 export interface GroupsStore {
   /** Creates an empty group; rejects with `GroupExistsError` on a duplicate name. */
   createGroup(name: string): Promise<GroupRecord>
@@ -89,12 +108,16 @@ export interface GroupsStore {
     tools: readonly string[] | '*',
     methods?: MethodGrantsInput,
   ): Promise<GroupRecord>
-  /** Removes the grant for `server`; idempotent when no such grant exists. */
-  ungrantServer(group: string, server: string): Promise<GroupRecord>
+  /**
+   * Removes the grant for `server`. Validates the name exactly like
+   * `grantServer` (a reserved key is refused, not quietly looked up), and
+   * reports whether anything was actually removed; idempotent either way.
+   */
+  ungrantServer(group: string, server: string): Promise<UngrantServerResult>
   /** Adds an agent to the group; idempotent. Membership stays sorted and unique. */
   addMember(group: string, agent: string): Promise<GroupRecord>
-  /** Removes an agent from the group; idempotent. */
-  removeMember(group: string, agent: string): Promise<GroupRecord>
+  /** Removes an agent from the group; reports whether they were a member. Idempotent. */
+  removeMember(group: string, agent: string): Promise<RemoveMemberResult>
   getGroup(name: string): Promise<GroupRecord | undefined>
   /** All groups, sorted by name for stable CLI/UI output. */
   listGroups(): Promise<readonly GroupRecord[]>
@@ -239,13 +262,23 @@ export function createGroupsStore(opts: GroupsStoreOptions = {}): GroupsStore {
     return requireGroup(next, group)
   }
 
-  async function ungrantServer(group: string, server: string): Promise<GroupRecord> {
+  async function ungrantServer(group: string, server: string): Promise<UngrantServerResult> {
+    // Validated like `grantServer`: the two sides of one grant must agree on
+    // what a caller may name, or `ungrant __proto__` would go looking for a
+    // key `grant __proto__` could never have written.
+    assertValidServerName(server)
+    // Reset at the top of EVERY attempt, like `removeGroup`: a replayed `fn`
+    // must not leave the first attempt's finding standing.
+    let hadGrant = false
     const next = await store.update((current) => {
+      hadGrant = false
       const record = requireGroup(current, group)
+      if (!Object.hasOwn(record.grants, server)) return current
+      hadGrant = true
       const { [server]: _removed, ...remaining } = record.grants
       return withGroup(current, { ...record, grants: remaining })
     })
-    return requireGroup(next, group)
+    return hadGrant ? { status: 'removed', record: requireGroup(next, group) } : { status: 'absent' }
   }
 
   async function addMember(group: string, agent: string): Promise<GroupRecord> {
@@ -259,17 +292,20 @@ export function createGroupsStore(opts: GroupsStoreOptions = {}): GroupsStore {
     return requireGroup(next, group)
   }
 
-  async function removeMember(group: string, agent: string): Promise<GroupRecord> {
+  async function removeMember(group: string, agent: string): Promise<RemoveMemberResult> {
     assertValidAgentName(agent)
+    let wasMember = false
     const next = await store.update((current) => {
+      wasMember = false
       const record = requireGroup(current, group)
       if (!record.members.includes(agent)) return current
+      wasMember = true
       return withGroup(current, {
         ...record,
         members: record.members.filter((member) => member !== agent),
       })
     })
-    return requireGroup(next, group)
+    return wasMember ? { status: 'removed', record: requireGroup(next, group) } : { status: 'absent' }
   }
 
   async function getGroup(name: string): Promise<GroupRecord | undefined> {

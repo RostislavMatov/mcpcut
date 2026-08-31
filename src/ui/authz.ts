@@ -86,8 +86,11 @@ export const ROUTE_TABLE: readonly RouteEntry[] = [
   // arrive percent-encoded; the handler decodes each exactly once.
   { method: 'POST', pattern: '/servers/:name/tools/:tool/rule', minRole: 'owner', handler: 'serversToolRule' },
   // Server groups (M5.5 п.2, decision G4): `viewer` reads the page, only
-  // `owner` writes — the same threshold grants themselves carry, because a
-  // group IS a grant handed to every member at once.
+  // `owner` writes. Deliberately STRICTER than the personal grant routes
+  // above (`/agents/grant` and `/agents/ungrant` are `operator`, and the CLI
+  // `agent grant` needs no token at all): one group edit moves every member's
+  // access at once. Whether the two thresholds should be aligned instead is an
+  // open owner decision — ROADMAP.md, «Хвосты ревью (волна 4)», п. 4.
   { method: 'POST', pattern: '/groups/create', minRole: 'owner', handler: 'groupsCreate' },
   { method: 'POST', pattern: '/groups/remove', minRole: 'owner', handler: 'groupsRemove' },
   { method: 'POST', pattern: '/groups/grant', minRole: 'owner', handler: 'groupsGrant' },
