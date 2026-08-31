@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { createAdminStore } from '../../src/admin/store.js'
+import { createAgentsStore } from '../../src/agents/store.js'
+import { createGroupsStore } from '../../src/groups/store.js'
 import {
   runServerAdd,
   runServerList,
@@ -11,7 +13,9 @@ import {
   type ServerCliOptions,
 } from '../../src/cli/server-cmd.js'
 import { runServerRefresh, type ServerProbeOptions } from '../../src/cli/server-status-cmd.js'
+import { ACCESS_EDIT_SESSION_ID } from '../../src/journal/access-edit-record.js'
 import type { DecisionInfo, JournalRecord } from '../../src/journal/record.js'
+import { readSessionWithStats } from '../../src/journal/reader.js'
 import { createJournalSink } from '../../src/journal/sink.js'
 import { PROBE_MAX_CONCURRENT } from '../../src/probe/constants.js'
 import type { ProbeResult } from '../../src/probe/engine.js'
@@ -416,6 +420,117 @@ describe('server remove', () => {
 
     expect(exitCode).toBe(1)
     expect(io.err()).toContain('corrupt')
+  })
+})
+
+/** Reads every access-edit record written under the reserved session. */
+async function accessEditRecords(): Promise<readonly JournalRecord[]> {
+  const read = await readSessionWithStats(ACCESS_EDIT_SESSION_ID, { dir: journalDir })
+  expect(read.skippedLineCount).toBe(0)
+  return read.records
+}
+
+/** Seeds two agents and one group all granting `server`, plus one bystander of each. */
+async function seedGrantHolders(server: string): Promise<void> {
+  const agents = createAgentsStore({ journalDir })
+  await agents.createAgent('bot-a')
+  await agents.createAgent('bot-b')
+  await agents.createAgent('bystander')
+  await agents.grantServer('bot-a', server, ['read_file'])
+  await agents.grantServer('bot-b', server, '*')
+  await agents.grantServer('bystander', 'other', ['read_file'])
+  const groups = createGroupsStore({ journalDir })
+  await groups.createGroup('analytics')
+  await groups.createGroup('idle')
+  await groups.grantServer('analytics', server, ['read_file'])
+}
+
+describe('server remove — cascade into grants and groups (G6, Task 10)', () => {
+  test('drops the server from every agent grant and every group, and says how many', async () => {
+    await seedServer('github')
+    await seedGrantHolders('github')
+    const io = fakeIo()
+
+    const exitCode = await runServerRemove(['github'], io, opts())
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toBe('removed server "github"; cascaded: 2 agent grants, 1 groups\n')
+    const agents = createAgentsStore({ journalDir })
+    expect(Object.keys((await agents.getAgent('bot-a'))?.grants ?? {})).toEqual([])
+    expect(Object.keys((await agents.getAgent('bot-b'))?.grants ?? {})).toEqual([])
+    expect(Object.keys((await agents.getAgent('bystander'))?.grants ?? {})).toEqual(['other'])
+    const groups = await createGroupsStore({ journalDir }).listGroups()
+    expect(groups.map((group) => Object.keys(group.grants))).toEqual([[], []])
+  })
+
+  test('the cascade is journalled as one access-edit record naming what it touched', async () => {
+    await seedServer('github')
+    await seedGrantHolders('github')
+
+    await runServerRemove(['github'], fakeIo(), opts())
+
+    const records = await accessEditRecords()
+    expect(records).toHaveLength(1)
+    expect(records[0]?.kind).toBe('access-edit')
+    expect(records[0]?.payload).toEqual({
+      actor: { adminName: null, role: null, via: 'cli' },
+      action: 'server.remove',
+      server: 'github',
+      affectedAgents: ['bot-a', 'bot-b'],
+      affectedGroups: ['analytics'],
+    })
+  })
+
+  test('without a token the record is unattributed and stderr says so — the removal still happens', async () => {
+    await seedServer('github')
+    const io = fakeIo()
+
+    const exitCode = await runServerRemove(['github'], io, opts())
+
+    expect(exitCode).toBe(0)
+    expect(io.err()).toContain('not attributed')
+    expect(io.err()).toContain('MCP_ADMIN_TOKEN')
+    expect(io.err()).toContain('[audit] server remove by unattributed: "github", cascaded: 0 agent grants, 0 groups')
+  })
+
+  test('a valid token attributes the record and the audit line to that admin', async () => {
+    await seedServer('github')
+    await seedGrantHolders('github')
+    const env = await adminEnv('alice', 'owner')
+    const io = fakeIo()
+
+    const exitCode = await runServerRemove(['github'], io, opts({ env }))
+
+    expect(exitCode).toBe(0)
+    expect(io.err()).toContain('[audit] server remove by alice (owner): "github", cascaded: 2 agent grants, 1 groups')
+    expect(io.err()).not.toContain('not attributed')
+    const records = await accessEditRecords()
+    expect(records[0]?.payload).toMatchObject({
+      actor: { adminName: 'alice', role: 'owner', via: 'cli' },
+    })
+  })
+
+  test('a removal that touched nothing still leaves a record, with empty cascade lists', async () => {
+    await seedServer('solo')
+
+    const exitCode = await runServerRemove(['solo'], fakeIo(), opts())
+
+    expect(exitCode).toBe(0)
+    const records = await accessEditRecords()
+    expect(records).toHaveLength(1)
+    expect(records[0]?.payload).toMatchObject({ affectedAgents: [], affectedGroups: [] })
+  })
+
+  test('an unknown server neither cascades nor journals', async () => {
+    await seedGrantHolders('github')
+
+    const exitCode = await runServerRemove(['github'], fakeIo(), opts())
+
+    expect(exitCode).toBe(1)
+    expect(await accessEditRecords()).toHaveLength(0)
+    expect(Object.keys((await createAgentsStore({ journalDir }).getAgent('bot-a'))?.grants ?? {})).toEqual([
+      'github',
+    ])
   })
 })
 

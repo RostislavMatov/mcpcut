@@ -25,8 +25,14 @@ export type ClientServerDirection = 'client→server' | 'server→client'
 /** Every direction a journal record can carry, including server stderr. */
 export type JournalDirection = ClientServerDirection | 'server-stderr'
 
-/** Journal-specific kind: classify()'s kinds plus synthetic 'stderr', 'decision', 'probe' and 'policy-edit' kinds. */
-export type JournalKind = ClassifiedMessage['kind'] | 'stderr' | 'decision' | 'probe' | 'policy-edit'
+/** Journal-specific kind: classify()'s kinds plus the synthetic 'stderr', 'decision', 'probe', 'policy-edit' and 'access-edit' kinds. */
+export type JournalKind =
+  | ClassifiedMessage['kind']
+  | 'stderr'
+  | 'decision'
+  | 'probe'
+  | 'policy-edit'
+  | 'access-edit'
 
 export type {
   DecisionInfo,
@@ -50,6 +56,13 @@ export type {
   PolicyEditInfo,
   PolicyEditVia,
 } from './policy-edit-record.js'
+
+export type {
+  AccessEditAction,
+  AccessEditActor,
+  AccessEditInfo,
+  AccessEditVia,
+} from './access-edit-record.js'
 
 export interface JournalRecord {
   readonly id: string

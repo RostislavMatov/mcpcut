@@ -1,6 +1,7 @@
 import { join } from 'node:path'
 import { parseArgs } from 'node:util'
 import { JOURNAL_DIR, SYSTEM_ENV_ALLOWLIST } from '../config.js'
+import { createEffectiveAgentReader } from '../agents/effective-reader.js'
 import { createAgentsStore, type AgentsStore } from '../agents/store.js'
 import type { JournalSinkOptions } from '../journal/sink.js'
 import { INVENTORY_FILE_NAME } from '../policy/inventory.js'
@@ -11,6 +12,7 @@ import type { Policy } from '../policy/schema.js'
 import { journalingOnlyPolicy } from './connect-policy.js'
 import { createReloadingPolicy } from './policy-reload.js'
 import { guardDiagnostics } from '../proxy/diagnostics.js'
+import { createGroupsStore, type GroupsStore } from '../groups/store.js'
 import { createRegistryStore, type RegistryStore } from '../registry/store.js'
 import { preflightDatabases } from '../store/preflight.js'
 import { createHttpFront, type HttpFront } from '../transport/http/server.js'
@@ -69,7 +71,9 @@ export interface ServeHandle {
 /** Stores `serve` reads; injectable so tests never touch the real journal dir. */
 export interface ServeStores {
   readonly registry?: RegistryStore
-  readonly agents?: AgentsStore
+  readonly agents?: Pick<AgentsStore, 'getAgent' | 'findAgentByToken'>
+  /** Group source for effective grants (M5.5 п.2); defaults to `<journalDir>/state.db`. */
+  readonly groups?: Pick<GroupsStore, 'groupsOf'>
   readonly vault?: Pick<VaultStore, 'readSecretValues'>
 }
 
@@ -264,13 +268,18 @@ function buildFront(
     io.stderr.write(`${line}\n`)
   }
   const agents = opts.stores?.agents ?? createAgentsStore({ journalDir })
+  const groups = opts.stores?.groups ?? createGroupsStore({ journalDir })
+  // One reader for both the front's token check and the session factory's
+  // re-read: an agent granted through a group authenticates and opens a
+  // session exactly like one granted personally (G2/G5).
+  const agentReader = createEffectiveAgentReader({ agents, groups })
   const registry = opts.stores?.registry ?? createRegistryStore(journalDir)
   const vault = opts.stores?.vault ?? createVaultStore({ journalDir, warn })
   const hooks = createServeHooks()
 
   const openSession = createServeSessionFactory({
     registry,
-    agents,
+    agents: agentReader,
     handoff: hooks.handoff,
     policy,
     journalDir,
@@ -296,7 +305,7 @@ function buildFront(
   })
 
   return createHttpFront({
-    agentsStore: agents,
+    agentsStore: agentReader,
     openSession,
     detectInitialize: hooks.detectInitialize,
     validateStatelessHeaders: hooks.validateStatelessHeaders,

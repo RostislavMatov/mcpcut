@@ -3,6 +3,7 @@ import { formatReadableField } from '../journal/format.js'
 import { formatPolicyErrors } from '../policy/load.js'
 import { parseServerRecord, type ServerRecord } from '../registry/schema.js'
 import { createRegistryStore, type RegistryStore } from '../registry/store.js'
+import { cascadeServerRemoval, cascadeSummary } from './server-remove-cascade.js'
 import {
   printProbedStatus,
   printRegistrationProbe,
@@ -37,7 +38,13 @@ export interface ServerCliIo {
 export interface ServerCliOptions {
   /** Directory holding `registry.json`. Defaults to `JOURNAL_DIR`. */
   readonly journalDir?: string
-  /** Environment holding `MCP_ADMIN_TOKEN` for probe attribution (the `approvals-cmd.ts` seam). Defaults to `process.env`. */
+  /**
+   * Environment holding `MCP_ADMIN_TOKEN`, read for ATTRIBUTION only (the
+   * `approvals-cmd.ts` seam): probe records, and since M5.5 п.2 the
+   * `server remove` cascade record. Never an access barrier — a missing token
+   * downgrades the record to unattributed, it does not refuse the command.
+   * Defaults to `process.env`.
+   */
   readonly env?: NodeJS.ProcessEnv
   /** Probe seams for tests (engine stub, horizons, list deadline, clock). */
   readonly probes?: ServerProbeOptions
@@ -370,9 +377,11 @@ export async function runServerShow(
 }
 
 /**
- * `server remove <name>`. Removes unconditionally: a warning about agent
- * grants still pointing at the server needs `agents.json` (a different Wave 1
- * task) and is wired up in Wave 4.
+ * `server remove <name>`. The registry write comes first, then the cascade
+ * that strips the server from agent grants and groups (G6), then the audit
+ * line, the journal record and the report. Exit stays 0 once the server is
+ * gone — including when the journal dropped the record, which is reported
+ * rather than hidden.
  */
 export async function runServerRemove(
   args: string[],
@@ -390,7 +399,9 @@ export async function runServerRemove(
       io.stderr.write(`unknown server "${formatReadableField(name)}"\n`)
       return 1
     }
-    io.stdout.write(`removed server "${result.record.name}"\n`)
+    const removed = result.record.name
+    const cascade = await cascadeServerRemoval(removed, io, opts)
+    io.stdout.write(`removed server "${removed}"; cascaded: ${cascadeSummary(cascade)}\n`)
     return 0
   } catch (error: unknown) {
     io.stderr.write(`${describeError(error)}\n`)

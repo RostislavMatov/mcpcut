@@ -1,5 +1,5 @@
+import type { EffectiveAgentReader } from '../agents/effective-reader.js'
 import type { AgentRecord } from '../agents/schema.js'
-import type { AgentsStore } from '../agents/store.js'
 import { formatReadableField } from '../journal/format.js'
 import type { RegistryStore } from '../registry/store.js'
 import type { ServerRecord } from '../registry/schema.js'
@@ -59,7 +59,12 @@ export interface ResolveConnectArgs {
   readonly agentName: string
   /** Environment to read the token from — never argv. */
   readonly env: NodeJS.ProcessEnv
-  readonly agents: Pick<AgentsStore, 'findAgentByToken'>
+  /**
+   * The EFFECTIVE record source (`agents/effective-reader.ts`), never the bare
+   * store: the two `Object.hasOwn(agent.grants, …)` reads below decide against
+   * the matrix a group membership already expanded (G2).
+   */
+  readonly agents: Pick<EffectiveAgentReader, 'findAgentByToken'>
   readonly registry: Pick<RegistryStore, 'getServer' | 'listServers'>
 }
 

@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import { createAgentsStore } from '../../src/agents/store.js'
+import { createGroupsStore } from '../../src/groups/store.js'
 import { createRegistryStore } from '../../src/registry/store.js'
 import { createVaultStore } from '../../src/vault/store.js'
 import type { ProbeInitiator, ServerStatus } from '../../src/probe/status-schema.js'
@@ -78,11 +79,12 @@ function makeHarness(): Harness {
   const dir = mkdtempSync(join(tmpdir(), 'mcp-ui-servers-status-'))
   const registry = createRegistryStore(dir)
   const agents = createAgentsStore({ journalDir: dir })
+  const groups = createGroupsStore({ journalDir: dir })
   const vault = createVaultStore({ journalDir: dir })
   return {
     dir,
     registry,
-    makeHandlers: (port) => createServersHandlers({ registry, agents, vault, probes: port }),
+    makeHandlers: (port) => createServersHandlers({ registry, agents, groups, vault, probes: port }),
     dispose: () => rmSync(dir, { recursive: true, force: true }),
   }
 }

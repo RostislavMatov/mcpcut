@@ -10,10 +10,10 @@ import {
   InvalidToolPatternError,
   type AgentsStore,
   type AgentsStoreOptions,
-  type MethodGrantsInput,
 } from '../agents/store.js'
 import type { AgentRecord } from '../agents/schema.js'
 import { formatReadableField } from '../journal/format.js'
+import { resolveGrantFlags } from './grant-flags.js'
 import { StoreCorruptError, StoreLockError } from '../policy/store.js'
 
 /**
@@ -212,27 +212,15 @@ async function runGrant(args: string[], io: AgentCliIo, store: AgentsStore): Pro
     return 1
   }
 
-  const tools = parseToolsFlag(toolsValue)
-  if (tools === 'empty') {
-    io.stderr.write('--tools was given but contains no tool patterns (expected e.g. --tools get_*,list_issues)\n')
-    return 1
-  }
-  const resources = parseMethodFlag(resourcesValue)
-  if (resources === 'empty') {
-    io.stderr.write('--resources was given but contains no URI patterns (expected e.g. --resources file:///project/*)\n')
-    return 1
-  }
-  const prompts = parseMethodFlag(promptsValue)
-  if (prompts === 'empty') {
-    io.stderr.write('--prompts was given but contains no prompt patterns (expected e.g. --prompts greet*)\n')
+  // The flags (and their asymmetric defaults) are parsed by the module
+  // `group grant` shares, so one grant shape keeps one reading.
+  const flags = resolveGrantFlags({ tools: toolsValue, resources: resourcesValue, prompts: promptsValue })
+  if (!flags.ok) {
+    io.stderr.write(flags.message)
     return 1
   }
 
-  const methods: MethodGrantsInput = {
-    ...(resources !== undefined ? { resources } : {}),
-    ...(prompts !== undefined ? { prompts } : {}),
-  }
-  const agent = await store.grantServer(agentName, serverName, tools, methods)
+  const agent = await store.grantServer(agentName, serverName, flags.tools, flags.methods)
   const grant = agent.grants[serverName]
   const summary = grant?.tools === '*' ? '* (all tools)' : (grant?.tools ?? []).join(', ')
   io.stdout.write(
@@ -250,31 +238,6 @@ async function runGrant(args: string[], io: AgentCliIo, store: AgentsStore): Pro
 /** `'*'` → `* (all …)`; array → raw comma-joined patterns (sanitized by the caller). */
 function summaryOf(patterns: '*' | readonly string[], everything: string): string {
   return patterns === '*' ? `* (${everything})` : patterns.join(', ')
-}
-
-/** No flag → `'*'`; a flag that boils down to zero patterns → `'empty'` (an error). */
-function parseToolsFlag(value: string | undefined): readonly string[] | '*' | 'empty' {
-  if (value === undefined) return '*'
-  return splitPatterns(value)
-}
-
-/**
- * `--resources`/`--prompts`: ABSENT means "leave the field out" (the M3
- * fail-closed denial stands) — unlike `--tools`, where absence means
- * everything. Opening a method surface must always be an explicit act.
- */
-function parseMethodFlag(value: string | undefined): readonly string[] | '*' | 'empty' | undefined {
-  if (value === undefined) return undefined
-  if (value.trim() === '*') return '*'
-  return splitPatterns(value)
-}
-
-function splitPatterns(value: string): readonly string[] | '*' | 'empty' {
-  const patterns = value
-    .split(',')
-    .map((pattern) => pattern.trim())
-    .filter((pattern) => pattern.length > 0)
-  return patterns.length === 0 ? 'empty' : patterns
 }
 
 async function runUngrant(args: string[], io: AgentCliIo, store: AgentsStore): Promise<number> {

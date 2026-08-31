@@ -3,6 +3,7 @@ import { realpathSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { runAdminCommand, type AdminCliOptions } from './cli/admin-cmd.js'
 import { runAgentCommand, type AgentCliOptions } from './cli/agent-cmd.js'
+import { runGroupCommand, type GroupCliOptions } from './cli/group-cmd.js'
 import { runApprovals, type ApprovalsCliOptions } from './cli/approvals-cmd.js'
 import { runBackupCommand, type BackupCommandOptions } from './cli/backup-cmd.js'
 import { runConnect, type ConnectDeps } from './cli/connect-cmd.js'
@@ -60,6 +61,7 @@ export interface DispatchOptions {
   readonly server?: ServerCliOptions
   readonly vault?: VaultCmdDeps
   readonly agent?: AgentCliOptions
+  readonly group?: GroupCliOptions
   readonly connect?: ConnectDeps
   readonly serve?: ServeCommandOptions
   readonly ui?: UiCommandOptions
@@ -94,6 +96,7 @@ export async function dispatch(
   if (command === 'server') return runServerCommand(rest, io, opts.server)
   if (command === 'vault') return runVault(rest, io, opts.vault)
   if (command === 'agent') return runAgentCommand(rest, io, opts.agent)
+  if (command === 'group') return runGroupCommand(rest, io, opts.group)
   if (command === 'migrate') return runMigrateCommand(rest, io, opts.migrate)
   if (command === 'export') return runExportCommand(rest, io, opts.export)
   if (command === 'backup') return runBackupCommand(rest, io, opts.backup)

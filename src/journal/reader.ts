@@ -22,6 +22,7 @@ export const JOURNAL_KINDS: readonly string[] = [
   'decision',
   'probe',
   'policy-edit',
+  'access-edit',
 ]
 
 export interface SessionSummary {

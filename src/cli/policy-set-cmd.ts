@@ -1,7 +1,7 @@
 import { POLICY_HASH_PREVIEW_CHARS } from '../policy/constants.js'
 import { join } from 'node:path'
 import { parseArgs } from 'node:util'
-import { roleSatisfies, type Role } from '../admin/authz.js'
+import type { Role } from '../admin/authz.js'
 import { ADMIN_TOKEN_ENV_VAR } from '../admin/constants.js'
 import { JOURNAL_DIR } from '../config.js'
 import { formatReadableField } from '../journal/format.js'
@@ -26,7 +26,7 @@ import {
 import { effectiveToolRule, type EffectiveToolRule } from '../policy/effective.js'
 import { INVENTORY_FILE_NAME } from '../policy/inventory.js'
 import { POLICY_OUTCOME_VALUES, type Policy, type PolicyOutcome } from '../policy/schema.js'
-import { adminFromEnv } from './admin-token.js'
+import { requireAdminFromEnv, type AdminRefusalWording } from './admin-token.js'
 import type { PolicyCliIo } from './policy-cmd.js'
 import { toolFactsForEffectiveRule } from './policy-set-facts.js'
 
@@ -68,31 +68,12 @@ const SET_USAGE = `Usage:
                                 token via ${ADMIN_TOKEN_ENV_VAR}, role ${POLICY_SET_MIN_ROLE})
 `
 
-const MISSING_TOKEN_MESSAGE =
-  `Refusing to edit the policy: no admin token. Set ${ADMIN_TOKEN_ENV_VAR} to your personal admin token ` +
-  `(role "${POLICY_SET_MIN_ROLE}") so the edit records which admin made it.\n` +
-  `Get one with: mcp-journal admin add <name> --role ${POLICY_SET_MIN_ROLE}   (existing admin: mcp-journal admin rotate <name>)\n`
-
-const UNKNOWN_TOKEN_MESSAGE =
-  `Refusing to edit the policy: ${ADMIN_TOKEN_ENV_VAR} does not match any active admin — it may have been ` +
-  `rotated, or the admin removed.\n` +
-  `Check "mcp-journal admin list", then: mcp-journal admin rotate <name>\n`
-
-function insufficientRoleMessage(adminName: string): string {
-  return (
-    `Refusing to edit the policy: this admin token's role may not change rules ` +
-    `(role "${POLICY_SET_MIN_ROLE}" is required, the same rule the admin UI applies to ` +
-    `POST /servers/:name/tools/:tool/rule).\n` +
-    `An owner can change it with: mcp-journal admin role ${formatReadableField(adminName)} ${POLICY_SET_MIN_ROLE}\n`
-  )
-}
-
-function storeUnreadableMessage(detail: string): string {
-  return (
-    `Refusing to edit the policy: the admin store could not be read, so the edit could not be ` +
-    `attributed to a human.\n${formatReadableField(detail)}\n` +
-    `Check the file named above, then: mcp-journal admin list\n`
-  )
+/** How the shared token gate names this command's refusals (same lines as before it was hoisted). */
+const POLICY_SET_REFUSAL: AdminRefusalWording = {
+  action: 'edit the policy',
+  noun: 'edit',
+  verb: 'may not change rules',
+  roleDetail: 'the same rule the admin UI applies to POST /servers/:name/tools/:tool/rule',
 }
 
 /** Hot reload is wave 2 of the same plan (`src/policy/reload.ts`), so the reminder is unconditional. */
@@ -165,24 +146,9 @@ function ruleOf(word: string): PolicyOutcome | null | undefined {
 
 /** The owner behind `MCP_ADMIN_TOKEN`, or `undefined` with the refusal already printed. */
 async function resolveOwner(io: PolicyCliIo, opts: PolicySetOptions): Promise<PolicyEditActor | undefined> {
-  const resolved = await adminFromEnv(opts)
-  if (resolved.kind === 'missing') {
-    io.stderr.write(MISSING_TOKEN_MESSAGE)
-    return undefined
-  }
-  if (resolved.kind === 'unknown') {
-    io.stderr.write(UNKNOWN_TOKEN_MESSAGE)
-    return undefined
-  }
-  if (resolved.kind === 'unreadable') {
-    io.stderr.write(storeUnreadableMessage(resolved.detail))
-    return undefined
-  }
-  if (!roleSatisfies(resolved.role, POLICY_SET_MIN_ROLE)) {
-    io.stderr.write(insufficientRoleMessage(resolved.name))
-    return undefined
-  }
-  return { adminName: resolved.name, role: resolved.role, via: 'cli' }
+  const admin = await requireAdminFromEnv(opts, POLICY_SET_MIN_ROLE, io, POLICY_SET_REFUSAL)
+  if (admin === undefined) return undefined
+  return { adminName: admin.adminName, role: admin.role, via: 'cli' }
 }
 
 /** The file this invocation would load, plus who else reads it. Never refuses: an edit reaches whoever loaded it. */
