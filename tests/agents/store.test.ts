@@ -180,6 +180,73 @@ describe('grantServer / ungrantServer', () => {
   })
 })
 
+describe('ungrantServerEverywhere', () => {
+  test('removes the grant from every holder and returns their names sorted', async () => {
+    // Arrange
+    await store.createAgent('bravo')
+    await store.createAgent('alpha')
+    await store.createAgent('charlie')
+    await store.grantServer('bravo', 'github', '*')
+    await store.grantServer('alpha', 'github', ['get_*'])
+    await store.grantServer('charlie', 'jira', '*')
+
+    // Act
+    const affected = await store.ungrantServerEverywhere('github')
+
+    // Assert
+    expect(affected).toEqual(['alpha', 'bravo'])
+    expect((await store.getAgent('alpha'))?.grants).toEqual({})
+    expect((await store.getAgent('bravo'))?.grants).toEqual({})
+  })
+
+  test('leaves a record without that grant untouched', async () => {
+    await store.createAgent('alpha')
+    await store.createAgent('charlie')
+    await store.grantServer('alpha', 'github', '*')
+    await store.grantServer('charlie', 'jira', ['read_*'])
+    const before = await store.getAgent('charlie')
+
+    await store.ungrantServerEverywhere('github')
+
+    expect(await store.getAgent('charlie')).toEqual(before)
+  })
+
+  test('cascades through revoked agents too — their grants must not dangle', async () => {
+    await store.createAgent('alpha')
+    await store.grantServer('alpha', 'github', '*')
+    await store.revokeAgent('alpha')
+
+    const affected = await store.ungrantServerEverywhere('github')
+
+    expect(affected).toEqual(['alpha'])
+    expect((await store.getAgent('alpha'))?.grants).toEqual({})
+    expect((await store.getAgent('alpha'))?.revokedAt).toBe(FIXED_NOW.toISOString())
+  })
+
+  test('a second call is idempotent: nobody holds the grant any more', async () => {
+    await store.createAgent('alpha')
+    await store.grantServer('alpha', 'github', '*')
+    await store.ungrantServerEverywhere('github')
+
+    expect(await store.ungrantServerEverywhere('github')).toEqual([])
+  })
+
+  test('on an empty store → empty result', async () => {
+    expect(await store.ungrantServerEverywhere('github')).toEqual([])
+  })
+
+  test.each(['GitHub', '-bad', '', 'x'.repeat(65), 'constructor', '__proto__'])(
+    'invalid or reserved server name %j → InvalidServerNameError',
+    async (server) => {
+      await store.createAgent('alpha')
+
+      await expect(store.ungrantServerEverywhere(server)).rejects.toBeInstanceOf(
+        InvalidServerNameError,
+      )
+    },
+  )
+})
+
 describe('getAgent / listAgents', () => {
   test('getAgent returns the stored record, unknown name → undefined', async () => {
     const { agent } = await store.createAgent('research-bot')

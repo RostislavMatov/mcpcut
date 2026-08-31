@@ -116,6 +116,14 @@ export interface AgentsStore {
   ): Promise<AgentRecord>
   /** Removes the grant for `server`; idempotent when no such grant exists. */
   ungrantServer(agentName: string, serverName: string): Promise<AgentRecord>
+  /**
+   * Removes the grant for `server` from EVERY agent record — revoked agents
+   * included, since a grant left behind by a removed server would come back
+   * to life under a server registered again under the same name. Returns the
+   * names of the agents that actually held the grant, sorted like
+   * `listAgents`; a repeat call returns an empty list.
+   */
+  ungrantServerEverywhere(server: string): Promise<readonly string[]>
   getAgent(name: string): Promise<AgentRecord | undefined>
   /** All agents, sorted by name for stable CLI output. */
   listAgents(): Promise<readonly AgentRecord[]>
@@ -277,6 +285,32 @@ export function createAgentsStore(opts: AgentsStoreOptions = {}): AgentsStore {
     return next.agents[agentName] as AgentRecord
   }
 
+  async function ungrantServerEverywhere(server: string): Promise<readonly string[]> {
+    assertValidServerName(server)
+    // `update` may re-run this callback when a concurrent process steals the
+    // store lock, so the captured result must be reset at the top of EVERY
+    // attempt: names collected by an attempt whose CAS then lost would
+    // otherwise report a cascade that never reached the file.
+    let affected: string[] = []
+    await store.update((current) => {
+      affected = []
+      const agents: Record<string, AgentRecord> = {}
+      for (const [name, record] of Object.entries(current.agents)) {
+        if (!Object.hasOwn(record.grants, server)) {
+          // Carried over as-is: an untouched record must stay byte-for-byte
+          // what it was, so nothing here rebuilds it.
+          agents[name] = record
+          continue
+        }
+        affected.push(record.name)
+        const { [server]: _removed, ...remaining } = record.grants
+        agents[name] = { ...record, grants: remaining }
+      }
+      return affected.length === 0 ? current : { ...current, agents }
+    })
+    return [...affected].sort((a, b) => a.localeCompare(b))
+  }
+
   async function getAgent(name: string): Promise<AgentRecord | undefined> {
     const file = await store.read()
     return Object.hasOwn(file.agents, name) ? file.agents[name] : undefined
@@ -304,6 +338,7 @@ export function createAgentsStore(opts: AgentsStoreOptions = {}): AgentsStore {
     revokeAgent,
     grantServer,
     ungrantServer,
+    ungrantServerEverywhere,
     getAgent,
     listAgents,
     findAgentByToken,
