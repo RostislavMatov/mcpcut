@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { runAgentCommand } from '../../src/cli/agent-cmd.js'
 import { createAgentsStore } from '../../src/agents/store.js'
+import { createGroupsStore } from '../../src/groups/store.js'
 
 /**
  * M4 Task 6: `agent grant --resources/--prompts`. The pre-M4 CLI surface is
@@ -157,5 +158,62 @@ describe('agent grant --resources/--prompts', () => {
     expect(exitCode).toBe(0)
     const agent = await createAgentsStore({ journalDir }).getAgent('research-bot')
     expect(agent?.grants['github']).toBeUndefined()
+  })
+})
+
+/**
+ * U1, CLI half: `agent ungrant` of a personal grant that SHADOWS a group grant
+ * (ADR-0010 §2) widens effective access instead of narrowing it. The command
+ * still succeeds — the UI is where confirmation lives — but the shell must not
+ * be left believing it just took access away.
+ */
+describe('agent ungrant warns when a group grant is uncovered', () => {
+  test('names every group the agent now inherits the server from', async () => {
+    await run(['create', 'research-bot'])
+    await run(['grant', 'research-bot', 'github', '--tools', 'read_file'])
+    const groups = createGroupsStore({ journalDir })
+    await groups.createGroup('analytics')
+    await groups.createGroup('ops')
+    await groups.grantServer('analytics', 'github', ['read_file'])
+    await groups.grantServer('ops', 'github', '*')
+    await groups.addMember('analytics', 'research-bot')
+    await groups.addMember('ops', 'research-bot')
+    const io = fakeIo()
+
+    const exitCode = await run(['ungrant', 'research-bot', 'github'], io)
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain('removed grant github from research-bot')
+    expect(io.err()).toContain(
+      '[warn] research-bot now inherits github from group:analytics, group:ops — effective access WIDENED',
+    )
+  })
+
+  test('stays silent when no group of the agent grants that server', async () => {
+    await run(['create', 'research-bot'])
+    await run(['grant', 'research-bot', 'github', '--tools', 'read_file'])
+    const groups = createGroupsStore({ journalDir })
+    await groups.createGroup('analytics')
+    await groups.grantServer('analytics', 'other', ['x'])
+    await groups.addMember('analytics', 'research-bot')
+    const io = fakeIo()
+
+    const exitCode = await run(['ungrant', 'research-bot', 'github'], io)
+
+    expect(exitCode).toBe(0)
+    expect(io.err()).toBe('')
+  })
+
+  test('a group the agent is not a member of raises no warning', async () => {
+    await run(['create', 'research-bot'])
+    await run(['grant', 'research-bot', 'github', '--tools', 'read_file'])
+    const groups = createGroupsStore({ journalDir })
+    await groups.createGroup('analytics')
+    await groups.grantServer('analytics', 'github', '*')
+    const io = fakeIo()
+
+    await run(['ungrant', 'research-bot', 'github'], io)
+
+    expect(io.err()).toBe('')
   })
 })

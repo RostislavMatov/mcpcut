@@ -1,4 +1,5 @@
 import type { z } from 'zod'
+import { compareAsText } from '../agents/effective.js'
 import type { MethodGrantsInput } from '../agents/store.js'
 import { RESERVED_OBJECT_KEYS } from '../policy/constants.js'
 import { createJsonStore, type JsonStore } from '../policy/store.js'
@@ -136,10 +137,21 @@ function ownGroup(file: GroupsFile, name: string): GroupRecord | undefined {
   return Object.hasOwn(file.groups, name) ? file.groups[name] : undefined
 }
 
+/**
+ * The group under `name`, or `GroupNotFoundError`. Also used to read a record
+ * back off the value `update` persisted: the group is there by construction
+ * (every mutation checked it first), but a cast would silently paper over the
+ * case where it is not.
+ */
 function requireGroup(file: GroupsFile, name: string): GroupRecord {
   const record = ownGroup(file, name)
   if (record === undefined) throw new GroupNotFoundError(name)
   return record
+}
+
+/** `listGroups` order: by name, and by UTF-16 code unit like every other sort here. */
+function byName(left: GroupRecord, right: GroupRecord): number {
+  return compareAsText(left.name, right.name)
 }
 
 /** New file value with `record` upserted under its name (input untouched). */
@@ -157,7 +169,7 @@ function withGroup(file: GroupsFile, record: GroupRecord): GroupsFile {
 function withMember(members: readonly string[], agent: string): readonly string[] {
   if (members.includes(agent)) return members
   const next = [...members, agent]
-  next.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+  next.sort(compareAsText)
   return next
 }
 
@@ -224,7 +236,7 @@ export function createGroupsStore(opts: GroupsStoreOptions = {}): GroupsStore {
       const record = requireGroup(current, group)
       return withGroup(current, { ...record, grants: { ...record.grants, [server]: grant } })
     })
-    return next.groups[group] as GroupRecord
+    return requireGroup(next, group)
   }
 
   async function ungrantServer(group: string, server: string): Promise<GroupRecord> {
@@ -233,7 +245,7 @@ export function createGroupsStore(opts: GroupsStoreOptions = {}): GroupsStore {
       const { [server]: _removed, ...remaining } = record.grants
       return withGroup(current, { ...record, grants: remaining })
     })
-    return next.groups[group] as GroupRecord
+    return requireGroup(next, group)
   }
 
   async function addMember(group: string, agent: string): Promise<GroupRecord> {
@@ -244,7 +256,7 @@ export function createGroupsStore(opts: GroupsStoreOptions = {}): GroupsStore {
       if (members === record.members) return current
       return withGroup(current, { ...record, members: [...members] })
     })
-    return next.groups[group] as GroupRecord
+    return requireGroup(next, group)
   }
 
   async function removeMember(group: string, agent: string): Promise<GroupRecord> {
@@ -257,7 +269,7 @@ export function createGroupsStore(opts: GroupsStoreOptions = {}): GroupsStore {
         members: record.members.filter((member) => member !== agent),
       })
     })
-    return next.groups[group] as GroupRecord
+    return requireGroup(next, group)
   }
 
   async function getGroup(name: string): Promise<GroupRecord | undefined> {
@@ -266,12 +278,16 @@ export function createGroupsStore(opts: GroupsStoreOptions = {}): GroupsStore {
 
   async function listGroups(): Promise<readonly GroupRecord[]> {
     const file = await store.read()
-    return Object.values(file.groups).sort((a, b) => a.name.localeCompare(b.name))
+    return Object.values(file.groups).sort(byName)
   }
 
   async function groupsOf(agentName: string): Promise<readonly GroupRecord[]> {
-    const groups = await listGroups()
-    return groups.filter((group) => group.members.includes(agentName))
+    // Filtered BEFORE sorting: this runs on every authenticated request, and
+    // sorting the whole store to then discard most of it is wasted work.
+    const file = await store.read()
+    return Object.values(file.groups)
+      .filter((group) => group.members.includes(agentName))
+      .sort(byName)
   }
 
   async function ungrantServerEverywhere(server: string): Promise<readonly string[]> {
@@ -289,7 +305,9 @@ export function createGroupsStore(opts: GroupsStoreOptions = {}): GroupsStore {
       if (affected.length === 0) return current
       return { ...current, groups: Object.fromEntries(entries) }
     })
-    return [...affected].sort((a, b) => a.localeCompare(b))
+    // Code-unit order, like every array that ends up in an `access-edit`
+    // record: locale collation varies with the runtime's ICU data.
+    return [...affected].sort(compareAsText)
   }
 
   return {

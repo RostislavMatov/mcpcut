@@ -15,6 +15,7 @@ import {
 } from '../../groups/store.js'
 import type { GroupRecord } from '../../groups/schema.js'
 import type { AccessEditInfo } from '../../journal/record.js'
+import { StoreWriteRejectedError } from '../../policy/store.js'
 import type { RegistryStore } from '../../registry/store.js'
 import type { UiSession } from '../auth.js'
 import {
@@ -112,6 +113,8 @@ function refusal(message: string, session: UiSession): UiResult {
  * Store errors caused by what the operator typed. `GroupsFileInvalidError` is
  * deliberately ABSENT for the same reason `AgentsFileInvalidError` is absent
  * from the agents list: a corrupt document is a broken plane, not a bad form.
+ * `StoreWriteRejectedError` IS present: a write refused against the document
+ * schema (a `MAX_*` cap) is what the operator asked for, not a broken store.
  */
 const GROUP_INPUT_ERRORS: readonly ErrorClass[] = [
   GroupExistsError,
@@ -122,6 +125,7 @@ const GROUP_INPUT_ERRORS: readonly ErrorClass[] = [
   InvalidToolPatternError,
   InvalidResourcePatternError,
   InvalidPromptPatternError,
+  StoreWriteRejectedError,
 ]
 
 function storeFailure(error: unknown, session: UiSession): UiResult {

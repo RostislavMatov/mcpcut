@@ -16,6 +16,8 @@ import {
   InvalidGroupNameError,
   type GroupsStore,
 } from '../../src/groups/store.js'
+import { MAX_GROUPS, MAX_MEMBERS_PER_GROUP } from '../../src/groups/constants.js'
+import { StoreCorruptError, StoreWriteRejectedError } from '../../src/policy/store.js'
 
 let journalDir: string
 let store: GroupsStore
@@ -365,5 +367,42 @@ describe('ungrantServerEverywhere', () => {
 
     expect(await store.ungrantServerEverywhere('never-registered')).toEqual([])
     expect(await store.listGroups()).toEqual(before)
+  })
+})
+
+describe('schema caps are enforced at write time', () => {
+  test(`group number ${MAX_GROUPS + 1} is refused and the document stays readable`, async () => {
+    // Arrange — fill the document to the cap.
+    for (let index = 0; index < MAX_GROUPS; index += 1) {
+      await store.createGroup(`g-${String(index).padStart(4, '0')}`)
+    }
+
+    // Act
+    const refused = store.createGroup('one-too-many')
+
+    // Assert — refused BEFORE the write, so `groups.json` is still a document
+    // every later read (every authentication, in `serve`) can parse.
+    await expect(refused).rejects.toBeInstanceOf(StoreWriteRejectedError)
+    await expect(refused).rejects.not.toBeInstanceOf(StoreCorruptError)
+    expect((await store.listGroups()).length).toBe(MAX_GROUPS)
+    expect(await store.getGroup('one-too-many')).toBeUndefined()
+  })
+
+  test(`member number ${MAX_MEMBERS_PER_GROUP + 1} is refused and the group stays readable`, async () => {
+    // Arrange
+    await store.createGroup('analytics')
+    for (let index = 0; index < MAX_MEMBERS_PER_GROUP; index += 1) {
+      await store.addMember('analytics', `a-${String(index).padStart(4, '0')}`)
+    }
+
+    // Act
+    const refused = store.addMember('analytics', 'one-too-many')
+
+    // Assert
+    await expect(refused).rejects.toBeInstanceOf(StoreWriteRejectedError)
+    const record = await store.getGroup('analytics')
+    expect(record?.members.length).toBe(MAX_MEMBERS_PER_GROUP)
+    expect(record?.members).not.toContain('one-too-many')
+    expect((await store.listGroups()).length).toBe(1)
   })
 })

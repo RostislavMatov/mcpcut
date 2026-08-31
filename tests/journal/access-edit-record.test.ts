@@ -362,6 +362,30 @@ describe('buildAccessEditRecord', () => {
     expect(Object.hasOwn(payload, 'group')).toBe(false)
   })
 
+  test('the cascade verdict is copied field by field when present, and absent otherwise', () => {
+    // Arrange / Act — a half that could not run must be legible in the record:
+    // an empty `affectedGroups` alone cannot distinguish "no group granted it"
+    // from "the groups store could not be read".
+    const withVerdict = buildAccessEditRecord({
+      info: {
+        actor: { adminName: null, role: null, via: 'cli' },
+        action: 'server.remove',
+        server: 'notes',
+        affectedAgents: ['ci-agent'],
+        affectedGroups: [],
+        cascade: { agents: 'done', groups: 'failed' },
+      },
+      clock: () => FIXED_NOW_MS,
+    })
+
+    // Assert
+    expect((withVerdict.payload as Record<string, unknown>)['cascade']).toEqual({
+      agents: 'done',
+      groups: 'failed',
+    })
+    expect(Object.hasOwn(cascadeRecord().payload as Record<string, unknown>, 'cascade')).toBe(false)
+  })
+
   test('an optional grant field is copied only when the grant carries it', () => {
     const record = buildAccessEditRecord({
       info: infoOf({ grant: { tools: '*', resources: '*', prompts: ['weekly_*'] } }),

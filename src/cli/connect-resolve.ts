@@ -118,7 +118,10 @@ export async function resolveConnectTarget(args: ResolveConnectArgs): Promise<Re
   try {
     agent = await args.agents.findAgentByToken(token)
   } catch (error: unknown) {
-    return refuse('store-error', `cannot read the agent store: ${describeError(error)}\n`)
+    // Both stores are named: `agents` here is the effective-agent reader, so
+    // this failure can just as well come from `groups.json` — pointing the
+    // operator at one file when the other is broken costs them the diagnosis.
+    return refuse('store-error', `cannot read the agent or group store: ${describeError(error)}\n`)
   }
 
   // Unknown token, revoked token, and a live token belonging to some other

@@ -13,6 +13,7 @@ import {
   type ServerCliOptions,
 } from '../../src/cli/server-cmd.js'
 import { runServerRefresh, type ServerProbeOptions } from '../../src/cli/server-status-cmd.js'
+import { GROUPS_FILE_NAME } from '../../src/groups/constants.js'
 import { ACCESS_EDIT_SESSION_ID } from '../../src/journal/access-edit-record.js'
 import type { DecisionInfo, JournalRecord } from '../../src/journal/record.js'
 import { readSessionWithStats } from '../../src/journal/reader.js'
@@ -478,6 +479,7 @@ describe('server remove — cascade into grants and groups (G6, Task 10)', () =>
       server: 'github',
       affectedAgents: ['bot-a', 'bot-b'],
       affectedGroups: ['analytics'],
+      cascade: { agents: 'done', groups: 'done' },
     })
   })
 
@@ -521,16 +523,191 @@ describe('server remove — cascade into grants and groups (G6, Task 10)', () =>
     expect(records[0]?.payload).toMatchObject({ affectedAgents: [], affectedGroups: [] })
   })
 
-  test('an unknown server neither cascades nor journals', async () => {
-    await seedGrantHolders('github')
+  test('an unknown server with nothing dangling exits 1 and journals nothing', async () => {
+    await seedGrantHolders('other-server')
 
     const exitCode = await runServerRemove(['github'], fakeIo(), opts())
 
     expect(exitCode).toBe(1)
     expect(await accessEditRecords()).toHaveLength(0)
-    expect(Object.keys((await createAgentsStore({ journalDir }).getAgent('bot-a'))?.grants ?? {})).toEqual([
-      'github',
-    ])
+  })
+})
+
+/** Grants `server` to two agents only — no groups, so the groups half can be broken freely. */
+async function seedAgentGrantHolders(server: string): Promise<void> {
+  const agents = createAgentsStore({ journalDir })
+  await agents.createAgent('bot-a')
+  await agents.createAgent('bot-b')
+  await agents.grantServer('bot-a', server, ['read_file'])
+  await agents.grantServer('bot-b', server, '*')
+}
+
+/**
+ * Breaks the groups document by planting an unparseable LEGACY `groups.json`
+ * that the store has not imported yet: its first touch fails, which is what a
+ * half-failing cascade looks like from `server remove`.
+ */
+async function breakGroupsStore(): Promise<void> {
+  await writeFile(join(journalDir, GROUPS_FILE_NAME), '{ not json', 'utf8')
+}
+
+describe('server add — dangling grants under the same name (F8, M3a)', () => {
+  test('warns when agents or groups already grant the name, exit stays 0', async () => {
+    // Arrange — the state left by an earlier registration that was removed
+    // without its cascade: nothing in the registry, grants still standing.
+    await seedGrantHolders('github')
+    const io = fakeIo()
+
+    // Act
+    const exitCode = await runServerAdd(ADD_GITHUB, io, opts())
+
+    // Assert — re-registering the name silently hands the OLD grantees access
+    // to a server that may now be something else entirely.
+    expect(exitCode).toBe(0)
+    expect(io.err()).toContain(
+      '[warn] "github" is already granted to 2 agents and 1 groups from an earlier registration',
+    )
+    expect(io.err()).toContain('agent list')
+    expect(io.err()).toContain('group list')
+  })
+
+  test('a name nobody grants adds without a warning', async () => {
+    // Arrange
+    await seedGrantHolders('other-server')
+    const io = fakeIo()
+
+    // Act
+    const exitCode = await runServerAdd(ADD_GITHUB, io, opts())
+
+    // Assert
+    expect(exitCode).toBe(0)
+    expect(io.err()).not.toContain('[warn]')
+  })
+
+  test('a failed add warns about nothing', async () => {
+    // Arrange
+    await seedGrantHolders('github')
+    const io = fakeIo()
+
+    // Act — no --transport, so the record never lands.
+    const exitCode = await runServerAdd(['github'], io, opts())
+
+    // Assert
+    expect(exitCode).toBe(1)
+    expect(io.err()).not.toContain('[warn]')
+  })
+})
+
+describe('server remove — a half-failing cascade (F2)', () => {
+  test('the agents half still runs, exit stays 0, and stderr names the failed half', async () => {
+    // Arrange
+    await seedServer('github')
+    await seedAgentGrantHolders('github')
+    await breakGroupsStore()
+    const io = fakeIo()
+
+    // Act
+    const exitCode = await runServerRemove(['github'], io, opts())
+
+    // Assert — the registry write already landed, so the command reports what
+    // actually happened instead of failing after an applied change.
+    expect(exitCode).toBe(0)
+    expect(io.out()).toBe('removed server "github"; cascaded: 2 agent grants, 0 groups\n')
+    expect(io.err()).toContain('groups')
+    expect(io.err()).toContain('server remove github')
+    const agents = createAgentsStore({ journalDir })
+    expect(Object.keys((await agents.getAgent('bot-a'))?.grants ?? {})).toEqual([])
+  })
+
+  test('the access-edit record is still written and says which half failed', async () => {
+    // Arrange
+    await seedServer('github')
+    await seedAgentGrantHolders('github')
+    await breakGroupsStore()
+
+    // Act
+    await runServerRemove(['github'], fakeIo(), opts())
+
+    // Assert
+    const records = await accessEditRecords()
+    expect(records).toHaveLength(1)
+    expect(records[0]?.payload).toMatchObject({
+      action: 'server.remove',
+      server: 'github',
+      affectedAgents: ['bot-a', 'bot-b'],
+      affectedGroups: [],
+      cascade: { agents: 'done', groups: 'failed' },
+    })
+  })
+
+  test('the audit line is emitted even when a half failed', async () => {
+    // Arrange
+    await seedServer('github')
+    await seedAgentGrantHolders('github')
+    await breakGroupsStore()
+    const io = fakeIo()
+
+    // Act
+    await runServerRemove(['github'], io, opts())
+
+    // Assert
+    expect(io.err()).toContain('[audit] server remove by unattributed: "github", cascaded: 2 agent grants, 0 groups')
+  })
+})
+
+describe('server remove — repair of a dangling cascade (F2c)', () => {
+  test('an unregistered server whose grants still dangle is pruned, exit 0', async () => {
+    // Arrange — the state a crash between the registry write and the cascade
+    // leaves behind: no registry entry, grants still pointing at the name.
+    await seedGrantHolders('github')
+    const io = fakeIo()
+
+    // Act
+    const exitCode = await runServerRemove(['github'], io, opts())
+
+    // Assert
+    expect(exitCode).toBe(0)
+    expect(io.out()).toBe(
+      'server "github" was not registered; pruned dangling grants: 2 agent grants, 1 groups\n',
+    )
+    const agents = createAgentsStore({ journalDir })
+    expect(Object.keys((await agents.getAgent('bot-a'))?.grants ?? {})).toEqual([])
+    const groups = await createGroupsStore({ journalDir }).listGroups()
+    expect(groups.map((group) => Object.keys(group.grants))).toEqual([[], []])
+  })
+
+  test('the repair is journalled as a server.remove access-edit record', async () => {
+    // Arrange
+    await seedGrantHolders('github')
+
+    // Act
+    await runServerRemove(['github'], fakeIo(), opts())
+
+    // Assert
+    const records = await accessEditRecords()
+    expect(records).toHaveLength(1)
+    expect(records[0]?.payload).toMatchObject({
+      action: 'server.remove',
+      server: 'github',
+      affectedAgents: ['bot-a', 'bot-b'],
+      affectedGroups: ['analytics'],
+      cascade: { agents: 'done', groups: 'done' },
+    })
+  })
+
+  test('a second run finds nothing left to prune and falls back to exit 1', async () => {
+    // Arrange
+    await seedGrantHolders('github')
+    await runServerRemove(['github'], fakeIo(), opts())
+    const io = fakeIo()
+
+    // Act
+    const exitCode = await runServerRemove(['github'], io, opts())
+
+    // Assert
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('unknown server "github"')
+    expect(await accessEditRecords()).toHaveLength(1)
   })
 })
 

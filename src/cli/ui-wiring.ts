@@ -277,6 +277,10 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
     probes: probes.port,
     readPolicyView: () => readPolicyView(policyEnv),
     journalAccessEdit: writeAccessEdit,
+    // A `server remove` whose cascade half failed reports it the way every
+    // other UI-side fault does — on this process's stderr, never from inside
+    // the handler.
+    diagnostics: (line) => deps.stderr.write(line),
   })
   // Policy editing (ADR-0009, corrected 2026-08-26): the read view feeds the
   // page, the rule handler is the one HTTP path that writes `policy.json`.

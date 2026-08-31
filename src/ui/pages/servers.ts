@@ -17,6 +17,7 @@ import {
 } from './servers-parts.js'
 import { renderPolicyBanner, renderPolicySources, ruleControlsOf, toolsNoteOf } from './servers-policy-view.js'
 import type { ServerStatusesByName } from './servers-status.js'
+import { plural } from './plural.js'
 
 export {
   serverToolsModalId,
@@ -319,9 +320,14 @@ export function renderRemoveWarning(view: RemoveWarningView): string {
     panelClass: 'srv-confirm',
     cancelHref: '/servers',
     heading: html`Remove server “${view.serverName}”?`,
+    // The count and the listed set are the SAME set — active agents — because
+    // that is what the panel below names. The cascade is wider: it also drops
+    // the dangling grants of revoked agents, which nothing here can list
+    // meaningfully, so the sentence says so instead of quietly under-counting.
     warning: html`<p role="alert">
         Removing this server also removes it from
-        ${String(view.agents.length)} agent grants and ${String(groups.length)} groups:
+        ${plural(view.agents.length, 'active agent grant')}
+        (revoked agents’ dangling grants are dropped too) and ${plural(groups.length, 'group')}:
       </p>`,
     details: html`${holderList('Agents', view.agents)}${holderList('Groups', groups)}`,
     form: html`<form method="post" action="/servers/remove">

@@ -27,6 +27,17 @@ const NOTICE_CLASS_BY_HREF: Readonly<Record<string, string>> = {
   '/groups': 'gr-notice',
 }
 
+/**
+ * The family class for `backHref`, or `''`. The `Object.hasOwn` guard is not
+ * decoration: a plain object literal inherits `constructor`, `toString` and
+ * friends, so an unguarded lookup for a caller-supplied href named after one
+ * of them yields a FUNCTION, which then gets stringified into the class
+ * attribute. Own properties only, always.
+ */
+function noticeClassOf(backHref: string): string {
+  return Object.hasOwn(NOTICE_CLASS_BY_HREF, backHref) ? (NOTICE_CLASS_BY_HREF[backHref] ?? '') : ''
+}
+
 /** Nav key of the page the notice belongs to (`/groups` → `groups`). */
 function navKeyOf(backHref: string): string | undefined {
   const key = backHref.replace(/^\//, '').split(/[/?#]/)[0] ?? ''
@@ -48,7 +59,7 @@ export interface NoticeView {
 
 /** A success/failure notice with a link back to the page that raised it. */
 export function renderNotice(view: NoticeView): string {
-  const noticeClass = view.noticeClass ?? NOTICE_CLASS_BY_HREF[view.backHref] ?? ''
+  const noticeClass = view.noticeClass ?? noticeClassOf(view.backHref)
   const activeNav = navKeyOf(view.backHref)
   const content = html`<section class="notice ${view.ok ? 'ok' : 'error'} ${noticeClass}" role="status">
     <h1>${view.ok ? 'Done' : 'Could not complete the action'}</h1>

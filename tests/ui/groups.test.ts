@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import type { AgentRecord } from '../../src/agents/schema.js'
 import { createAgentsStore, type AgentsStore } from '../../src/agents/store.js'
 import { createGroupsStore, type GroupsStore } from '../../src/groups/store.js'
+import { StoreWriteRejectedError } from '../../src/policy/store.js'
 import type { GroupRecord } from '../../src/groups/schema.js'
 import type { AccessEditInfo } from '../../src/journal/record.js'
 import { createRegistryStore, type RegistryStore } from '../../src/registry/store.js'
@@ -514,5 +515,21 @@ describe('the journal port cannot turn a completed write into a 500', () => {
     expect(result.status).toBe(303)
     expect(await groups.getGroup('analytics')).toBeDefined()
     expect(audit[0]).toMatchObject({ action: 'group.create' })
+  })
+})
+
+describe('a capped write is a readable 400, not a 500 (U6)', () => {
+  test('StoreWriteRejectedError from the group store renders the notice', async () => {
+    const rejected = new StoreWriteRejectedError('/tmp/groups.json', new Error('too many groups'))
+    const failing = createGroupsHandlers({
+      groups: { ...groups, createGroup: () => Promise.reject(rejected) } as GroupsStore,
+      agents,
+      registry,
+    })
+
+    const result = asResponse(await failing.groupsCreate(postCtx({ name: 'analytics' }, session('owner'))))
+
+    expect(result.status).toBe(400)
+    expect(String(result.body)).toMatch(/Refusing to write/)
   })
 })

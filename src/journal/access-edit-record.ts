@@ -84,7 +84,23 @@ export interface AccessEditInfo {
   readonly affectedAgents?: readonly string[]
   /** `server.remove` cascade: groups whose grant for the server was dropped. */
   readonly affectedGroups?: readonly string[]
+  /**
+   * `server.remove` only: whether each half of the cascade actually ran. The
+   * three documents (registry, `agents.json`, `groups.json`) do not share a
+   * transaction, so one half can fail while the other lands; the record must
+   * say which, or an auditor reading `affectedGroups: []` cannot tell "no
+   * group granted it" from "the groups store could not be read".
+   */
+  readonly cascade?: CascadeVerdict
 }
+
+/** Per-half outcome of the `server remove` cascade. */
+export interface CascadeVerdict {
+  readonly agents: CascadeHalfStatus
+  readonly groups: CascadeHalfStatus
+}
+
+export type CascadeHalfStatus = 'done' | 'failed'
 
 export interface BuildAccessEditRecordInput {
   readonly info: AccessEditInfo
@@ -128,7 +144,13 @@ function flatInfoOf(info: AccessEditInfo): Record<string, unknown> {
     ...(info.grant !== undefined ? { grant: flatGrantOf(info.grant) } : {}),
     ...(info.affectedAgents !== undefined ? { affectedAgents: [...info.affectedAgents] } : {}),
     ...(info.affectedGroups !== undefined ? { affectedGroups: [...info.affectedGroups] } : {}),
+    ...(info.cascade !== undefined ? { cascade: flatCascadeOf(info.cascade) } : {}),
   }
+}
+
+/** The cascade verdict, field by field, for the same no-extra-keys reason. */
+function flatCascadeOf(cascade: CascadeVerdict): Record<string, unknown> {
+  return { agents: cascade.agents, groups: cascade.groups }
 }
 
 /** The grant, field by field, for the same reason: no extra key can ride in on a stored object. */

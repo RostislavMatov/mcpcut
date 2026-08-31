@@ -1,9 +1,10 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { createAgentsStore } from '../../src/agents/store.js'
 import { runConnect, type ConnectDeps } from '../../src/cli/connect-cmd.js'
+import { GROUPS_FILE_NAME } from '../../src/groups/constants.js'
 import { createGroupsStore } from '../../src/groups/store.js'
 import { requestLine, waitUntil } from '../proxy/harness.js'
 import {
@@ -156,5 +157,29 @@ describe('connect: grants inherited from a group', () => {
     expect(exitCode).toBe(1)
     expect(io.err()).toContain(`agent "${AGENT}" has no grant for server "${SERVER}"`)
     expect(stdio.stdoutText()).toBe('')
+  })
+})
+
+describe('connect — an unreadable group store', () => {
+  test('refuses naming BOTH stores, since either one can be the failure', async () => {
+    // Arrange — a groups document that cannot be parsed; the agent itself is
+    // perfectly readable, so a message blaming only the agent store would
+    // send the operator to the wrong file.
+    const agents = createAgentsStore({ journalDir: tempDir })
+    const created = await agents.createAgent(AGENT)
+    await agents.grantServer(AGENT, SERVER, '*')
+    await addPolicyServer()
+    await writeFile(join(tempDir, GROUPS_FILE_NAME), '{ not json', 'utf8')
+
+    // Act
+    const code = await runConnect(
+      [SERVER, '--agent', AGENT],
+      io,
+      depsOf({ env: { MCP_AGENT_TOKEN: created.token, PATH: process.env['PATH'] ?? '' } }),
+    )
+
+    // Assert
+    expect(code).toBe(1)
+    expect(io.err()).toContain('cannot read the agent or group store')
   })
 })

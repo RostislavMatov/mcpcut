@@ -1,8 +1,10 @@
 import { setTimeout as sleep } from 'node:timers/promises'
 import { isSqliteBusy, type SqliteHandle } from '../store/sqlite.js'
+import { createDocumentValidator } from './store-validate.js'
 import {
   StoreCorruptError,
   StoreLockError,
+  StoreWriteRejectedError,
   assertNotPreviouslyMigrated,
   dbPathFor,
   insertDocumentFirstWrite,
@@ -46,7 +48,7 @@ import {
  * `src/store/sqlite.ts`.
  */
 
-export { StoreCorruptError, StoreLockError } from './store-backend.js'
+export { StoreCorruptError, StoreLockError, StoreWriteRejectedError } from './store-backend.js'
 export type { StateDatabase } from './store-backend.js'
 
 /** Budgets of the transactional write path (distinct from the vault's file-lock options). */
@@ -129,26 +131,18 @@ export function createJsonStore<T>(filePath: string, opts: JsonStoreOptions<T>):
   /** Serializes every read-modify-write cycle so updates never interleave. */
   let queue: Promise<void> = Promise.resolve()
 
+  /**
+   * Domain validation on both sides of the boundary — corrupt reads, refused
+   * writes — plus the rev-keyed memo that keeps an unchanged row from being
+   * validated twice. See `store-validate.ts` for the contracts.
+   */
+  const document = createDocumentValidator<T>(filePath, validate)
+
   async function stateDb(): Promise<SqliteHandle> {
     try {
       return await openStateDbShared(dbPath)
     } catch (error: unknown) {
       rethrowClassified(filePath, error, true)
-    }
-  }
-
-  function parseValidated(text: string): T {
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(text)
-    } catch (error: unknown) {
-      throw new StoreCorruptError(filePath, error)
-    }
-
-    try {
-      return validate(parsed)
-    } catch (error: unknown) {
-      throw new StoreCorruptError(filePath, error)
     }
   }
 
@@ -175,7 +169,7 @@ export function createJsonStore<T>(filePath: string, opts: JsonStoreOptions<T>):
    */
   async function legacyImportCandidate(): Promise<string | null> {
     const text = await loadLegacyTextAt(filePath)
-    if (text !== null) parseValidated(text)
+    if (text !== null) document.parseText(text)
     return text
   }
 
@@ -203,9 +197,10 @@ export function createJsonStore<T>(filePath: string, opts: JsonStoreOptions<T>):
     const handle = await stateDb()
     try {
       const row = guarded(() => selectDocument(handle.db, documentName, filePath))
-      // Either branch yields a value nobody else holds a reference to: a
-      // fresh parse, or a clone of the caller's `defaultValue`.
-      if (row !== null) return parseValidated(row.doc)
+      // The default branch yields a value nobody else holds a reference to (a
+      // clone of the caller's `defaultValue`); the row branch may return the
+      // memoised parse — see the memo's contract above.
+      if (row !== null) return document.parseRow(row)
 
       guarded(() => assertNotPreviouslyMigrated(handle.db, documentName, filePath))
       const legacyText = await legacyImportCandidate()
@@ -217,7 +212,7 @@ export function createJsonStore<T>(filePath: string, opts: JsonStoreOptions<T>):
         guarded(() => insertDocumentFirstWrite(handle, documentName, filePath, legacyText, true)),
       )
       const imported = guarded(() => selectDocument(handle.db, documentName, filePath))
-      return imported === null ? structuredClone(defaultValue) : parseValidated(imported.doc)
+      return imported === null ? structuredClone(defaultValue) : document.parseRow(imported)
     } catch (error: unknown) {
       rethrowClassified(filePath, error)
     }
@@ -234,11 +229,15 @@ export function createJsonStore<T>(filePath: string, opts: JsonStoreOptions<T>):
     if (row === null) {
       guarded(() => assertNotPreviouslyMigrated(db, documentName, filePath))
       const legacyText = await legacyImportCandidate()
-      const current = legacyText === null ? structuredClone(defaultValue) : parseValidated(legacyText)
+      const current = legacyText === null ? structuredClone(defaultValue) : document.parseText(legacyText)
 
       let next: T
       try {
         next = fn(current)
+        // Inside the same try as `fn` on purpose: a refusal computed against a
+        // snapshot a concurrent writer has already superseded is stale — the
+        // staleness check below re-runs the cycle instead of reporting it.
+        document.assertWritable(next)
       } catch (error: unknown) {
         if (guarded(() => selectDocument(db, documentName, filePath)) === null) throw error
         return { kind: 'conflict', fnError: [error] }
@@ -254,10 +253,11 @@ export function createJsonStore<T>(filePath: string, opts: JsonStoreOptions<T>):
       return inserted ? { kind: 'committed', text } : { kind: 'conflict' }
     }
 
-    const current = parseValidated(row.doc)
+    const current = document.parseText(row.doc)
     let next: T
     try {
       next = fn(current)
+      document.assertWritable(next)
     } catch (error: unknown) {
       const nowRev = guarded(() => selectDocument(db, documentName, filePath))?.rev ?? null
       if (nowRev === row.rev) throw error
@@ -280,7 +280,10 @@ export function createJsonStore<T>(filePath: string, opts: JsonStoreOptions<T>):
     return handle.transaction((db) => {
       const row = selectDocument(db, documentName, filePath)
       if (row === null) return { kind: 'conflict' as const }
-      const next = fn(parseValidated(row.doc))
+      const next = fn(document.parseText(row.doc))
+      // Under the write lock the snapshot cannot be stale, so a refusal here
+      // is genuine: it propagates and rolls the transaction back.
+      document.assertWritable(next)
       const text = JSON.stringify(next)
       updateDocumentCas(db, documentName, text, row.rev)
       return { kind: 'committed' as const, text }
@@ -315,6 +318,10 @@ export function createJsonStore<T>(filePath: string, opts: JsonStoreOptions<T>):
       }
 
       if (outcome.kind === 'committed') {
+        // The document moved under the memo, and this attempt does not know
+        // the revision the CAS minted — drop it rather than guess; the next
+        // read reparses once and memoises the row it actually finds.
+        document.invalidate()
         // Resolve with what was PERSISTED: a fresh deep copy round-tripped
         // through JSON, exactly what the next read() yields.
         return JSON.parse(outcome.text) as T

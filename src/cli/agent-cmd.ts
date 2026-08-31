@@ -12,9 +12,10 @@ import {
   type AgentsStoreOptions,
 } from '../agents/store.js'
 import type { AgentRecord } from '../agents/schema.js'
+import { createGroupsStore } from '../groups/store.js'
 import { formatReadableField } from '../journal/format.js'
 import { resolveGrantFlags } from './grant-flags.js'
-import { StoreCorruptError, StoreLockError } from '../policy/store.js'
+import { StoreCorruptError, StoreLockError, StoreWriteRejectedError } from '../policy/store.js'
 
 /**
  * `agent create|list|grant|ungrant|revoke` — operator-facing management of
@@ -66,6 +67,7 @@ const EXPECTED_ERRORS = [
   InvalidToolPatternError,
   StoreCorruptError,
   StoreLockError,
+  StoreWriteRejectedError,
 ] as const
 
 function isExpectedError(error: unknown): error is Error {
@@ -93,7 +95,7 @@ export async function runAgentCommand(
       case 'grant':
         return await runGrant(rest, io, store)
       case 'ungrant':
-        return await runUngrant(rest, io, store)
+        return await runUngrant(rest, io, store, opts)
       case 'revoke':
         return await runRevoke(rest, io, store)
       default:
@@ -240,7 +242,12 @@ function summaryOf(patterns: '*' | readonly string[], everything: string): strin
   return patterns === '*' ? `* (${everything})` : patterns.join(', ')
 }
 
-async function runUngrant(args: string[], io: AgentCliIo, store: AgentsStore): Promise<number> {
+async function runUngrant(
+  args: string[],
+  io: AgentCliIo,
+  store: AgentsStore,
+  options: AgentCliOptions,
+): Promise<number> {
   const [agentName, serverName] = args
   if (agentName === undefined || serverName === undefined || args.length !== 2) {
     io.stderr.write(USAGE)
@@ -251,7 +258,42 @@ async function runUngrant(args: string[], io: AgentCliIo, store: AgentsStore): P
   io.stdout.write(
     `removed grant ${formatReadableField(serverName)} from ${formatReadableField(agentName)}\n`,
   )
+  await warnIfGroupsUncovered(agentName, serverName, io, options)
   return 0
+}
+
+/**
+ * A personal grant takes its server WHOLE, shadowing whatever the agent's
+ * groups grant for it (ADR-0010 §2). Removing it therefore does not deny the
+ * server — it hands the agent the groups' (unioned, usually wider) grant. The
+ * shell is told so, because "removed grant" alone reads as de-escalation.
+ *
+ * Read AFTER the write, so the groups named are the ones the agent actually
+ * falls back to now. A groups document that cannot be read must not turn a
+ * completed ungrant into a failure: the removal happened either way, and the
+ * warning is advisory.
+ */
+async function warnIfGroupsUncovered(
+  agentName: string,
+  serverName: string,
+  io: AgentCliIo,
+  options: AgentCliOptions,
+): Promise<void> {
+  let inheritedFrom: readonly string[]
+  try {
+    const memberships = await createGroupsStore(options).groupsOf(agentName)
+    inheritedFrom = memberships
+      .filter((group) => Object.hasOwn(group.grants, serverName))
+      .map((group) => group.name)
+  } catch {
+    return
+  }
+  if (inheritedFrom.length === 0) return
+  const from = inheritedFrom.map((name) => `group:${formatReadableField(name)}`).join(', ')
+  io.stderr.write(
+    `[warn] ${formatReadableField(agentName)} now inherits ${formatReadableField(serverName)}` +
+      ` from ${from} — effective access WIDENED\n`,
+  )
 }
 
 async function runRevoke(args: string[], io: AgentCliIo, store: AgentsStore): Promise<number> {

@@ -8,6 +8,7 @@ import { createAdminStore } from '../../src/admin/store.js'
 import { runGroupCommand, type GroupCliOptions } from '../../src/cli/group-cmd.js'
 import { createGroupsStore } from '../../src/groups/store.js'
 import { ACCESS_EDIT_SESSION_ID } from '../../src/journal/access-edit-record.js'
+import { MAX_GROUPS } from '../../src/groups/constants.js'
 import { createRegistryStore } from '../../src/registry/store.js'
 import { readJournalRecords } from '../support/journal-rows.js'
 
@@ -323,6 +324,25 @@ describe('group grant', () => {
     ])
   })
 
+  test('an explicit --tools "*" means the same as omitting the flag', async () => {
+    // Arrange — parity with `--resources '*'` and with the UI, where "*" is
+    // how an operator says "every tool" out loud.
+    await seedGroup('analytics')
+    await seedServer('github')
+    const io = fakeIo()
+
+    // Act
+    const code = await runGroupCommand(
+      ['grant', 'analytics', 'github', '--tools', '*'],
+      io,
+      await ownerOpts(),
+    )
+
+    // Assert — the stored grant is the wildcard itself, not a list holding it.
+    expect(code).toBe(0)
+    expect((await groups().getGroup('analytics'))?.grants['github']).toEqual({ tools: '*' })
+  })
+
   test('omitting --tools grants all tools while resources/prompts stay denied', async () => {
     await seedGroup('analytics')
     await seedServer('github')
@@ -545,5 +565,25 @@ describe('group -- journal drop', () => {
     expect(code).toBe(0)
     expect(io.err()).toMatch(/journal record.*dropped/i)
     expect((await groups().getGroup('analytics'))?.name).toBe('analytics')
+  })
+})
+
+describe('group create -- schema cap', () => {
+  test(`group number ${MAX_GROUPS + 1} is refused with a message, exit 1`, async () => {
+    // Arrange
+    const io = fakeIo()
+    const opts = await ownerOpts()
+    const store = groups()
+    for (let index = 0; index < MAX_GROUPS; index += 1) {
+      await store.createGroup(`g-${String(index).padStart(4, '0')}`)
+    }
+
+    // Act
+    const code = await runGroupCommand(['create', 'one-too-many'], io, opts)
+
+    // Assert — an expected boundary error, not a crash, and nothing landed.
+    expect(code).toBe(1)
+    expect(io.err()).toContain('Refusing to write')
+    expect(await store.getGroup('one-too-many')).toBeUndefined()
   })
 })

@@ -53,6 +53,19 @@ const INSERT_MARKER = 'INSERT OR IGNORE INTO migrated_documents (name) VALUES (?
 const UPDATE_DOCUMENT = 'UPDATE documents SET doc = ?, rev = rev + 1 WHERE name = ? AND rev = ?'
 
 /** Raised by the stores when persisted state exists but cannot be trusted. */
+/**
+ * The value a store was about to persist fails its own document schema — for
+ * example a write that would push a collection past a `MAX_*` cap. Refused
+ * BEFORE the write so the document on disk always stays readable; the error
+ * is expected input at the CLI/UI boundary, not a corrupt store.
+ */
+export class StoreWriteRejectedError extends Error {
+  constructor(filePath: string, cause: unknown) {
+    super(`Refusing to write "${filePath}": ${describeCause(cause)}`, { cause })
+    this.name = 'StoreWriteRejectedError'
+  }
+}
+
 export class StoreCorruptError extends Error {
   constructor(filePath: string, cause: unknown) {
     super(`Policy store "${filePath}" is corrupt: ${describeCause(cause)}`, { cause })
