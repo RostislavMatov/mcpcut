@@ -186,6 +186,50 @@ describe('quarantineApprove / quarantineReject actions', () => {
     expect(bodyText(result).toLowerCase()).toContain('not')
   })
 
+  test('return_to sends a native form back to the page it came from (allowlist only)', async () => {
+    const handlers = createQuarantineHandlers(deps({ approve: async () => true }))
+    const post = async (fields: Record<string, string>) =>
+      handlers.quarantineApprove(
+        makeCtx({ method: 'POST', path: '/quarantine/approve', body: formBody(fields) }),
+      )
+    const base = { server: 'github', tool: 'create_issue', csrf_token: OPERATOR.csrfToken }
+
+    // The Servers screen's tools modal has no JavaScript path — it asks to come back.
+    const back = await post({ ...base, return_to: '/servers' })
+    if (back.kind !== 'response') throw new Error('expected response')
+    expect(back.status).toBe(303)
+    expect(back.headers?.location).toBe('/servers')
+
+    // Anything not on the allowlist is ignored rather than followed: an open
+    // `return_to` on a cookie-authenticated endpoint is an open redirect.
+    for (const hostile of ['https://evil.example/', '//evil.example', '/servers?next=x', '']) {
+      const result = await post({ ...base, return_to: hostile })
+      if (result.kind !== 'response') throw new Error('expected response')
+      expect(result.status, hostile).toBe(200)
+      expect(result.headers?.location, hostile).toBeUndefined()
+    }
+
+    // The scripted path (no return_to) still gets JSON.
+    const json = await post(base)
+    if (json.kind !== 'response') throw new Error('expected response')
+    expect(json.status).toBe(200)
+    expect(JSON.parse(bodyText(json))).toMatchObject({ status: 'ok', action: 'approve' })
+  })
+
+  test('a refused mutation never redirects, even with return_to', async () => {
+    const handlers = createQuarantineHandlers(deps({ approve: async () => false }))
+    const result = await handlers.quarantineApprove(
+      makeCtx({
+        method: 'POST',
+        path: '/quarantine/approve',
+        body: formBody({ server: 'github', tool: 'ghost', return_to: '/servers' }),
+      }),
+    )
+    if (result.kind !== 'response') throw new Error('expected response')
+    expect(result.status).toBe(404)
+    expect(result.headers?.location).toBeUndefined()
+  })
+
   test('a missing admin session fails closed and never mutates', async () => {
     const calls: Array<[string, string]> = []
     const handlers = createQuarantineHandlers(deps({ approve: async (s, t) => (calls.push([s, t]), true) }))

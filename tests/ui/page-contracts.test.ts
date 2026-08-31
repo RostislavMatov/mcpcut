@@ -261,7 +261,7 @@ describe('live-region attributes match what APP_JS consumes (M-3)', () => {
     }
   })
 
-  test('the servers tools panel is a settle-only region keyed per server, re-fetched from /servers', () => {
+  test('the servers tools modal is a settle-only region keyed per server, re-fetched from /servers', () => {
     const document = renderServersPage(serversWithRules())
     const regions = attributeValues(document, 'data-live-region')
     expect(regions).toEqual(['server-tools:github'])
@@ -270,8 +270,8 @@ describe('live-region attributes match what APP_JS consumes (M-3)', () => {
     // exact key, through the script's own cssEscape — a colon needs none.
     expect(JS_SOURCE).toContain(`'[data-live-region="' + cssEscape(key) + '"]'`)
     expect(regions[0]).not.toMatch(/["\\]/)
-    // The region is inside the <details>, so a swap never closes the panel.
-    expect(document).toMatch(/<details class="disclosure srv-tools">[\s\S]*?data-live-region="server-tools:github"[\s\S]*?<\/details>/)
+    // The region is inside the modal <details>, so a swap never closes it.
+    expect(document).toMatch(/<details class="drawer srv-tools-modal" id="tools-github">[\s\S]*?data-live-region="server-tools:github"[\s\S]*?<\/details>/)
   })
 
   test('every rule form carries the same encoded path in action and data-action, plus the CAS token', () => {

@@ -54,7 +54,8 @@ import { buildAsset, type Asset } from './asset.js'
  *   - the Servers page renders each card's dot with `data-server="<name>"`
  *     (pages/servers-status.ts); a `server-status-changed` SSE event carries
  *     JSON `{server, status, probedVia?, probedAt?, latencyMs?, error?}` and
- *     `applyServerStatus` swaps the dot's class and `title` in place.
+ *     `applyServerStatus` swaps the dot's class and `title` — and the state
+ *     word beside the transport pill — in place.
  *
  *  Signed out mid-session
  *   - every scripted request carries `x-requested-with: fetch`, which a dead
@@ -333,10 +334,16 @@ const APP_JS_SOURCE = `"use strict";
 
   function applyServerStatus(detail) {
     if (!detail || typeof detail.server !== "string" || typeof detail.status !== "string") return;
-    var dot = document.querySelector('.srv-dot[data-server="' + cssEscape(detail.server) + '"]');
-    if (!dot) return;
-    dot.className = serverStatusDotClass(detail.status);
-    dot.title = serverStatusTitle(detail);
+    var selector = '[data-server="' + cssEscape(detail.server) + '"]';
+    var dot = document.querySelector(".srv-dot" + selector);
+    if (dot) {
+      dot.className = serverStatusDotClass(detail.status);
+      dot.title = serverStatusTitle(detail);
+    }
+    // The word beside the transport pill carries the same state as the dot;
+    // textContent, never markup, so the status string stays inert.
+    var label = document.querySelector(".srv-state" + selector);
+    if (label) label.textContent = detail.status;
   }
 
   function onServerStatusEvent(data) {
