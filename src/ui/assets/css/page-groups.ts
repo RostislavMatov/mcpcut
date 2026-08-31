@@ -14,8 +14,11 @@ export const CSS_PAGE_GROUPS = `
 .gr-panel .panel-hd .row { gap: 14px; }
 .gr-panel .empty { border-style: dashed; }
 .gr-list { display: flex; flex-direction: column; }
+/* The card zeroes its own padding, so the summary has to supply the inset
+   itself — otherwise its name and counter sit flush against the 2px border and
+   misalign with the body below (.gr-bd, 14px). Same inset as .srv-sum. */
 .gr-card { padding: 0; }
-.gr-sum { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.gr-sum { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 11px 14px; }
 .gr-sum .name { font-size: 12px; letter-spacing: var(--track-s); }
 .gr-sum .num { margin-left: auto; }
 .gr-bd { display: flex; flex-direction: column; gap: 12px; padding: 12px 14px 14px; }
