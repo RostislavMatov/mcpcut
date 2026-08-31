@@ -1,12 +1,14 @@
 import { renderLayout, type SearchBox } from '../pages/layout.js'
 import type { Html } from '../html.js'
 import {
+  renderAllRecords,
   renderCrossSessionSearch,
   renderInvalidSession,
   renderSessionList,
   renderSessionView,
   type JournalViewState,
 } from '../pages/journal.js'
+import { parseRequest, sessionMatches, type JournalRequest } from './journal-query.js'
 import type { UiHandler, UiRequestContext, UiResult } from '../routes.js'
 import type { UiSession } from '../auth.js'
 import { CONTENT_TYPE_HTML, HTTP_STATUS_BAD_REQUEST, HTTP_STATUS_OK } from '../constants.js'
@@ -18,15 +20,22 @@ import type {
   SessionPage,
   SessionPageOptions,
 } from '../../journal/search.js'
-import type { JournalDirection } from '../../journal/record.js'
 import { isValidSessionId } from '../../journal/session-id.js'
 
 /**
- * `GET /journal` — the journal browser (M4 Task 15). Three views selected by
- * query: the session list (index-cache), one session's records with filters
- * (single-session search), and a cross-session text search with an honest
- * truncation mark. Authorization (viewer+) is done by `server.ts` before this
- * runs; this handler only reads and renders.
+ * `GET /journal` — the journal browser (M4 Task 15; redrawn from Claude Design
+ * `Journal.dc.html` 2026-08-27). Four views selected by query:
+ *
+ * - the session list (index-cache), narrowed by id/text and by period;
+ * - `view=records`, the cross-session record stream behind the `Records` tab;
+ * - `session=<id>`, one session's records with filters;
+ * - `q=<text>` from the top bar, the cross-session text search with an honest
+ *   truncation mark.
+ *
+ * The period control is server-side state: its day/preset/month cells are
+ * submit buttons of the filter form (`pick`, `period`, `pmnav`, `close`), and
+ * this handler folds them into the `from`/`to` filters. That keeps the whole
+ * bar working with JavaScript off, and makes every view a shareable URL.
  *
  * Fail-closed on the session id: it is NEVER turned into a path here. The
  * handler screens it with the journal layer's own validator and, on rejection,
@@ -50,40 +59,59 @@ export interface JournalReadPort {
   searchAllSessions(options?: CrossSessionSearchOptions): Promise<CrossSessionSearchResult>
 }
 
+
 export interface JournalHandlerDeps {
   readonly read: JournalReadPort
   /** Journal directory passed through to the read layer (defaults to the layer's own). */
   readonly dir?: string
+  /**
+   * Names offered by the agent dropdown. Read from the agent registry, not
+   * from the records: an agent that has not acted yet must still be
+   * selectable, and deriving the list from a page would change it per page.
+   * Absent (or failing) leaves the dropdown with just `agent · any`.
+   */
+  readonly listAgentNames?: () => Promise<readonly string[]>
+  /** Clock for the period presets; injected so tests pin "today". */
+  readonly now?: () => Date
 }
 
 /** Builds the injectable `journalPage` handler bound to a read port. */
 export function createJournalHandler(deps: JournalHandlerDeps): UiHandler {
   return async function journalPage(ctx: UiRequestContext): Promise<UiResult> {
-    const sessionId = firstNonEmpty(ctx.query.get('session'))
-    const text = firstNonEmpty(ctx.query.get('q'))
-    const filters = buildFilters(ctx.query, text)
-    const page = parsePage(ctx.query.get('page'))
+    const request = parseRequest(ctx.query, deps.now?.() ?? new Date())
 
-    if (sessionId !== undefined) {
-      return renderSingleSession(deps, ctx, sessionId, filters, page)
+    if (request.sessionId !== undefined) {
+      return renderSingleSession(deps, ctx, request.sessionId, request)
     }
-    if (text !== undefined) {
-      return renderSearch(deps, ctx, filters, page)
+    if (request.allSessions) {
+      return renderRecordsTab(deps, ctx, request)
     }
-    return renderList(deps, ctx, page)
+    // A bare `q` is the top bar's cross-session search. The same `q` submitted
+    // by the session list's own bar carries `view=sessions` and narrows the
+    // list instead — the top bar starts a search, the panel bar refines a view.
+    if (request.filters.text !== undefined && request.view !== 'sessions') {
+      return renderSearch(deps, ctx, request)
+    }
+    return renderList(deps, ctx, request)
   }
 }
+
+// --- Views ----------------------------------------------------------------
 
 async function renderList(
   deps: JournalHandlerDeps,
   ctx: UiRequestContext,
-  page: number,
+  request: JournalRequest,
 ): Promise<UiResult> {
-  const sessions = await deps.read.listSessions(deps.dir)
+  const all = await deps.read.listSessions(deps.dir)
+  const sessions = all.filter((entry) => sessionMatches(entry, request.filters))
   const pageCount = Math.max(1, Math.ceil(sessions.length / JOURNAL_SESSIONS_PER_PAGE))
-  const start = (page - 1) * JOURNAL_SESSIONS_PER_PAGE
+  const start = (request.page - 1) * JOURNAL_SESSIONS_PER_PAGE
   const slice = sessions.slice(start, start + JOURNAL_SESSIONS_PER_PAGE)
-  const content = renderSessionList(slice, page, pageCount, sessions.length)
+  // The session list's own bar has no agent field, so the dropdown's options
+  // are not read here — one fewer store touch on the most-visited view.
+  const state = viewState(request, [])
+  const content = renderSessionList(slice, state, pageCount, sessions.length)
   return ok(ctx, content, { search: searchBox(undefined), navMeta: `${sessions.length} sessions` })
 }
 
@@ -91,8 +119,7 @@ async function renderSingleSession(
   deps: JournalHandlerDeps,
   ctx: UiRequestContext,
   sessionId: string,
-  filters: JournalFilters,
-  page: number,
+  request: JournalRequest,
 ): Promise<UiResult> {
   // The session id is attacker-influenced and would become a file name in the
   // read layer. Screen it with the journal's own validator and refuse cleanly
@@ -103,66 +130,80 @@ async function renderSingleSession(
     })
   }
   const options: SessionPageOptions = {
-    ...filters,
+    ...request.filters,
     ...(deps.dir !== undefined ? { dir: deps.dir } : {}),
     limit: JOURNAL_RECORDS_PER_PAGE,
-    offset: (page - 1) * JOURNAL_RECORDS_PER_PAGE,
+    offset: (request.page - 1) * JOURNAL_RECORDS_PER_PAGE,
   }
   const pageData = await deps.read.searchSession(sessionId, options)
-  const state: JournalViewState = { sessionId, filters, page }
+  const state = viewState(request, await agentNames(deps))
   return ok(ctx, renderSessionView(sessionId, pageData, state), {
-    search: searchBox(filters.text),
-    navMeta: `page ${page}`,
+    search: searchBox(request.filters.text),
+    navMeta: `page ${request.page}`,
+  })
+}
+
+/** The `Records` tab: every session's records as one stream, same ceilings as a search. */
+async function renderRecordsTab(
+  deps: JournalHandlerDeps,
+  ctx: UiRequestContext,
+  request: JournalRequest,
+): Promise<UiResult> {
+  const result = await deps.read.searchAllSessions(crossSessionOptions(deps, request.filters))
+  const state = viewState(request, await agentNames(deps))
+  const shown = result.hits.length
+  return ok(ctx, renderAllRecords(result, state), {
+    search: searchBox(request.filters.text),
+    navMeta: `${shown} ${shown === 1 ? 'record' : 'records'}`,
   })
 }
 
 async function renderSearch(
   deps: JournalHandlerDeps,
   ctx: UiRequestContext,
-  filters: JournalFilters,
-  page: number,
+  request: JournalRequest,
 ): Promise<UiResult> {
-  const options: CrossSessionSearchOptions = {
-    ...filters,
-    ...(deps.dir !== undefined ? { dir: deps.dir } : {}),
-  }
-  const result = await deps.read.searchAllSessions(options)
-  const state: JournalViewState = { filters, page }
+  const result = await deps.read.searchAllSessions(crossSessionOptions(deps, request.filters))
+  const state = viewState(request, await agentNames(deps))
   const hits = result.hits.length
   return ok(ctx, renderCrossSessionSearch(result, state), {
-    search: searchBox(filters.text),
+    search: searchBox(request.filters.text),
     navMeta: `${hits} ${hits === 1 ? 'hit' : 'hits'}`,
   })
 }
 
-/** Reads the recognised filter fields from the query into a `JournalFilters`. */
-function buildFilters(query: URLSearchParams, text: string | undefined): JournalFilters {
-  const direction = firstNonEmpty(query.get('direction'))
-  return {
-    ...maybe('kind', firstNonEmpty(query.get('kind'))),
-    ...(direction !== undefined ? { direction: direction as JournalDirection } : {}),
-    ...maybe('method', firstNonEmpty(query.get('method'))),
-    ...maybe('toolName', firstNonEmpty(query.get('tool'))),
-    ...maybe('outcome', firstNonEmpty(query.get('outcome'))),
-    ...(text !== undefined ? { text } : {}),
+function crossSessionOptions(
+  deps: JournalHandlerDeps,
+  filters: JournalFilters,
+): CrossSessionSearchOptions {
+  return { ...filters, ...(deps.dir !== undefined ? { dir: deps.dir } : {}) }
+}
+
+/**
+ * The agent dropdown's options. A registry that cannot be read must not take
+ * the page down with it: the filter is still typed into the URL, the list is
+ * simply empty.
+ */
+async function agentNames(deps: JournalHandlerDeps): Promise<readonly string[]> {
+  if (deps.listAgentNames === undefined) return []
+  try {
+    return await deps.listAgentNames()
+  } catch {
+    return []
   }
 }
 
-function maybe(key: string, value: string | undefined): Record<string, string> {
-  return value !== undefined ? { [key]: value } : {}
-}
-
-/** Parses a 1-based page number, clamping anything invalid up to 1. */
-function parsePage(raw: string | null): number {
-  const parsed = Number.parseInt(raw ?? '', 10)
-  return Number.isFinite(parsed) && parsed >= 1 ? parsed : 1
-}
-
-/** Trims a query value and drops it to `undefined` when empty. */
-function firstNonEmpty(value: string | null): string | undefined {
-  if (value === null) return undefined
-  const trimmed = value.trim()
-  return trimmed === '' ? undefined : trimmed
+function viewState(request: JournalRequest, names: readonly string[]): JournalViewState {
+  return {
+    ...(request.sessionId !== undefined ? { sessionId: request.sessionId } : {}),
+    filters: request.filters,
+    page: request.page,
+    month: request.month,
+    pickerOpen: request.pickerOpen,
+    today: request.today,
+    agentNames: names,
+    ...(request.view !== undefined ? { view: request.view } : {}),
+  }
 }
 
 /** Shell extras per view: the top-bar search box and the tab-bar meta text. */

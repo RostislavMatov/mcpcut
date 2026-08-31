@@ -286,7 +286,13 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
     loginPage: createLoginPage(),
     assets: createAssetsHandler(),
     events: createEventsHandler(deps.hub),
-    journalPage: createJournalHandler({ read: journalReadPort(), dir: deps.journalDir }),
+    // The journal's agent dropdown enumerates the registry, not the records:
+    // an agent that has not acted yet is still a valid thing to filter for.
+    journalPage: createJournalHandler({
+      read: journalReadPort(),
+      dir: deps.journalDir,
+      listAgentNames: async () => (await deps.agents.listAgents()).map((agent) => agent.name),
+    }),
     ...approvals,
     ...quarantine,
     ...servers,

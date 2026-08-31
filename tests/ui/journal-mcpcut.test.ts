@@ -18,7 +18,7 @@ describe('journal handler — McpCut front (structure)', () => {
     const handler = createJournalHandler({ read })
 
     const page2 = await bodyOf(await handler(ctx('page=2')))
-    expect(page2).toContain('<h1>Call journal</h1>')
+    expect(page2).toContain('<h1 class="vh">Call journal</h1>')
     expect(page2).toContain(`${total} sessions`)
     expect(page2).toMatch(/<span class="meta num" data-live-text="nav-meta">\d+ sessions<\/span>/)
     expect(page2).toMatch(/<a class="jr-row jr-session[^"]*" href="\/journal\?session=sess-050"/)
@@ -47,11 +47,11 @@ describe('journal handler — McpCut front (structure)', () => {
     expect(session).toContain('<input type="hidden" name="session" value="S1">')
     expect(session).toMatch(/jr-filters[\s\S]*name="q" value="abc"/)
     expect(session).toMatch(/name="tool" value="create_issue"/)
-    expect(session).toContain('<h1>Session S1</h1>')
+    expect(session).toContain('<h1 class="vh">Session S1</h1>')
     expect(session).toMatch(/<span class="meta num" data-live-text="nav-meta">page 1<\/span>/)
   })
 
-  test('a record row is a <details> disclosure with the payload inside; time is HH:MM:SS with the full ts as title', async () => {
+  test('a record row is a <details> disclosure with the payload inside; time is the design\'s short stamp with the full ts as title', async () => {
     const page = emptyPage({
       records: [record({ ts: '2026-08-11T09:08:07.000Z', payload: { a: 1 } })],
     })
@@ -62,10 +62,13 @@ describe('journal handler — McpCut front (structure)', () => {
     expect(body).toMatch(
       /<details class="disclosure jr-rec[^"]*">\s*<summary class="jr-row jr-record">[\s\S]*?<\/summary>[\s\S]*?<pre class="payload">/,
     )
-    expect(body).toMatch(/title="2026-08-11T09:08:07.000Z"[^>]*>09:08:07</)
+    expect(body).toMatch(/title="2026-08-11T09:08:07.000Z"[^>]*>Aug 11 26 09:08:07</)
     expect(body).toContain('client→server')
     expect(body).toContain('tools/call')
-    expect(body).not.toContain('<span>Lat</span>')
+    // The design keeps the Lat column on every record list and writes an em
+    // dash where nothing was measured, so the grid does not reflow per page.
+    expect(body).toContain('<span>Lat</span>')
+    expect(body).toContain('<span class="jr-lat faint">—</span>')
   })
 
   test('a decision row shows the outcome as an alert pill for deny, the rule line and the approval link', async () => {
@@ -97,7 +100,7 @@ describe('journal handler — McpCut front (structure)', () => {
     expect(body).toContain('<a href="/#approval-01APPROVAL02">approval 01APPROVAL02</a>')
   })
 
-  test('latency renders as the Lat column only when a record carries durationMs', async () => {
+  test('latency renders in the Lat column when a record carries durationMs', async () => {
     const read = fakePort({
       searchSession: vi.fn(async () =>
         emptyPage({ records: [record({ kind: 'response', durationMs: 42 })] }),
@@ -107,7 +110,7 @@ describe('journal handler — McpCut front (structure)', () => {
     const body = await bodyOf(await handler(ctx('session=S1')))
     expect(body).toContain('<span>Lat</span>')
     expect(body).toMatch(/<span class="jr-lat num">42 ms<\/span>/)
-    expect(body).toMatch(/<section class="panel jr-panel jr-has-lat"/)
+    expect(body).toMatch(/<section class="panel jr-panel"/)
   })
 
   test('a cross-session hit is a row prefixed by an escaped session link', async () => {

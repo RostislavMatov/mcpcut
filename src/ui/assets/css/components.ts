@@ -75,6 +75,19 @@ export const CSS_COMPONENTS = `
   color: var(--fg-mute);
 }
 .muted { color: var(--fg-mute); }
+/* Visually hidden but read aloud: a heading the design draws as something else
+   (tabs, a meta line) still has to exist for the document outline. */
+.vh {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 .dim { color: var(--fg-dim); }
 .faint { color: var(--fg-faint); }
 .small { font-size: 11px; }
