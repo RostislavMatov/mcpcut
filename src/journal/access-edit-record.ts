@@ -52,6 +52,12 @@ export type AccessEditAction =
   | 'group.join'
   | 'group.leave'
   | 'server.remove'
+  // Personal grants (owner decision T1, 2026-09-01): the same category as
+  // group edits, so the journal answers "who changed this agent's matrix".
+  | 'agent.create'
+  | 'agent.grant'
+  | 'agent.ungrant'
+  | 'agent.revoke'
 
 /**
  * WHO made the change: the authenticated admin, their role at the time, and
