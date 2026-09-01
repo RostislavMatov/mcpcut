@@ -8,7 +8,12 @@ import { HTTP_STATUS_BAD_REQUEST, HTTP_STATUS_NOT_FOUND, HTTP_STATUS_OK } from '
 import { roleSatisfies } from '../authz.js'
 import type { UiHandler, UiRequestContext, UiResult } from '../routes.js'
 import { csrfTokenOf, currentAdminOf, fieldsOf, redirect } from './request-helpers.js'
-import { createServersRemoveHandler, type ServersRemoveDeps } from './servers-remove.js'
+import {
+  agentsGranting,
+  createServersRemoveHandler,
+  groupsGranting,
+  type ServersRemoveDeps,
+} from './servers-remove.js'
 import {
   probeInitiatorOf,
   startProbe,
@@ -22,6 +27,7 @@ import {
   renderVaultPage,
   toServerToolsByName,
   TOOLS_QUERY_PARAM,
+  type AddConfirmView,
   type ServerDrawerState,
   type ServersView,
   type VaultView,
@@ -260,6 +266,7 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
         fields,
         csrfToken: csrfTokenOf(ctx),
         currentAdmin: currentAdminOf(ctx),
+        ...(await grantedToFields(parsed.record.name)),
       })
       return { kind: 'response', status: HTTP_STATUS_OK, body }
     }
@@ -286,6 +293,24 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
    * add flow: editing a stdio command is the same remote-code-execution power
    * as registering one.
    */
+  /**
+   * The `grantedTo` half of the add confirmation (T3): who already grants this
+   * NAME, which the registry knows nothing about. Absent when nothing does, so
+   * the ordinary registration shows the ordinary page. A read failure here
+   * would fail the confirmation, which is the right way round: the operator
+   * must not confirm a registration whose consequences could not be checked.
+   */
+  async function grantedToFields(
+    name: string,
+  ): Promise<Pick<AddConfirmView, 'grantedTo'> | Record<string, never>> {
+    const [agents, groups] = await Promise.all([
+      agentsGranting(deps.agents, name),
+      groupsGranting(deps.groups, name),
+    ])
+    if (agents.length === 0 && groups.length === 0) return {}
+    return { grantedTo: { agents, groups } }
+  }
+
   async function serversEdit(ctx: UiRequestContext): Promise<UiResult> {
     const fields = fieldsOf(ctx)
     const original = fields.original ?? ''

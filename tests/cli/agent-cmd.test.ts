@@ -2,13 +2,17 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { ADMIN_TOKEN_ENV_VAR } from '../../src/admin/constants.js'
+import { createAdminStore } from '../../src/admin/store.js'
 import { runAgentCommand } from '../../src/cli/agent-cmd.js'
 import { createAgentsStore } from '../../src/agents/store.js'
 
 let journalDir: string
+let ownerToken: string
 
 beforeEach(async () => {
   journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-agent-cmd-'))
+  ownerToken = (await createAdminStore({ journalDir }).createAdmin('alice', 'owner')).token
 })
 
 afterEach(async () => {
@@ -32,8 +36,13 @@ function fakeIo(): {
   }
 }
 
+/**
+ * Every mutation runs AS a named owner (owner decision T4, 2026-09-01): the
+ * gate itself is covered by `agent-cmd-token.test.ts`, so the behaviour tests
+ * here carry a valid token and stay about what the command DOES.
+ */
 function run(args: string[], io = fakeIo()): Promise<number> {
-  return runAgentCommand(args, io, { journalDir })
+  return runAgentCommand(args, io, { journalDir, env: { [ADMIN_TOKEN_ENV_VAR]: ownerToken } })
 }
 
 describe('agent create', () => {

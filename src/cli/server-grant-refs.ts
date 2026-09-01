@@ -25,16 +25,23 @@ function storeOptionsOf(opts: ServerCliOptions): { journalDir?: string } {
   return opts.journalDir !== undefined ? { journalDir: opts.journalDir } : {}
 }
 
-/** Counts the agents and groups whose grants name `server`. */
+/**
+ * Counts the agents and groups whose grants name `server`. Revoked agents are
+ * counted by default — their grants dangle and are pruned like any other — but
+ * the registration warning passes `liveOnly`: a revoked agent's token is dead,
+ * so it is not a live grantee of a re-registered name (parity with the UI).
+ */
 export async function countGrantReferences(
   server: string,
   opts: ServerCliOptions,
+  scope: { readonly liveOnly: boolean } = { liveOnly: false },
 ): Promise<GrantReferenceCount> {
   const storeOpts = storeOptionsOf(opts)
   const agents = await createAgentsStore(storeOpts).listAgents()
   const groups = await createGroupsStore(storeOpts).listGroups()
+  const counted = scope.liveOnly ? agents.filter((agent) => agent.revokedAt === undefined) : agents
   return {
-    agents: agents.filter((agent) => Object.hasOwn(agent.grants, server)).length,
+    agents: counted.filter((agent) => Object.hasOwn(agent.grants, server)).length,
     groups: groups.filter((group) => Object.hasOwn(group.grants, server)).length,
   }
 }
@@ -51,7 +58,7 @@ export async function warnAboutExistingGrants(
 ): Promise<void> {
   let counts: GrantReferenceCount
   try {
-    counts = await countGrantReferences(server, opts)
+    counts = await countGrantReferences(server, opts, { liveOnly: true })
   } catch (error: unknown) {
     const reason = error instanceof Error ? error.message : String(error)
     io.stderr.write(`[warn] could not check existing grants for "${formatReadableField(server)}": ${reason}\n`)

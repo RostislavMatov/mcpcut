@@ -11,23 +11,30 @@ import {
   type AgentsStore,
   type AgentsStoreOptions,
 } from '../agents/store.js'
-import type { AgentRecord } from '../agents/schema.js'
-import { effectiveGrantsOf, type GrantSource } from '../agents/effective.js'
-import type { GroupRecord } from '../groups/schema.js'
 import { createGroupsStore } from '../groups/store.js'
 import { formatReadableField } from '../journal/format.js'
+import type { JournalSinkOptions } from '../journal/sink.js'
+import { pairTarget } from './access-cmd-write.js'
+import { formatAgentLine, formatGrantLines, summaryOf } from './agent-cmd-format.js'
+import { recordChange, requireOwner, warnIfGroupsUncovered } from './agent-cmd-write.js'
 import { resolveGrantFlags } from './grant-flags.js'
 import { StoreCorruptError, StoreLockError, StoreWriteRejectedError } from '../policy/store.js'
 
 /**
- * `agent create|list|grant|ungrant|revoke` — operator-facing management of
- * agent identities and the grant matrix. Same shape as the other M2 command
- * modules: exported functions with injectable io/options, dispatched from
- * `src/cli.ts` (wired in Wave 4) and driven directly by tests.
+ * `agent create|list|grant|ungrant|revoke` — management of agent identities
+ * and the personal grant matrix. Same shape as the other M2 command modules:
+ * exported functions with injectable io/options, dispatched from `src/cli.ts`
+ * and driven directly by tests.
+ *
+ * Reading (`agent list`) is free; every MUTATION needs a personal admin token
+ * of role `owner` in `MCP_ADMIN_TOKEN` and is recorded twice — an audit line
+ * on stderr and an `access-edit` journal record (owner decisions T4 and T1,
+ * 2026-09-01; the gate and the record live in `agent-cmd-write.ts`). The token
+ * buys ATTRIBUTION and parity with the UI's role table, not an access barrier.
  *
  * The ONE place a plaintext token ever surfaces is `agent create`'s stdout;
- * every other output path renders hashes-free, `formatReadableField`-sanitized
- * data read back from the store file.
+ * every other output path — the journal record included — renders hash-free,
+ * `formatReadableField`-sanitized data read back from the store.
  */
 
 /** Minimal writable-stream shape these commands need, so tests can inject capture objects. */
@@ -40,8 +47,17 @@ export interface AgentCliIo {
   readonly stderr: AgentCliWritable
 }
 
-/** Test seams: journal dir + clock, threaded into `createAgentsStore`. */
-export type AgentCliOptions = AgentsStoreOptions
+/** @internal test-only seams for the journal sink (retry delay, fault-injected commit). */
+export interface AgentCliDeps {
+  readonly sink?: Pick<JournalSinkOptions, 'retryDelayMs' | 'commitBatchImpl'>
+}
+
+/** Test seams: journal dir + clock (threaded into `createAgentsStore`), token env, sink. */
+export interface AgentCliOptions extends AgentsStoreOptions {
+  /** Environment holding `MCP_ADMIN_TOKEN`. Defaults to `process.env`. */
+  readonly env?: NodeJS.ProcessEnv
+  readonly deps?: AgentCliDeps
+}
 
 const DEFAULT_IO: AgentCliIo = { stdout: process.stdout, stderr: process.stderr }
 
@@ -56,6 +72,7 @@ const USAGE = `Usage:
                                                (opening a method surface is always an explicit act)
   agent ungrant <agent> <server>               Remove the grant for a server
   agent revoke <name>                          Revoke the agent (its token stops working)
+Every change needs a personal admin token in MCP_ADMIN_TOKEN (role owner); list does not.
 `
 
 /** Errors these commands convert into an exit-1 message instead of a crash. */
@@ -86,20 +103,20 @@ export async function runAgentCommand(
   opts: AgentCliOptions = {},
 ): Promise<number> {
   const [subcommand, ...rest] = args
-  const store = createAgentsStore(opts)
+  const store = createAgentsStore(storeOptionsOf(opts))
 
   try {
     switch (subcommand) {
       case 'create':
-        return await runCreate(rest, io, store)
+        return await runCreate(rest, io, opts, store)
       case 'list':
         return await runList(io, store, opts)
       case 'grant':
-        return await runGrant(rest, io, store)
+        return await runGrant(rest, io, opts, store)
       case 'ungrant':
-        return await runUngrant(rest, io, store, opts)
+        return await runUngrant(rest, io, opts, store)
       case 'revoke':
-        return await runRevoke(rest, io, store)
+        return await runRevoke(rest, io, opts, store)
       default:
         io.stderr.write(USAGE)
         return 1
@@ -115,19 +132,41 @@ export async function runAgentCommand(
   }
 }
 
-async function runCreate(args: string[], io: AgentCliIo, store: AgentsStore): Promise<number> {
+/** The subset of the options the agents/groups stores take. */
+function storeOptionsOf(opts: AgentCliOptions): AgentsStoreOptions {
+  return {
+    ...(opts.journalDir !== undefined ? { journalDir: opts.journalDir } : {}),
+    ...(opts.clock !== undefined ? { clock: opts.clock } : {}),
+  }
+}
+
+async function runCreate(
+  args: string[],
+  io: AgentCliIo,
+  opts: AgentCliOptions,
+  store: AgentsStore,
+): Promise<number> {
   const name = args[0]
   if (name === undefined || args.length !== 1) {
     io.stderr.write(USAGE)
     return 1
   }
+  // Refused BEFORE the write: an identity created by nobody is exactly what
+  // T4 exists to prevent.
+  const actor = await requireOwner(io, opts)
+  if (actor === undefined) return 1
 
   const { agent, token } = await store.createAgent(name)
 
   io.stdout.write(`agent: ${formatReadableField(agent.name)}\n`)
   io.stdout.write(`token: ${token}\n`)
   io.stdout.write('Save this token now: it cannot be recovered or shown again.\n')
-  return 0
+  // The record names the agent and nothing else — the token stays in the one
+  // place it was printed.
+  return recordChange(io, opts, actor, 'create', formatReadableField(name), {
+    action: 'agent.create',
+    agent: name,
+  })
 }
 
 async function runList(
@@ -146,7 +185,7 @@ async function runList(
   // document that cannot be read is NOT swallowed: rendering the personal
   // half alone would understate every member agent's access, which is the
   // one direction this listing must never be wrong in.
-  const groups = await createGroupsStore(options).listGroups()
+  const groups = await createGroupsStore(storeOptionsOf(options)).listGroups()
 
   for (const agent of agents) {
     io.stdout.write(`${formatAgentLine(agent)}\n`)
@@ -157,71 +196,15 @@ async function runList(
   return 0
 }
 
-/** Header line: name, creation date, revocation marker. Never the token hash. */
-function formatAgentLine(agent: AgentRecord): string {
-  const name = formatReadableField(agent.name)
-  const created = `created ${formatReadableField(agent.createdAt)}`
-  const revoked =
-    agent.revokedAt === undefined ? '' : `  REVOKED ${formatReadableField(agent.revokedAt)}`
-  return `${name}  ${created}${revoked}`
+/** The two positionals and three flags of `agent grant`, or `undefined` with usage printed. */
+interface GrantArgs {
+  readonly agentName: string
+  readonly serverName: string
+  readonly tools: readonly string[] | '*'
+  readonly methods: { readonly resources?: '*' | readonly string[]; readonly prompts?: '*' | readonly string[] }
 }
 
-/**
- * Indented lines per EFFECTIVE granted server: `<server>: tool, tool` (or
- * `* (all tools)`), plus one extra line each for the resources/prompts
- * dimensions when present (M4 Task 6) — absent fields print nothing, so
- * pre-M4 grants render exactly as before.
- *
- * Rows carry their provenance when a group is involved: ` (via group:…)` for
- * a server the agent only reaches through its groups, ` (overrides group:…)`
- * for a personal grant that takes a server the groups also grant (G2 — the
- * personal grant wins WHOLESALE, so the tools shown are the personal ones).
- * An agent in no group has neither suffix and renders byte-identically to
- * before groups existed.
- */
-function formatGrantLines(agent: AgentRecord, groups: readonly GroupRecord[]): string[] {
-  const effective = effectiveGrantsOf(agent, groups)
-  const entries = Object.entries(effective.grants)
-  if (entries.length === 0) {
-    return ['  (no grants)']
-  }
-  return entries.flatMap(([server, grant]) => {
-    const origin = formatOrigin(effective.sources, server)
-    const lines = [
-      `  ${formatReadableField(server)}: ${formatPatterns(grant.tools, 'all tools')}${origin}`,
-    ]
-    if (grant.resources !== undefined) {
-      lines.push(`    resources: ${formatPatterns(grant.resources, 'all resources')}`)
-    }
-    if (grant.prompts !== undefined) {
-      lines.push(`    prompts: ${formatPatterns(grant.prompts, 'all prompts')}`)
-    }
-    return lines
-  })
-}
-
-/**
- * The provenance suffix of one row, or `''` when no group is involved.
- * `Object.hasOwn` because the key is a server name read off a document.
- */
-function formatOrigin(sources: Readonly<Record<string, GrantSource>>, server: string): string {
-  const source = Object.hasOwn(sources, server) ? sources[server] : undefined
-  if (source === undefined) return ''
-  const names = source.kind === 'group' ? source.groups : source.shadowedGroups
-  if (names.length === 0) return ''
-  const label = source.kind === 'group' ? 'via' : 'overrides'
-  const list = names.map((name) => `group:${formatReadableField(name)}`).join(', ')
-  return ` (${label} ${list})`
-}
-
-/** `'*'` → `* (all …)`; array → sanitized, comma-joined patterns. */
-function formatPatterns(patterns: '*' | readonly string[], everything: string): string {
-  return patterns === '*'
-    ? `* (${everything})`
-    : patterns.map(formatReadableField).join(', ')
-}
-
-async function runGrant(args: string[], io: AgentCliIo, store: AgentsStore): Promise<number> {
+function parseGrantArgs(args: string[], io: AgentCliIo): GrantArgs | undefined {
   let positionals: string[]
   let toolsValue: string | undefined
   let resourcesValue: string | undefined
@@ -243,115 +226,105 @@ async function runGrant(args: string[], io: AgentCliIo, store: AgentsStore): Pro
     promptsValue = parsed.values.prompts
   } catch {
     io.stderr.write(USAGE)
-    return 1
+    return undefined
   }
 
   const [agentName, serverName] = positionals
   if (agentName === undefined || serverName === undefined || positionals.length !== 2) {
     io.stderr.write(USAGE)
-    return 1
+    return undefined
   }
 
-  // The flags (and their asymmetric defaults) are parsed by the module
-  // `group grant` shares, so one grant shape keeps one reading.
+  // The flags (and the asymmetric defaults `group grant` no longer shares —
+  // owner decision T2) are parsed by the module both commands use, so one
+  // grant shape keeps one reading.
   const flags = resolveGrantFlags({ tools: toolsValue, resources: resourcesValue, prompts: promptsValue })
   if (!flags.ok) {
     io.stderr.write(flags.message)
-    return 1
+    return undefined
   }
-
-  const agent = await store.grantServer(agentName, serverName, flags.tools, flags.methods)
-  const grant = agent.grants[serverName]
-  const summary = grant?.tools === '*' ? '* (all tools)' : (grant?.tools ?? []).join(', ')
-  io.stdout.write(
-    `granted ${formatReadableField(serverName)} to ${formatReadableField(agentName)}: ${formatReadableField(summary)}\n`,
-  )
-  if (grant?.resources !== undefined) {
-    io.stdout.write(`  resources: ${formatReadableField(summaryOf(grant.resources, 'all resources'))}\n`)
-  }
-  if (grant?.prompts !== undefined) {
-    io.stdout.write(`  prompts: ${formatReadableField(summaryOf(grant.prompts, 'all prompts'))}\n`)
-  }
-  return 0
+  return { agentName, serverName, tools: flags.tools, methods: flags.methods }
 }
 
-/** `'*'` → `* (all …)`; array → raw comma-joined patterns (sanitized by the caller). */
-function summaryOf(patterns: '*' | readonly string[], everything: string): string {
-  return patterns === '*' ? `* (${everything})` : patterns.join(', ')
+async function runGrant(
+  args: string[],
+  io: AgentCliIo,
+  opts: AgentCliOptions,
+  store: AgentsStore,
+): Promise<number> {
+  const parsed = parseGrantArgs(args, io)
+  if (parsed === undefined) return 1
+  const actor = await requireOwner(io, opts)
+  if (actor === undefined) return 1
+
+  const { agentName, serverName } = parsed
+  const agent = await store.grantServer(agentName, serverName, parsed.tools, parsed.methods)
+  const grant = agent.grants[serverName]
+  if (grant === undefined) throw new Error('grant vanished right after it was written')
+  io.stdout.write(
+    `granted ${formatReadableField(serverName)} to ${formatReadableField(agentName)}: ` +
+      `${formatReadableField(summaryOf(grant.tools, 'all tools'))}\n`,
+  )
+  if (grant.resources !== undefined) {
+    io.stdout.write(`  resources: ${formatReadableField(summaryOf(grant.resources, 'all resources'))}\n`)
+  }
+  if (grant.prompts !== undefined) {
+    io.stdout.write(`  prompts: ${formatReadableField(summaryOf(grant.prompts, 'all prompts'))}\n`)
+  }
+  return recordChange(io, opts, actor, 'grant', pairTarget(agentName, serverName), {
+    action: 'agent.grant',
+    agent: agentName,
+    server: serverName,
+    grant,
+  })
 }
 
 async function runUngrant(
   args: string[],
   io: AgentCliIo,
+  opts: AgentCliOptions,
   store: AgentsStore,
-  options: AgentCliOptions,
 ): Promise<number> {
   const [agentName, serverName] = args
   if (agentName === undefined || serverName === undefined || args.length !== 2) {
     io.stderr.write(USAGE)
     return 1
   }
+  const actor = await requireOwner(io, opts)
+  if (actor === undefined) return 1
 
   await store.ungrantServer(agentName, serverName)
   io.stdout.write(
     `removed grant ${formatReadableField(serverName)} from ${formatReadableField(agentName)}\n`,
   )
-  await warnIfGroupsUncovered(agentName, serverName, io, options)
-  return 0
+  await warnIfGroupsUncovered(agentName, serverName, io, opts)
+  return recordChange(io, opts, actor, 'ungrant', pairTarget(agentName, serverName), {
+    action: 'agent.ungrant',
+    agent: agentName,
+    server: serverName,
+  })
 }
 
-/**
- * A personal grant takes its server WHOLE, shadowing whatever the agent's
- * groups grant for it (ADR-0010 §2). Removing it therefore does not deny the
- * server — it hands the agent the groups' (unioned, usually wider) grant. The
- * shell is told so, because "removed grant" alone reads as de-escalation.
- *
- * Read AFTER the write, so the groups named are the ones the agent actually
- * falls back to now. A groups document that cannot be read must not turn a
- * completed ungrant into a failure: the removal happened either way, and the
- * warning is advisory.
- */
-async function warnIfGroupsUncovered(
-  agentName: string,
-  serverName: string,
+async function runRevoke(
+  args: string[],
   io: AgentCliIo,
-  options: AgentCliOptions,
-): Promise<void> {
-  let inheritedFrom: readonly string[]
-  try {
-    const memberships = await createGroupsStore(options).groupsOf(agentName)
-    inheritedFrom = memberships
-      .filter((group) => Object.hasOwn(group.grants, serverName))
-      .map((group) => group.name)
-  } catch (error: unknown) {
-    // Advisory, but never silent: "I could not look" must be distinguishable
-    // from "there is nothing to warn about" — same shape as
-    // `server-grant-refs.ts`'s failed lookup. The ungrant itself already
-    // landed, so the exit code stays 0.
-    const reason = error instanceof Error ? error.message : String(error)
-    io.stderr.write(
-      `[warn] could not check group grants for ${formatReadableField(agentName)}: ${reason}\n`,
-    )
-    return
-  }
-  if (inheritedFrom.length === 0) return
-  const from = inheritedFrom.map((name) => `group:${formatReadableField(name)}`).join(', ')
-  io.stderr.write(
-    `[warn] ${formatReadableField(agentName)} now inherits ${formatReadableField(serverName)}` +
-      ` from ${from} — effective access WIDENED\n`,
-  )
-}
-
-async function runRevoke(args: string[], io: AgentCliIo, store: AgentsStore): Promise<number> {
+  opts: AgentCliOptions,
+  store: AgentsStore,
+): Promise<number> {
   const name = args[0]
   if (name === undefined || args.length !== 1) {
     io.stderr.write(USAGE)
     return 1
   }
+  const actor = await requireOwner(io, opts)
+  if (actor === undefined) return 1
 
   const agent = await store.revokeAgent(name)
   io.stdout.write(
     `revoked ${formatReadableField(agent.name)} at ${formatReadableField(agent.revokedAt ?? '')}\n`,
   )
-  return 0
+  return recordChange(io, opts, actor, 'revoke', formatReadableField(name), {
+    action: 'agent.revoke',
+    agent: name,
+  })
 }

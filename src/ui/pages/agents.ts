@@ -45,16 +45,22 @@ function ownerAdminsLink(session: UiSession): Html {
 }
 
 /**
- * Membership is an owner-only edit (G4), so `operator`/`viewer` are not shown
- * a form the route would refuse anyway.
+ * Editing the matrix — creating an agent, granting a server, adding an agent
+ * to a group — is an owner-only action (G4 for membership, decision T4 for
+ * personal grants). Below `owner` the drawers are not rendered at all: a form
+ * the route would refuse with a 403 is worse than no form.
  */
-function byGroupDrawer(
+function editDrawers(
   groups: readonly GroupRecord[],
   agents: readonly AgentRecord[],
   session: UiSession,
 ): Html {
-  const canManageGroups = roleSatisfies(session.role, 'owner')
-  return canManageGroups ? renderGroupGrantDrawer(GROUP_DRAWER_ID, { groups, agents, session }) : html``
+  if (!roleSatisfies(session.role, 'owner')) return html``
+  return html`<div class="grid-2 ag-drawers">
+    ${renderCreateDrawer(CREATE_DRAWER_ID, session)}
+    ${renderGrantDrawer('grant-server', session)}
+    ${renderGroupGrantDrawer(GROUP_DRAWER_ID, { groups, agents, session })}
+  </div>`
 }
 
 /** "N agents · M active" — the tab-bar meta. */
@@ -76,21 +82,19 @@ export function renderAgentsPage(view: {
 }): string {
   const { agents, session } = view
   const groups = view.groups ?? []
+  const canManage = roleSatisfies(session.role, 'owner')
+  const cards = agents.map((agent) => renderAgentCard({ agent, groups, canManage, session }))
   const list =
     agents.length === 0
       ? html`<p class="empty">no agents yet</p>`
-      : html`<div class="stack ag-list">${join(agents.map((agent) => renderAgentCard(agent, groups, session)))}</div>`
+      : html`<div class="stack ag-list">${join(cards)}</div>`
   const content = html`<section class="panel ag-panel" aria-label="Agent permissions">
     <div class="panel-hd">
       <h1>Agent permissions</h1>
       <span class="row">${ownerAdminsLink(session)}<span class="small dim num">${agentsMeta(agents)}</span></span>
     </div>
     <div class="panel-bd">
-      <div class="grid-2 ag-drawers">
-        ${renderCreateDrawer(CREATE_DRAWER_ID, session)}
-        ${renderGrantDrawer('grant-server', session)}
-        ${byGroupDrawer(groups, agents, session)}
-      </div>
+      ${editDrawers(groups, agents, session)}
       ${list}
     </div>
   </section>`
@@ -100,7 +104,7 @@ export function renderAgentsPage(view: {
     csrfToken: session.csrfToken,
     currentAdmin: currentAdmin(session),
     activeNav: 'agents',
-    navAction: { title: 'Create an agent', targetId: CREATE_DRAWER_ID },
+    ...(canManage ? { navAction: { title: 'Create an agent', targetId: CREATE_DRAWER_ID } } : {}),
     navMeta: agentsMeta(agents),
   })
 }

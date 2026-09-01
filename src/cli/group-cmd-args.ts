@@ -1,6 +1,7 @@
 import { parseArgs } from 'node:util'
 import { ADMIN_TOKEN_ENV_VAR } from '../admin/constants.js'
 import type { Role } from '../admin/authz.js'
+import { ACCESS_MIN_ROLE } from './access-cmd-write.js'
 import type { GroupCliIo } from './group-cmd.js'
 import { resolveGrantFlags } from './grant-flags.js'
 
@@ -20,16 +21,17 @@ import { resolveGrantFlags } from './grant-flags.js'
  * usage text that imported it back from the command module would make the two
  * files a runtime cycle.
  */
-export const GROUP_MIN_ROLE: Role = 'owner'
+export const GROUP_MIN_ROLE: Role = ACCESS_MIN_ROLE
 
 export const USAGE = `Usage:
   group create <name>                          Create an empty group
   group remove <name>                          Remove a group (refused while it still has members)
   group list                                   List groups with their server and member counts
   group show <name>                            Print one group's grants and members
-  group grant <group> <server> [--tools a,b,prefix*] [--resources uri,uriprefix*|*] [--prompts name,prefix*|*]
-                                               Grant server access to the group. NOTE the asymmetric defaults:
-                                                 omitting --tools grants ALL tools ('*'),
+  group grant <group> <server> --tools a,b,prefix*|* [--resources uri,uriprefix*|*] [--prompts name,prefix*|*]
+                                               Grant server access to the group. --tools is REQUIRED here
+                                               (unlike agent grant): the grant lands on every member at once,
+                                               so "all tools" must be typed as --tools '*'.
                                                  omitting --resources keeps resources/* DENIED,
                                                  omitting --prompts keeps prompts/* DENIED
                                                (opening a method surface is always an explicit act)
@@ -73,6 +75,11 @@ export interface GrantArgs {
   readonly methods: { readonly resources?: '*' | readonly string[]; readonly prompts?: '*' | readonly string[] }
 }
 
+/** The T2 refusal: names the flag and the explicit way to grant everything. */
+const MISSING_TOOLS_MESSAGE =
+  '--tools is required for a group grant: the grant applies to every member at once.\n' +
+  "Type the surface out (--tools read_file,list_*) or grant everything explicitly: --tools '*'\n"
+
 export function parseGrantArgs(args: string[], io: GroupCliIo): GrantArgs | undefined {
   let names: string[]
   let toolsValue: string | undefined
@@ -101,6 +108,15 @@ export function parseGrantArgs(args: string[], io: GroupCliIo): GrantArgs | unde
   const [group, server] = names
   if (group === undefined || server === undefined || names.length !== 2) {
     io.stderr.write(USAGE)
+    return undefined
+  }
+
+  // Owner decision T2 (2026-09-01): unlike `agent grant`, a group grant has no
+  // default tools. `agent grant` may keep its asymmetric default — one agent,
+  // one operator, one decision — but here the cost of a mistaken `'*'` is
+  // multiplied by the member count, so "all tools" must be typed out.
+  if (toolsValue === undefined) {
+    io.stderr.write(MISSING_TOOLS_MESSAGE)
     return undefined
   }
 

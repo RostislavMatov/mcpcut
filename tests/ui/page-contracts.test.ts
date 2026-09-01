@@ -12,12 +12,12 @@ import { renderApprovalsPage, type ApprovalCardView } from '../../src/ui/pages/a
 import { renderLoginPage } from '../../src/ui/pages/login.js'
 import { renderQuarantinePage, type QuarantineCardView } from '../../src/ui/pages/quarantine.js'
 import {
-  renderRemoveWarning,
   renderServersPage,
   renderVaultPage,
   toServerToolsByName,
   type ServersView,
 } from '../../src/ui/pages/servers.js'
+import { renderPruneDangling, renderRemoveWarning } from '../../src/ui/pages/servers-holders.js'
 import { serverToolsRegionKey } from '../../src/ui/pages/servers-tool-rule.js'
 import type { AgentRecord } from '../../src/agents/schema.js'
 import type { GroupRecord } from '../../src/groups/schema.js'
@@ -160,6 +160,16 @@ function allPages(): ReadonlyArray<{ readonly name: string; readonly html: strin
       html: renderRemoveWarning({
         serverName: 'github',
         agents: ['research-bot'],
+        csrfToken: SESSION.csrfToken,
+        currentAdmin: { name: SESSION.adminName, role: SESSION.role },
+      }),
+    },
+    {
+      name: 'servers-prune-dangling',
+      html: renderPruneDangling({
+        serverName: 'github',
+        agents: ['research-bot'],
+        groups: ['analytics'],
         csrfToken: SESSION.csrfToken,
         currentAdmin: { name: SESSION.adminName, role: SESSION.role },
       }),

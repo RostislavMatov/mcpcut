@@ -5,6 +5,7 @@ import type { PolicyView } from '../../policy/edit/policy-view.js'
 import { html, join, safeUrl, type Html } from '../html.js'
 import { EMPTY_SERVER_FORM, type ServerFormValues } from '../server-form.js'
 import { csrfField } from './csrf-field.js'
+import { renderGrantedElsewhereCallout } from './servers-holders.js'
 import { renderInterstitial } from './interstitial.js'
 import { renderLayout, type CurrentAdmin } from './layout.js'
 import { renderServerDrawer, type ServerDrawerOptions } from './servers-form.js'
@@ -237,6 +238,13 @@ export interface AddConfirmView {
   readonly currentAdmin: CurrentAdmin
   /** `edit` posts the confirmation to `/servers/edit` and words it as a save. */
   readonly mode?: 'add' | 'edit'
+  /**
+   * Who ALREADY grants this name (owner decision T3). Present only when
+   * something does, and only on the add path: re-registering a name that
+   * outlived its registration hands its old grantees whatever the name now
+   * points at, and the confirmation step is where that has to be said.
+   */
+  readonly grantedTo?: { readonly agents: readonly string[]; readonly groups: readonly string[] }
 }
 
 /**
@@ -269,7 +277,7 @@ export function renderAddConfirm(view: AddConfirmView): string {
         <code>stdio</code> server means the plane spawns this exact command on this host.
         Confirm that it is what you intend to run.
       </p>`,
-    details: html`<div class="srv-bd srv-confirm-details">${renderServerDetails(view.record)}</div>`,
+    details: html`${grantedElsewhere(view)}<div class="srv-bd srv-confirm-details">${renderServerDetails(view.record)}</div>`,
     form: html`<form method="post" action="${safeUrl(isEdit ? '/servers/edit' : '/servers/add')}">
         ${csrfField(view.csrfToken)}
         ${replay}
@@ -286,63 +294,13 @@ export function renderAddConfirm(view: AddConfirmView): string {
   })
 }
 
-/** View model for the remove-with-grants confirmation interstitial. */
-export interface RemoveWarningView {
-  readonly serverName: string
-  readonly agents: readonly string[]
-  /**
-   * Groups holding a grant for the server (G6). Optional so a caller that
-   * predates groups still renders the agent half unchanged; the handler
-   * always passes it.
-   */
-  readonly groups?: readonly string[]
-  readonly csrfToken: string
-  readonly currentAdmin: CurrentAdmin
-}
-
-/** One labelled list of holders, or nothing when that half is empty. */
-function holderList(label: string, names: readonly string[]): Html {
-  if (names.length === 0) return html``
-  const items = join(names.map((name) => html`<li><code>${name}</code></li>`))
-  return html`<p class="small muted">${label}</p>
-    <ul class="rows srv-holders">${items}</ul>`
-}
-
-/**
- * The confirmation page shown when a server is still granted to agents or
- * groups: it names every affected holder and requires an explicit confirm,
- * because confirming CASCADES (G6) — the grants are dropped with the server,
- * not left pointing at something that no longer exists.
- */
-export function renderRemoveWarning(view: RemoveWarningView): string {
-  const groups = view.groups ?? []
-  const content = renderInterstitial({
-    panelClass: 'srv-confirm',
-    cancelHref: '/servers',
-    heading: html`Remove server “${view.serverName}”?`,
-    // The count and the listed set are the SAME set — active agents — because
-    // that is what the panel below names. The cascade is wider: it also drops
-    // the dangling grants of revoked agents, which nothing here can list
-    // meaningfully, so the sentence says so instead of quietly under-counting.
-    warning: html`<p role="alert">
-        Removing this server also removes it from
-        ${plural(view.agents.length, 'active agent grant')}
-        (revoked agents’ dangling grants are dropped too) and ${plural(groups.length, 'group')}:
-      </p>`,
-    details: html`${holderList('Agents', view.agents)}${holderList('Groups', groups)}`,
-    form: html`<form method="post" action="/servers/remove">
-        ${csrfField(view.csrfToken)}
-        <input type="hidden" name="name" value="${view.serverName}" />
-        <input type="hidden" name="confirm" value="true" />
-        <div class="actions"><button type="submit" class="danger">Remove anyway</button></div>
-      </form>`,
-  })
-  return renderLayout({
-    title: 'Remove server',
-    content,
-    csrfToken: view.csrfToken,
-    currentAdmin: view.currentAdmin,
-    activeNav: 'servers',
+/** The "already granted" callout (T3), or nothing when the name is free. */
+function grantedElsewhere(view: AddConfirmView): Html {
+  if (view.grantedTo === undefined) return html``
+  return renderGrantedElsewhereCallout({
+    serverName: view.record.name,
+    agents: view.grantedTo.agents,
+    groups: view.grantedTo.groups,
   })
 }
 

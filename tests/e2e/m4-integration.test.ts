@@ -6,6 +6,7 @@ import { collectPersistedBytes } from '../support/persisted-bytes.js'
 import { readJournalRecords, requestLine, waitUntil, waitUntilAsync } from '../proxy/harness.js'
 import { startUiHarness, type UiTestHarness } from '../ui/harness.js'
 import {
+  asOwner,
   decisionsOf,
   postMcp,
   rpcBody,
@@ -311,10 +312,12 @@ describe('e2e: scenario 6 — `revoke` in the UI ends the agent session', () => 
     const token = await onboard()
     await writePolicyFile(plane, ALLOW_ALL_POLICY)
     const harness = await startUi()
-    const operator = await harness.login(OPERATOR)
+    // Personal-matrix routes are owner-only since T4 (2026-09-01); the
+    // approvals scenarios keep proving that an operator can act and is named.
+    const owner = await harness.login(OWNER)
     const live = await openSession(token, 'm4-revoke')
 
-    const revoked = await operator.post('/agents/revoke', { agent: AGENT })
+    const revoked = await owner.post('/agents/revoke', { agent: AGENT })
     expect(revoked.status).toBe(200)
 
     // Nobody closed the client's pipe: the session ends because the plane
@@ -355,7 +358,7 @@ describe('e2e: scenario 7 — a changed inputSchema quarantines the tool and sho
     expect((await addServer(SERVER, 'v2')).code).toBe(0)
     // `server remove` cascades (M5.5 p.2, G6): the agent's grant for the server
     // went with it, so the re-registered server must be granted again.
-    expect((await plane.run(['agent', 'grant', AGENT, SERVER])).code).toBe(0)
+    expect((await plane.run(['agent', 'grant', AGENT, SERVER], await asOwner(plane))).code).toBe(0)
 
     const secondRun = await openSession(token, 'm4-quarantine-2')
     // The catalog is observed asynchronously behind the response, so wait for
@@ -391,12 +394,14 @@ describe('e2e: scenario 8 — granting `resources` in the UI opens the method', 
     const token = await onboard()
     await writePolicyFile(plane, ALLOW_ALL_POLICY)
     const harness = await startUi()
-    const operator = await harness.login(OPERATOR)
+    // The grant matrix is an owner edit (T4); the resource dimension itself is
+    // what this scenario is about.
+    const owner = await harness.login(OWNER)
 
     const readNoGrant = await runResourceRead(token, 'm4-res-closed')
     expect(readNoGrant).toHaveProperty('error')
 
-    const granted = await operator.post('/agents/grant', {
+    const granted = await owner.post('/agents/grant', {
       agent: AGENT,
       server: SERVER,
       tools: '*',
@@ -410,7 +415,7 @@ describe('e2e: scenario 8 — granting `resources` in the UI opens the method', 
     expect(outOfScope).toHaveProperty('error')
 
     // Re-granting without the dimension closes it again (M3 fail-closed shape).
-    const closed = await operator.post('/agents/grant', { agent: AGENT, server: SERVER, tools: '*' })
+    const closed = await owner.post('/agents/grant', { agent: AGENT, server: SERVER, tools: '*' })
     expect(closed.status).toBe(200)
     expect(await runResourceRead(token, 'm4-res-reclosed')).toHaveProperty('error')
 

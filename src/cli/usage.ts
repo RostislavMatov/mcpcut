@@ -15,26 +15,32 @@ export const USAGE = `Usage:
   mcp-journal server add <name> --transport stdio|http ...
                                          Register an MCP server (see server add --help);
                                          probes it once right after registration
-  mcp-journal server list|show <name>|remove <name>
+  mcp-journal server list|show <name>|remove <name> [--prune-grants]
                                          Inspect or edit the server registry; list and show
-                                         print liveness + latency, probing stale servers
+                                         print liveness + latency, probing stale servers.
+                                         remove of an UNKNOWN name is refused; --prune-grants
+                                         prunes grants left dangling behind such a name
   mcp-journal server refresh <name>     Force a probe of one server, re-shooting tools/list
                                          (personal admin token via MCP_ADMIN_TOKEN, role
                                          operator or owner; exit 0 alive / 1 otherwise)
   mcp-journal vault init|set <name>|list|remove <name>|rekey
                                          Manage the encrypted secrets vault (set reads stdin)
-  mcp-journal agent create <name>       Create an agent identity (prints its token once)
+  mcp-journal agent create <name>       Create an agent identity (prints its token once;
+                                         owner token via MCP_ADMIN_TOKEN, like every agent change)
   mcp-journal agent grant <agent> <server> [--tools a,b,prefix*]
                                          Grant a server (optionally specific tools) to an agent
   mcp-journal agent ungrant <agent> <server> | revoke <name> | list
-                                         Edit or inspect agent identities and grants
+                                         Edit or inspect agent identities and grants (create,
+                                         grant, ungrant and revoke need an owner token in
+                                         MCP_ADMIN_TOKEN; list needs none)
   mcp-journal group create <name>|remove <name>|list|show <name>
                                          Manage server groups: a group carries per-server grants
                                          and the agents that inherit them (owner token via
                                          MCP_ADMIN_TOKEN; list and show need none)
-  mcp-journal group grant <group> <server> [--tools a,b,prefix*] [--resources ...|*] [--prompts ...|*]
-                                         Grant a server to a group (same asymmetric defaults as
-                                         agent grant); ungrant <group> <server> removes it
+  mcp-journal group grant <group> <server> --tools a,b,prefix*|* [--resources ...|*] [--prompts ...|*]
+                                         Grant a server to a group; --tools is REQUIRED here
+                                         (it lands on every member at once), resources/prompts
+                                         stay denied unless named; ungrant removes it
   mcp-journal group join <group> <agent> | leave <group> <agent>
                                          Add or remove a member; a personal grant for the same
                                          server overrides the group's

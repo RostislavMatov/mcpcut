@@ -14,6 +14,7 @@ import {
 } from '../proxy/harness.js'
 import {
   createCliApprover,
+  asOwner,
   createGrantedAgent,
   createPlane,
   decisionsOf,
@@ -252,7 +253,8 @@ describe('e2e: gate metric — revoking an agent is a single command', () => {
     live.stdio.clientOutbox.write(requestLine(1, 'tools/call', { name: 'echo', arguments: {} }))
     await waitUntil(() => live.stdio.lineCount() >= 1)
 
-    const revoke = await plane.run(['agent', 'revoke', AGENT])
+    // Owner decision T4 (2026-09-01): the revocation is a named owner's act.
+    const revoke = await plane.run(['agent', 'revoke', AGENT], await asOwner(plane))
     expect(revoke.code).toBe(0)
 
     // Nobody closed the client's pipe: the session ends because the plane

@@ -7,6 +7,7 @@ import { RESERVED_OBJECT_KEYS } from '../policy/constants.js'
 import type { CascadeHalfStatus, CascadeVerdict } from '../journal/access-edit-record.js'
 import type { AccessEditActor } from '../journal/record.js'
 import { adminFromEnv } from './admin-token.js'
+import { countGrantReferences, type GrantReferenceCount } from './server-grant-refs.js'
 import type { ServerCliIo, ServerCliOptions } from './server-cmd.js'
 
 /**
@@ -39,11 +40,6 @@ const DROPPED_RECORD_MESSAGE =
 /** `N agent grants, M groups` — the same phrasing on stderr and stdout. */
 export function cascadeSummary(cascade: CascadeResult): string {
   return `${cascade.affectedAgents.length} agent grants, ${cascade.affectedGroups.length} groups`
-}
-
-/** True when either half actually pruned something. */
-export function cascadeTouchedAnything(cascade: CascadeResult): boolean {
-  return cascade.affectedAgents.length > 0 || cascade.affectedGroups.length > 0
 }
 
 function describeError(error: unknown): string {
@@ -191,4 +187,38 @@ export async function cascadeServerRemoval(
   const cascade = await cascadeGrants(name, io, opts)
   await reportCascade(name, cascade, io, opts)
   return cascade
+}
+
+/**
+ * The `not-found` branch of `server remove` WITHOUT `--prune-grants` (owner
+ * decision T5, 2026-09-01): a name the registry does not hold is a plain
+ * refusal that writes NOTHING. Until T5 this branch silently ran both cascade
+ * halves, so "remove" and "repair" were the same word; now the dangling grants
+ * are only COUNTED (read-only) and named in a hint, and pruning them is a
+ * second, deliberate command.
+ *
+ * A failed count is reported and does not change the outcome: the refusal
+ * stands either way, and "I could not look" must not read as "nothing dangles".
+ */
+export async function refuseUnknownServer(
+  name: string,
+  io: ServerCliIo,
+  opts: ServerCliOptions,
+): Promise<number> {
+  io.stderr.write(`unknown server "${formatReadableField(name)}"\n`)
+  let counts: GrantReferenceCount
+  try {
+    counts = await countGrantReferences(name, opts)
+  } catch (error: unknown) {
+    io.stderr.write(
+      `[warn] could not check dangling grants for "${formatReadableField(name)}": ${describeError(error)}\n`,
+    )
+    return 1
+  }
+  if (counts.agents === 0 && counts.groups === 0) return 1
+  io.stderr.write(
+    `dangling grants: ${counts.agents} agent grants, ${counts.groups} groups — ` +
+      `prune with: server remove --prune-grants ${formatReadableField(name)}\n`,
+  )
+  return 1
 }
