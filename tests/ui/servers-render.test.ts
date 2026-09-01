@@ -4,6 +4,7 @@ import { CSS_BASE } from '../../src/ui/assets/css/base.js'
 import { CSS_COMPONENTS } from '../../src/ui/assets/css/components.js'
 import type { ServerRecord } from '../../src/registry/schema.js'
 import {
+  renderAddConfirm,
   renderServersPage,
   type ServersView,
   type ServerStatusView,
@@ -504,5 +505,57 @@ describe('server-status-changed handler in APP_JS', () => {
 
     expect(dot.className.split(/\s+/)).toContain('dot')
     expect(dot.title).toContain('alive')
+  })
+})
+
+/**
+ * T3 — the "already granted" callout on the add confirmation. Holder names
+ * come from `agents.json` / `groups.json` and are untrusted for render: a
+ * hand-edited document can carry anything the store would have refused.
+ */
+describe('the add confirmation callout for a name that is already granted (T3)', () => {
+  const RECORD: ServerRecord = { name: 'github', transport: 'stdio', command: 'gh-mcp' }
+  const BASE = {
+    record: RECORD,
+    fields: { name: 'github', transport: 'stdio', command: 'gh-mcp' },
+    csrfToken: 'csrf-token-value',
+    currentAdmin: { name: 'alice', role: 'owner' as const },
+  }
+
+  test('names the holders and points at both pages to review them', () => {
+    const html = renderAddConfirm({
+      ...BASE,
+      grantedTo: { agents: ['research-bot'], groups: ['analytics'] },
+    })
+
+    expect(html).toContain('is already granted to 1 agent')
+    expect(html).toContain('1 group')
+    expect(html).toContain('<code>research-bot</code>')
+    expect(html).toContain('<code>analytics</code>')
+    expect(html).toContain('href="/agents"')
+    expect(html).toContain('href="/groups"')
+  })
+
+  test('a hostile holder name is escaped, not executed', () => {
+    const html = renderAddConfirm({
+      ...BASE,
+      grantedTo: { agents: ['<script>alert(1)</script>'], groups: [] },
+    })
+
+    expect(html).not.toContain('<script>alert(1)</script>')
+    expect(html).toContain('&lt;script&gt;')
+  })
+
+  test('an empty half is not printed as an empty pair of brackets', () => {
+    const html = renderAddConfirm({ ...BASE, grantedTo: { agents: ['research-bot'], groups: [] } })
+
+    expect(html).toContain('0 groups')
+    expect(html).not.toContain('()')
+  })
+
+  test('without the field the confirmation carries no callout at all', () => {
+    const html = renderAddConfirm(BASE)
+
+    expect(html).not.toContain('already granted')
   })
 })

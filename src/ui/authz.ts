@@ -59,7 +59,7 @@ export const ROUTE_TABLE: readonly RouteEntry[] = [
   { method: 'GET', pattern: '/api/approvals', minRole: 'viewer', handler: 'approvalsApi' },
   { method: 'GET', pattern: '/events', minRole: 'viewer', handler: 'events' },
 
-  // --- operator: approvals, quarantine, agent grant matrix ---
+  // --- operator: approvals, quarantine, forced server probe ---
   // The threshold is shared with `mcp-journal approvals approve|deny`: one
   // constant, so the CLI can never become a way around this row.
   { method: 'POST', pattern: '/approvals/:id/approve', minRole: APPROVAL_RESOLVE_MIN_ROLE, handler: 'approvalsApprove' },
@@ -71,12 +71,16 @@ export const ROUTE_TABLE: readonly RouteEntry[] = [
   { method: 'POST', pattern: '/servers/refresh', minRole: 'operator', handler: 'serversRefresh' },
   { method: 'POST', pattern: '/quarantine/approve', minRole: 'operator', handler: 'quarantineApprove' },
   { method: 'POST', pattern: '/quarantine/reject', minRole: 'operator', handler: 'quarantineReject' },
-  { method: 'POST', pattern: '/agents/create', minRole: 'operator', handler: 'agentsCreate' },
-  { method: 'POST', pattern: '/agents/grant', minRole: 'operator', handler: 'agentsGrant' },
-  { method: 'POST', pattern: '/agents/ungrant', minRole: 'operator', handler: 'agentsUngrant' },
-  { method: 'POST', pattern: '/agents/revoke', minRole: 'operator', handler: 'agentsRevoke' },
 
-  // --- owner: servers, vault (names only), admin management ---
+  // --- owner: the permission matrix, servers, vault (names only), admins ---
+  // Personal grants are an OWNER edit (decision T4, 2026-09-01), the same
+  // threshold as the group routes below: both move an agent's effective
+  // surface, and the two ways of doing it must not have two prices.
+  // `operator`/`viewer` still READ the matrix on `GET /agents`.
+  { method: 'POST', pattern: '/agents/create', minRole: 'owner', handler: 'agentsCreate' },
+  { method: 'POST', pattern: '/agents/grant', minRole: 'owner', handler: 'agentsGrant' },
+  { method: 'POST', pattern: '/agents/ungrant', minRole: 'owner', handler: 'agentsUngrant' },
+  { method: 'POST', pattern: '/agents/revoke', minRole: 'owner', handler: 'agentsRevoke' },
   { method: 'GET', pattern: '/vault', minRole: 'owner', handler: 'vaultPage' },
   { method: 'POST', pattern: '/servers/add', minRole: 'owner', handler: 'serversAdd' },
   { method: 'POST', pattern: '/servers/edit', minRole: 'owner', handler: 'serversEdit' },
@@ -86,11 +90,10 @@ export const ROUTE_TABLE: readonly RouteEntry[] = [
   // arrive percent-encoded; the handler decodes each exactly once.
   { method: 'POST', pattern: '/servers/:name/tools/:tool/rule', minRole: 'owner', handler: 'serversToolRule' },
   // Server groups (M5.5 п.2, decision G4): `viewer` reads the page, only
-  // `owner` writes. Deliberately STRICTER than the personal grant routes
-  // above (`/agents/grant` and `/agents/ungrant` are `operator`, and the CLI
-  // `agent grant` needs no token at all): one group edit moves every member's
-  // access at once. Whether the two thresholds should be aligned instead is an
-  // open owner decision — ROADMAP.md, «Хвосты ревью (волна 4)», п. 4.
+  // `owner` writes — one group edit moves every member's access at once. Since
+  // decision T4 the personal grant routes above carry the SAME threshold, so
+  // the group rows are no longer the strict outlier they were written as: an
+  // agent's surface is owner-owned however it is reached.
   { method: 'POST', pattern: '/groups/create', minRole: 'owner', handler: 'groupsCreate' },
   { method: 'POST', pattern: '/groups/remove', minRole: 'owner', handler: 'groupsRemove' },
   { method: 'POST', pattern: '/groups/grant', minRole: 'owner', handler: 'groupsGrant' },

@@ -12,6 +12,7 @@ import {
 import { createGroupsStore, type GroupsStore } from '../../src/groups/store.js'
 import { StoreWriteRejectedError } from '../../src/policy/store.js'
 import type { GroupRecord } from '../../src/groups/schema.js'
+import type { AccessEditInfo } from '../../src/journal/record.js'
 import type { UiSession } from '../../src/ui/auth.js'
 import {
   createAgentsHandlers,
@@ -72,6 +73,8 @@ let journalDir: string
 let store: AgentsStore
 let groups: GroupsStore
 let audit: UiAuditEvent[]
+/** Every `access-edit` the handlers handed to the injected journal port. */
+let accessEdits: AccessEditInfo[]
 let handlers: AgentsHandlers
 
 beforeEach(() => {
@@ -79,7 +82,15 @@ beforeEach(() => {
   store = createAgentsStore({ journalDir })
   groups = createGroupsStore({ journalDir })
   audit = []
-  handlers = createAgentsHandlers({ agentsStore: store, groups, audit: (event) => audit.push(event) })
+  accessEdits = []
+  handlers = createAgentsHandlers({
+    agentsStore: store,
+    groups,
+    audit: (event) => audit.push(event),
+    journalAccessEdit: async (info) => {
+      accessEdits.push(info)
+    },
+  })
 })
 
 afterEach(() => {
@@ -94,7 +105,7 @@ describe('agent matrix rendering', () => {
       prompts: '*',
     })
 
-    const html = bodyOf(await handlers.agentsPage(getCtx(session('operator'))))
+    const html = bodyOf(await handlers.agentsPage(getCtx(session('owner'))))
 
     expect(html).toContain('research-bot')
     expect(html).toContain('github')
@@ -113,7 +124,7 @@ describe('agent matrix rendering', () => {
       grants: { 'srv"<x>': { tools: ['t<img>'] } },
     } as AgentRecord
 
-    const html = renderAgentsPage({ agents: [evil], session: session('operator') })
+    const html = renderAgentsPage({ agents: [evil], session: session('owner') })
 
     expect(html).not.toContain('<script>')
     expect(html).not.toContain('<img>')
@@ -127,21 +138,21 @@ describe('grant / ungrant / revoke through the store', () => {
     await store.createAgent('bot')
 
     const granted = await handlers.agentsGrant(
-      postCtx({ agent: 'bot', server: 'github', tools: 'create_issue', csrf_token: 'x' }, session('operator')),
+      postCtx({ agent: 'bot', server: 'github', tools: 'create_issue', csrf_token: 'x' }, session('owner')),
     )
     expect(granted.kind).toBe('response')
 
     const stored = await store.getAgent('bot')
     expect(stored?.grants.github).toEqual({ tools: ['create_issue'] })
 
-    const html = bodyOf(await handlers.agentsPage(getCtx(session('operator'))))
+    const html = bodyOf(await handlers.agentsPage(getCtx(session('owner'))))
     expect(html).toContain('github')
     expect(html).toContain('create_issue')
   })
 
   test('a lone * grants everything; resources/prompts stay unset when blank', async () => {
     await store.createAgent('bot')
-    await handlers.agentsGrant(postCtx({ agent: 'bot', server: 'gh', tools: '*' }, session('operator')))
+    await handlers.agentsGrant(postCtx({ agent: 'bot', server: 'gh', tools: '*' }, session('owner')))
 
     const stored = await store.getAgent('bot')
     expect(stored?.grants.gh).toEqual({ tools: '*' })
@@ -151,7 +162,7 @@ describe('grant / ungrant / revoke through the store', () => {
     await store.createAgent('bot')
     await store.grantServer('bot', 'github', ['create_issue'])
 
-    await handlers.agentsUngrant(postCtx({ agent: 'bot', server: 'github' }, session('operator')))
+    await handlers.agentsUngrant(postCtx({ agent: 'bot', server: 'github' }, session('owner')))
 
     const stored = await store.getAgent('bot')
     expect(stored?.grants.github).toBeUndefined()
@@ -160,18 +171,18 @@ describe('grant / ungrant / revoke through the store', () => {
   test('revoke is a single action reflected in the store and UI', async () => {
     await store.createAgent('bot')
 
-    const result = await handlers.agentsRevoke(postCtx({ agent: 'bot' }, session('operator')))
+    const result = await handlers.agentsRevoke(postCtx({ agent: 'bot' }, session('owner')))
     expect(result.kind).toBe('response')
 
     const stored = await store.getAgent('bot')
     expect(stored?.revokedAt).toBeDefined()
-    const html = bodyOf(await handlers.agentsPage(getCtx(session('operator'))))
+    const html = bodyOf(await handlers.agentsPage(getCtx(session('owner'))))
     expect(html).toContain('revoked')
   })
 
   test('a concurrent CLI edit is not lost (store lock serializes writes)', async () => {
     await store.createAgent('bot')
-    await handlers.agentsGrant(postCtx({ agent: 'bot', server: 'ui-server', tools: 'a' }, session('operator')))
+    await handlers.agentsGrant(postCtx({ agent: 'bot', server: 'ui-server', tools: 'a' }, session('owner')))
     // A separate store instance == a separate process editing the same file.
     const cli = createAgentsStore({ journalDir })
     await cli.grantServer('bot', 'cli-server', ['b'])
@@ -183,7 +194,7 @@ describe('grant / ungrant / revoke through the store', () => {
 
 describe('create issues a one-time token', () => {
   test('create shows the token once with a warning and never persists it', async () => {
-    const created = await handlers.agentsCreate(postCtx({ name: 'research-bot' }, session('operator')))
+    const created = await handlers.agentsCreate(postCtx({ name: 'research-bot' }, session('owner')))
     const revealed = bodyOf(created)
     expect(revealed).toContain('research-bot')
     expect(revealed).toMatch(/shown once/i)
@@ -195,7 +206,7 @@ describe('create issues a one-time token', () => {
     expect(token.length).toBeGreaterThan(20)
 
     // Marker: the token is absent from a subsequent page load...
-    const reload = bodyOf(await handlers.agentsPage(getCtx(session('operator'))))
+    const reload = bodyOf(await handlers.agentsPage(getCtx(session('owner'))))
     expect(reload).not.toContain(token)
     // ...from the store (only the hash is kept)...
     const stored = await store.getAgent('research-bot')
@@ -205,9 +216,9 @@ describe('create issues a one-time token', () => {
   })
 
   test('the end-to-end "issue a scoped key" flow works from the panel', async () => {
-    await handlers.agentsCreate(postCtx({ name: 'scoped-bot' }, session('operator')))
+    await handlers.agentsCreate(postCtx({ name: 'scoped-bot' }, session('owner')))
     await handlers.agentsGrant(
-      postCtx({ agent: 'scoped-bot', server: 'github', tools: 'read_*' }, session('operator')),
+      postCtx({ agent: 'scoped-bot', server: 'github', tools: 'read_*' }, session('owner')),
     )
     const stored = await store.getAgent('scoped-bot')
     expect(stored?.grants).toEqual({ github: { tools: ['read_*'] } })
@@ -217,7 +228,7 @@ describe('create issues a one-time token', () => {
 describe('error handling and attribution', () => {
   test('an action on a nonexistent agent yields a readable 400, not a 500', async () => {
     const result = await handlers.agentsGrant(
-      postCtx({ agent: 'ghost', server: 'github', tools: 'x' }, session('operator')),
+      postCtx({ agent: 'ghost', server: 'github', tools: 'x' }, session('owner')),
     )
     expect(result.kind).toBe('response')
     if (result.kind === 'response') expect(result.status).toBe(400)
@@ -226,7 +237,7 @@ describe('error handling and attribution', () => {
 
   test('every successful mutation is attributed to actor "ui" + admin name', async () => {
     await store.createAgent('bot')
-    await handlers.agentsGrant(postCtx({ agent: 'bot', server: 'gh', tools: 'a' }, session('operator', 'alice')))
+    await handlers.agentsGrant(postCtx({ agent: 'bot', server: 'gh', tools: 'a' }, session('owner', 'alice')))
 
     expect(audit).toContainEqual({ actor: 'ui', adminName: 'alice', action: 'agents.grant', target: 'bot/gh' })
   })
@@ -241,7 +252,7 @@ describe('error handling and attribution', () => {
 describe('CSRF and owner-only nav link', () => {
   test('forms embed the per-session CSRF token', async () => {
     await store.createAgent('bot')
-    const html = bodyOf(await handlers.agentsPage(getCtx(session('operator'))))
+    const html = bodyOf(await handlers.agentsPage(getCtx(session('owner'))))
     expect(html).toContain('name="csrf_token"')
     expect(html).toContain('csrf-token-value-123456')
   })
@@ -271,7 +282,7 @@ describe('store failures are classified, not flattened to 400 (T-2)', () => {
   test('an unrecognized store error is a detail-free 500, not a 400 echoing it', async () => {
     const secretish = 'EACCES: /home/alice/.mcp-journal/agents.json.lock held by pid 4242'
     const failing = createAgentsHandlers({ agentsStore: brokenStore(new Error(secretish)), groups })
-    const admin = session('operator')
+    const admin = session('owner')
 
     for (const result of [
       await failing.agentsCreate(postCtx({ name: 'bot' }, admin)),
@@ -292,7 +303,7 @@ describe('store failures are classified, not flattened to 400 (T-2)', () => {
       ),
       groups,
     })
-    const result = await failing.agentsCreate(postCtx({ name: 'bot' }, session('operator')))
+    const result = await failing.agentsCreate(postCtx({ name: 'bot' }, session('owner')))
     if (result.kind === 'response') expect(result.status).toBe(500)
   })
 
@@ -300,7 +311,7 @@ describe('store failures are classified, not flattened to 400 (T-2)', () => {
     const rejected = new StoreWriteRejectedError('/tmp/agents.json', new Error('too many agents'))
     const failing = createAgentsHandlers({ agentsStore: brokenStore(rejected), groups })
 
-    const result = await failing.agentsCreate(postCtx({ name: 'bot' }, session('operator')))
+    const result = await failing.agentsCreate(postCtx({ name: 'bot' }, session('owner')))
 
     expect(asResponseStatus(result)).toBe(400)
     expect(bodyOf(result)).toMatch(/Refusing to write/)
@@ -308,11 +319,11 @@ describe('store failures are classified, not flattened to 400 (T-2)', () => {
 
   test('known validation errors still yield a 400 carrying their message', async () => {
     await store.createAgent('bot')
-    const duplicate = await handlers.agentsCreate(postCtx({ name: 'bot' }, session('operator')))
+    const duplicate = await handlers.agentsCreate(postCtx({ name: 'bot' }, session('owner')))
     if (duplicate.kind === 'response') expect(duplicate.status).toBe(400)
     expect(bodyOf(duplicate)).toMatch(/exists/i)
 
-    const missing = await handlers.agentsRevoke(postCtx({ agent: 'ghost' }, session('operator')))
+    const missing = await handlers.agentsRevoke(postCtx({ agent: 'ghost' }, session('owner')))
     if (missing.kind === 'response') expect(missing.status).toBe(400)
     expect(bodyOf(missing)).toMatch(/ghost|not/i)
   })
@@ -343,7 +354,7 @@ describe('ungrant of an overriding personal grant (U1)', () => {
     await groups.grantServer('analytics', 'other', ['x'])
     await groups.addMember('analytics', 'bot')
 
-    const result = await handlers.agentsUngrant(postCtx({ agent: 'bot', server: 'github' }, session('operator')))
+    const result = await handlers.agentsUngrant(postCtx({ agent: 'bot', server: 'github' }, session('owner')))
 
     expect(asResponseStatus(result)).toBe(200)
     expect((await store.getAgent('bot'))?.grants.github).toBeUndefined()
@@ -355,7 +366,7 @@ describe('ungrant of an overriding personal grant (U1)', () => {
   test('a shadowed group turns the ungrant into a confirmation, writing nothing', async () => {
     await seedShadowed()
 
-    const result = await handlers.agentsUngrant(postCtx({ agent: 'bot', server: 'github' }, session('operator')))
+    const result = await handlers.agentsUngrant(postCtx({ agent: 'bot', server: 'github' }, session('owner')))
 
     expect(asResponseStatus(result)).toBe(200)
     const body = bodyOf(result)
@@ -375,7 +386,7 @@ describe('ungrant of an overriding personal grant (U1)', () => {
     await seedShadowed()
 
     const result = await handlers.agentsUngrant(
-      postCtx({ agent: 'bot', server: 'github', confirm: 'true' }, session('operator')),
+      postCtx({ agent: 'bot', server: 'github', confirm: 'true' }, session('owner')),
     )
 
     expect(asResponseStatus(result)).toBe(200)
@@ -391,7 +402,7 @@ describe('ungrant of an overriding personal grant (U1)', () => {
   })
 
   test('an unknown agent is still the store\'s 400, not a confirmation', async () => {
-    const result = await handlers.agentsUngrant(postCtx({ agent: 'ghost', server: 'github' }, session('operator')))
+    const result = await handlers.agentsUngrant(postCtx({ agent: 'ghost', server: 'github' }, session('owner')))
 
     expect(asResponseStatus(result)).toBe(400)
   })
@@ -412,7 +423,7 @@ describe('ungrant of an overriding personal grant (U1)', () => {
     })
 
     const body = bodyOf(
-      await forgedHandlers.agentsUngrant(postCtx({ agent: 'bot', server: 'github' }, session('operator'))),
+      await forgedHandlers.agentsUngrant(postCtx({ agent: 'bot', server: 'github' }, session('owner'))),
     )
 
     expect(body).not.toContain('<script>')
@@ -432,7 +443,7 @@ describe('McpCut agents page structure', () => {
     }) as AgentRecord
 
   test('the create and grant forms are drawers above the list, opened by the nav "+"', () => {
-    const html = renderAgentsPage({ agents: [], session: session('operator') })
+    const html = renderAgentsPage({ agents: [], session: session('owner') })
     expect(html).toContain('<details class="drawer" id="create-agent">')
     expect(html).toContain('<details class="drawer" id="grant-server">')
     expect(html).toContain('data-open-details="create-agent"')
@@ -445,7 +456,7 @@ describe('McpCut agents page structure', () => {
   test('the tab-bar meta counts agents and active agents', () => {
     const html = renderAgentsPage({
       agents: [bot('a'), bot('b', { revokedAt: '2026-08-12T00:00:00.000Z' })],
-      session: session('operator'),
+      session: session('owner'),
     })
     expect(html).toContain('2 agents · 1 active')
   })
@@ -456,7 +467,7 @@ describe('McpCut agents page structure', () => {
         bot('live', { grants: { gh: { tools: '*' } } }),
         bot('dead', { revokedAt: '2026-08-12T00:00:00.000Z', grants: { gh: { tools: ['x'] } } }),
       ],
-      session: session('operator'),
+      session: session('owner'),
     })
     expect(html).toMatch(/<section class="card agent ag-card" data-agent="live">/)
     expect(html).toMatch(/<span class="pill pill-on">all<\/span>/)
@@ -473,17 +484,17 @@ describe('McpCut agents page structure', () => {
   })
 
   test('the token-once page keeps the data-token box and the warning callout', async () => {
-    const created = bodyOf(await handlers.agentsCreate(postCtx({ name: 'tok-bot' }, session('operator'))))
+    const created = bodyOf(await handlers.agentsCreate(postCtx({ name: 'tok-bot' }, session('owner'))))
     expect(created).toMatch(/<pre class="token" data-token>[^<]+<\/pre>/)
     expect(created).toContain('class="callout"')
     expect(created).toContain('class="panel panel-strong')
   })
 
   test('notices keep the ok / error semantics', async () => {
-    const bad = bodyOf(await handlers.agentsRevoke(postCtx({ agent: 'ghost' }, session('operator'))))
+    const bad = bodyOf(await handlers.agentsRevoke(postCtx({ agent: 'ghost' }, session('owner'))))
     expect(bad).toContain('class="notice error')
     await store.createAgent('n-bot')
-    const good = bodyOf(await handlers.agentsRevoke(postCtx({ agent: 'n-bot' }, session('operator'))))
+    const good = bodyOf(await handlers.agentsRevoke(postCtx({ agent: 'n-bot' }, session('owner'))))
     expect(good).toContain('class="notice ok')
   })
 })
@@ -512,7 +523,7 @@ describe('group-derived rows and the by-group drawer (M5.5 п.2, Task 14)', () =
     await store.createAgent('bot')
     await store.grantServer('bot', 'github', ['x'])
 
-    const html = bodyOf(await handlers.agentsPage(getCtx(session('operator'))))
+    const html = bodyOf(await handlers.agentsPage(getCtx(session('owner'))))
 
     expect(html).toContain('<th>Prompts</th><th>Source</th><th></th>')
     expect(html).toContain('<td class="ag-source">agent')
@@ -521,7 +532,7 @@ describe('group-derived rows and the by-group drawer (M5.5 п.2, Task 14)', () =
   test('the empty matrix row spans every column', async () => {
     await store.createAgent('bare')
 
-    const html = bodyOf(await handlers.agentsPage(getCtx(session('operator'))))
+    const html = bodyOf(await handlers.agentsPage(getCtx(session('owner'))))
 
     expect(html).toContain('<td colspan="6" class="faint">no grants</td>')
   })
@@ -532,7 +543,7 @@ describe('group-derived rows and the by-group drawer (M5.5 п.2, Task 14)', () =
     await groups.grantServer('analytics', 'postgres', ['select'])
     await groups.addMember('analytics', 'bot')
 
-    const html = bodyOf(await handlers.agentsPage(getCtx(session('operator'))))
+    const html = bodyOf(await handlers.agentsPage(getCtx(session('owner'))))
 
     expect(html).toContain('<tr data-server="postgres">')
     expect(html).toContain('group:analytics')
@@ -550,7 +561,7 @@ describe('group-derived rows and the by-group drawer (M5.5 п.2, Task 14)', () =
     await groups.grantServer('analytics', 'postgres', ['group_tool'])
     await groups.addMember('analytics', 'bot')
 
-    const html = bodyOf(await handlers.agentsPage(getCtx(session('operator'))))
+    const html = bodyOf(await handlers.agentsPage(getCtx(session('owner'))))
 
     expect(html).toContain('overrides group:analytics')
     expect(html).toContain('personal_tool')
@@ -567,7 +578,7 @@ describe('group-derived rows and the by-group drawer (M5.5 п.2, Task 14)', () =
       await groups.addMember(name, 'bot')
     }
 
-    const html = bodyOf(await handlers.agentsPage(getCtx(session('operator'))))
+    const html = bodyOf(await handlers.agentsPage(getCtx(session('owner'))))
 
     expect(html).toContain('group:analytics, group:reporting')
   })
@@ -578,7 +589,7 @@ describe('group-derived rows and the by-group drawer (M5.5 п.2, Task 14)', () =
     await groups.createGroup('other')
     await groups.grantServer('other', 'postgres', ['b'])
 
-    const html = bodyOf(await handlers.agentsPage(getCtx(session('operator'))))
+    const html = bodyOf(await handlers.agentsPage(getCtx(session('owner'))))
 
     expect(html).toContain('<tr data-server="gh">')
     expect(html).not.toContain('postgres')
@@ -622,5 +633,202 @@ describe('group-derived rows and the by-group drawer (M5.5 п.2, Task 14)', () =
     expect(html).not.toContain('<script>')
     expect(html).toContain('group:g&lt;script&gt;')
     expect(html).toContain('<option value="g&lt;script&gt;">')
+  })
+})
+
+/**
+ * T4 (owner decision, 2026-09-01) — every personal-grant mutation is an OWNER
+ * action. `ROUTE_TABLE` is the enforcement (pinned by the matrix test in
+ * `ui-hardening.test.ts`); this page must not offer controls that the route
+ * would then refuse, while the matrix itself stays readable to everyone.
+ */
+describe('the permission matrix is owner-editable, read-only below (T4)', () => {
+  /** An agent with one personal grant and one inherited through a group. */
+  async function seedMatrix(): Promise<void> {
+    await store.createAgent('bot')
+    await store.grantServer('bot', 'github', ['create_issue'])
+    await groups.createGroup('analytics')
+    await groups.grantServer('analytics', 'postgres', ['select'])
+    await groups.addMember('analytics', 'bot')
+  }
+
+  test.each(['operator', 'viewer'] as const)(
+    'a %s reads the whole matrix and is offered no edit control',
+    async (role) => {
+      // Arrange
+      await seedMatrix()
+
+      // Act
+      const html = bodyOf(await handlers.agentsPage(getCtx(session(role))))
+
+      // Assert — the data is all there...
+      expect(html).toContain('data-agent="bot"')
+      expect(html).toContain('<tr data-server="github">')
+      expect(html).toContain('create_issue')
+      expect(html).toContain('<tr data-server="postgres">')
+      expect(html).toContain('group:analytics')
+      // ...and not one control that posts a mutation.
+      expect(html).not.toContain('action="/agents/create"')
+      expect(html).not.toContain('action="/agents/grant"')
+      expect(html).not.toContain('action="/agents/ungrant"')
+      expect(html).not.toContain('action="/agents/revoke"')
+      expect(html).not.toContain('action="/groups/join"')
+      expect(html).not.toContain('id="create-agent"')
+      expect(html).not.toContain('data-open-details="create-agent"')
+    },
+  )
+
+  test('an owner keeps every control on the same matrix', async () => {
+    // Arrange
+    await seedMatrix()
+
+    // Act
+    const html = bodyOf(await handlers.agentsPage(getCtx(session('owner'))))
+
+    // Assert
+    expect(html).toContain('action="/agents/create"')
+    expect(html).toContain('action="/agents/grant"')
+    expect(html).toContain('action="/agents/ungrant"')
+    expect(html).toContain('action="/agents/revoke"')
+    expect(html).toContain('action="/groups/join"')
+  })
+
+  test('the read-only matrix keeps all six columns on every row', async () => {
+    // Arrange
+    await seedMatrix()
+
+    // Act
+    const html = bodyOf(await handlers.agentsPage(getCtx(session('viewer'))))
+
+    // Assert — the personal row keeps an (empty) action cell, so the row does
+    // not shrink out of alignment with the header.
+    expect(html).toContain('<td class="ag-ungrant"></td>')
+    expect(html).toContain('<th>Prompts</th><th>Source</th><th></th>')
+    // The inherited row still points at where its grant is managed.
+    expect(html).toContain('manage in groups')
+  })
+})
+
+/**
+ * T1 (owner decision, 2026-09-01) — a personal grant edit made from the panel
+ * leaves the same `access-edit` record a group edit does. Before this, the
+ * journal could answer "who changed this group" but not "who changed this
+ * agent", and the two halves of the same question have to be answered
+ * together.
+ */
+describe('personal grant edits are journalled (T1)', () => {
+  const actor = { adminName: 'alice', role: 'owner', via: 'ui' }
+  const admin = (): UiSession => session('owner', 'alice')
+
+  test('create records agent.create and carries no token anywhere in the info', async () => {
+    // Act
+    const revealed = bodyOf(await handlers.agentsCreate(postCtx({ name: 'research-bot' }, admin())))
+    const token = (revealed.match(/data-token>([^<]+)</) as RegExpMatchArray)[1] as string
+
+    // Assert
+    expect(accessEdits).toHaveLength(1)
+    expect(accessEdits[0]).toEqual({ actor, action: 'agent.create', agent: 'research-bot' })
+    // The one-time key has no field in the record and must never gain one.
+    expect(JSON.stringify(accessEdits)).not.toContain(token)
+    expect(Object.keys(accessEdits[0] as object)).not.toContain('token')
+  })
+
+  test('grant records agent.grant with the grant that was actually written', async () => {
+    // Arrange
+    await store.createAgent('bot')
+
+    // Act
+    await handlers.agentsGrant(
+      postCtx({ agent: 'bot', server: 'github', tools: 'create_issue', prompts: '*' }, admin()),
+    )
+
+    // Assert
+    expect(accessEdits).toEqual([
+      {
+        actor,
+        action: 'agent.grant',
+        agent: 'bot',
+        server: 'github',
+        grant: { tools: ['create_issue'], prompts: '*' },
+      },
+    ])
+  })
+
+  test('ungrant and revoke record their own actions', async () => {
+    // Arrange
+    await store.createAgent('bot')
+    await store.grantServer('bot', 'github', ['create_issue'])
+
+    // Act
+    await handlers.agentsUngrant(postCtx({ agent: 'bot', server: 'github' }, admin()))
+    await handlers.agentsRevoke(postCtx({ agent: 'bot' }, admin()))
+
+    // Assert
+    expect(accessEdits).toEqual([
+      { actor, action: 'agent.ungrant', agent: 'bot', server: 'github' },
+      { actor, action: 'agent.revoke', agent: 'bot' },
+    ])
+  })
+
+  test('a refused edit leaves no record — the journal must not show a phantom grant', async () => {
+    // Act — no such agent, so nothing was written.
+    const result = await handlers.agentsGrant(postCtx({ agent: 'ghost', server: 'gh', tools: 'x' }, admin()))
+
+    // Assert
+    expect(asResponseStatus(result)).toBe(400)
+    expect(accessEdits).toEqual([])
+  })
+
+  test('an ungrant stopped by the confirmation interstitial is not journalled yet', async () => {
+    // Arrange — a personal grant shadowing a group grant needs a confirm (U1).
+    await store.createAgent('bot')
+    await store.grantServer('bot', 'postgres', ['personal_tool'])
+    await groups.createGroup('analytics')
+    await groups.grantServer('analytics', 'postgres', ['group_tool'])
+    await groups.addMember('analytics', 'bot')
+
+    // Act
+    const shown = await handlers.agentsUngrant(postCtx({ agent: 'bot', server: 'postgres' }, admin()))
+
+    // Assert
+    expect(asResponseStatus(shown)).toBe(200)
+    expect(accessEdits).toEqual([])
+
+    // Act — confirmed, the record lands exactly once.
+    await handlers.agentsUngrant(postCtx({ agent: 'bot', server: 'postgres', confirm: 'true' }, admin()))
+
+    // Assert
+    expect(accessEdits).toEqual([
+      { actor, action: 'agent.ungrant', agent: 'bot', server: 'postgres' },
+    ])
+  })
+
+  test('a journal port that rejects cannot turn a completed write into a 500', async () => {
+    // Arrange
+    const failing = createAgentsHandlers({
+      agentsStore: store,
+      groups,
+      journalAccessEdit: () => Promise.reject(new Error('journal sink is down')),
+    })
+    await store.createAgent('bot')
+
+    // Act
+    const result = await failing.agentsRevoke(postCtx({ agent: 'bot' }, admin()))
+
+    // Assert — the revoke stands, and the response is the ordinary notice.
+    expect(asResponseStatus(result)).toBe(200)
+    expect((await store.getAgent('bot'))?.revokedAt).toBeDefined()
+  })
+
+  test('without the port the handlers still work (a plane wired before T1)', async () => {
+    // Arrange
+    const portless = createAgentsHandlers({ agentsStore: store, groups })
+
+    // Act
+    const result = await portless.agentsCreate(postCtx({ name: 'bot' }, admin()))
+
+    // Assert
+    expect(asResponseStatus(result)).toBe(200)
+    expect(accessEdits).toEqual([])
   })
 })

@@ -73,7 +73,9 @@ function seamsFor(journalDir: string): DispatchOptions {
     journalDir,
     server: { journalDir },
     vault: { journalDir },
-    agent: { journalDir },
+    // `env: {}` keeps a token exported in the developer's own shell out of the
+    // command under test; `asOwner()` puts this plane's own token back in.
+    agent: { journalDir, env: {} },
     admin: { journalDir },
     // `journalDir` here is where `approvals approve|deny` looks up the admin
     // behind `MCP_ADMIN_TOKEN`; `env: {}` keeps a token exported in the
@@ -171,6 +173,32 @@ export async function createCliApprover(
   return { approvals: { env: { [ADMIN_TOKEN_ENV_VAR]: token } } }
 }
 
+/** The admin every `agent` mutation in an e2e runs as (owner decision T4). */
+export const CLI_OWNER = 'cli-owner'
+
+/** One owner per plane, minted lazily; the promise is memoized, so never twice. */
+const ownerSeams = new WeakMap<Plane, Promise<DispatchOptions>>()
+
+/**
+ * The seam that makes `agent create|grant|ungrant|revoke` run AS a named
+ * owner. Since owner decision T4 (2026-09-01) every personal-grant mutation
+ * needs a token, so an e2e must onboard an admin exactly the way an operator
+ * would — through `admin add` — rather than seeding the store.
+ */
+export function asOwner(plane: Plane): Promise<DispatchOptions> {
+  const existing = ownerSeams.get(plane)
+  if (existing !== undefined) return existing
+  const seam = mintOwner(plane)
+  ownerSeams.set(plane, seam)
+  return seam
+}
+
+async function mintOwner(plane: Plane): Promise<DispatchOptions> {
+  const argv = ['admin', 'add', CLI_OWNER, '--role', 'owner']
+  const token = tokenFrom(expectOk(argv, await plane.run(argv)), 'admin add')
+  return { agent: { env: { [ADMIN_TOKEN_ENV_VAR]: token } } }
+}
+
 /** `agent create` + `agent grant` for a server that is already registered. */
 export async function createGrantedAgent(
   plane: Plane,
@@ -178,8 +206,9 @@ export async function createGrantedAgent(
   serverName: string,
   tools?: string,
 ): Promise<string> {
+  const owner = await asOwner(plane)
   const createArgv = ['agent', 'create', agentName]
-  const token = tokenFrom(expectOk(createArgv, await plane.run(createArgv)))
+  const token = tokenFrom(expectOk(createArgv, await plane.run(createArgv, owner)))
   const grantArgv = [
     'agent',
     'grant',
@@ -187,7 +216,7 @@ export async function createGrantedAgent(
     serverName,
     ...(tools !== undefined ? ['--tools', tools] : []),
   ]
-  expectOk(grantArgv, await plane.run(grantArgv))
+  expectOk(grantArgv, await plane.run(grantArgv, owner))
   return token
 }
 

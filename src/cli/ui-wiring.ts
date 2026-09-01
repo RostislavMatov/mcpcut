@@ -323,6 +323,9 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
     agentsStore: deps.agents,
     groups: { listGroups: () => groups.listGroups() },
     audit,
+    // Personal grants share the group edits' writer (decision T1): one
+    // `access-edit` category, one attribution shape, one drop diagnostic.
+    journalAccessEdit: writeAccessEdit,
   })
   const admins = createAdminsHandlers({ adminStore: deps.adminStore, audit })
 

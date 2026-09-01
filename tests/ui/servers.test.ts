@@ -641,8 +641,122 @@ describe('serversRemove', () => {
   })
 })
 
-describe('serversRemove — repair of dangling grants from the browser (F2c parity)', () => {
-  /** Grants a server name to one agent and one group, with NO registry record. */
+/**
+ * T3 (owner decision, 2026-09-01) — parity with the CLI's post-registration
+ * `[warn] "x" is already granted to N agents and M groups`. A name can outlive
+ * its registration (three documents, no shared transaction), so registering it
+ * again silently hands its old grantees whatever the name now points at. The
+ * browser says so on the confirmation step, BEFORE the record is written.
+ */
+describe('serversAdd — the confirmation warns about grants that predate it (T3)', () => {
+  const addPost = (fields: Record<string, string> = {}): UiRequestContext =>
+    formPost({
+      csrf_token: OWNER.csrfToken,
+      name: 'github',
+      transport: 'stdio',
+      command: 'gh-mcp',
+      ...fields,
+    })
+
+  test('an already-granted name is called out with the holders by name', async () => {
+    // Arrange — grants left behind by an earlier registration.
+    h = makeHarness()
+    await h.agents.createAgent('research-bot')
+    await h.agents.grantServer('research-bot', 'github', ['read_file'])
+    await h.groups.createGroup('analytics')
+    await h.groups.grantServer('analytics', 'github', ['read_file'])
+
+    // Act
+    const res = asResponse(await h.handlers.serversAdd(addPost()))
+
+    // Assert
+    expect(res.status).toBe(200)
+    const body = String(res.body)
+    expect(body).toContain('is already granted to 1 agent')
+    expect(body).toContain('1 group')
+    expect(body).toContain('research-bot')
+    expect(body).toContain('analytics')
+    expect(body).toContain('from an earlier registration')
+    expect(body).toContain('href="/agents"')
+    expect(body).toContain('href="/groups"')
+    // Still only a confirmation: nothing is registered yet.
+    expect(await h.registry.listServers()).toEqual([])
+  })
+
+  test('a free name gets the ordinary confirmation with no callout', async () => {
+    // Arrange — a grant for a DIFFERENT name must not trigger the warning.
+    h = makeHarness()
+    await h.agents.createAgent('research-bot')
+    await h.agents.grantServer('research-bot', 'notes', ['read_file'])
+
+    // Act
+    const res = asResponse(await h.handlers.serversAdd(addPost()))
+
+    // Assert
+    expect(res.status).toBe(200)
+    expect(String(res.body)).not.toContain('already granted')
+    expect(String(res.body)).toContain('Register it')
+  })
+
+  test('a revoked agent does not count: its token is dead, so it is not a grantee', async () => {
+    // Arrange
+    h = makeHarness()
+    await h.agents.createAgent('old-bot')
+    await h.agents.grantServer('old-bot', 'github', ['read_file'])
+    await h.agents.revokeAgent('old-bot')
+
+    // Act
+    const res = asResponse(await h.handlers.serversAdd(addPost()))
+
+    // Assert
+    expect(String(res.body)).not.toContain('already granted')
+  })
+
+  test('both holder halves are counted, and the record is not written yet', async () => {
+    // Arrange — two agents and two groups grant the name.
+    h = makeHarness()
+    for (const agent of ['research-bot', 'quiet-bot']) {
+      await h.agents.createAgent(agent)
+      await h.agents.grantServer(agent, 'github', ['read_file'])
+    }
+    for (const group of ['analytics', 'reporting']) {
+      await h.groups.createGroup(group)
+      await h.groups.grantServer(group, 'github', ['read_file'])
+    }
+
+    // Act
+    const res = asResponse(await h.handlers.serversAdd(addPost()))
+
+    // Assert
+    const body = String(res.body)
+    expect(body).toContain('is already granted to 2 agents')
+    expect(body).toContain('2 groups')
+    expect(await h.registry.listServers()).toEqual([])
+  })
+
+  test('the confirmed registration still lands and is audited', async () => {
+    // Arrange
+    h = makeHarness()
+    await h.agents.createAgent('research-bot')
+    await h.agents.grantServer('research-bot', 'github', ['read_file'])
+
+    // Act
+    const res = asResponse(await h.handlers.serversAdd(addPost({ confirm: 'true' })))
+
+    // Assert
+    expect(res.status).toBe(303)
+    expect((await h.registry.listServers()).map((record) => record.name)).toEqual(['github'])
+    expect(h.audit).toContainEqual({
+      actor: 'ui',
+      adminName: 'alice',
+      action: 'server.add',
+      target: 'github',
+    })
+  })
+})
+
+describe('serversRemove — pruning dangling grants is offered, never automatic (T5)', () => {
+  /** Grants a server name to one agent and one group, then unregisters it. */
   async function seedDangling(name: string): Promise<void> {
     if (h === null) throw new Error('harness not built')
     await h.registry.addServer({ name, transport: 'stdio', command: 'node' })
@@ -653,19 +767,40 @@ describe('serversRemove — repair of dangling grants from the browser (F2c pari
     await h.registry.removeServer(name)
   }
 
-  test('an unregistered name that still dangles is pruned, audited, journalled and redirected', async () => {
+  const removePost = (fields: Record<string, string>): UiRequestContext =>
+    formPost({ csrf_token: OWNER.csrfToken, ...fields }, '/servers/remove')
+
+  test('an unregistered name that still dangles gets an interstitial and changes nothing', async () => {
     // Arrange — the registry write landed but the cascade did not (a crash
-    // between three documents that share no transaction). The CLI repairs this
-    // on a repeat `server remove`; the browser used to answer a bare 404.
+    // between three documents that share no transaction).
+    h = makeHarness()
+    await seedDangling('github')
+
+    // Act — even a confirmed removal only OFFERS the prune (owner decision T5).
+    const res = asResponse(await h.handlers.serversRemove(removePost({ name: 'github', confirm: 'true' })))
+
+    // Assert
+    expect(res.status).toBe(200)
+    const body = String(res.body)
+    expect(body).toContain('is not registered')
+    expect(body).toContain('research-bot')
+    expect(body).toContain('analytics')
+    expect(body).toContain('Prune dangling grants')
+    expect(body).toContain('name="prune" value="true"')
+    // Nothing was written, attributed or journalled.
+    expect((await h.agents.getAgent('research-bot'))?.grants).toEqual({ github: { tools: ['read_file'] } })
+    expect((await h.groups.getGroup('analytics'))?.grants).toEqual({ github: { tools: ['read_file'] } })
+    expect(h.audit).toEqual([])
+    expect(h.accessEdits).toEqual([])
+  })
+
+  test('with prune=true the cascade runs, is audited, journalled and redirected', async () => {
+    // Arrange
     h = makeHarness()
     await seedDangling('github')
 
     // Act
-    const res = asResponse(
-      await h.handlers.serversRemove(
-        formPost({ csrf_token: OWNER.csrfToken, name: 'github', confirm: 'true' }, '/servers/remove'),
-      ),
-    )
+    const res = asResponse(await h.handlers.serversRemove(removePost({ name: 'github', prune: 'true' })))
 
     // Assert
     expect(res.status).toBe(303)
@@ -685,50 +820,28 @@ describe('serversRemove — repair of dangling grants from the browser (F2c pari
     })
   })
 
-  test('the interstitial still shows the holders before the repair runs', async () => {
-    // Arrange
-    h = makeHarness()
-    await seedDangling('github')
-
-    // Act — no `confirm`, so the holders are named first.
-    const res = asResponse(
-      await h.handlers.serversRemove(
-        formPost({ csrf_token: OWNER.csrfToken, name: 'github' }, '/servers/remove'),
-      ),
-    )
-
-    // Assert
-    expect(res.status).toBe(200)
-    expect(String(res.body)).toContain('research-bot')
-    expect(String(res.body)).toContain('analytics')
-    expect(h.accessEdits).toHaveLength(0)
-  })
-
-  test('an unregistered name with nothing dangling is still a 404', async () => {
+  test('an unregistered name with nothing dangling is a 404, prune or not', async () => {
     // Arrange
     h = makeHarness()
     await h.agents.createAgent('research-bot')
     await h.groups.createGroup('analytics')
 
     // Act
-    const res = asResponse(
-      await h.handlers.serversRemove(
-        formPost({ csrf_token: OWNER.csrfToken, name: 'ghost', confirm: 'true' }, '/servers/remove'),
-      ),
-    )
+    const plain = asResponse(await h.handlers.serversRemove(removePost({ name: 'ghost' })))
+    const forced = asResponse(await h.handlers.serversRemove(removePost({ name: 'ghost', prune: 'true' })))
 
     // Assert
-    expect(res.status).toBe(404)
+    expect(plain.status).toBe(404)
+    expect(forced.status).toBe(404)
     expect(h.audit).toEqual([])
-    expect(h.accessEdits).toHaveLength(0)
+    expect(h.accessEdits).toEqual([])
   })
 
-  test('a repeated repair journals exactly once', async () => {
+  test('a repeated prune journals exactly once — the second finds nothing to prune', async () => {
     // Arrange
     h = makeHarness()
     await seedDangling('github')
-    const post = (): UiRequestContext =>
-      formPost({ csrf_token: OWNER.csrfToken, name: 'github', confirm: 'true' }, '/servers/remove')
+    const post = (): UiRequestContext => removePost({ name: 'github', prune: 'true' })
 
     // Act
     const first = asResponse(await h.handlers.serversRemove(post()))
@@ -738,6 +851,39 @@ describe('serversRemove — repair of dangling grants from the browser (F2c pari
     expect(first.status).toBe(303)
     expect(second.status).toBe(404)
     expect(h.accessEdits).toHaveLength(1)
+  })
+
+  test('a dangling grant held only by a REVOKED agent is still prunable', async () => {
+    // Arrange — the removal interstitial deliberately counts active agents
+    // only; the prune offer must count what the cascade would actually drop.
+    h = makeHarness()
+    await h.registry.addServer({ name: 'github', transport: 'stdio', command: 'node' })
+    await h.agents.createAgent('old-bot')
+    await h.agents.grantServer('old-bot', 'github', ['read_file'])
+    await h.agents.revokeAgent('old-bot')
+    await h.registry.removeServer('github')
+
+    // Act
+    const offered = asResponse(await h.handlers.serversRemove(removePost({ name: 'github' })))
+    const pruned = asResponse(await h.handlers.serversRemove(removePost({ name: 'github', prune: 'true' })))
+
+    // Assert
+    expect(offered.status).toBe(200)
+    expect(String(offered.body)).toContain('old-bot')
+    expect(pruned.status).toBe(303)
+    expect((await h.agents.getAgent('old-bot'))?.grants).toEqual({})
+  })
+
+  test('a hostile dangling name is escaped on the prune page', async () => {
+    // Arrange — a name that would be markup if it reached the page unescaped.
+    h = makeHarness()
+    await seedDangling('github')
+
+    // Act
+    const res = asResponse(await h.handlers.serversRemove(removePost({ name: '<script>x</script>' })))
+
+    // Assert — outside the grant-name shape, so it can never dangle: 404.
+    expect(res.status).toBe(404)
   })
 })
 

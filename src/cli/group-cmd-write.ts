@@ -1,15 +1,13 @@
-import { journalAccessEdit } from '../groups/journal-access-edit.js'
 import type { AccessEditInfo } from '../journal/access-edit-record.js'
-import { requireAdminFromEnv, type AdminRefusalWording, type RequiredAdmin } from './admin-token.js'
-import { GROUP_MIN_ROLE } from './group-cmd-args.js'
-import { auditLineOf, type GroupOp } from './group-cmd-format.js'
+import type { AdminRefusalWording, RequiredAdmin } from './admin-token.js'
+import { recordAccessChange, requireAccessOwner } from './access-cmd-write.js'
+import type { GroupOp } from './group-cmd-format.js'
 import type { GroupCliIo, GroupCliOptions } from './group-cmd.js'
 
 /**
- * The shared write path of a `group` mutation: the owner gate in front of it
- * and the two records behind it — the stderr audit line and the `access-edit`
- * journal record (ADR-0009 O5/O6). Kept out of `group-cmd.ts` so each
- * subcommand there reads as "parse, refuse, write, record".
+ * The `group` half of the shared access write path (`access-cmd-write.ts`):
+ * this module only binds the subject and this command's refusal wording, so
+ * each subcommand in `group-cmd.ts` reads as "parse, refuse, write, record".
  *
  * Only types are imported back from `group-cmd.ts`, so the two modules share
  * no runtime edge.
@@ -28,23 +26,10 @@ export async function requireOwner(
   io: GroupCliIo,
   opts: GroupCliOptions,
 ): Promise<RequiredAdmin | undefined> {
-  return requireAdminFromEnv(
-    {
-      ...(opts.journalDir !== undefined ? { journalDir: opts.journalDir } : {}),
-      ...(opts.env !== undefined ? { env: opts.env } : {}),
-    },
-    GROUP_MIN_ROLE,
-    io,
-    GROUP_REFUSAL,
-  )
+  return requireAccessOwner(io, opts, GROUP_REFUSAL)
 }
 
-/**
- * The audit line plus the journal record of one applied change. The change is
- * ALREADY written when this runs, so a journal that cannot be reached is said
- * out loud and the command still exits 0 — mirroring `policy set` (a dropped
- * record must not be hidden, and must not fake a failed edit either).
- */
+/** The audit line plus the journal record of one applied group change. */
 export async function recordChange(
   io: GroupCliIo,
   opts: GroupCliOptions,
@@ -53,23 +38,5 @@ export async function recordChange(
   target: string,
   info: Omit<AccessEditInfo, 'actor'>,
 ): Promise<number> {
-  io.stderr.write(auditLineOf(op, actor, target))
-  const outcome = await journalAccessEdit({
-    info: { ...info, actor: { adminName: actor.adminName, role: actor.role, via: 'cli' } },
-    ...(opts.journalDir !== undefined ? { dir: opts.journalDir } : {}),
-    ...(opts.clock !== undefined ? { clock: clockMsOf(opts.clock) } : {}),
-    ...(opts.deps?.sink !== undefined ? { sinkOptions: opts.deps.sink } : {}),
-    diagnostics: (line: string) => io.stderr.write(line),
-  })
-  if (!outcome.written) {
-    io.stderr.write(
-      '[journal] the group change was applied, but its journal record was dropped (see the sink diagnostics above)\n',
-    )
-  }
-  return 0
-}
-
-/** The store's `Date` clock as the journal's epoch-milliseconds clock. */
-function clockMsOf(clock: () => Date): () => number {
-  return () => clock().getTime()
+  return recordAccessChange({ io, opts, actor, subject: 'group', op, target, info })
 }

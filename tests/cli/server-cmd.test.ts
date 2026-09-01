@@ -573,6 +573,29 @@ describe('server add — dangling grants under the same name (F8, M3a)', () => {
     expect(io.err()).toContain('group list')
   })
 
+  test('a revoked agent is not a live grantee: no warning on add, still a dangle for remove', async () => {
+    // Arrange — the only holder of the name is revoked (parity with the UI:
+    // its token is dead), yet its grant still dangles and remains prunable.
+    const agents = createAgentsStore({ journalDir })
+    await agents.createAgent('ghost')
+    await agents.grantServer('ghost', 'github', ['read_file'])
+    await agents.grantServer('ghost', 'orphan', ['read_file'])
+    await agents.revokeAgent('ghost')
+    const addIo = fakeIo()
+    const removeIo = fakeIo()
+
+    // Act — `github` gets registered (warning check); `orphan` never is, so
+    // its grant dangles and the removal hint must still count it.
+    const addExit = await runServerAdd(ADD_GITHUB, addIo, opts())
+    const removeExit = await runServerRemove(['orphan'], removeIo, opts())
+
+    // Assert
+    expect(addExit).toBe(0)
+    expect(addIo.err()).not.toContain('already granted')
+    expect(removeExit).toBe(1)
+    expect(removeIo.err()).toContain('dangling grants: 1 agent grants')
+  })
+
   test('a name nobody grants adds without a warning', async () => {
     // Arrange
     await seedGrantHolders('other-server')
@@ -657,8 +680,8 @@ describe('server remove — a half-failing cascade (F2)', () => {
   })
 })
 
-describe('server remove — repair of a dangling cascade (F2c)', () => {
-  test('an unregistered server whose grants still dangle is pruned, exit 0', async () => {
+describe('server remove — an unknown name repairs NOTHING (T5)', () => {
+  test('dangling grants are named in a hint, but the store is left alone, exit 1', async () => {
     // Arrange — the state a crash between the registry write and the cascade
     // leaves behind: no registry entry, grants still pointing at the name.
     await seedGrantHolders('github')
@@ -667,49 +690,29 @@ describe('server remove — repair of a dangling cascade (F2c)', () => {
     // Act
     const exitCode = await runServerRemove(['github'], io, opts())
 
-    // Assert
-    expect(exitCode).toBe(0)
-    expect(io.out()).toBe(
-      'server "github" was not registered; pruned dangling grants: 2 agent grants, 1 groups\n',
-    )
-    const agents = createAgentsStore({ journalDir })
-    expect(Object.keys((await agents.getAgent('bot-a'))?.grants ?? {})).toEqual([])
-    const groups = await createGroupsStore({ journalDir }).listGroups()
-    expect(groups.map((group) => Object.keys(group.grants))).toEqual([[], []])
-  })
-
-  test('the repair is journalled as a server.remove access-edit record', async () => {
-    // Arrange
-    await seedGrantHolders('github')
-
-    // Act
-    await runServerRemove(['github'], fakeIo(), opts())
-
-    // Assert
-    const records = await accessEditRecords()
-    expect(records).toHaveLength(1)
-    expect(records[0]?.payload).toMatchObject({
-      action: 'server.remove',
-      server: 'github',
-      affectedAgents: ['bot-a', 'bot-b'],
-      affectedGroups: ['analytics'],
-      cascade: { agents: 'done', groups: 'done' },
-    })
-  })
-
-  test('a second run finds nothing left to prune and falls back to exit 1', async () => {
-    // Arrange
-    await seedGrantHolders('github')
-    await runServerRemove(['github'], fakeIo(), opts())
-    const io = fakeIo()
-
-    // Act
-    const exitCode = await runServerRemove(['github'], io, opts())
-
-    // Assert
+    // Assert — owner decision T5 (2026-09-01): "remove" and "repair" are no
+    // longer the same word. The hint names the count and the command.
     expect(exitCode).toBe(1)
     expect(io.err()).toContain('unknown server "github"')
-    expect(await accessEditRecords()).toHaveLength(1)
+    expect(io.err()).toContain(
+      'dangling grants: 2 agent grants, 1 groups — prune with: server remove --prune-grants github',
+    )
+    const agents = createAgentsStore({ journalDir })
+    expect(Object.keys((await agents.getAgent('bot-a'))?.grants ?? {})).toEqual(['github'])
+    const groups = await createGroupsStore({ journalDir }).listGroups()
+    expect(groups.map((group) => Object.keys(group.grants))).toEqual([['github'], []])
+    expect(await accessEditRecords()).toHaveLength(0)
+  })
+
+  test('nothing dangling → the plain refusal, with no hint line', async () => {
+    await seedGrantHolders('other-server')
+    const io = fakeIo()
+
+    const exitCode = await runServerRemove(['github'], io, opts())
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('unknown server "github"')
+    expect(io.err()).not.toContain('dangling grants:')
   })
 
   test('a reserved object key is refused plainly, with no unsatisfiable cascade diagnostic', async () => {
@@ -725,12 +728,12 @@ describe('server remove — repair of a dangling cascade (F2c)', () => {
     expect(exitCode).toBe(1)
     expect(io.err()).toContain('unknown server "constructor"')
     expect(io.err()).not.toContain('[cascade]')
-    expect(io.err()).not.toContain('re-run')
+    expect(io.err()).not.toContain('dangling grants:')
   })
 
   test('removing an unknown server on a fresh install creates no grant documents', async () => {
-    // Arrange — nothing seeded at all: the cascade has nothing to prune, so it
-    // must not bring `agents.json` / `groups.json` rows into existence.
+    // Arrange — nothing seeded at all: counting what dangles is a READ, so it
+    // must not bring `agents.json` / `groups.json` rows into existence either.
     const io = fakeIo()
 
     // Act
@@ -741,6 +744,87 @@ describe('server remove — repair of a dangling cascade (F2c)', () => {
     const names = await documentNames()
     expect(names).not.toContain(AGENTS_FILE_NAME)
     expect(names).not.toContain(GROUPS_FILE_NAME)
+  })
+})
+
+describe('server remove --prune-grants (T5)', () => {
+  test('prunes both halves of a dangling cascade and reports what it took, exit 0', async () => {
+    // Arrange
+    await seedGrantHolders('github')
+    const io = fakeIo()
+
+    // Act
+    const exitCode = await runServerRemove(['github', '--prune-grants'], io, opts())
+
+    // Assert
+    expect(exitCode).toBe(0)
+    expect(io.out()).toBe(
+      'server "github" was not registered; pruned dangling grants: 2 agent grants, 1 groups\n',
+    )
+    const agents = createAgentsStore({ journalDir })
+    expect(Object.keys((await agents.getAgent('bot-a'))?.grants ?? {})).toEqual([])
+    const groups = await createGroupsStore({ journalDir }).listGroups()
+    expect(groups.map((group) => Object.keys(group.grants))).toEqual([[], []])
+  })
+
+  test('the prune is journalled as a server.remove access-edit record', async () => {
+    // Arrange
+    await seedGrantHolders('github')
+
+    // Act
+    await runServerRemove(['github', '--prune-grants'], fakeIo(), opts())
+
+    // Assert
+    const records = await accessEditRecords()
+    expect(records).toHaveLength(1)
+    expect(records[0]?.payload).toMatchObject({
+      action: 'server.remove',
+      server: 'github',
+      affectedAgents: ['bot-a', 'bot-b'],
+      affectedGroups: ['analytics'],
+      cascade: { agents: 'done', groups: 'done' },
+    })
+  })
+
+  test('a second prune finds nothing left and still exits 0', async () => {
+    // Arrange — both halves are idempotent, so asking again is safe; what the
+    // operator asked for (no dangling grant under this name) is now true.
+    await seedGrantHolders('github')
+    await runServerRemove(['github', '--prune-grants'], fakeIo(), opts())
+    const io = fakeIo()
+
+    // Act
+    const exitCode = await runServerRemove(['github', '--prune-grants'], io, opts())
+
+    // Assert
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain('pruned dangling grants: 0 agent grants, 0 groups')
+  })
+
+  test('on a REGISTERED name the flag is accepted and behaves like a normal remove', async () => {
+    // Arrange
+    await seedServer('github')
+    await seedGrantHolders('github')
+    const io = fakeIo()
+
+    // Act
+    const exitCode = await runServerRemove(['github', '--prune-grants'], io, opts())
+
+    // Assert
+    expect(exitCode).toBe(0)
+    expect(io.out()).toBe('removed server "github"; cascaded: 2 agent grants, 1 groups\n')
+    expect(await createRegistryStore(journalDir).getServer('github')).toBeUndefined()
+  })
+
+  test('an unknown flag prints the usage and changes nothing', async () => {
+    await seedGrantHolders('github')
+    const io = fakeIo()
+
+    const exitCode = await runServerRemove(['github', '--prune'], io, opts())
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('Usage')
+    expect(await accessEditRecords()).toHaveLength(0)
   })
 })
 

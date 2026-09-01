@@ -343,15 +343,34 @@ describe('group grant', () => {
     expect((await groups().getGroup('analytics'))?.grants['github']).toEqual({ tools: '*' })
   })
 
-  test('omitting --tools grants all tools while resources/prompts stay denied', async () => {
+  test('omitting --tools is refused, naming the flag and the explicit wildcard (T2)', async () => {
+    // Arrange — owner decision T2 (2026-09-01): unlike `agent grant`, a group
+    // grant has no default surface, because it lands on every member at once.
     await seedGroup('analytics')
     await seedServer('github')
     const io = fakeIo()
 
+    // Act
     const code = await runGroupCommand(['grant', 'analytics', 'github'], io, await ownerOpts())
 
-    expect(code).toBe(0)
-    expect((await groups().getGroup('analytics'))?.grants['github']).toEqual({ tools: '*' })
+    // Assert — the refusal names the flag AND how to grant everything on purpose.
+    expect(code).toBe(1)
+    expect(io.err()).toContain('--tools is required')
+    expect(io.err()).toContain("--tools '*'")
+    expect((await groups().getGroup('analytics'))?.grants).toEqual({})
+    expect(await accessRecords()).toHaveLength(0)
+  })
+
+  test('the refusal comes BEFORE the token gate: a missing --tools is a usage error', async () => {
+    // Arrange — an anonymous shell gets the argument error, not a token lecture:
+    // the command is malformed whoever typed it.
+    await seedGroup('analytics')
+    const io = fakeIo()
+
+    const code = await runGroupCommand(['grant', 'analytics', 'github'], io, anonOpts())
+
+    expect(code).toBe(1)
+    expect(io.err()).toContain('--tools is required')
   })
 
   test('--resources * opens the resource surface explicitly', async () => {
@@ -360,7 +379,7 @@ describe('group grant', () => {
     const io = fakeIo()
 
     const code = await runGroupCommand(
-      ['grant', 'analytics', 'github', '--resources', '*'],
+      ['grant', 'analytics', 'github', '--tools', '*', '--resources', '*'],
       io,
       await ownerOpts(),
     )
@@ -393,7 +412,11 @@ describe('group grant', () => {
     await seedGroup('analytics')
     const io = fakeIo()
 
-    const code = await runGroupCommand(['grant', 'analytics', 'ghost'], io, await ownerOpts())
+    const code = await runGroupCommand(
+      ['grant', 'analytics', 'ghost', '--tools', '*'],
+      io,
+      await ownerOpts(),
+    )
 
     expect(code).toBe(1)
     expect(io.err()).toContain('unknown server "ghost"')
@@ -405,7 +428,11 @@ describe('group grant', () => {
     await seedServer('github')
     const io = fakeIo()
 
-    const code = await runGroupCommand(['grant', 'ghost', 'github'], io, await ownerOpts())
+    const code = await runGroupCommand(
+      ['grant', 'ghost', 'github', '--tools', '*'],
+      io,
+      await ownerOpts(),
+    )
 
     expect(code).toBe(1)
     expect(io.err()).toContain('ghost')
@@ -417,7 +444,11 @@ describe('group grant', () => {
     await seedServer('github')
     const io = fakeIo()
 
-    const code = await runGroupCommand(['grant', 'analytics', 'github'], io, anonOpts())
+    const code = await runGroupCommand(
+      ['grant', 'analytics', 'github', '--tools', '*'],
+      io,
+      anonOpts(),
+    )
 
     expect(code).toBe(1)
     expect((await groups().getGroup('analytics'))?.grants).toEqual({})

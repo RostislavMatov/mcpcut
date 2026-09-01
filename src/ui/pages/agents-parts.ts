@@ -58,11 +58,21 @@ function sourceCell(source: GrantSource): Html {
 /**
  * The trailing action cell. An inherited row has nothing to ungrant HERE — the
  * grant belongs to the group — so it links to the group's card instead of
- * offering a control that would silently do nothing.
+ * offering a control that would silently do nothing. Below `owner` the
+ * personal row keeps its (empty) cell rather than losing a column: the matrix
+ * stays readable, it simply stops being editable (decision T4).
  */
-function actionCell(agentName: string, server: string, source: GrantSource, session: UiSession): Html {
+function actionCell(row: {
+  readonly agentName: string
+  readonly server: string
+  readonly source: GrantSource
+  readonly canManage: boolean
+  readonly session: UiSession
+}): Html {
+  const { agentName, server, source, canManage, session } = row
   if (source.kind === 'agent') {
-    return html`<td class="ag-ungrant">${ungrantForm(agentName, server, session)}</td>`
+    const control = canManage ? ungrantForm(agentName, server, session) : html``
+    return html`<td class="ag-ungrant">${control}</td>`
   }
   const group = source.groups[0] ?? ''
   return html`<td class="ag-ungrant"><a class="small" href="${safeUrl(`/groups#group-${group}`)}">manage in groups</a></td>`
@@ -74,16 +84,17 @@ function grantRow(row: {
   readonly server: string
   readonly grant: AgentGrant
   readonly source: GrantSource
+  readonly canManage: boolean
   readonly session: UiSession
 }): Html {
-  const { agentName, server, grant, source, session } = row
+  const { agentName, server, grant, source, canManage, session } = row
   return html`<tr data-server="${server}">
     <td class="ag-server">${server}</td>
     <td class="tools">${displayGrant(grant.tools)}</td>
     <td class="resources">${displayGrant(grant.resources)}</td>
     <td class="prompts">${displayGrant(grant.prompts)}</td>
     ${sourceCell(source)}
-    ${actionCell(agentName, server, source, session)}
+    ${actionCell({ agentName, server, source, canManage, session })}
   </tr>`
 }
 
@@ -91,7 +102,13 @@ function grantRow(row: {
 const PERSONAL_SOURCE: GrantSource = { kind: 'agent', shadowedGroups: [] }
 
 /** The whole effective grant table for one agent (or an empty-state row). */
-function grantTable(agentName: string, effective: EffectiveGrants, session: UiSession): Html {
+function grantTable(view: {
+  readonly agentName: string
+  readonly effective: EffectiveGrants
+  readonly canManage: boolean
+  readonly session: UiSession
+}): Html {
+  const { agentName, effective, canManage, session } = view
   const servers = Object.keys(effective.grants).sort()
   const rows =
     servers.length === 0
@@ -103,6 +120,7 @@ function grantTable(agentName: string, effective: EffectiveGrants, session: UiSe
               server,
               grant: effective.grants[server] as AgentGrant,
               source: effective.sources[server] ?? PERSONAL_SOURCE,
+              canManage,
               session,
             }),
           ),
@@ -128,25 +146,30 @@ function revokeForm(agentName: string, session: UiSession): Html {
  * every group of the installation — `effectiveGrantsOf` ignores the ones this
  * agent is not a member of.
  */
-export function renderAgentCard(
-  agent: AgentRecord,
-  groups: readonly GroupRecord[],
-  session: UiSession,
-): Html {
+export function renderAgentCard(view: {
+  readonly agent: AgentRecord
+  readonly groups: readonly GroupRecord[]
+  /** `owner` only (decision T4): below it the card is a read-only matrix. */
+  readonly canManage: boolean
+  readonly session: UiSession
+}): Html {
+  const { agent, groups, canManage, session } = view
   const revoked = agent.revokedAt !== undefined
   const badge = revoked ? html`<span class="badge revoked">revoked</span>` : html``
   const effective = effectiveGrantsOf(agent, groups)
   const grantCount = Object.keys(effective.grants).length
   const footer = revoked
     ? html`<span class="faint small num" title="${agent.revokedAt ?? ''}">revoked ${agent.revokedAt ?? ''}</span>`
-    : revokeForm(agent.name, session)
+    : canManage
+      ? revokeForm(agent.name, session)
+      : html``
   return html`<section class="card agent ag-card" data-agent="${agent.name}">
     <div class="card-hd">
       <span class="name">${agent.name}</span>
       ${badge}
       <span class="muted small num">${String(grantCount)} server${grantCount === 1 ? '' : 's'} granted</span>
     </div>
-    ${grantTable(agent.name, effective, session)}
+    ${grantTable({ agentName: agent.name, effective, canManage, session })}
     <div class="ag-foot">${footer}</div>
   </section>`
 }

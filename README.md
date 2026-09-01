@@ -349,12 +349,13 @@ mcp-journal wrap [--server <name>] [--policy <path>] [--no-policy] [--fail-close
 mcp-journal connect <server> --agent <name> [--policy <path>] [--fail-closed]
 mcp-journal serve [--port N] [--host H] [--policy <path>] [--fail-closed] [--allowed-origin URL]
 mcp-journal server add <name> --transport stdio|http ...
-mcp-journal server list | show <name> | remove <name>
+mcp-journal server list | show <name> | remove <name> [--prune-grants]
 mcp-journal vault init | set <name> | list | remove <name> | rekey
 mcp-journal agent create <name> | list | revoke <name>
 mcp-journal agent grant <agent> <server> [--tools a,b,prefix*] | ungrant <agent> <server>
+                                                  # every agent mutation needs MCP_ADMIN_TOKEN (owner); list does not
 mcp-journal group create <name> | remove <name> | list | show <name>
-mcp-journal group grant <group> <server> [--tools a,b,prefix*] [--resources ...|*] [--prompts ...|*]
+mcp-journal group grant <group> <server> --tools a,b,prefix*|* [--resources ...|*] [--prompts ...|*]
 mcp-journal group ungrant <group> <server>
 mcp-journal group join <group> <agent> | leave <group> <agent>   # mutations need MCP_ADMIN_TOKEN (owner)
 mcp-journal sessions
@@ -494,6 +495,7 @@ mcp-journal server add github --transport stdio \
   --command "npx" --args "-y,@modelcontextprotocol/server-github" \
   --env GITHUB_PERSONAL_ACCESS_TOKEN=vault:github-pat
 mcp-journal vault set github-pat        # value comes from stdin
+export MCP_ADMIN_TOKEN=<your personal admin token, role owner>
 mcp-journal agent create research-bot   # prints the token ONCE
 mcp-journal agent grant research-bot github --tools "get_*,list_*,search_*"
 ```
@@ -516,6 +518,12 @@ Step by step:
 5. **`agent grant`** is the grant matrix: this agent, this server, these tool
    patterns. Anything not granted is invisible in `tools/list` and denied on
    call — before any policy rule is even consulted.
+6. **`create`, `grant`, `ungrant` and `revoke` need a personal admin token** of
+   role `owner` in `MCP_ADMIN_TOKEN` (`admin add <name> --role owner` mints
+   one); `agent list` needs none. Each mutation prints an audit line on stderr
+   and writes an `access-edit` record naming the admin — the same treatment
+   `group *` and `policy set` get. The agent token itself never reaches the
+   journal.
 
 Then point the agent's own client config at `connect`:
 
@@ -563,6 +571,10 @@ admin token of role `owner` in `MCP_ADMIN_TOKEN` (the same bar as
 line on stderr and writes an `access-edit` record into the journal with the
 admin's name — the same treatment `policy set` gets.
 
+`group grant` **requires an explicit `--tools`** (unlike `agent grant`, which
+defaults to `'*'`): the grant lands on every member at once, so "all tools" has
+to be typed out as `--tools '*'`.
+
 **A group is not a login.** There is no group key and no shared token: the
 agent still authenticates with its own token, and journal records still name
 the agent. A group hands out *permissions* in bulk, nothing else — see
@@ -592,16 +604,25 @@ personal grant and every group grant, and the cascade is journaled
 token the removal still happens, and the record says the change was
 unattributed.
 
+Removing a name the registry does **not** hold changes nothing: it exits 1 with
+`unknown server "x"`, plus a hint when grants are still pointing at that name —
+`dangling grants: 2 agent grants, 1 groups — prune with: server remove
+--prune-grants x`. The repair is that explicit flag; on a registered name the
+flag is simply redundant, since the cascade runs anyway.
+
 ### Revoking access
 
 ```
 mcp-journal agent revoke research-bot
 ```
 
-One command, and the agent's token is dead: new connections are refused
-immediately, and sessions that are already live end on their next poll of
-`agents.json` (≤ 5 s) with an `agent-revoked` decision record in the journal.
-To narrow rather than cut off, use `mcp-journal agent ungrant <agent> <server>`.
+One command (with `MCP_ADMIN_TOKEN`, role `owner`), and the agent's token is
+dead: new connections are refused immediately, and sessions that are already
+live end on their next poll of `agents.json` (≤ 5 s) with an `agent-revoked`
+decision record in the journal.
+To narrow rather than cut off, use `mcp-journal agent ungrant <agent> <server>`
+— but note that for an agent in a group this WIDENS access rather than
+narrowing it (the group's grant comes back; the command warns when it does).
 
 ### HTTP agents (`serve`)
 
@@ -731,8 +752,8 @@ are exactly three roles, fixed (no custom/scoped roles in this release):
 
 | Role | Can |
 |---|---|
-| `owner` | everything, including managing other admins, the server registry, and the vault |
-| `operator` | approvals (approve/deny), quarantine (approve/reject), the agent grant matrix (create/grant/ungrant/revoke) |
+| `owner` | everything, including managing other admins, the server registry, the vault, and the permission surface itself: the agent grant matrix (create/grant/ungrant/revoke) and groups |
+| `operator` | approvals (approve/deny), quarantine (approve/reject), forced server probe — decisions *inside* the granted surface |
 | `viewer` | read-only: journal, approvals queue, registry, grant matrix — no POST action succeeds for this role, anywhere |
 
 Manage accounts from the CLI:

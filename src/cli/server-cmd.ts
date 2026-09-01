@@ -6,11 +6,9 @@ import { formatPolicyErrors } from '../policy/load.js'
 import { parseServerRecord, type ServerRecord } from '../registry/schema.js'
 import { createRegistryStore, type RegistryStore } from '../registry/store.js'
 import {
-  cascadeGrants,
   cascadeServerRemoval,
   cascadeSummary,
-  cascadeTouchedAnything,
-  reportCascade,
+  refuseUnknownServer,
 } from './server-remove-cascade.js'
 import {
   printProbedStatus,
@@ -72,7 +70,11 @@ const SHOW_USAGE = `Usage:
 `
 
 const REMOVE_USAGE = `Usage:
-  server remove <name>   Remove a server from the registry
+  server remove <name> [--prune-grants]
+      Remove a server from the registry; its grants are dropped from every agent
+      and group (cascade). An UNKNOWN name is refused: --prune-grants is the
+      explicit way to prune grants that dangle behind a name the registry has
+      already forgotten.
 `
 
 function describeError(error: unknown): string {
@@ -252,25 +254,45 @@ export async function runServerShow(
   return 0
 }
 
+/** The `<name>` positional of `server remove` plus its one flag (T5). */
+interface RemoveArgs {
+  readonly name: string
+  readonly pruneGrants: boolean
+}
+
+function parseRemoveArgs(args: string[], io: ServerCliIo): RemoveArgs | undefined {
+  try {
+    const parsed = parseArgs({
+      args: [...args],
+      options: { 'prune-grants': { type: 'boolean' } },
+      allowPositionals: true,
+      strict: true,
+    })
+    const name = parsed.positionals[0]
+    if (parsed.positionals.length === 1 && name !== undefined) {
+      return { name, pruneGrants: parsed.values['prune-grants'] === true }
+    }
+  } catch {
+    // fall through to usage
+  }
+  io.stderr.write(REMOVE_USAGE)
+  return undefined
+}
+
 /**
- * The `not-found` branch of `server remove` doubles as the REPAIR path: the
- * three documents share no transaction, so a crash (or a half-failed cascade)
- * can leave grants pointing at a name the registry no longer knows. Both
- * cascade halves are idempotent, so running them again either prunes what
- * dangled — reported, audited and journalled like any other removal — or
- * finds nothing, which is the plain "unknown server" of before.
+ * `--prune-grants` on a name the registry does not hold (owner decision T5):
+ * the three documents share no transaction, so a crash (or a half-failed
+ * cascade) can leave grants pointing at a forgotten name. Both cascade halves
+ * are idempotent, so this prunes whatever dangled — audited and journalled
+ * like any other removal — or finds nothing and says so. It is asked for
+ * explicitly: `server remove <unknown>` on its own no longer repairs anything.
  */
-async function repairDanglingGrants(
+async function pruneDanglingGrants(
   name: string,
   io: ServerCliIo,
   opts: ServerCliOptions,
 ): Promise<number> {
-  const cascade = await cascadeGrants(name, io, opts)
-  if (!cascadeTouchedAnything(cascade)) {
-    io.stderr.write(`unknown server "${formatReadableField(name)}"\n`)
-    return 1
-  }
-  await reportCascade(name, cascade, io, opts)
+  const cascade = await cascadeServerRemoval(name, io, opts)
   io.stdout.write(
     `server "${formatReadableField(name)}" was not registered; ` +
       `pruned dangling grants: ${cascadeSummary(cascade)}\n`,
@@ -279,27 +301,34 @@ async function repairDanglingGrants(
 }
 
 /**
- * `server remove <name>`. The registry write comes first, then the cascade
- * that strips the server from agent grants and groups (G6), then the audit
- * line, the journal record and the report. Exit stays 0 once the server is
- * gone — including when the journal dropped the record or one cascade half
- * failed, both of which are reported rather than hidden.
+ * `server remove <name> [--prune-grants]`. The registry write comes first,
+ * then the cascade that strips the server from agent grants and groups (G6),
+ * then the audit line, the journal record and the report. Exit stays 0 once
+ * the server is gone — including when the journal dropped the record or one
+ * cascade half failed, both of which are reported rather than hidden.
+ *
+ * An unknown name exits 1 and changes nothing (T5); `--prune-grants` is the
+ * explicit repair, and on a REGISTERED name it is simply redundant — the
+ * cascade runs either way.
  */
 export async function runServerRemove(
   args: string[],
   io: ServerCliIo = DEFAULT_IO,
   opts: ServerCliOptions = {},
 ): Promise<number> {
-  const name = parseNameArg(args, REMOVE_USAGE, io)
-  if (name === undefined) {
+  const parsed = parseRemoveArgs(args, io)
+  if (parsed === undefined) {
     return 1
   }
+  const { name } = parsed
 
   let removed: string
   try {
     const result = await makeStore(opts).removeServer(name)
     if (result.status === 'not-found') {
-      return await repairDanglingGrants(name, io, opts)
+      return parsed.pruneGrants
+        ? await pruneDanglingGrants(name, io, opts)
+        : await refuseUnknownServer(name, io, opts)
     }
     removed = result.record.name
   } catch (error: unknown) {

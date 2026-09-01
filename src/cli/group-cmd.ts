@@ -25,12 +25,12 @@ import {
   twoNames,
   USAGE,
 } from './group-cmd-args.js'
+import { pairTarget } from './access-cmd-write.js'
 import {
   formatGrantEcho,
   formatGroupDetail,
   formatGroupTable,
   formatMembers,
-  pairTarget,
 } from './group-cmd-format.js'
 import { recordChange, requireOwner } from './group-cmd-write.js'
 

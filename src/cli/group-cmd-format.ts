@@ -1,24 +1,18 @@
-import type { Role } from '../admin/authz.js'
 import type { AgentGrant } from '../agents/schema.js'
 import type { GroupRecord } from '../groups/schema.js'
 import { formatReadableField } from '../journal/format.js'
 
 /**
- * Rendering for `group list|show|grant` plus the stderr audit line, split out
- * of `group-cmd.ts` so the command module stays about control flow (token,
- * existence checks, store, journal) and this one about text.
+ * Rendering for `group list|show|grant`, split out of `group-cmd.ts` so the
+ * command module stays about control flow (token, existence checks, store,
+ * journal) and this one about text. The audit line itself is shared with
+ * `agent *` and lives in `access-cmd-write.ts` (owner decision T4).
  *
  * Every value that reaches a terminal here comes from an operator-typed name
  * or a hand-editable store document, so it goes through `formatReadableField`
  * first — the same rule the M2/M3 CLIs follow (a control character in a group
  * name must not be able to move the cursor).
  */
-
-/** The admin a mutation was attributed to, as the audit line needs it. */
-export interface GroupAuditActor {
-  readonly adminName: string
-  readonly role: Role
-}
 
 /** The mutating subcommands, as they appear in the audit line and the journal action. */
 export type GroupOp = 'create' | 'remove' | 'grant' | 'ungrant' | 'join' | 'leave'
@@ -27,20 +21,6 @@ export type GroupOp = 'create' | 'remove' | 'grant' | 'ungrant' | 'join' | 'leav
 const COLUMN_GAP = 2
 
 const LIST_HEADERS = ['NAME', 'SERVERS', 'MEMBERS'] as const
-
-/**
- * The audit line every successful mutation writes to stderr (ADR-0009 O5:
- * a store change made from a shell says who made it, right there in the
- * terminal, whether or not the journal record lands).
- */
-export function auditLineOf(op: GroupOp, actor: GroupAuditActor, target: string): string {
-  return `[audit] group ${op} by ${formatReadableField(actor.adminName)} (${actor.role}): ${target}\n`
-}
-
-/** `<group>/<server>` or `<group>/<agent>` — the two-part target, both halves sanitized. */
-export function pairTarget(first: string, second: string): string {
-  return `${formatReadableField(first)}/${formatReadableField(second)}`
-}
 
 /** `group list`: a padded NAME / SERVERS / MEMBERS table, or the empty marker. */
 export function formatGroupTable(groups: readonly GroupRecord[]): string {

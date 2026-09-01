@@ -12,6 +12,7 @@ import type { AgentGrant, AgentRecord } from '../../agents/schema.js'
 import { effectiveGrantsOf } from '../../agents/effective.js'
 import type { GroupRecord } from '../../groups/schema.js'
 import type { GroupsStore } from '../../groups/store.js'
+import type { AccessEditInfo } from '../../journal/record.js'
 import { StoreWriteRejectedError } from '../../policy/store.js'
 import type { UiSession } from '../auth.js'
 import {
@@ -57,6 +58,19 @@ export interface AgentsHandlersDeps {
    */
   readonly groups: Pick<GroupsStore, 'listGroups'>
   readonly audit?: UiAuditSink
+  /**
+   * Journal port for access changes (owner decision T1, 2026-09-01), injected
+   * by `cli/ui-wiring.ts` — the same port and the same shape the group
+   * handlers use, so "who changed this agent's surface" is answered by one
+   * record category however the change was made. Optional: without it an edit
+   * still happens and is still attributed on the audit sink, it simply leaves
+   * no journal record.
+   *
+   * The one-time token of `createAgent` has NO field in `AccessEditInfo` and
+   * must never acquire one: the record says an agent was created, never with
+   * what key.
+   */
+  readonly journalAccessEdit?: (info: AccessEditInfo) => Promise<unknown>
 }
 
 export interface AgentsHandlers {
@@ -116,6 +130,30 @@ export function createAgentsHandlers(deps: AgentsHandlersDeps): AgentsHandlers {
     audit?.({ actor: 'ui', adminName: session.adminName, action, target })
   }
 
+  /**
+   * Records one access change in the journal. The store write has already
+   * happened when this runs, so a journal that cannot be reached must not turn
+   * it into a 500: the injected writer never throws by contract
+   * (`groups/journal-access-edit.ts` returns a drop indicator instead), and
+   * this guard keeps that true for ANY injected port. Same shape and same
+   * ordering as `handlers/groups.ts`: attribution first, journal second, both
+   * exactly once.
+   */
+  async function journal(session: UiSession, info: Omit<AccessEditInfo, 'actor'>): Promise<void> {
+    const write = deps.journalAccessEdit
+    if (write === undefined) return
+    try {
+      await write({
+        actor: { adminName: session.adminName, role: session.role, via: 'ui' },
+        ...info,
+      })
+    } catch {
+      // Deliberately contained, not swallowed silently: the audit sink above
+      // already recorded the attributed edit, and the writer's own
+      // diagnostics report the drop.
+    }
+  }
+
   async function agentsPage(ctx: UiRequestContext): Promise<UiResult> {
     const session = ctx.session
     if (session === undefined) return FORBIDDEN
@@ -133,6 +171,9 @@ export function createAgentsHandlers(deps: AgentsHandlersDeps): AgentsHandlers {
     try {
       const created = await agentsStore.createAgent(name)
       record(session, 'agents.create', name)
+      // `created.token` is deliberately NOT passed on: the record says the
+      // agent exists, the reveal page is the only place the key is rendered.
+      await journal(session, { action: 'agent.create', agent: created.agent.name })
       return htmlResult(HTTP_STATUS_OK, renderAgentTokenOnce({ agent: created.agent.name, token: created.token, session }))
     } catch (error) {
       return storeFailure(error, session)
@@ -151,8 +192,15 @@ export function createAgentsHandlers(deps: AgentsHandlersDeps): AgentsHandlers {
     const toolsValue = parseGrantValue(form.tools)
     const tools = toolsValue === undefined ? [] : toolsValue
     try {
-      await agentsStore.grantServer(agent, server, tools, methodGrantsFrom(form))
+      const updated = await agentsStore.grantServer(agent, server, tools, methodGrantsFrom(form))
       record(session, 'agents.grant', `${agent}/${server}`)
+      const grant = updated.grants[server]
+      await journal(session, {
+        action: 'agent.grant',
+        agent,
+        server,
+        ...(grant !== undefined ? { grant } : {}),
+      })
       return htmlResult(HTTP_STATUS_OK, renderAgentNotice({ message: `granted ${server} to ${agent}`, ok: true, session }))
     } catch (error) {
       return storeFailure(error, session)
@@ -185,6 +233,7 @@ export function createAgentsHandlers(deps: AgentsHandlersDeps): AgentsHandlers {
       }
       await agentsStore.ungrantServer(agent, server)
       record(session, 'agents.ungrant', ungrantTarget(agent, server, shadowed?.groups))
+      await journal(session, { action: 'agent.ungrant', agent, server })
       return htmlResult(HTTP_STATUS_OK, renderAgentNotice({ message: `removed ${server} from ${agent}`, ok: true, session }))
     } catch (error) {
       return storeFailure(error, session)
@@ -222,6 +271,7 @@ export function createAgentsHandlers(deps: AgentsHandlersDeps): AgentsHandlers {
     try {
       await agentsStore.revokeAgent(agent)
       record(session, 'agents.revoke', agent)
+      await journal(session, { action: 'agent.revoke', agent })
       return htmlResult(HTTP_STATUS_OK, renderAgentNotice({ message: `revoked ${agent}`, ok: true, session }))
     } catch (error) {
       return storeFailure(error, session)
