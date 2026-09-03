@@ -30,6 +30,7 @@ pitch and landing material must not claim more than it does.
 | explicit retention pruning (`prune`) | shipped, **no defaults** | prune + marker tests |
 | admin UI / approval queue | shipped | e2e + UI test suites, TS + security reviews, manual browser smoke (`docs/smoke-m4.md`), `docs/adr/0004-admin-ui-architecture.md` |
 | named admin accounts (owner/operator/viewer) | shipped | admin CLI + role-enforcement tests |
+| whole-product security audit (pilot-ready gate) | passed 2026-09-02, **internal** | `docs/security-audit-2026-09.md` — 0 CRITICAL, 4 HIGH fixed in the same wave; an independent pass before the first partner is an open owner decision |
 
 The journal is a persistent, append-oriented, secret-redacted SQLite database
 (`journal.db`; JSONL is the export format — `mcp-journal export` — and the
