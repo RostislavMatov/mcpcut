@@ -91,6 +91,26 @@ function cascadeRecord(): JournalRecord {
   })
 }
 
+/** `vault set github-pat` by an owner from the CLI (owner decision S2, 2026-09-03). */
+function vaultSetRecord(): JournalRecord {
+  return buildAccessEditRecord({
+    info: {
+      actor: { adminName: 'alice', role: 'owner', via: 'cli' },
+      action: 'vault.set',
+      vaultEntry: 'github-pat',
+    },
+    clock: () => FIXED_NOW_MS,
+  })
+}
+
+/** `vault rekey`: every secret re-encrypted, none named. */
+function vaultRekeyRecord(): JournalRecord {
+  return buildAccessEditRecord({
+    info: { actor: { adminName: 'alice', role: 'owner', via: 'cli' }, action: 'vault.rekey' },
+    clock: () => FIXED_NOW_MS,
+  })
+}
+
 function trafficDoc(sessionId: string, id: string): string {
   return JSON.stringify({
     id,
@@ -137,6 +157,16 @@ function mixedRows(): readonly JournalRecordRow[] {
     editRowOf(grantRecord()),
     rowOf(trafficDoc('session-1', 'b')),
     editRowOf(cascadeRecord()),
+  ]
+}
+
+/** Traffic interleaved with the three vault actions — the S2 shape of `mixedRows()`. */
+function vaultRows(): readonly JournalRecordRow[] {
+  return [
+    rowOf(trafficDoc('session-1', 'a')),
+    editRowOf(vaultSetRecord()),
+    editRowOf(vaultRekeyRecord()),
+    rowOf(trafficDoc('session-1', 'b')),
   ]
 }
 
@@ -407,5 +437,103 @@ describe('buildAccessEditRecord', () => {
 
   test('two records built from the same info still get distinct ids', () => {
     expect(grantRecord().id).not.toBe(grantRecord().id)
+  })
+})
+
+// --- vault.* actions (owner decision S2, 2026-09-03) --------------------------
+
+describe('vault.* access-edit records (S2)', () => {
+  test('a vault.set record names the secret, and a vault.rekey record names none', () => {
+    // A secret NAME is the only thing the record may carry: the value went
+    // into the vault and has no field here to ride in on.
+    expect(vaultSetRecord().payload).toEqual({
+      actor: { adminName: 'alice', role: 'owner', via: 'cli' },
+      action: 'vault.set',
+      vaultEntry: 'github-pat',
+    })
+    const rekey = vaultRekeyRecord().payload as Record<string, unknown>
+    expect(Object.keys(rekey).sort()).toEqual(['action', 'actor'])
+    expect(Object.hasOwn(rekey, 'vaultEntry')).toBe(false)
+  })
+
+  test('a secret NAME shaped like a real key (sk-…) survives value redaction — it is the fact S2 keeps', () => {
+    // Arrange — a legitimate vault name that happens to match the redactor's
+    // `sk-` value pattern; the value patterns must not blank a validated name.
+    const record = buildAccessEditRecord({
+      info: infoOf({ action: 'vault.set', vaultEntry: 'sk-openai-prod-key' }),
+      clock: () => FIXED_NOW_MS,
+    })
+
+    // Assert
+    expect((record.payload as Record<string, unknown>)['vaultEntry']).toBe('sk-openai-prod-key')
+    expect(JSON.stringify(record.payload)).not.toContain(REDACTED_PLACEHOLDER)
+  })
+
+  test('the builder rejects a vaultEntry outside the vault name pattern WITHOUT echoing it', () => {
+    // A caller that passes the value where the name belongs is the mistake
+    // this field invites; the vault's own name pattern is the fence, and the
+    // error must not repeat the offending string into a diagnostics line.
+    const stray = 'Bearer sk-live-abcdef1234567890abcd'
+    let thrown: unknown
+    try {
+      buildAccessEditRecord({ info: infoOf({ action: 'vault.set', vaultEntry: stray }), clock: () => FIXED_NOW_MS })
+    } catch (error: unknown) {
+      thrown = error
+    }
+    expect(thrown).toBeInstanceOf(Error)
+    expect((thrown as Error).message).not.toContain(stray)
+    expect((thrown as Error).message).not.toContain('sk-live')
+    expect((thrown as Error).message).toContain('secret')
+  })
+
+  test('verify walks a journal holding vault records without finding a break', async () => {
+    const handle = await openWithRows(vaultRows())
+    const result = verifyChain(handle)
+    expect(result.break).toBeNull()
+    expect(result.totalRowCount).toBe(4)
+    expect(result.attestedCount).toBe(4)
+  })
+
+  test('export + offline verify --report pass, and the vault edit is in the export by name only', async () => {
+    const fixture = await buildExport(vaultRows())
+    const result = await verifyExport(fixture)
+    expect(result.failedCount).toBe(0)
+    expect(result.couldNotRunCount).toBe(0)
+    expect(fixture.recordsText).toContain('"action":"vault.set"')
+    expect(fixture.recordsText).toContain('"action":"vault.rekey"')
+    expect(fixture.recordsText).toContain('"vaultEntry":"github-pat"')
+    expect(fixture.manifest.counts.records).toBe(4)
+    expect(fixture.manifest.counts.decisions).toBe(0)
+    expect(fixture.manifest.counts.unparsableRows).toBe(0)
+  })
+
+  test('a stored vault record reads back as a record, not a skipped row', async () => {
+    await openWithRows(vaultRows())
+    const result = await readSessionWithStats(ACCESS_EDIT_SESSION_ID, { dir: journalDir })
+    expect(result.skippedLineCount).toBe(0)
+    expect(result.records.map((record) => (record.payload as { action: string }).action)).toEqual([
+      'vault.set',
+      'vault.rekey',
+    ])
+  })
+
+  test('search filters match a vault edit by kind and secret name; decision filters never do', () => {
+    const record = vaultSetRecord()
+    expect(matchesFilters(record, { kind: 'access-edit' })).toBe(true)
+    expect(matchesFilters(record, { text: 'github-pat' })).toBe(true)
+    expect(matchesFilters(record, { text: 'alice' })).toBe(true)
+    // Swapping a server's credential is not a call an agent made against it.
+    expect(matchesFilters(record, { outcome: 'allow' })).toBe(false)
+    expect(matchesFilters(record, { agentName: 'ci-agent' })).toBe(false)
+  })
+
+  test('the UI journal row renders a vault edit with its action and secret name', () => {
+    const rendered = render(
+      renderRecordRow(vaultSetRecord(), { hasLatency: false, withSession: false }),
+    )
+    expect(rendered).toContain('access-edit')
+    expect(rendered).toContain('vault.set')
+    expect(rendered).toContain('github-pat')
+    expect(rendered).toContain('alice')
   })
 })

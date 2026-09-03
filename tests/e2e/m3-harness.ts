@@ -72,9 +72,9 @@ function seamsFor(journalDir: string): DispatchOptions {
   return {
     journalDir,
     server: { journalDir },
-    vault: { journalDir },
     // `env: {}` keeps a token exported in the developer's own shell out of the
     // command under test; `asOwner()` puts this plane's own token back in.
+    vault: { journalDir, env: {} },
     agent: { journalDir, env: {} },
     admin: { journalDir },
     // `journalDir` here is where `approvals approve|deny` looks up the admin
@@ -180,10 +180,11 @@ export const CLI_OWNER = 'cli-owner'
 const ownerSeams = new WeakMap<Plane, Promise<DispatchOptions>>()
 
 /**
- * The seam that makes `agent create|grant|ungrant|revoke` run AS a named
- * owner. Since owner decision T4 (2026-09-01) every personal-grant mutation
- * needs a token, so an e2e must onboard an admin exactly the way an operator
- * would — through `admin add` — rather than seeding the store.
+ * The seam that makes `agent create|grant|ungrant|revoke` — and, since owner
+ * decision S2 (2026-09-03), `vault set|remove|rekey` — run AS a named owner.
+ * Since owner decision T4 (2026-09-01) every personal-grant mutation needs a
+ * token, so an e2e must onboard an admin exactly the way an operator would —
+ * through `admin add` — rather than seeding the store.
  */
 export function asOwner(plane: Plane): Promise<DispatchOptions> {
   const existing = ownerSeams.get(plane)
@@ -196,7 +197,8 @@ export function asOwner(plane: Plane): Promise<DispatchOptions> {
 async function mintOwner(plane: Plane): Promise<DispatchOptions> {
   const argv = ['admin', 'add', CLI_OWNER, '--role', 'owner']
   const token = tokenFrom(expectOk(argv, await plane.run(argv)), 'admin add')
-  return { agent: { env: { [ADMIN_TOKEN_ENV_VAR]: token } } }
+  const env = { [ADMIN_TOKEN_ENV_VAR]: token }
+  return { agent: { env }, vault: { env } }
 }
 
 /** `agent create` + `agent grant` for a server that is already registered. */
@@ -289,11 +291,16 @@ export async function runOnboarding(plane: Plane, args: OnboardingArgs): Promise
   if (args.secret !== undefined) {
     const setArgv = ['vault', 'set', args.secret.name]
     const value = args.secret.value
+    // `vault set` runs as the plane's owner (owner decision S2, 2026-09-03),
+    // the same admin `agent create|grant` below run as.
+    const owner = await asOwner(plane)
     expectOk(
       setArgv,
       // The value arrives on stdin, never in argv (which `ps` exposes) — the
       // injected reader is the same seam the real command reads stdin through.
-      await plane.run(setArgv, { vault: { readSecretInput: () => Promise.resolve(value) } }),
+      await plane.run(setArgv, {
+        vault: { ...owner.vault, readSecretInput: () => Promise.resolve(value) },
+      }),
     )
   }
 

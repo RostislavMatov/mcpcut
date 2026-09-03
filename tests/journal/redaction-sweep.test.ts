@@ -6,6 +6,7 @@ import { REDACTED_PLACEHOLDER } from '../../src/config.js'
 import { createJournalSink } from '../../src/journal/sink.js'
 import { createRecordBuilder } from '../../src/journal/record.js'
 import { journalAccessEdit } from '../../src/groups/journal-access-edit.js'
+import type { AccessEditInfo } from '../../src/journal/access-edit-record.js'
 import { journalPolicyEdit } from '../../src/policy/edit/journal-edit.js'
 import { journalProbe } from '../../src/probe/journal-probe.js'
 import { classify } from '../../src/protocol/classify.js'
@@ -153,5 +154,33 @@ describe('journal redaction sweep: a secret never reaches journal.db', () => {
       expect(rendering).not.toContain(SECRET_VALUE)
     }
     expect(renderings.some((rendering) => rendering.includes(REDACTED_PLACEHOLDER))).toBe(true)
+  })
+
+  test('the vault path — a vault.set record through journalAccessEdit() — never lands the value, even in a stray field (S2, 2026-09-03)', async () => {
+    // `vault.set` names the SECRET, never its value: the record has no field
+    // for one and must not grow one. The builder assembles the payload field
+    // by field, so a value a careless caller attaches under any other key is
+    // dropped before redaction even runs. Pinned through the real writer so
+    // the guarantee is about the bytes in journal.db, not the type.
+    const stray = {
+      actor: { adminName: 'alice', role: 'owner', via: 'cli' },
+      action: 'vault.set',
+      vaultEntry: 'github-pat',
+      value: SECRET_VALUE,
+      token: SECRET_VALUE,
+    }
+    const outcome = await journalAccessEdit({ info: stray as AccessEditInfo, dir: journalDir })
+    expect(outcome.written).toBe(true)
+
+    const { fileNames, renderings } = await collectPersistedBytes(journalDir)
+    // Positive sentinels first: the sweep reached the store AND the record
+    // itself landed there (its secret NAME is what should be on disk).
+    expect(fileNames).toContain('journal.db')
+    expect(renderings.some((rendering) => rendering.includes('"action":"vault.set"'))).toBe(true)
+    expect(renderings.some((rendering) => rendering.includes('github-pat'))).toBe(true)
+
+    for (const rendering of renderings) {
+      expect(rendering).not.toContain(SECRET_VALUE)
+    }
   })
 })
