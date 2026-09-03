@@ -163,6 +163,31 @@ describe('the modal itself', () => {
     expect(modal).not.toContain('<script>alert(2)')
     expect(modal).toContain('&lt;img src=x onerror=alert(1)&gt;')
   })
+
+  // Audit 2026-09-02 F1 — built from code points: a literal one would be invisible here.
+  const RTL_OVERRIDE = String.fromCodePoint(0x202e)
+  const CYRILLIC_I = String.fromCodePoint(0x0456)
+
+  test('strips invisible bidi characters from a spoofed tool name, flags it, and keeps the raw name in the release form (audit 2026-09-02 F1)', () => {
+    const raw = `read_file${RTL_OVERRIDE}txt.exe`
+    const spoofed: ServerToolsView = { tools: [{ name: raw, quarantined: 'new' }], quarantinedCount: 1 }
+    const modal = modalOf(pageWith({ tools: toolsMap(spoofed), canRelease: true }), 'echo')
+    expect(modal).toMatch(/<span class="srv-tool-name">read_filetxt\.exe<span class="name-flag"/)
+    expect(modal).toMatch(/“read_filetxt\.exe<span class="name-flag"/)
+    expect(modal).toContain(`name="tool" value="${raw}"`)
+  })
+
+  test('keeps a homoglyph tool name but flags it', () => {
+    const view: ServerToolsView = { tools: [{ name: `create_${CYRILLIC_I}ssue` }], quarantinedCount: 0 }
+    const modal = modalOf(pageWith({ tools: toolsMap(view) }), 'echo')
+    expect(modal).toContain(`<span class="srv-tool-name">create_${CYRILLIC_I}ssue<span class="name-flag"`)
+  })
+
+  test('a plain tool name carries no flag', () => {
+    const modal = modalOf(pageWith(), 'echo')
+    expect(modal).toContain('<span class="srv-tool-name">read_note</span>')
+    expect(modal).not.toContain('name-flag')
+  })
 })
 
 describe('release from quarantine (operator+, the design control)', () => {

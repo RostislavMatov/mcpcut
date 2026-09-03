@@ -11,6 +11,7 @@ import type { AccessEditInfo } from '../../src/journal/record.js'
 import { createRegistryStore, type RegistryStore } from '../../src/registry/store.js'
 import type { ServerRecord } from '../../src/registry/schema.js'
 import type { UiSession } from '../../src/ui/auth.js'
+import { AUDIT_RECORD_DROPPED_WARNING } from '../../src/ui/constants.js'
 import type { UiAuditEvent } from '../../src/ui/handlers/agents.js'
 import { createGroupsHandlers, type GroupsHandlers } from '../../src/ui/handlers/groups.js'
 import { renderGroupsPage } from '../../src/ui/pages/groups.js'
@@ -103,6 +104,7 @@ beforeEach(async () => {
     audit: (event) => audit.push(event),
     journalAccessEdit: async (info) => {
       edits.push(info)
+      return { written: true }
     },
   })
   await registry.addServer(SERVER)
@@ -532,7 +534,7 @@ describe('POST /groups/remove', () => {
 // ---------------------------------------------------------------------------
 
 describe('the journal port cannot turn a completed write into a 500', () => {
-  test('a rejecting journal writer still leaves the group created and redirects', async () => {
+  test('a rejecting journal writer still leaves the group created — and is reported as a dropped record', async () => {
     const failing = createGroupsHandlers({
       groups,
       agents,
@@ -545,9 +547,56 @@ describe('the journal port cannot turn a completed write into a 500', () => {
 
     const result = asResponse(await failing.groupsCreate(postCtx({ name: 'analytics' }, session('owner'))))
 
-    expect(result.status).toBe(303)
+    expect(result.status).toBe(200)
+    expect(bodyOf(result)).toContain(AUDIT_RECORD_DROPPED_WARNING)
     expect(await groups.getGroup('analytics')).toBeDefined()
     expect(audit[0]).toMatchObject({ action: 'group.create' })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// A dropped audit record reaches the admin who made the change (audit F1)
+// ---------------------------------------------------------------------------
+
+describe('a dropped audit record is shown on the success page, never hidden behind a redirect', () => {
+  function withJournal(written: boolean): GroupsHandlers {
+    return createGroupsHandlers({
+      groups,
+      agents,
+      registry,
+      audit: (event) => audit.push(event),
+      journalAccessEdit: async () => ({ written }),
+    })
+  }
+
+  test('written: false → the change stands, and a 200 notice carries the warning instead of the 303', async () => {
+    const result = asResponse(await withJournal(false).groupsCreate(postCtx({ name: 'analytics' }, session('owner'))))
+
+    expect(result.status).toBe(200)
+    expect(bodyOf(result)).toContain(AUDIT_RECORD_DROPPED_WARNING)
+    expect(bodyOf(result)).toContain('class="notice ok')
+    expect(await groups.getGroup('analytics')).toBeDefined()
+    expect(audit[0]).toMatchObject({ action: 'group.create' })
+  })
+
+  test('written: false on a grant → the same warning, the grant kept', async () => {
+    await groups.createGroup('analytics')
+
+    const result = asResponse(
+      await withJournal(false).groupsGrant(postCtx({ group: 'analytics', server: 'notes', tools: 'read' }, session('owner'))),
+    )
+
+    expect(result.status).toBe(200)
+    expect(bodyOf(result)).toContain(AUDIT_RECORD_DROPPED_WARNING)
+    expect((await groups.getGroup('analytics'))?.grants.notes).toBeDefined()
+  })
+
+  test('written: true → the ordinary redirect, no warning anywhere', async () => {
+    const result = asResponse(await withJournal(true).groupsCreate(postCtx({ name: 'analytics' }, session('owner'))))
+
+    expect(result.status).toBe(303)
+    expect(result.headers?.location).toBe('/groups')
+    expect(bodyOf(result)).not.toContain(AUDIT_RECORD_DROPPED_WARNING)
   })
 })
 

@@ -110,6 +110,45 @@ describe('journal handler — single session view', () => {
     expect(body).toMatch(/<a[^>]+href="[^"]*01APPROVAL01[^"]*"/)
   })
 
+  // Audit 2026-09-02 F1 — built from code points: a literal one would be invisible here.
+  const RTL_OVERRIDE = String.fromCodePoint(0x202e)
+  const CYRILLIC_I = String.fromCodePoint(0x0456)
+
+  /** A decision record whose tool name the (untrusted) server chose. */
+  function decisionNamed(toolName: string) {
+    return record({
+      kind: 'decision',
+      decision: {
+        outcome: 'allow',
+        rule: 'allow:read',
+        serverName: 'github',
+        toolName,
+        toolClass: 'read',
+        quarantineState: 'known',
+        argsHash: 'abc',
+      },
+    })
+  }
+
+  test('strips invisible bidi characters from a spoofed tool name in a decision row and flags it (audit 2026-09-02 F1)', async () => {
+    const page = emptyPage({ records: [decisionNamed(`read_file${RTL_OVERRIDE}txt.exe`)] })
+    const read = fakePort({ searchSession: vi.fn(async () => page) })
+    const handler = createJournalHandler({ read })
+
+    const body = await bodyOf(await handler(ctx('session=S1')))
+    expect(body).not.toContain(RTL_OVERRIDE)
+    expect(body).toMatch(/<span class="tool-name">read_filetxt\.exe<span class="name-flag"/)
+  })
+
+  test('keeps a homoglyph tool name in a decision row but flags it', async () => {
+    const page = emptyPage({ records: [decisionNamed(`create_${CYRILLIC_I}ssue`)] })
+    const read = fakePort({ searchSession: vi.fn(async () => page) })
+    const handler = createJournalHandler({ read })
+
+    const body = await bodyOf(await handler(ctx('session=S1')))
+    expect(body).toContain(`<span class="tool-name">create_${CYRILLIC_I}ssue<span class="name-flag"`)
+  })
+
   test('counts and shows unreadable lines instead of hiding them', async () => {
     const read = fakePort({
       searchSession: vi.fn(async () => emptyPage({ skippedLineCount: 4 })),

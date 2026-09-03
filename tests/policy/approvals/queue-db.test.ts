@@ -317,6 +317,7 @@ describe('importLegacyApprovals: the file queue an M4 build left behind', () => 
       serverName: 'github',
       toolName: 'create_issue',
       argsHash: 'hash-1',
+      sessionId: 'session-1', // the legacy document's own session (requester binding, audit 2026-09-02 F1)
       ttlMs: 60_000,
       clock: () => nowMs,
     })

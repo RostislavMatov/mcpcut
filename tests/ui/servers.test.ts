@@ -8,6 +8,7 @@ import type { AccessEditInfo } from '../../src/journal/record.js'
 import { createRegistryStore } from '../../src/registry/store.js'
 import { createVaultStore } from '../../src/vault/store.js'
 import type { InventoryStoreData } from '../../src/policy/inventory-store.js'
+import { AUDIT_RECORD_DROPPED_WARNING } from '../../src/ui/constants.js'
 import {
   createServersHandlers,
   type ServersHandlers,
@@ -58,6 +59,7 @@ function makeHarness(inventory?: InventoryStoreData): Harness {
     audit: (event) => audit.push(event),
     journalAccessEdit: async (info) => {
       accessEdits.push(info)
+      return { written: true }
     },
     diagnostics: (line) => diagnostics.push(line),
     ...(inventory !== undefined ? { readInventory: async () => inventory } : {}),
@@ -997,7 +999,7 @@ describe('serversRemove — cascade into grants and groups (G6, Task 10)', () =>
     expect(h.accessEdits[0]).toMatchObject({ affectedAgents: [], affectedGroups: [] })
   })
 
-  test('a journal port that rejects cannot turn a completed removal into a 500', async () => {
+  test('a journal port that rejects cannot turn a completed removal into a 500 — it is reported as a dropped record', async () => {
     h = makeHarness()
     const dir = h.dir
     const handlers = createServersHandlers({
@@ -1013,8 +1015,45 @@ describe('serversRemove — cascade into grants and groups (G6, Task 10)', () =>
     const res = asResponse(
       await handlers.serversRemove(formPost({ csrf_token: OWNER.csrfToken, name: 'solo' }, '/servers/remove')),
     )
-    expect(res.status).toBe(303)
+    expect(res.status).toBe(200)
+    expect(String(res.body ?? '')).toContain(AUDIT_RECORD_DROPPED_WARNING)
     expect(await h.registry.listServers()).toHaveLength(0)
+  })
+})
+
+describe('serversRemove — a dropped audit record is shown on the success page (audit F1)', () => {
+  function withJournal(written: boolean): ServersHandlers {
+    if (h === null) throw new Error('harness not built')
+    return createServersHandlers({
+      registry: h.registry,
+      agents: h.agents,
+      groups: h.groups,
+      vault: h.vault,
+      journalAccessEdit: async () => ({ written }),
+    })
+  }
+
+  test('written: false → the server is gone, and a 200 notice carries the warning instead of the 303', async () => {
+    h = makeHarness()
+    await h.registry.addServer({ name: 'solo', transport: 'stdio', command: 'node' })
+    const res = asResponse(
+      await withJournal(false).serversRemove(formPost({ csrf_token: OWNER.csrfToken, name: 'solo' }, '/servers/remove')),
+    )
+    expect(res.status).toBe(200)
+    expect(String(res.body ?? '')).toContain(AUDIT_RECORD_DROPPED_WARNING)
+    expect(String(res.body ?? '')).toContain('class="notice ok')
+    expect(await h.registry.listServers()).toHaveLength(0)
+  })
+
+  test('written: true → the ordinary 303 back to /servers, no warning', async () => {
+    h = makeHarness()
+    await h.registry.addServer({ name: 'solo', transport: 'stdio', command: 'node' })
+    const res = asResponse(
+      await withJournal(true).serversRemove(formPost({ csrf_token: OWNER.csrfToken, name: 'solo' }, '/servers/remove')),
+    )
+    expect(res.status).toBe(303)
+    expect(res.headers?.location).toBe('/servers')
+    expect(String(res.body ?? '')).not.toContain(AUDIT_RECORD_DROPPED_WARNING)
   })
 })
 
@@ -1054,6 +1093,7 @@ describe('serversRemove — a half-failed cascade still lands the record (U2)', 
       audit: (event) => audit.push(event),
       journalAccessEdit: async (info) => {
         accessEdits.push(info)
+        return { written: true }
       },
       diagnostics: (line) => diagnostics.push(line),
     })

@@ -1,3 +1,4 @@
+import { renderToolName } from '../display-name.js'
 import { html, join, type Html } from '../html.js'
 import type { QuarantineCardView } from './quarantine.js'
 
@@ -18,6 +19,12 @@ import type { QuarantineCardView } from './quarantine.js'
 
 /** Description length beyond which the text is cut and marked (untrusted server prose). */
 const DESCRIPTION_MAX_CHARS = 280
+/**
+ * A schema-diff path is a property name the server chose; it has no bound of
+ * its own (audit 2026-09-02, F2). Cut for display with the same visible marker
+ * the description uses — the diff itself stays exact for the policy.
+ */
+const SCHEMA_PATH_MAX_CHARS = 160
 
 /** `2026-08-11T12:34:56.000Z` → `2026-08-11 12:34`; anything else is shown verbatim. */
 function shortStamp(ts: string): string {
@@ -52,7 +59,15 @@ function renderDescription(card: QuarantineCardView): Html {
 }
 
 function renderChangeRow(change: QuarantineCardView['changes'][number]): Html {
-  return html`<div class="qr-change change change-${change.kind}"><code>${change.path}</code><span class="label">${change.kind}</span></div>`
+  return html`<div class="qr-change change change-${change.kind}">${renderChangePath(change.path)}<span class="label">${change.kind}</span></div>`
+}
+
+/** The path, cut by code point with the explicit marker when over the bound. */
+function renderChangePath(path: string): Html {
+  const points = Array.from(path)
+  if (points.length <= SCHEMA_PATH_MAX_CHARS) return html`<code>${path}</code>`
+  const cut = points.slice(0, SCHEMA_PATH_MAX_CHARS).join('')
+  return html`<code>${cut}</code><span class="pill pill-alert qr-trunc">… (truncated)</span>`
 }
 
 /** The explicit, loud truncation row — never a quiet footnote. */
@@ -99,7 +114,7 @@ function renderActionForm(
 export function renderQuarantineCard(card: QuarantineCardView, csrfToken: string): Html {
   return html`<article class="quarantine-card qr-card row-in" data-server="${card.serverName}" data-tool="${card.toolName}">
     <div class="qr-head">
-      <span class="qr-tool pixel ellipsis"><span class="server">${card.serverName}</span>/<span class="tool-name">${card.toolName}</span></span>
+      <span class="qr-tool pixel ellipsis"><span class="server">${card.serverName}</span>/<span class="tool-name">${renderToolName(card.toolName)}</span></span>
       ${renderStatePill(card.state)}
       ${renderDeltaPill(card)}
       <span class="qr-seen muted small num" title="${card.firstSeenAt}">first seen ${shortStamp(card.firstSeenAt)}</span>

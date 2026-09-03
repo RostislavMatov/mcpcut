@@ -51,6 +51,10 @@ services:
     command: ["ui", "--host", "0.0.0.0", "--port", "8091"]
     ports:
       - "127.0.0.1:8091:8091"
+    # `ui` spawns registry MCP servers too — the connection probe (ADR-0008)
+    # starts a stdio server to ask it `initialize`; PID 1 must reap them or
+    # the container accumulates zombies.
+    init: true
     healthcheck:
       # GET /login is the one public route, so it exercises the whole stack
       # (listener, router, renderer) rather than just the socket.

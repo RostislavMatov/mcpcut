@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { REDACTED_PLACEHOLDER } from '../../src/config.js'
 import { createJournalSink } from '../../src/journal/sink.js'
 import { createRecordBuilder } from '../../src/journal/record.js'
+import { journalAccessEdit } from '../../src/groups/journal-access-edit.js'
+import { journalPolicyEdit } from '../../src/policy/edit/journal-edit.js'
 import { journalProbe } from '../../src/probe/journal-probe.js'
 import { classify } from '../../src/protocol/classify.js'
 import { collectPersistedBytes } from '../support/persisted-bytes.js'
@@ -80,6 +82,64 @@ describe('journal redaction sweep: a secret never reaches journal.db', () => {
       result: {
         status: 'error',
         message: `the server echoed Bearer ${SECRET_VALUE} in its failure body`,
+      },
+      dir: journalDir,
+    })
+    expect(outcome.written).toBe(true)
+
+    const { fileNames, renderings } = await collectPersistedBytes(journalDir)
+    // Positive sentinel first: the sweep actually reached the store.
+    expect(fileNames).toContain('journal.db')
+
+    for (const rendering of renderings) {
+      expect(rendering).not.toContain(SECRET_VALUE)
+    }
+    expect(renderings.some((rendering) => rendering.includes(REDACTED_PLACEHOLDER))).toBe(true)
+  })
+
+  test('the policy-edit path — journalPolicyEdit() — never lands a secret in journal.db (audit 2026-09-02, F2)', async () => {
+    // `sourcePath` is the one free-text field on this kind: whatever path the
+    // write target resolved to, never validated as a name, so it is where a
+    // stray secret would ride into the payload. The builder redacts the whole
+    // payload; this pins that the redacted bytes are what reach the store,
+    // exactly as the traffic and probe sweeps above do for their kinds.
+    const outcome = await journalPolicyEdit({
+      edit: {
+        actor: { adminName: 'alice', role: 'owner', via: 'ui' },
+        serverName: 'github',
+        toolName: 'create_issue',
+        rule: 'deny',
+        policyHashBefore: null,
+        policyHashAfter: 'a'.repeat(64),
+        sourcePath: `/srv/journal/${SECRET_VALUE}/policy.json`,
+      },
+      dir: journalDir,
+    })
+    expect(outcome.written).toBe(true)
+
+    const { fileNames, renderings } = await collectPersistedBytes(journalDir)
+    // Positive sentinel first: the sweep actually reached the store.
+    expect(fileNames).toContain('journal.db')
+
+    for (const rendering of renderings) {
+      expect(rendering).not.toContain(SECRET_VALUE)
+    }
+    expect(renderings.some((rendering) => rendering.includes(REDACTED_PLACEHOLDER))).toBe(true)
+  })
+
+  test('the access-edit path — journalAccessEdit() — never lands a secret in journal.db (audit 2026-09-02, F2)', async () => {
+    // This kind has NO free-text field: every string is a group, server,
+    // agent or admin name, validated at the CLI/UI boundary before the
+    // builder sees it. The builder itself accepts any string, though, and it
+    // — not the boundary — is the journal's redaction choke point, so the
+    // secret goes into `agent` to pin the journal-side guarantee
+    // independently of whatever upstream validation happens to hold.
+    const outcome = await journalAccessEdit({
+      info: {
+        actor: { adminName: 'alice', role: 'owner', via: 'cli' },
+        action: 'group.join',
+        group: 'research',
+        agent: SECRET_VALUE,
       },
       dir: journalDir,
     })

@@ -6,6 +6,7 @@ import type { InventoryStoreData } from '../../src/policy/inventory-store.js'
 import { parsePolicy, type Policy } from '../../src/policy/schema.js'
 import { policyHashOf } from '../../src/policy/provenance.js'
 import { matchRoute, ROUTE_TABLE } from '../../src/ui/authz.js'
+import { AUDIT_RECORD_DROPPED_WARNING } from '../../src/ui/constants.js'
 import type { UiAuditEvent } from '../../src/ui/handlers/servers.js'
 import {
   createServersToolRuleHandlers,
@@ -74,6 +75,8 @@ interface HarnessOptions {
   readonly inventory?: InventoryStoreData
   /** Makes the display-only inventory read reject, as a corrupt or locked store does. */
   readonly inventoryFails?: boolean
+  /** Makes the journal writer answer `written: false` — the record was dropped after the file landed. */
+  readonly journalDropped?: boolean
 }
 
 function makeHarness(options: HarnessOptions = {}): Harness {
@@ -96,6 +99,7 @@ function makeHarness(options: HarnessOptions = {}): Harness {
     },
     journal: async (edit) => {
       journal.push(edit)
+      return { written: options.journalDropped !== true }
     },
     audit: (event) => audit.push(event),
   }
@@ -322,6 +326,34 @@ describe('success', () => {
     const h = makeHarness()
     const result = await h.handler(post({ form: true }))
     expect(result).toMatchObject({ kind: 'response', status: 303, headers: { location: '/servers' } })
+    expect(h.writes).toHaveLength(1)
+  })
+
+  test('JSON: the payload says the audit record was written', async () => {
+    const h = makeHarness()
+    const result = await h.handler(post())
+    expect(statusOf(result)).toBe(200)
+    expect(jsonOf(result)).toMatchObject({ status: 'ok', journal: 'written' })
+  })
+
+  test('JSON: a dropped audit record is reported as journal: "dropped" — still status ok, still 200 (audit F1)', async () => {
+    const h = makeHarness({ journalDropped: true })
+    const result = await h.handler(post())
+    expect(statusOf(result)).toBe(200)
+    expect(jsonOf(result)).toMatchObject({ status: 'ok', journal: 'dropped', rule: 'deny' })
+    // The edit landed and was journaled ONCE (attempted); the drop is the sink's, not the handler's.
+    expect(h.writes).toHaveLength(1)
+    expect(h.journal).toHaveLength(1)
+  })
+
+  test('form POST: a dropped audit record renders a 200 notice with the warning instead of the redirect (audit F1)', async () => {
+    const h = makeHarness({ journalDropped: true })
+    const result = await h.handler(post({ form: true }))
+    expect(statusOf(result)).toBe(200)
+    if (result.kind !== 'response') throw new Error('expected a buffered response')
+    const body = String(result.body ?? '')
+    expect(body).toContain(AUDIT_RECORD_DROPPED_WARNING)
+    expect(body).toContain('class="notice ok')
     expect(h.writes).toHaveLength(1)
   })
 

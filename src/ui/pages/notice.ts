@@ -55,15 +55,26 @@ export interface NoticeView {
   readonly session: UiSession
   /** Optional override of the page-family class (see `NOTICE_CLASS_BY_HREF`). */
   readonly noticeClass?: string
+  /**
+   * A caveat under the message of a SUCCESS notice — today only "applied, but
+   * its audit record was dropped" (`AUDIT_RECORD_DROPPED_WARNING`, audit F1).
+   * Rendered as its own `role="alert"` paragraph so assistive tech announces
+   * it and it cannot be read as part of the message. It never flips `ok`: the
+   * change the notice reports has happened, the warning qualifies the evidence.
+   */
+  readonly warning?: string
 }
 
 /** A success/failure notice with a link back to the page that raised it. */
 export function renderNotice(view: NoticeView): string {
   const noticeClass = view.noticeClass ?? noticeClassOf(view.backHref)
   const activeNav = navKeyOf(view.backHref)
+  const warning =
+    view.warning === undefined ? '' : html`<p class="notice-warning" role="alert">${view.warning}</p>`
   const content = html`<section class="notice ${view.ok ? 'ok' : 'error'} ${noticeClass}" role="status">
     <h1>${view.ok ? 'Done' : 'Could not complete the action'}</h1>
     <p>${view.message}</p>
+    ${warning}
     <p><a href="${safeUrl(view.backHref)}">${view.backLabel}</a></p>
   </section>`
   return renderLayout({

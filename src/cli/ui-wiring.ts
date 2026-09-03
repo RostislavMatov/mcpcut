@@ -1,7 +1,7 @@
 import type { AgentsStore } from '../agents/store.js'
 import type { AdminStore } from '../admin/store.js'
 import { createGroupsStore } from '../groups/store.js'
-import { journalAccessEdit } from '../groups/journal-access-edit.js'
+import { journalAccessEdit, type JournalAccessEditOutcome } from '../groups/journal-access-edit.js'
 import type { AccessEditInfo } from '../journal/record.js'
 import { formatReadableField } from '../journal/format.js'
 import { createSessionIndexCache } from '../journal/index-cache.js'
@@ -245,9 +245,12 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
   // it on removal (G6) and the groups surfaces read and write it.
   const groups = createGroupsStore({ journalDir: deps.journalDir })
   // One writer for every `access-edit` record this process produces (G6): the
-  // servers cascade and the six group actions share it, so attribution and the
-  // drop diagnostic are defined once.
-  const writeAccessEdit = (info: AccessEditInfo): Promise<unknown> =>
+  // servers cascade, the six group actions and the personal grants share it,
+  // so attribution and the drop diagnostic are defined once. The writer's REAL
+  // outcome is handed through, never widened to `unknown`: `written: false`
+  // is what the handler's success page hangs its warning on (audit F1) — the
+  // stderr diagnostic alone never reached the admin in the browser.
+  const writeAccessEdit = (info: AccessEditInfo): Promise<JournalAccessEditOutcome> =>
     journalAccessEdit({
       info,
       dir: deps.journalDir,
@@ -287,7 +290,8 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
   // The path is bound HERE — the file THIS process resolved through the
   // operator-launched source order (`resolvePolicyEditTarget`, same env/cwd
   // as the view) — and never derived from a request; the journal record goes
-  // through the same sink the probe facts use.
+  // through the same sink the probe facts use, and its drop verdict reaches
+  // the handler unwidened for the same reason as `writeAccessEdit` above.
   const serversToolRule = createServersToolRuleHandlers({
     resolveEditTarget: () => resolvePolicyEditTarget(policyEnv),
     readPolicyFile: (path) => readPolicyFileForEdit(path, defaultPolicyFileDeps),

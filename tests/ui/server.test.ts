@@ -6,7 +6,13 @@ import { afterEach, describe, expect, test } from 'vitest'
 import { createAdminStore, type AdminStore } from '../../src/admin/store.js'
 import { REQUIRED_HANDLER_KEYS, type UiHandlers } from '../../src/ui/routes.js'
 import { createUiServer, type UiServer, type UiServerOptions } from '../../src/ui/server.js'
-import { CONTENT_SECURITY_POLICY, SESSION_COOKIE_NAME } from '../../src/ui/constants.js'
+import {
+  CONTENT_SECURITY_POLICY,
+  SESSION_COOKIE_NAME,
+  UI_HEADERS_TIMEOUT_MS,
+  UI_KEEP_ALIVE_TIMEOUT_MS,
+  UI_REQUEST_TIMEOUT_MS,
+} from '../../src/ui/constants.js'
 
 /**
  * Origin a browser would attach to every POST from a page of this UI. The
@@ -341,5 +347,19 @@ describe('SSE contract', () => {
     expect(res.headers.get('content-type')).toContain('text/event-stream')
     expect(res.headers.get('content-security-policy')).toBeTruthy()
     await res.text()
+  })
+})
+
+describe('connection timeouts are explicit, not Node defaults (audit 2026-09-02)', () => {
+  test('the listener carries the UI timeouts', async () => {
+    started = await startUi()
+
+    expect(started.server.connectionTimeouts()).toEqual({
+      headersTimeoutMs: UI_HEADERS_TIMEOUT_MS,
+      requestTimeoutMs: UI_REQUEST_TIMEOUT_MS,
+      keepAliveTimeoutMs: UI_KEEP_ALIVE_TIMEOUT_MS,
+    })
+    // Node requires headersTimeout <= requestTimeout; pin the ordering.
+    expect(UI_HEADERS_TIMEOUT_MS).toBeLessThan(UI_REQUEST_TIMEOUT_MS)
   })
 })

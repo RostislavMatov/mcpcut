@@ -57,3 +57,37 @@ describe('renderNotice — the class lookup is own-property only (L5)', () => {
     expect(body).toContain('gr-notice')
   })
 })
+
+describe('renderNotice — the "applied but not journaled" warning line (audit F1)', () => {
+  test('a warning renders as its own alert paragraph, escaped like every other value', () => {
+    const body = renderNotice({
+      title: 'Groups',
+      message: 'done',
+      ok: true,
+      backHref: '/groups',
+      backLabel: 'Back to groups',
+      session: session(),
+      warning: 'NOT written <b>&</b> "quoted"',
+    })
+
+    expect(body).toContain(
+      '<p class="notice-warning" role="alert">NOT written &lt;b&gt;&amp;&lt;/b&gt; &quot;quoted&quot;</p>',
+    )
+    expect(body).not.toContain('<b>&</b>')
+    // Still a success notice: the warning qualifies the outcome, it does not reverse it.
+    expect(body).toContain('class="notice ok gr-notice"')
+  })
+
+  test('without a warning no alert paragraph is rendered at all', () => {
+    const body = renderNotice({
+      title: 'Groups',
+      message: 'done',
+      ok: true,
+      backHref: '/groups',
+      backLabel: 'Back to groups',
+      session: session(),
+    })
+
+    expect(body).not.toContain('notice-warning')
+  })
+})

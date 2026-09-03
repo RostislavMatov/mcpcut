@@ -16,6 +16,26 @@ export const DEFAULT_UI_PORT = 8091
 /** Cap on one request body; larger → 413 (DoS bound). Forms and actions are tiny. */
 export const MAX_UI_BODY_BYTES = 1 * 1024 * 1024
 
+/**
+ * Explicit per-connection timeouts for the UI listener (security audit
+ * 2026-09-02, LOW-2). Node's defaults (60 s headers / 300 s request / 5 s
+ * keep-alive) already bound a slow client, but they were never values this
+ * console chose: 300 s to finish sending a form under `MAX_UI_BODY_BYTES` is
+ * headroom only a socket-holding attacker would use.
+ *
+ * `requestTimeout` clocks RECEIVING the request (headers + body) and stops at
+ * message-complete, so `GET /events` — a response that stays open for hours —
+ * is not on it (verified empirically on Node 25.6, floor 24: an SSE response
+ * outlived a 200 ms `requestTimeout` untouched). `headersTimeout` must stay ≤
+ * `requestTimeout` — guarded at startup by `net/connection-timeouts.ts` and
+ * pinned by a test, since Node checks the pair only for constructor options;
+ * the keep-alive value is Node's default made explicit and applies to an idle
+ * socket between requests only.
+ */
+export const UI_HEADERS_TIMEOUT_MS = 30_000
+export const UI_REQUEST_TIMEOUT_MS = 60_000
+export const UI_KEEP_ALIVE_TIMEOUT_MS = 5_000
+
 // --- Sessions -------------------------------------------------------------
 
 /** Name of the session cookie when the UI is reached over plain HTTP (loopback). */
@@ -351,3 +371,20 @@ export const NON_LOCALHOST_BIND_WARNING =
 export const WILDCARD_BIND_WARNING =
   '[ui] wildcard bind: Host screening admits only localhost names and explicit ' +
   'allowlist entries; remote clients will get 403 unless --allowed-host names them'
+
+// --- Audit evidence -------------------------------------------------------
+
+/**
+ * The line a success page carries when the change landed but its audit record
+ * (`access-edit` / `policy-edit`) was dropped by the journal (security audit
+ * 2026-09-02, F1). The writers never throw and never roll the change back — a
+ * journal that cannot be reached must not turn a completed change into a
+ * failed request — so the only honest answer is a success that says, in the
+ * admin's own browser, that the evidence is missing. Until this line existed
+ * the drop was reported on the server process's stderr alone, which the
+ * browser-side admin never sees; an auditor would later find a clean chain
+ * with no trace of the change and nothing to say why.
+ */
+export const AUDIT_RECORD_DROPPED_WARNING =
+  'The change was applied, but its audit record was NOT written to the journal — ' +
+  'check the server log and the journal integrity before relying on the evidence.'

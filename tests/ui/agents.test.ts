@@ -14,6 +14,7 @@ import { StoreWriteRejectedError } from '../../src/policy/store.js'
 import type { GroupRecord } from '../../src/groups/schema.js'
 import type { AccessEditInfo } from '../../src/journal/record.js'
 import type { UiSession } from '../../src/ui/auth.js'
+import { AUDIT_RECORD_DROPPED_WARNING } from '../../src/ui/constants.js'
 import {
   createAgentsHandlers,
   type AgentsHandlers,
@@ -89,6 +90,7 @@ beforeEach(() => {
     audit: (event) => audit.push(event),
     journalAccessEdit: async (info) => {
       accessEdits.push(info)
+      return { written: true }
     },
   })
 })
@@ -815,9 +817,44 @@ describe('personal grant edits are journalled (T1)', () => {
     // Act
     const result = await failing.agentsRevoke(postCtx({ agent: 'bot' }, admin()))
 
-    // Assert — the revoke stands, and the response is the ordinary notice.
+    // Assert — the revoke stands; the notice says its record was lost.
     expect(asResponseStatus(result)).toBe(200)
+    expect(bodyOf(result)).toContain(AUDIT_RECORD_DROPPED_WARNING)
     expect((await store.getAgent('bot'))?.revokedAt).toBeDefined()
+  })
+
+  test('a writer answering written: false → the grant stands and the 200 notice carries the warning (audit F1)', async () => {
+    // Arrange
+    const dropping = createAgentsHandlers({
+      agentsStore: store,
+      groups,
+      journalAccessEdit: async () => ({ written: false }),
+    })
+    await store.createAgent('bot')
+
+    // Act
+    const result = await dropping.agentsGrant(postCtx({ agent: 'bot', server: 'postgres', tools: 'query' }, admin()))
+
+    // Assert
+    expect(asResponseStatus(result)).toBe(200)
+    expect(bodyOf(result)).toContain('granted postgres to bot')
+    expect(bodyOf(result)).toContain(AUDIT_RECORD_DROPPED_WARNING)
+    expect(bodyOf(result)).toContain('class="notice ok ag-notice"')
+    expect((await store.getAgent('bot'))?.grants.postgres).toBeDefined()
+  })
+
+  test('a writer answering written: true → the same notice without the warning', async () => {
+    // Arrange
+    await store.createAgent('bot')
+
+    // Act
+    const result = await handlers.agentsGrant(postCtx({ agent: 'bot', server: 'postgres', tools: 'query' }, admin()))
+
+    // Assert
+    expect(asResponseStatus(result)).toBe(200)
+    expect(bodyOf(result)).toContain('granted postgres to bot')
+    expect(bodyOf(result)).not.toContain(AUDIT_RECORD_DROPPED_WARNING)
+    expect(bodyOf(result)).not.toContain('notice-warning')
   })
 
   test('without the port the handlers still work (a plane wired before T1)', async () => {

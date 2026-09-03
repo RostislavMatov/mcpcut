@@ -126,6 +126,36 @@ describe('approvalsPage rendering', () => {
     expect(html).not.toContain('<img src=x onerror=alert(2)>')
   })
 
+  // Audit 2026-09-02 F1 — built from code points: a literal one would be invisible here.
+  const RTL_OVERRIDE = String.fromCodePoint(0x202e)
+  const CYRILLIC_I = String.fromCodePoint(0x0456)
+
+  test('strips invisible bidi characters from a spoofed tool name and flags it (audit 2026-09-02 F1)', async () => {
+    await enqueueSample({ toolName: `read_file${RTL_OVERRIDE}txt.exe` })
+    const handlers = createApprovalsHandlers({ queue, clock: () => T0 })
+    const html = bodyText(await handlers.approvalsPage(makeCtx()))
+
+    expect(html).not.toContain(RTL_OVERRIDE)
+    expect(html).toMatch(/<span class="tool-name">read_filetxt\.exe<span class="name-flag"/)
+  })
+
+  test('keeps a homoglyph tool name but flags it', async () => {
+    await enqueueSample({ toolName: `create_${CYRILLIC_I}ssue` })
+    const handlers = createApprovalsHandlers({ queue, clock: () => T0 })
+    const html = bodyText(await handlers.approvalsPage(makeCtx()))
+
+    expect(html).toContain(`<span class="tool-name">create_${CYRILLIC_I}ssue<span class="name-flag"`)
+  })
+
+  test('a plain ASCII tool name carries no flag', async () => {
+    await enqueueSample()
+    const handlers = createApprovalsHandlers({ queue, clock: () => T0 })
+    const html = bodyText(await handlers.approvalsPage(makeCtx()))
+
+    expect(html).toContain('<span class="tool-name">create_issue</span>')
+    expect(html).not.toContain('name-flag')
+  })
+
   test('every action form embeds the session csrf_token', async () => {
     await enqueueSample()
     const handlers = createApprovalsHandlers({ queue, clock: () => T0 })

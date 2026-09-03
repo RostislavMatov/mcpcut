@@ -2,6 +2,11 @@ import { afterEach, describe, expect, test } from 'vitest'
 import { waitUntil } from '../../proxy/harness.js'
 import type { WarnSink } from '../../../src/transport/http/server.js'
 import {
+  HEADERS_TIMEOUT_MS,
+  KEEP_ALIVE_TIMEOUT_MS,
+  REQUEST_TIMEOUT_MS,
+} from '../../../src/transport/http/server-constants.js'
+import {
   createFakeSessionFactory,
   openSseCapture,
   startFront,
@@ -254,6 +259,19 @@ describe('listen and close', () => {
     },
   )
 
+
+  test('the listener carries explicit connection timeouts (audit 2026-09-02, F3)', async () => {
+    started = await startFront()
+
+    expect(started.front.connectionTimeouts()).toEqual({
+      headersTimeoutMs: HEADERS_TIMEOUT_MS,
+      requestTimeoutMs: REQUEST_TIMEOUT_MS,
+      keepAliveTimeoutMs: KEEP_ALIVE_TIMEOUT_MS,
+    })
+    // Node requires headersTimeout <= requestTimeout; pin the ordering so a
+    // future edit cannot invert it without this test noticing.
+    expect(HEADERS_TIMEOUT_MS).toBeLessThan(REQUEST_TIMEOUT_MS)
+  })
 
   test('close() tears down live sessions and stops accepting connections', async () => {
     started = await startFront()
