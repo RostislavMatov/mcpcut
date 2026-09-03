@@ -1,5 +1,6 @@
 import type { ToolClass } from '../../policy/schema.js'
 import type { PendingApproval } from '../../policy/approvals/queue.js'
+import { renderToolName } from '../display-name.js'
 import { html, join, type Html } from '../html.js'
 import type { CurrentAdmin } from './layout.js'
 
@@ -120,7 +121,7 @@ function renderCard(card: ApprovalCardView, csrfToken: string): Html {
     : html``
   return html`<article class="approval-card row-in" data-approval-id="${card.approvalId}" data-tool-class="${card.toolClass}">
     <div class="approval-head">
-      <span class="tool ellipsis"><span class="server">${card.serverName}</span>/<span class="tool-name">${card.toolName}</span></span>
+      <span class="tool ellipsis"><span class="server">${card.serverName}</span>/<span class="tool-name">${renderToolName(card.toolName)}</span></span>
       <span class="badge tool-class tool-class-${card.toolClass} ${card.toolClass}">${card.toolClass}</span>
       <span class="agent muted ellipsis">${card.agentName ?? '(unnamed agent)'}</span>
     </div>

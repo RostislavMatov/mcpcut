@@ -10,12 +10,14 @@ import {
 } from '../../agents/store.js'
 import type { AgentGrant, AgentRecord } from '../../agents/schema.js'
 import { effectiveGrantsOf } from '../../agents/effective.js'
+import type { JournalAccessEditOutcome } from '../../groups/journal-access-edit.js'
 import type { GroupRecord } from '../../groups/schema.js'
 import type { GroupsStore } from '../../groups/store.js'
 import type { AccessEditInfo } from '../../journal/record.js'
 import { StoreWriteRejectedError } from '../../policy/store.js'
 import type { UiSession } from '../auth.js'
 import {
+  AUDIT_RECORD_DROPPED_WARNING,
   BODY_FORBIDDEN,
   CONTENT_TYPE_HTML,
   HTTP_STATUS_BAD_REQUEST,
@@ -24,6 +26,7 @@ import {
 } from '../constants.js'
 import { renderAgentNotice, renderAgentsPage, renderAgentTokenOnce } from '../pages/agents.js'
 import { renderUngrantConfirm } from '../pages/agents-ungrant.js'
+import { renderNotice } from '../pages/notice.js'
 import { methodGrantsFrom, parseGrantValue } from './grant-fields.js'
 import { internalErrorResult, isKnownStoreError, type ErrorClass } from './store-errors.js'
 import { headerValue, parseBodyFields, type UiHandler, type UiRequestContext, type UiResult } from '../routes.js'
@@ -49,6 +52,19 @@ export interface UiAuditEvent {
 /** Optional attribution sink; the token is NEVER part of an audit event. */
 export type UiAuditSink = (event: UiAuditEvent) => void
 
+/**
+ * What a handler learns from the journal port: whether the record landed.
+ * `written: false` is a DROPPED record — attempted after the change and lost
+ * (the writer never throws; `groups/journal-access-edit.ts`). The full outcome
+ * also counts the drops; a handler needs only the verdict, and it needs it
+ * honestly typed — the `Promise<unknown>` this port used to be is how the
+ * verdict got discarded on every UI path (security audit 2026-09-02, F1).
+ */
+export type AccessEditJournalOutcome = Pick<JournalAccessEditOutcome, 'written'>
+
+/** The journal port every access-edit handler takes: agents, groups, server removal. */
+export type AccessEditJournalPort = (info: AccessEditInfo) => Promise<AccessEditJournalOutcome>
+
 export interface AgentsHandlersDeps {
   readonly agentsStore: AgentsStore
   /**
@@ -70,7 +86,7 @@ export interface AgentsHandlersDeps {
    * must never acquire one: the record says an agent was created, never with
    * what key.
    */
-  readonly journalAccessEdit?: (info: AccessEditInfo) => Promise<unknown>
+  readonly journalAccessEdit?: AccessEditJournalPort
 }
 
 export interface AgentsHandlers {
@@ -131,27 +147,56 @@ export function createAgentsHandlers(deps: AgentsHandlersDeps): AgentsHandlers {
   }
 
   /**
-   * Records one access change in the journal. The store write has already
-   * happened when this runs, so a journal that cannot be reached must not turn
-   * it into a 500: the injected writer never throws by contract
-   * (`groups/journal-access-edit.ts` returns a drop indicator instead), and
-   * this guard keeps that true for ANY injected port. Same shape and same
-   * ordering as `handlers/groups.ts`: attribution first, journal second, both
-   * exactly once.
+   * Records one access change in the journal and says whether the record
+   * landed. The store write has already happened when this runs, so a journal
+   * that cannot be reached must not turn it into a 500: the injected writer
+   * never throws by contract (`groups/journal-access-edit.ts` returns a drop
+   * indicator instead), and this guard keeps that true for ANY injected port —
+   * a port that threw has not written either, so it answers as a drop. No
+   * port at all is the composition root's choice (a plane assembled without a
+   * journal), not a record that was lost, and earns no warning. Same shape
+   * and same ordering as `handlers/groups.ts`: attribution first, journal
+   * second, both exactly once.
    */
-  async function journal(session: UiSession, info: Omit<AccessEditInfo, 'actor'>): Promise<void> {
+  async function journal(
+    session: UiSession,
+    info: Omit<AccessEditInfo, 'actor'>,
+  ): Promise<AccessEditJournalOutcome> {
     const write = deps.journalAccessEdit
-    if (write === undefined) return
+    if (write === undefined) return { written: true }
     try {
-      await write({
+      const { written } = await write({
         actor: { adminName: session.adminName, role: session.role, via: 'ui' },
         ...info,
       })
+      return { written }
     } catch {
-      // Deliberately contained, not swallowed silently: the audit sink above
-      // already recorded the attributed edit, and the writer's own
-      // diagnostics report the drop.
+      // Contained, not swallowed: the audit sink above already recorded the
+      // attributed edit, the writer's own diagnostics report the fault, and
+      // the verdict below puts it on the admin's success page.
+      return { written: false }
     }
+  }
+
+  /**
+   * The success notice, carrying the F1 warning line when the audit record
+   * was dropped. Rendered through the shared `renderNotice` rather than
+   * `renderAgentNotice` because only the shared page has the warning slot;
+   * with `backHref: '/agents'` it yields the same section, class and nav tab.
+   */
+  function applied(session: UiSession, message: string, journaled: AccessEditJournalOutcome): UiResult {
+    return htmlResult(
+      HTTP_STATUS_OK,
+      renderNotice({
+        title: 'Agents',
+        message,
+        ok: true,
+        backHref: '/agents',
+        backLabel: 'Back to agents',
+        session,
+        ...(journaled.written ? {} : { warning: AUDIT_RECORD_DROPPED_WARNING }),
+      }),
+    )
   }
 
   async function agentsPage(ctx: UiRequestContext): Promise<UiResult> {
@@ -173,6 +218,9 @@ export function createAgentsHandlers(deps: AgentsHandlersDeps): AgentsHandlers {
       record(session, 'agents.create', name)
       // `created.token` is deliberately NOT passed on: the record says the
       // agent exists, the reveal page is the only place the key is rendered.
+      // That page has no warning slot yet, so a dropped `agent.create` record
+      // is still reported on the process's stderr only — the reveal cannot be
+      // swapped for a notice without losing the one-time token.
       await journal(session, { action: 'agent.create', agent: created.agent.name })
       return htmlResult(HTTP_STATUS_OK, renderAgentTokenOnce({ agent: created.agent.name, token: created.token, session }))
     } catch (error) {
@@ -195,13 +243,13 @@ export function createAgentsHandlers(deps: AgentsHandlersDeps): AgentsHandlers {
       const updated = await agentsStore.grantServer(agent, server, tools, methodGrantsFrom(form))
       record(session, 'agents.grant', `${agent}/${server}`)
       const grant = updated.grants[server]
-      await journal(session, {
+      const outcome = await journal(session, {
         action: 'agent.grant',
         agent,
         server,
         ...(grant !== undefined ? { grant } : {}),
       })
-      return htmlResult(HTTP_STATUS_OK, renderAgentNotice({ message: `granted ${server} to ${agent}`, ok: true, session }))
+      return applied(session, `granted ${server} to ${agent}`, outcome)
     } catch (error) {
       return storeFailure(error, session)
     }
@@ -233,8 +281,8 @@ export function createAgentsHandlers(deps: AgentsHandlersDeps): AgentsHandlers {
       }
       await agentsStore.ungrantServer(agent, server)
       record(session, 'agents.ungrant', ungrantTarget(agent, server, shadowed?.groups))
-      await journal(session, { action: 'agent.ungrant', agent, server })
-      return htmlResult(HTTP_STATUS_OK, renderAgentNotice({ message: `removed ${server} from ${agent}`, ok: true, session }))
+      const outcome = await journal(session, { action: 'agent.ungrant', agent, server })
+      return applied(session, `removed ${server} from ${agent}`, outcome)
     } catch (error) {
       return storeFailure(error, session)
     }
@@ -271,8 +319,8 @@ export function createAgentsHandlers(deps: AgentsHandlersDeps): AgentsHandlers {
     try {
       await agentsStore.revokeAgent(agent)
       record(session, 'agents.revoke', agent)
-      await journal(session, { action: 'agent.revoke', agent })
-      return htmlResult(HTTP_STATUS_OK, renderAgentNotice({ message: `revoked ${agent}`, ok: true, session }))
+      const outcome = await journal(session, { action: 'agent.revoke', agent })
+      return applied(session, `revoked ${agent}`, outcome)
     } catch (error) {
       return storeFailure(error, session)
     }

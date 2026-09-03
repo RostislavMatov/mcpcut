@@ -25,6 +25,9 @@ import { startAgentWatch } from '../../src/session/agent-watch.js'
 import { readJournalRecords } from '../support/journal-rows.js'
 import { typecheckSource } from '../support/typecheck.js'
 
+/** A `tsc` spawn is not a 5 s unit test: see the compile assertions below. */
+const TYPECHECK_TIMEOUT_MS = 30_000
+
 /**
  * Decision-record provenance at the gate (M5 wave 1). The invariant under
  * test is deliberately broader than any single decision path: *every*
@@ -526,7 +529,10 @@ describe('an agent session can never look like an agentless one', () => {
    * would never flag. So the getter is REQUIRED on `GateAgentScope` — the one
    * production implementer (`session/agent-watch.ts`) already provides it.
    */
-  test('a scope without a grants fingerprint does not compile', () => {
+  // Each of these spawns a full `tsc` pass; under a loaded full-suite run
+  // (coverage on, other suites in flight) it exceeded the default 5 s once
+  // (2026-09-02) while passing alone in ~1 s — so the budget is explicit.
+  test('a scope without a grants fingerprint does not compile', { timeout: TYPECHECK_TIMEOUT_MS }, () => {
     const diagnostics = typecheckSource(`
       import type { GateAgentScope } from '../../src/proxy/gate-helpers.js'
 
@@ -540,7 +546,7 @@ describe('an agent session can never look like an agentless one', () => {
     expect(diagnostics).toMatch(/grantsHash/)
   })
 
-  test('a scope with one compiles', () => {
+  test('a scope with one compiles', { timeout: TYPECHECK_TIMEOUT_MS }, () => {
     const diagnostics = typecheckSource(`
       import type { GateAgentScope } from '../../src/proxy/gate-helpers.js'
 

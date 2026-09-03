@@ -39,6 +39,33 @@ export const WILDCARD_BIND_WARNING =
 export const MAX_REQUEST_BODY_BYTES = 8 * 1024 * 1024
 
 /**
+ * Explicit per-connection timeouts for the listener (security audit
+ * 2026-09-02, F3). Node's own defaults (60 s headers / 300 s request / 5 s
+ * keep-alive) were never a choice this front made; these are, and a test
+ * pins them.
+ *
+ * What `requestTimeout` covers, per Node's `http.Server` semantics: the time
+ * from a request's first byte until its whole message (headers + body) has
+ * been RECEIVED. The parser's clock stops at message-complete, so the
+ * response side is not on it — a GET-SSE stream, or a POST whose answer waits
+ * on a human approval for up to `STATELESS_RESPONSE_TIMEOUT_MS`, is never cut
+ * by this timer (verified empirically on Node 25.6, floor 24: an SSE response
+ * outlived a 200 ms `requestTimeout` untouched). An MCP request body is one
+ * JSON-RPC message under `MAX_REQUEST_BODY_BYTES`, so 60 s to deliver it is
+ * generous for a real agent and a ceiling for a trickling one.
+ *
+ * `headersTimeout` must stay ≤ `requestTimeout`: Node checks the pair only
+ * when both arrive as `createServer` options, not on property assignment, so
+ * `net/connection-timeouts.ts` guards it at startup and a test pins the
+ * ordering. The keep-alive value is Node's default made explicit — it governs
+ * an IDLE keep-alive socket between requests only, never one with a response
+ * in flight.
+ */
+export const HEADERS_TIMEOUT_MS = 30_000
+export const REQUEST_TIMEOUT_MS = 60_000
+export const KEEP_ALIVE_TIMEOUT_MS = 5_000
+
+/**
  * Cap on concurrently open sessions — sessionful ones AND stateless
  * one-shots still in flight; creating one past it → 429. Both models cost
  * an upstream (a spawned child or an open client), so both are counted:

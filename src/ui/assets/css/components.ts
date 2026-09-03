@@ -125,6 +125,9 @@ export const CSS_COMPONENTS = `
 }
 .pill-solid .dot, .badge.vault .dot { background: var(--bg); }
 .badge.write, .badge.destructive, .pill-alert { border-color: var(--fg); color: var(--fg); }
+/* The "non-standard characters in name" badge after a tool name the server chose
+   (audit 2026-09-02 F1): bordered so it reads as a mark, not as part of the name. */
+.name-flag { display: inline-block; margin-left: 0.3em; padding: 0 3px; border: 1px solid var(--fg); font-size: 10px; line-height: 1.4; vertical-align: baseline; cursor: help; }
 .badge.read { color: var(--fg-dim); }
 .badge.revoked { text-decoration: line-through; color: var(--fg-faint); }
 
@@ -272,6 +275,13 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   font-size: 11px;
   line-height: 1.6;
 }
+/* The "applied, but its audit record was dropped" line under a SUCCESS notice
+   (audit F1). It sits inside an .ok panel, so it has to read as a warning on
+   its own: the alert border it already inherits, plus weight and a gap from
+   the message. Two classes deep on purpose - the page-family rules
+   (.gr-notice p, .ag-notice p) are one class and one tag, and would win on
+   source order otherwise. */
+.notice .notice-warning { margin: 10px 0 0; font-weight: 700; color: var(--fg); }
 .token {
   padding: 14px;
   border: 2px solid var(--fg);

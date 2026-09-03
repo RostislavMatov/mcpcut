@@ -70,45 +70,56 @@ describe('checkRecentApproval', () => {
     await rm(journalDir, { recursive: true, force: true })
   })
 
+  /** The fields a test can shape on a stored resolved record. */
+  interface ResolvedRecordFields {
+    serverName?: string
+    toolName?: string
+    argsHash?: string
+    outcome?: string
+    actor?: unknown
+    resolvedAt?: string
+    /** The requester the record is bound to (security audit 2026-09-02, F1). */
+    sessionId?: string
+    agentName?: unknown
+    doc?: string
+  }
+
+  /**
+   * The stored document as `resolve()` would shape it, returned as an object
+   * so a test can reshape it (drop a key) before handing it to
+   * `writeResolvedRecord` as `doc`.
+   */
+  function resolvedDocOf(approvalId: string, fields: ResolvedRecordFields): Record<string, unknown> {
+    return {
+      approvalId,
+      serverName: fields.serverName ?? 'github',
+      toolName: fields.toolName ?? 'create_issue',
+      toolClass: 'write',
+      argsRedacted: {},
+      argsHash: fields.argsHash ?? 'hash-1',
+      sessionId: fields.sessionId ?? 'session-1',
+      ...(fields.agentName !== undefined ? { agentName: fields.agentName } : {}),
+      requestedAt: new Date().toISOString(),
+      expiresAt: new Date().toISOString(),
+      resolution: {
+        outcome: fields.outcome ?? 'approved',
+        ...(fields.actor !== undefined ? { actor: fields.actor } : {}),
+      },
+      resolvedAt: fields.resolvedAt ?? new Date().toISOString(),
+    }
+  }
+
   /**
    * Writes one resolved record straight into the queue's table. The fields a
    * grant is decided on come from `doc`, so a test can shape them freely —
    * including combinations `resolve()` itself would never produce.
    */
-  async function writeResolvedRecord(
-    approvalId: string,
-    fields: {
-      serverName?: string
-      toolName?: string
-      argsHash?: string
-      outcome?: string
-      actor?: unknown
-      resolvedAt?: string
-      doc?: string
-    } = {},
-  ): Promise<void> {
+  async function writeResolvedRecord(approvalId: string, fields: ResolvedRecordFields = {}): Promise<void> {
     const serverName = fields.serverName ?? 'github'
     const toolName = fields.toolName ?? 'create_issue'
     const argsHash = fields.argsHash ?? 'hash-1'
     const resolvedAt = fields.resolvedAt ?? new Date().toISOString()
-    const doc =
-      fields.doc ??
-      JSON.stringify({
-        approvalId,
-        serverName,
-        toolName,
-        toolClass: 'write',
-        argsRedacted: {},
-        argsHash,
-        sessionId: 'session-1',
-        requestedAt: new Date().toISOString(),
-        expiresAt: new Date().toISOString(),
-        resolution: {
-          outcome: fields.outcome ?? 'approved',
-          ...(fields.actor !== undefined ? { actor: fields.actor } : {}),
-        },
-        resolvedAt,
-      })
+    const doc = fields.doc ?? JSON.stringify(resolvedDocOf(approvalId, { ...fields, resolvedAt }))
 
     const db = await openApprovalsDb(baseDir)
     db.handle.db
@@ -138,6 +149,7 @@ describe('checkRecentApproval', () => {
       serverName: 'github',
       toolName: 'create_issue',
       argsHash: 'hash-1',
+      sessionId: 'session-1',
       ttlMs: 60_000,
       clock: () => nowMs,
     })
@@ -153,6 +165,7 @@ describe('checkRecentApproval', () => {
       serverName: 'github',
       toolName: 'create_issue',
       argsHash: 'hash-1',
+      sessionId: 'session-1',
       ttlMs: 60_000,
       clock: () => nowMs,
     })
@@ -168,6 +181,7 @@ describe('checkRecentApproval', () => {
       serverName: 'github',
       toolName: 'create_issue',
       argsHash: 'hash-1',
+      sessionId: 'session-1',
       ttlMs: 60_000,
       clock: () => nowMs,
     })
@@ -183,6 +197,7 @@ describe('checkRecentApproval', () => {
       serverName: 'github',
       toolName: 'create_issue',
       argsHash: 'hash-1',
+      sessionId: 'session-1',
       ttlMs: 60_000,
       clock: () => nowMs,
     })
@@ -198,6 +213,7 @@ describe('checkRecentApproval', () => {
       serverName: 'github',
       toolName: 'create_issue',
       argsHash: 'hash-1',
+      sessionId: 'session-1',
       ttlMs: 60_000,
       clock: () => nowMs,
     })
@@ -214,6 +230,7 @@ describe('checkRecentApproval', () => {
       serverName: 'github',
       toolName: 'create_issue',
       argsHash: 'hash-1',
+      sessionId: 'session-1',
       ttlMs: 60_000,
       clock: () => nowMs,
     })
@@ -229,6 +246,7 @@ describe('checkRecentApproval', () => {
         serverName: 'github',
         toolName: 'create_issue',
         argsHash: 'hash-1',
+        sessionId: 'session-1',
         ttlMs: 60_000,
       }),
     ).resolves.toBeNull()
@@ -240,6 +258,7 @@ describe('checkRecentApproval', () => {
         serverName: 'github',
         toolName: 'create_issue',
         argsHash: 'hash-1',
+        sessionId: 'session-1',
         ttlMs: 60_000,
       }),
     ).resolves.toBeNull()
@@ -262,6 +281,7 @@ describe('checkRecentApproval', () => {
       serverName: 'github',
       toolName: 'create_issue',
       argsHash,
+      sessionId: 'session-1',
       ttlMs: 60_000,
       clock: () => nowMs,
     })
@@ -284,6 +304,7 @@ describe('checkRecentApproval', () => {
       serverName: 'github',
       toolName: 'create_issue',
       argsHash: 'hash-1',
+      sessionId: 'session-1',
       ttlMs: 60_000,
       clock: () => nowMs,
     })
@@ -303,6 +324,7 @@ describe('checkRecentApproval', () => {
       serverName: 'github',
       toolName: 'create_issue',
       argsHash: 'hash-1',
+      sessionId: 'session-1',
       ttlMs: 60_000,
       clock: () => nowMs,
     })
@@ -325,6 +347,7 @@ describe('checkRecentApproval', () => {
       serverName: 'github',
       toolName: 'create_issue',
       argsHash: 'hash-1',
+      sessionId: 'session-1',
       ttlMs: 60_000,
       clock: () => nowMs,
     })
@@ -345,6 +368,7 @@ describe('checkRecentApproval', () => {
       serverName: 'github',
       toolName: 'create_issue',
       argsHash: 'hash-1',
+      sessionId: 'session-1',
       ttlMs: 60_000,
       clock: () => nowMs,
     })
@@ -361,6 +385,7 @@ describe('checkRecentApproval', () => {
       serverName: 'github',
       toolName: 'create_issue',
       argsHash: 'hash-1',
+      sessionId: 'session-1',
       ttlMs: 60_000,
       clock: () => nowMs,
     })
@@ -379,6 +404,7 @@ describe('checkRecentApproval', () => {
         serverName: 'github',
         toolName: 'create_issue',
         argsHash: 'hash-1',
+        sessionId: 'session-1',
         ttlMs: 60_000,
       }),
     ).resolves.toBeNull()
@@ -397,6 +423,7 @@ describe('checkRecentApproval', () => {
       serverName: 'github',
       toolName: 'create_issue',
       argsHash: 'hash-1',
+      sessionId: 'session-1',
       ttlMs: 60_000,
       clock: () => nowMs,
     })
@@ -419,11 +446,154 @@ describe('checkRecentApproval', () => {
       serverName: 'github',
       toolName: 'create_issue',
       argsHash: 'hash-1',
+      sessionId: 'session-1',
       ttlMs: 60_000,
       clock: () => nowMs,
     })
 
     expect(granted).toBeNull()
+  })
+
+  describe('requester binding (security audit 2026-09-02, F1)', () => {
+    /**
+     * A resolved approval is a human's answer to ONE requester's question.
+     * Before this binding the fallback matched on the call triple alone, so
+     * within `grantTtlMs` any other agent sending the byte-identical call
+     * consumed that answer with no human ever seeing ITS request.
+     */
+    const TRIPLE = { serverName: 'github', toolName: 'create_issue', argsHash: 'hash-1' } as const
+
+    test('a resolution recorded for agent alpha does not grant agent beta the identical call', async () => {
+      const nowMs = Date.now()
+      await writeResolvedRecord('01AAA', { agentName: 'alpha', resolvedAt: new Date(nowMs - 1000).toISOString() })
+
+      const granted = await checkRecentApproval(baseDir, {
+        ...TRIPLE,
+        sessionId: 'session-2',
+        agentName: 'beta',
+        ttlMs: 60_000,
+        clock: () => nowMs,
+      })
+
+      expect(granted).toBeNull()
+    })
+
+    test('the same agent retrying from a DIFFERENT session is granted: the late-approval case', async () => {
+      // The whole point of the fallback: the first attempt timed out and the
+      // agent came back later — from a new proxy session — with the same call.
+      const nowMs = Date.now()
+      await writeResolvedRecord('01AAA', {
+        agentName: 'alpha',
+        sessionId: 'session-1',
+        resolvedAt: new Date(nowMs - 1000).toISOString(),
+      })
+
+      const granted = await checkRecentApproval(baseDir, {
+        ...TRIPLE,
+        sessionId: 'session-2',
+        agentName: 'alpha',
+        ttlMs: 60_000,
+        clock: () => nowMs,
+      })
+
+      expect(granted).toEqual({ approvalId: '01AAA' })
+    })
+
+    test('a wrap-path resolution (no agentName) grants a retry from the same session', async () => {
+      const nowMs = Date.now()
+      await writeResolvedRecord('01AAA', { sessionId: 'session-1', resolvedAt: new Date(nowMs - 1000).toISOString() })
+
+      const granted = await checkRecentApproval(baseDir, {
+        ...TRIPLE,
+        sessionId: 'session-1',
+        ttlMs: 60_000,
+        clock: () => nowMs,
+      })
+
+      expect(granted).toEqual({ approvalId: '01AAA' })
+    })
+
+    test('a wrap-path resolution (no agentName) does not grant a retry from a different session', async () => {
+      // Without an agent the session is the only identity a requester has.
+      const nowMs = Date.now()
+      await writeResolvedRecord('01AAA', { sessionId: 'session-1', resolvedAt: new Date(nowMs - 1000).toISOString() })
+
+      const granted = await checkRecentApproval(baseDir, {
+        ...TRIPLE,
+        sessionId: 'session-2',
+        ttlMs: 60_000,
+        clock: () => nowMs,
+      })
+
+      expect(granted).toBeNull()
+    })
+
+    test('a wrap-path resolution never grants an authenticated agent, even in the same session', async () => {
+      const nowMs = Date.now()
+      await writeResolvedRecord('01AAA', { sessionId: 'session-1', resolvedAt: new Date(nowMs - 1000).toISOString() })
+
+      const granted = await checkRecentApproval(baseDir, {
+        ...TRIPLE,
+        sessionId: 'session-1',
+        agentName: 'alpha',
+        ttlMs: 60_000,
+        clock: () => nowMs,
+      })
+
+      expect(granted).toBeNull()
+    })
+
+    test('an agent resolution never grants a wrap-path retry, even in the same session', async () => {
+      const nowMs = Date.now()
+      await writeResolvedRecord('01AAA', {
+        agentName: 'alpha',
+        sessionId: 'session-1',
+        resolvedAt: new Date(nowMs - 1000).toISOString(),
+      })
+
+      const granted = await checkRecentApproval(baseDir, {
+        ...TRIPLE,
+        sessionId: 'session-1',
+        ttlMs: 60_000,
+        clock: () => nowMs,
+      })
+
+      expect(granted).toBeNull()
+    })
+
+    test('a record with no sessionId at all is skipped whole, and grants nothing', async () => {
+      // Not "granted to whoever asks": a record that cannot say who asked
+      // failed validation, so nothing about it is trusted.
+      const nowMs = Date.now()
+      const resolvedAt = new Date(nowMs - 1000).toISOString()
+      const withoutSession = Object.fromEntries(
+        Object.entries(resolvedDocOf('01AAA', { resolvedAt })).filter(([key]) => key !== 'sessionId'),
+      )
+      await writeResolvedRecord('01AAA', { doc: JSON.stringify(withoutSession), resolvedAt })
+
+      const granted = await checkRecentApproval(baseDir, {
+        ...TRIPLE,
+        sessionId: 'session-1',
+        ttlMs: 60_000,
+        clock: () => nowMs,
+      })
+
+      expect(granted).toBeNull()
+    })
+
+    test('a record whose agentName is not a string is skipped whole, and grants nothing', async () => {
+      const nowMs = Date.now()
+      await writeResolvedRecord('01AAA', { agentName: 42, resolvedAt: new Date(nowMs - 1000).toISOString() })
+
+      const granted = await checkRecentApproval(baseDir, {
+        ...TRIPLE,
+        sessionId: 'session-1',
+        ttlMs: 60_000,
+        clock: () => nowMs,
+      })
+
+      expect(granted).toBeNull()
+    })
   })
 
   // REMOVED (M4.5 wave 3): "a resolved file whose approvalId does not match its

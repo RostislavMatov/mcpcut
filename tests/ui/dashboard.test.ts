@@ -350,6 +350,47 @@ describe('dashboard — hostile values in the new attribute interpolation points
     expect(doc).not.toContain('"onmouseover="')
     expect(doc).toContain('&lt;img src=x onerror=alert(1)&gt;')
   })
+
+  // Audit 2026-09-02 F1 — built from code points: a literal one would be invisible here.
+  const RTL_OVERRIDE = String.fromCodePoint(0x202e)
+  const CYRILLIC_I = String.fromCodePoint(0x0456)
+
+  /** The page with one recent decision whose tool name the (untrusted) server chose. */
+  function pageWithToolNamed(toolName: string): string {
+    return renderDashboardPage({
+      cards: [],
+      csrfToken: 'c',
+      summary: {
+        ...SUMMARY,
+        recentDecisions: toRecentDecisions(
+          [{ sessionId: 's1', record: decisionRecord('2026-08-22T10:00:01.000Z', { toolName }) }],
+          5,
+        ),
+      },
+    })
+  }
+
+  test('strips invisible bidi characters from a spoofed tool name everywhere on the page and flags it (audit 2026-09-02 F1)', () => {
+    const doc = pageWithToolNamed(`read_file${RTL_OVERRIDE}txt.exe`)
+    expect(doc).not.toContain(RTL_OVERRIDE)
+    expect(doc).toMatch(/<span class="tool-name">read_filetxt\.exe<span class="name-flag"/)
+    // The row's data-* payload (what dashboard.js copies into the detail card) and the
+    // detail card's own tool line carry the cleaned text; the card keeps the badge.
+    expect(doc).toContain('data-tool="read_filetxt.exe"')
+    expect(doc).toMatch(/data-d="tool" title="read_filetxt\.exe">read_filetxt\.exe<span class="name-flag"/)
+  })
+
+  test('keeps a homoglyph tool name but flags it', () => {
+    const doc = pageWithToolNamed(`create_${CYRILLIC_I}ssue`)
+    expect(doc).toContain(`<span class="tool-name">create_${CYRILLIC_I}ssue<span class="name-flag"`)
+    expect(doc).toContain(`data-tool="create_${CYRILLIC_I}ssue"`)
+  })
+
+  test('a plain tool name carries no flag', () => {
+    const doc = pageWithToolNamed('list_issues')
+    expect(doc).toContain('<span class="tool-name">list_issues</span>')
+    expect(doc).not.toContain('name-flag')
+  })
 })
 
 describe('dashboard — row click enhancement (dashboard.js contract)', () => {

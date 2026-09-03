@@ -1,5 +1,6 @@
 import type { Readable } from 'node:stream'
-import { createFrameSplitter } from '../protocol/split.js'
+import { MAX_LINE_BUFFER_BYTES } from '../config.js'
+import { createFrameSplitter, type Frame } from '../protocol/split.js'
 import { perMessageHeadersOptionOf } from '../session/per-message-headers.js'
 import { buildServerEnv, type ResolveEnvRefsFn } from '../proxy/server-env.js'
 import { killWithEscalation, spawnServer, type ServerHandle } from '../proxy/spawn.js'
@@ -170,9 +171,13 @@ function wrapStdioHandle(handle: ServerHandle, deps: OpenUpstreamDeps): Upstream
   // A child that dies (or never started) ends the conversation; the session
   // core reacts to `onEnd` exactly as it would to a closed socket.
   handle.exitCode().then(
-    () => source.end(),
+    () => {
+      stderrLines.flush()
+      source.end()
+    },
     (error: unknown) => {
       deps.onError(error)
+      stderrLines.flush()
       source.end()
     },
   )
@@ -252,18 +257,48 @@ function createChildMessageSource(stdout: Readable, deps: OpenUpstreamDeps): Chi
   return { source, end, dispose: () => source.dispose() }
 }
 
-/** Splits a stream of chunks into text lines for the stderr journal tap. */
-function createLineReader(onLine: (line: string) => void): { push(chunk: Buffer): void } {
-  let buffered = ''
+export interface LineReaderOptions {
+  /** Cap on an unterminated line before it is flushed as-is; tests inject a small one. */
+  readonly maxBufferBytes?: number
+}
+
+/**
+ * Splits a child's stderr into text lines for the journal tap, on the same
+ * bounded byte splitter the child's stdout wire goes through.
+ *
+ * WHY not a string accumulator (security audit 2026-09-02, F1 HIGH): the
+ * previous `buffered += chunk` version had no cap, so a registered server
+ * writing stderr without a newline — a runaway dump, a corrupted binary
+ * payload, a hostile package — grew the shared `serve` daemon's heap for the
+ * life of the session and re-split the whole backlog on every chunk. Reusing
+ * `createFrameSplitter` gives stderr parity with the stdout framing: the tail
+ * is capped at `MAX_LINE_BUFFER_BYTES`, kept as fragments rather than
+ * re-concatenated, and decoded only once a line is complete (so a multi-byte
+ * character split across chunks survives). Unlike the stdout path, an
+ * overflow flush is NOT dropped: it is diagnostic text, not protocol, so
+ * relaying the fragment as a line loses nothing and hides nothing — the
+ * journal's raw-text cap (`MAX_INVALID_PAYLOAD_CHARS`) trims it before it is
+ * stored.
+ */
+export function createLineReader(
+  onLine: (line: string) => void,
+  options: LineReaderOptions = {},
+): { push(chunk: Buffer): void; flush(): void } {
+  const splitter = createFrameSplitter({
+    maxBufferBytes: options.maxBufferBytes ?? MAX_LINE_BUFFER_BYTES,
+  })
+  const deliver = (frames: readonly Frame[]): void => {
+    for (const frame of frames) {
+      if (frame.isBlank) continue
+      onLine(frame.bytes.toString('utf8'))
+    }
+  }
   return {
-    push: (chunk: Buffer) => {
-      buffered += chunk.toString('utf8')
-      const lines = buffered.split('\n')
-      buffered = lines.pop() ?? ''
-      for (const line of lines) {
-        if (line.length > 0) onLine(line)
-      }
-    },
+    push: (chunk: Buffer) => deliver(splitter.push(chunk)),
+    // The child's LAST line is the one operators want most — a crash message
+    // rarely ends in a newline. Called once the child has exited (review of
+    // the 2026-09-02 audit fix), the same moment the stdout source is ended.
+    flush: () => deliver(splitter.flush()),
   }
 }
 

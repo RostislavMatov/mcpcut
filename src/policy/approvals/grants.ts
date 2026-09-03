@@ -38,6 +38,16 @@ import {
  * retry that immediately follows an approval succeeds without asking twice",
  * and `checkRecentApproval` already covers the case that matters (a
  * *slower* retry, arriving after the in-process wait gave up).
+ *
+ * **Requester binding (security audit 2026-09-02, F1).** Both tiers answer
+ * "was THIS requester's identical call approved?", never "was an identical
+ * call approved for anyone?". The fast path is per-requester by
+ * construction (one registry per proxy session, one agent per session). The
+ * fallback reads resolved rows shared by every session on the installation,
+ * so it carries the binding explicitly -- see `isSameRequester`: by agent
+ * identity when the call came from an authenticated agent (a later session
+ * of the same agent is exactly the late retry this tier exists for), by
+ * session when it did not (the ad-hoc `wrap` path has no other identity).
  */
 
 /**
@@ -51,6 +61,10 @@ const RETENTION_CLEANUP_BATCH = 200
  * narrowed to a single (server, tool, args) triple by index and ordered newest
  * first, and only a resolution inside the TTL window can grant, so anything
  * past the newest few is necessarily too old to matter.
+ * Since the requester binding (audit 2026-09-02, H1) the window is shared by
+ * every requester of the same triple: fifty newer resolutions by OTHER agents
+ * can push this requester's own approval out of it. The miss is fail-closed —
+ * the gate asks a human again — never a grant to the wrong party.
  */
 const MAX_GRANT_CANDIDATES = 50
 
@@ -106,12 +120,19 @@ export function createGrantRegistry(opts: GrantRegistryOptions = {}): GrantRegis
  * `resolution.actor` is part of that minimum since M5 wave 2: the retry this
  * record admits writes a journal record naming the operator, so the name has
  * to survive the same validation as everything else it is decided on.
+ *
+ * `sessionId`/`agentName` are part of it since the 2026-09-02 security audit
+ * (F1): the grant is bound to the requester the human answered, so a record
+ * that cannot say who asked is skipped whole rather than granted to whoever
+ * asks next.
  */
 interface ResolvedFileForGrantCheck {
   readonly approvalId: string
   readonly serverName: string
   readonly toolName: string
   readonly argsHash: string
+  readonly sessionId: string
+  readonly agentName?: string
   readonly resolvedAt: string
   readonly resolution: { readonly outcome: string; readonly actor?: string }
 }
@@ -125,6 +146,8 @@ function isResolvedFileForGrantCheck(raw: unknown): raw is ResolvedFileForGrantC
     typeof value.serverName === 'string' &&
     typeof value.toolName === 'string' &&
     typeof value.argsHash === 'string' &&
+    typeof value.sessionId === 'string' &&
+    (value.agentName === undefined || typeof value.agentName === 'string') &&
     typeof value.resolvedAt === 'string' &&
     typeof resolution === 'object' &&
     resolution !== null &&
@@ -154,6 +177,10 @@ export interface RecentApprovalGrant {
 }
 
 export interface CheckRecentApprovalInput extends GrantKey {
+  /** The session asking now; without an `agentName` it is the only identity a requester has. */
+  readonly sessionId: string
+  /** The authenticated agent asking now; absent on the ad-hoc `wrap` path. */
+  readonly agentName?: string
   readonly ttlMs: number
   /** Injectable clock for deterministic tests. Defaults to `Date.now`. */
   readonly clock?: () => number
@@ -236,6 +263,7 @@ function matchesGrant(
   if (raw.serverName !== input.serverName) return null
   if (raw.toolName !== input.toolName) return null
   if (raw.argsHash !== input.argsHash) return null
+  if (!isSameRequester(raw, input)) return null
 
   const resolvedAtMs = Date.parse(raw.resolvedAt)
   if (Number.isNaN(resolvedAtMs)) return null
@@ -243,6 +271,26 @@ function matchesGrant(
   // come from an approval that already happened, within the TTL window.
   if (resolvedAtMs > nowMs + GRANT_CLOCK_SKEW_MS) return null
   return nowMs - resolvedAtMs <= input.ttlMs ? raw : null
+}
+
+/**
+ * Whether the requester asking now is the one the human answered.
+ *
+ * WHY (security audit 2026-09-02, F1): the fallback used to grant on the call
+ * triple alone, so within `grantTtlMs` ANY agent sending the byte-identical
+ * call consumed a human's answer to somebody else's question -- the
+ * human-in-the-loop invariant ("an operator saw THIS requester's call")
+ * silently broken for the second requester, with the journal naming the first
+ * one's approval. The binding is by agent identity when there is one: a later
+ * session of the SAME agent is exactly the late-approval-after-timeout case
+ * this tier exists for, so sessions are not compared. Without an agent (the
+ * ad-hoc `wrap` path) the session is the only identity there is, so the grant
+ * stays inside it. An agent record never grants an anonymous retry and vice
+ * versa: those are different requesters by construction.
+ */
+function isSameRequester(raw: ResolvedFileForGrantCheck, input: CheckRecentApprovalInput): boolean {
+  if (raw.agentName !== undefined) return input.agentName === raw.agentName
+  return input.agentName === undefined && raw.sessionId === input.sessionId
 }
 
 /**

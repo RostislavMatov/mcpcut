@@ -218,6 +218,32 @@ describe('a retry admitted by a LATE approval names the approval and the operato
     expect(granted['approvalId']).toBe(pending.approvalId)
     expect(Object.hasOwn(granted, 'actor')).toBe(false)
   })
+
+  test('a late approval for agent alpha does not admit the identical retry from agent beta (audit 2026-09-02, F1)', async () => {
+    // Two authenticated agents, one approvals queue. The human answered
+    // ALPHA's question; beta's byte-identical call is a question nobody was
+    // asked, so it must raise its own prompt rather than ride on alpha's.
+    const alpha = createHarness({ policy: policyOf(LATE_APPROVAL_POLICY), agentScope: scopeOf('alpha') })
+    const beta = createHarness({ policy: policyOf(LATE_APPROVAL_POLICY), agentScope: scopeOf('beta') })
+
+    await alpha.gate.gateClientMessage(toolCall(1, 'delete_repo'))
+    const pending = await waitForPendingApproval()
+    expect(pending.agentName).toBe('alpha')
+    await queue.resolve(pending.approvalId, { outcome: 'approved', actor: OPERATOR })
+
+    const retry = await beta.gate.gateClientMessage(toolCall(2, 'delete_repo'))
+
+    // Beta's own wait timed out: nobody approved BETA, and a fresh prompt was
+    // raised for it instead of being skipped.
+    expect(retry).toEqual({ action: 'drop' })
+    const [betaPending] = await queue.list()
+    expect(betaPending?.agentName).toBe('beta')
+    expect(betaPending?.approvalId).not.toBe(pending.approvalId)
+    const betaDecisions = decisionsOf(beta)
+    expect(betaDecisions.map((decision) => decision['rule'])).not.toContain('grant')
+    expect(betaDecisions.at(-1)?.['outcome']).toBe('timeout')
+    expect(errors).toEqual([])
+  })
 })
 
 describe('the terminal record of a waited-out approval names its operator', () => {

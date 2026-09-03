@@ -304,6 +304,42 @@ describe('McpCut quarantine page structure', () => {
     expect(doc).not.toContain('(truncated)')
   })
 
+  // Audit 2026-09-02 F1 — built from code points: a literal one would be invisible here.
+  const RTL_OVERRIDE = String.fromCodePoint(0x202e)
+  const CYRILLIC_I = String.fromCodePoint(0x0456)
+
+  test('strips invisible bidi characters from a spoofed tool name in the head, flags it, and keeps the raw name in the form (audit 2026-09-02 F1)', () => {
+    const raw = `read_file${RTL_OVERRIDE}txt.exe`
+    const doc = renderQuarantinePage({ cards: [{ ...changedCard, toolName: raw }], csrfToken: CSRF })
+    expect(doc).toMatch(/<span class="tool-name">read_filetxt\.exe<span class="name-flag"/)
+    // The POST must still name the exact tool: the raw bytes ride only in the round-trip field.
+    expect(doc).toContain(`name="tool" value="${raw}"`)
+  })
+
+  test('keeps a homoglyph tool name but flags it', () => {
+    const doc = renderQuarantinePage({ cards: [{ ...changedCard, toolName: `create_${CYRILLIC_I}ssue` }], csrfToken: CSRF })
+    expect(doc).toContain(`<span class="tool-name">create_${CYRILLIC_I}ssue<span class="name-flag"`)
+  })
+
+  test('a plain tool name carries no flag', () => {
+    const doc = renderQuarantinePage({ cards: [changedCard], csrfToken: CSRF })
+    expect(doc).toContain('<span class="tool-name">create_issue</span>')
+    expect(doc).not.toContain('name-flag')
+  })
+
+  test('an over-long schema-diff path is cut with the same visible marker as the description (audit 2026-09-02 F2)', () => {
+    const path = `properties.${'p'.repeat(2000)}`
+    const doc = renderQuarantinePage({ cards: [{ ...changedCard, changes: [{ kind: 'property-added', path }] }], csrfToken: CSRF })
+    expect(doc).not.toContain('p'.repeat(2000))
+    expect(doc).toMatch(/<code>properties\.p{149}<\/code><span class="pill pill-alert qr-trunc">… \(truncated\)<\/span>/)
+  })
+
+  test('a short schema-diff path is shown whole, without a marker', () => {
+    const doc = renderQuarantinePage({ cards: [changedCard], csrfToken: CSRF })
+    expect(doc).toContain('<code>properties.force</code>')
+    expect(doc).not.toContain('(truncated)')
+  })
+
   test('approve is primary, reject is secondary; both carry server/tool/csrf', () => {
     const doc = renderQuarantinePage({ cards: [changedCard], csrfToken: CSRF })
     expect(doc).toMatch(/action="\/quarantine\/approve" data-action="\/quarantine\/approve"/)

@@ -1,4 +1,5 @@
 import type { ServerRecord } from '../../registry/schema.js'
+import { displayName, renderToolName } from '../display-name.js'
 import { html, join, safeUrl, type Html } from '../html.js'
 import type { RecentDecisionView } from './dashboard.js'
 
@@ -80,16 +81,16 @@ function detailMeta(decision: RecentDecisionView): string {
  */
 function rowDetailData(decision: RecentDecisionView, lat: string): Html {
   const sessionHref = `/journal?session=${encodeURIComponent(decision.sessionId)}`
-  return html` data-detail-id="${decision.id}" data-server="${decision.serverName}" data-tool="${decision.toolName}" data-caller="${decision.agentName ?? '—'}" data-started="${shortTime(decision.ts)}" data-duration="${lat}" data-status="${decision.outcome.toUpperCase()}" data-meta="${detailMeta(decision)}" data-session-href="${safeUrl(sessionHref)}"`
+  return html` data-detail-id="${decision.id}" data-server="${decision.serverName}" data-tool="${displayName(decision.toolName).text}" data-caller="${decision.agentName ?? '—'}" data-started="${shortTime(decision.ts)}" data-duration="${lat}" data-status="${decision.outcome.toUpperCase()}" data-meta="${detailMeta(decision)}" data-session-href="${safeUrl(sessionHref)}"`
 }
 
 function renderRow(decision: RecentDecisionView, input: JournalPanelInput): Html {
   const cls = decision.id === input.selectedId ? 'dash-row is-sel' : 'dash-row'
   const lat = decision.durationMs !== undefined ? `${decision.durationMs}ms` : '—'
-  const filterText = `${decision.serverName}/${decision.toolName} ${decision.outcome} ${shortTime(decision.ts)}`
+  const filterText = `${decision.serverName}/${displayName(decision.toolName).text} ${decision.outcome} ${shortTime(decision.ts)}`
   return html`<a class="${cls}" href="${safeUrl(rowHref(decision, input.filter))}" title="${decision.ts}" data-filter-item data-filter-text="${filterText}"${rowDetailData(decision, lat)}>
     <span class="muted num">${shortTime(decision.ts)}</span>
-    <span class="ellipsis"><span class="server">${decision.serverName}</span>/<span class="tool-name">${decision.toolName}</span></span>
+    <span class="ellipsis"><span class="server">${decision.serverName}</span>/<span class="tool-name">${renderToolName(decision.toolName)}</span></span>
     <span class="lat num">${lat}</span>
     <span class="outcome outcome-${decision.outcome} upper">${decision.outcome}</span>
   </a>`
@@ -122,8 +123,13 @@ export function renderJournalPanel(input: JournalPanelInput): Html {
   </section>`
 }
 
-function kv(key: string, value: string, slug: string): Html {
-  return html`<div class="kv-line"><span class="label">${key}</span><span class="kv-v ellipsis" data-d="${slug}" title="${value}">${value}</span></div>`
+/**
+ * One detail line. `shown` is the visible form when it differs from the plain
+ * `value` — a tool name carries its spoofing badge (audit F1), while the
+ * `title` attribute, which cannot hold markup, gets the cleaned text.
+ */
+function kv(key: string, value: string, slug: string, shown: Html = html`${value}`): Html {
+  return html`<div class="kv-line"><span class="label">${key}</span><span class="kv-v ellipsis" data-d="${slug}" title="${value}">${shown}</span></div>`
 }
 
 /** The right "Call detail" panel for the selected row (or its empty state). */
@@ -139,7 +145,7 @@ export function renderCallDetail(decision: RecentDecisionView | undefined): Html
     <div class="dash-detail-bd">
       <div class="kv-rows">
         ${kv('Server', decision.serverName, 'server')}
-        ${kv('Tool', decision.toolName, 'tool')}
+        ${kv('Tool', displayName(decision.toolName).text, 'tool', renderToolName(decision.toolName))}
         ${kv('Caller', decision.agentName ?? '—', 'caller')}
         ${kv('Started', shortTime(decision.ts), 'started')}
         ${kv('Duration', decision.durationMs !== undefined ? `${decision.durationMs}ms` : '—', 'duration')}

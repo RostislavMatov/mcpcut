@@ -1,3 +1,4 @@
+import { renderToolName } from '../display-name.js'
 import { html, type Html, join, safeUrl } from '../html.js'
 import type { JournalRecord } from '../../journal/record.js'
 import type { JournalFilters } from '../../journal/search.js'
@@ -193,7 +194,7 @@ function decisionCells(record: JournalRecord): Html {
   if (d === undefined) return html``
   const agent = d.agentName !== undefined ? html` <span class="muted jr-agent">· ${d.agentName}</span>` : html``
   const outcomeCls = ALERT_OUTCOMES.has(d.outcome) ? 'pill pill-alert jr-outcome' : 'pill jr-outcome'
-  return html`<span class="ellipsis jr-what"><span class="server">${d.serverName}</span>/<span class="tool-name">${d.toolName}</span>${agent}</span>
+  return html`<span class="ellipsis jr-what"><span class="server">${d.serverName}</span>/<span class="tool-name">${renderToolName(d.toolName)}</span>${agent}</span>
       <span class="jr-state"><span class="pill jr-class">${d.toolClass}</span> <span class="${outcomeCls}">${d.outcome}</span></span>`
 }
 

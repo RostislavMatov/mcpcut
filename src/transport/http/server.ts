@@ -4,6 +4,11 @@ import {
   type Server,
   type ServerResponse,
 } from 'node:http'
+import {
+  applyConnectionTimeouts,
+  readConnectionTimeouts,
+  type ConnectionTimeouts,
+} from '../../net/connection-timeouts.js'
 import { isHostAllowed, isWildcardBindHost, LOCALHOST_HOSTNAMES } from '../../net/origin-host.js'
 import { authenticate, type TokenResolver } from './auth.js'
 import { isOriginAllowed, parseRoute, type RouteMatch } from './routes.js'
@@ -14,12 +19,15 @@ import {
   BODY_PAYLOAD_TOO_LARGE,
   BODY_UNAUTHORIZED,
   DEFAULT_HTTP_HOST,
+  HEADERS_TIMEOUT_MS,
   HTTP_STATUS_FORBIDDEN,
   HTTP_STATUS_INTERNAL_ERROR,
   HTTP_STATUS_PAYLOAD_TOO_LARGE,
   HTTP_STATUS_UNAUTHORIZED,
+  KEEP_ALIVE_TIMEOUT_MS,
   MAX_REQUEST_BODY_BYTES,
   NON_LOCALHOST_BIND_WARNING,
+  REQUEST_TIMEOUT_MS,
   WILDCARD_BIND_WARNING,
 } from './server-constants.js'
 import { CONTENT_TYPE_JSON, HTTP_STATUS_NOT_FOUND } from './constants.js'
@@ -66,11 +74,14 @@ export interface HttpFrontOptions extends Omit<SessionManagerOptions, 'onSession
   readonly stderr?: WarnSink
 }
 
+/** The per-connection timeouts a live listener enforces, read back from it (tests). */
 export interface HttpFront {
   /** Binds and resolves with the actual port (use 0 for an ephemeral one). */
   listen(port: number, host?: string): Promise<{ port: number }>
   /** Stops accepting, tears down every session, closes remaining sockets. Idempotent. */
   close(): Promise<void>
+  /** Timeouts of the live listener; `null` before `listen` (tests). */
+  connectionTimeouts(): ConnectionTimeouts | null
 }
 
 /** Body read outcome: the whole payload or an over-limit refusal. */
@@ -239,6 +250,12 @@ export function createHttpFront(opts: HttpFrontOptions): HttpFront {
     }
     return new Promise((resolve, reject) => {
       const instance = createServer(onRequest)
+      // Audit 2026-09-02, F3 — the constants say what each timer does and does not cover.
+      applyConnectionTimeouts(instance, {
+        headersTimeoutMs: HEADERS_TIMEOUT_MS,
+        requestTimeoutMs: REQUEST_TIMEOUT_MS,
+        keepAliveTimeoutMs: KEEP_ALIVE_TIMEOUT_MS,
+      })
       server = instance
       instance.once('error', reject)
       instance.listen(port, bindHost, () => {
@@ -281,5 +298,9 @@ export function createHttpFront(opts: HttpFrontOptions): HttpFront {
     return closePromise
   }
 
-  return Object.freeze({ listen, close })
+  return Object.freeze({
+    listen,
+    close,
+    connectionTimeouts: () => (server === null ? null : readConnectionTimeouts(server)),
+  })
 }

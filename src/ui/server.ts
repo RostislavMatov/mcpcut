@@ -4,6 +4,11 @@ import {
   type Server,
   type ServerResponse,
 } from 'node:http'
+import {
+  applyConnectionTimeouts,
+  readConnectionTimeouts,
+  type ConnectionTimeouts,
+} from '../net/connection-timeouts.js'
 import { isHostAllowed, isOriginAllowed, isWildcardBindHost, LOCALHOST_HOSTNAMES } from '../net/origin-host.js'
 import type { AdminResolver, UiSession } from './auth.js'
 import {
@@ -55,6 +60,9 @@ import {
   SCRIPT_REQUEST_HEADER,
   SCRIPT_REQUEST_VALUE,
   SSE_HEADERS,
+  UI_HEADERS_TIMEOUT_MS,
+  UI_KEEP_ALIVE_TIMEOUT_MS,
+  UI_REQUEST_TIMEOUT_MS,
   WILDCARD_BIND_WARNING,
 } from './constants.js'
 
@@ -127,6 +135,7 @@ export interface UiServerOptions {
   readonly stderr?: WarnSink
 }
 
+/** The per-connection timeouts a live listener enforces, read back from it (tests). */
 export interface UiServer {
   /** Binds and resolves with the actual port (use 0 for an ephemeral one). */
   listen(port: number, host?: string): Promise<{ port: number }>
@@ -134,6 +143,8 @@ export interface UiServer {
   close(): Promise<void>
   /** Live session count (tests). */
   sessionCount(): number
+  /** Timeouts of the live listener; `null` before `listen` (tests). */
+  connectionTimeouts(): ConnectionTimeouts | null
 }
 
 const EMPTY_BODY = Buffer.alloc(0)
@@ -473,6 +484,12 @@ export function createUiServer(opts: UiServerOptions): UiServer {
     }
     return new Promise((resolve, reject) => {
       const instance = createServer(onRequest)
+      // Audit 2026-09-02, LOW-2 — the constants say what each timer does and does not cover.
+      applyConnectionTimeouts(instance, {
+        headersTimeoutMs: UI_HEADERS_TIMEOUT_MS,
+        requestTimeoutMs: UI_REQUEST_TIMEOUT_MS,
+        keepAliveTimeoutMs: UI_KEEP_ALIVE_TIMEOUT_MS,
+      })
       server = instance
       instance.once('error', reject)
       instance.listen(port, bindHost, () => {
@@ -506,6 +523,11 @@ export function createUiServer(opts: UiServerOptions): UiServer {
     return closePromise
   }
 
-  return Object.freeze({ listen, close, sessionCount: () => sessions.size() })
+  return Object.freeze({
+    listen,
+    close,
+    sessionCount: () => sessions.size(),
+    connectionTimeouts: () => (server === null ? null : readConnectionTimeouts(server)),
+  })
 }
 

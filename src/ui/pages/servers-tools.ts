@@ -1,5 +1,6 @@
 import type { InventoryStoreData } from '../../policy/inventory-store.js'
 import type { Policy } from '../../policy/schema.js'
+import { renderToolName } from '../display-name.js'
 import { html, join, safeUrl, type Html } from '../html.js'
 import { csrfField } from './csrf-field.js'
 import {
@@ -141,9 +142,9 @@ function renderRelease(tool: ServerToolView, ctx: ToolsPanelContext): Html {
   if (ctx.canRelease !== true || tool.quarantined === undefined) return html``
   const explanation =
     tool.quarantined === 'new'
-      ? html`“${tool.name}” was discovered on the last probe and has never run. Releasing it makes it
+      ? html`“${renderToolName(tool.name)}” was discovered on the last probe and has never run. Releasing it makes it
           callable by agents connected to ${ctx.serverName}.`
-      : html`“${tool.name}” already ran, and its declared schema has CHANGED since it was approved.
+      : html`“${renderToolName(tool.name)}” already ran, and its declared schema has CHANGED since it was approved.
           Releasing it approves the new surface for every agent connected to ${ctx.serverName}.`
   return html`<details class="srv-release">
     <summary class="srv-release-open">Release from quarantine</summary>
@@ -189,7 +190,7 @@ function renderTool(tool: ServerToolView, ctx: ToolsPanelContext): Html {
         })
       : html``
   return html`<div class="srv-tool">
-    <div class="row"><span class="srv-tool-name">${tool.name}</span>${pill}${rulePill}<span class="spacer"></span>${review}</div>
+    <div class="row"><span class="srv-tool-name">${renderToolName(tool.name)}</span>${pill}${rulePill}<span class="spacer"></span>${review}</div>
     ${tool.description !== undefined ? renderDescription(tool.description) : html``}
     ${controls}
     ${renderRelease(tool, ctx)}

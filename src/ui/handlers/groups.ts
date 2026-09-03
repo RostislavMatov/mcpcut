@@ -20,6 +20,7 @@ import { StoreWriteRejectedError } from '../../policy/store.js'
 import type { RegistryStore } from '../../registry/store.js'
 import type { UiSession } from '../auth.js'
 import {
+  AUDIT_RECORD_DROPPED_WARNING,
   BODY_FORBIDDEN,
   CONTENT_TYPE_HTML,
   HTTP_STATUS_BAD_REQUEST,
@@ -35,7 +36,7 @@ import {
 } from '../pages/groups.js'
 import { renderNotice } from '../pages/notice.js'
 import type { UiHandler, UiRequestContext, UiResult } from '../routes.js'
-import type { UiAuditSink } from './agents.js'
+import type { AccessEditJournalOutcome, AccessEditJournalPort, UiAuditSink } from './agents.js'
 import { methodGrantsFrom, parseGrantValue } from './grant-fields.js'
 import { fieldsOf, redirect } from './request-helpers.js'
 import { internalErrorResult, isKnownStoreError, type ErrorClass } from './store-errors.js'
@@ -67,7 +68,7 @@ export interface GroupsHandlersDeps {
    * Optional: without it an edit still happens and is still attributed on the
    * audit sink, it simply leaves no journal record.
    */
-  readonly journalAccessEdit?: (info: AccessEditInfo) => Promise<unknown>
+  readonly journalAccessEdit?: AccessEditJournalPort
 }
 
 export interface GroupsHandlers {
@@ -143,25 +144,56 @@ export function createGroupsHandlers(deps: GroupsHandlersDeps): GroupsHandlers {
   }
 
   /**
-   * Records one access change in the journal. The write has already happened
-   * when this runs, so a journal that cannot be reached must not turn it into
-   * a 500: the injected writer never throws by contract
-   * (`groups/journal-access-edit.ts` returns a drop indicator instead), and
-   * this guard keeps that true for ANY injected port.
+   * Records one access change in the journal and says whether the record
+   * landed. The write has already happened when this runs, so a journal that
+   * cannot be reached must not turn it into a 500: the injected writer never
+   * throws by contract (`groups/journal-access-edit.ts` returns a drop
+   * indicator instead), and this guard keeps that true for ANY injected port —
+   * a port that threw has not written either, so it answers as a drop. No
+   * port at all is the composition root's choice (a plane assembled without a
+   * journal), not a record that was lost, and earns no warning.
    */
-  async function journal(session: UiSession, info: Omit<AccessEditInfo, 'actor'>): Promise<void> {
+  async function journal(
+    session: UiSession,
+    info: Omit<AccessEditInfo, 'actor'>,
+  ): Promise<AccessEditJournalOutcome> {
     const write = deps.journalAccessEdit
-    if (write === undefined) return
+    if (write === undefined) return { written: true }
     try {
-      await write({
+      const { written } = await write({
         actor: { adminName: session.adminName, role: session.role, via: 'ui' },
         ...info,
       })
+      return { written }
     } catch {
-      // Deliberately contained, not swallowed silently: the audit sink above
-      // already recorded the attributed edit, and the writer's own
-      // diagnostics report the drop.
+      // Contained, not swallowed: the audit sink above already recorded the
+      // attributed edit, the writer's own diagnostics report the fault, and
+      // the verdict below puts it on the admin's success page.
+      return { written: false }
     }
+  }
+
+  /**
+   * The answer to a group edit that HAS happened: the plain 303 when its audit
+   * record landed, the success notice carrying the F1 warning when it was
+   * dropped. A redirect has nowhere to say it and `/groups` has no
+   * query-notice flag, so the drop is the one case a group edit answers with
+   * a page — still a 200: the change stands, and the page says so first.
+   */
+  function applied(session: UiSession, message: string, journaled: AccessEditJournalOutcome): UiResult {
+    if (journaled.written) return redirect('/groups')
+    return htmlResult(
+      HTTP_STATUS_OK,
+      renderNotice({
+        title: 'Groups',
+        message,
+        ok: true,
+        backHref: '/groups',
+        backLabel: 'Back to groups',
+        session,
+        warning: AUDIT_RECORD_DROPPED_WARNING,
+      }),
+    )
   }
 
   async function groupsPage(ctx: UiRequestContext): Promise<UiResult> {
@@ -200,8 +232,8 @@ export function createGroupsHandlers(deps: GroupsHandlersDeps): GroupsHandlers {
       return storeFailure(error, session)
     }
     audit(session, 'group.create', name)
-    await journal(session, { action: 'group.create', group: name })
-    return redirect('/groups')
+    const outcome = await journal(session, { action: 'group.create', group: name })
+    return applied(session, `created group "${name}"`, outcome)
   }
 
   /**
@@ -236,8 +268,8 @@ export function createGroupsHandlers(deps: GroupsHandlersDeps): GroupsHandlers {
       return htmlResult(HTTP_STATUS_OK, renderGroupRemoveRefusal({ group: fresh, session }))
     }
     audit(session, 'group.remove', name)
-    await journal(session, { action: 'group.remove', group: name })
-    return redirect('/groups')
+    const outcome = await journal(session, { action: 'group.remove', group: name })
+    return applied(session, `removed group "${name}"`, outcome)
   }
 
   async function groupsGrant(ctx: UiRequestContext): Promise<UiResult> {
@@ -263,13 +295,13 @@ export function createGroupsHandlers(deps: GroupsHandlersDeps): GroupsHandlers {
     }
     audit(session, 'group.grant', `${group}/${server}`)
     const grant = record.grants[server]
-    await journal(session, {
+    const outcome = await journal(session, {
       action: 'group.grant',
       group,
       server,
       ...(grant !== undefined ? { grant } : {}),
     })
-    return redirect('/groups')
+    return applied(session, `granted ${server} to group "${group}"`, outcome)
   }
 
   async function groupsUngrant(ctx: UiRequestContext): Promise<UiResult> {
@@ -292,8 +324,8 @@ export function createGroupsHandlers(deps: GroupsHandlersDeps): GroupsHandlers {
       return refusal(`group "${group}" has no grant for "${server}"`, session)
     }
     audit(session, 'group.ungrant', `${group}/${server}`)
-    await journal(session, { action: 'group.ungrant', group, server })
-    return redirect('/groups')
+    const journaled = await journal(session, { action: 'group.ungrant', group, server })
+    return applied(session, `removed ${server} from group "${group}"`, journaled)
   }
 
   async function groupsJoin(ctx: UiRequestContext): Promise<UiResult> {
@@ -316,8 +348,8 @@ export function createGroupsHandlers(deps: GroupsHandlersDeps): GroupsHandlers {
       return storeFailure(error, session)
     }
     audit(session, 'group.join', `${group}/${agentName}`)
-    await journal(session, { action: 'group.join', group, agent: agentName })
-    return redirect('/groups')
+    const outcome = await journal(session, { action: 'group.join', group, agent: agentName })
+    return applied(session, `added ${agentName} to group "${group}"`, outcome)
   }
 
   async function groupsLeave(ctx: UiRequestContext): Promise<UiResult> {
@@ -339,8 +371,8 @@ export function createGroupsHandlers(deps: GroupsHandlersDeps): GroupsHandlers {
       return refusal(`group "${group}" has no member "${agentName}"`, session)
     }
     audit(session, 'group.leave', `${group}/${agentName}`)
-    await journal(session, { action: 'group.leave', group, agent: agentName })
-    return redirect('/groups')
+    const journaled = await journal(session, { action: 'group.leave', group, agent: agentName })
+    return applied(session, `removed ${agentName} from group "${group}"`, journaled)
   }
 
   return { groupsPage, groupsCreate, groupsRemove, groupsGrant, groupsUngrant, groupsJoin, groupsLeave }

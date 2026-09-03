@@ -205,6 +205,12 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
    * prompting a second time. Only consulted on the require-approval path —
    * an allowed call never pays for this I/O.
    *
+   * The lookup names the requester (this session, and the agent when there
+   * is one) because the resolved rows are shared across every session on
+   * the installation: an approval is the human's answer to ONE requester,
+   * and a different agent's byte-identical call must raise its own prompt
+   * (security audit 2026-09-02, F1; the rule lives in `grants.ts`).
+   *
    * The record written here names the approval and the operator behind it.
    * Without them the journal showed a destructive call simply succeeding
    * under `rule: 'grant'`, with the human approval that authorized it
@@ -214,6 +220,8 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
   async function resolveLateApproval(call: ParsedToolCall, facts: CallFacts, grantKey: GrantKey): Promise<Verdict | null> {
     const granted = await checkRecentApproval(deps.approvalsBaseDir, {
       ...grantKey,
+      sessionId: deps.sessionId,
+      ...(deps.agentName !== undefined ? { agentName: deps.agentName } : {}),
       ttlMs: policy.approval.grantTtlMs,
       clock,
     })
