@@ -240,8 +240,10 @@ CLI-паритет обязателен (урок поправки ADR-0004 от
 stderr той оболочки, что её сделала (`src/cli/group-cmd-format.ts:37`), и запись
 `kind: 'access-edit'` в доказательном журнале (`src/journal/access-edit-record.ts:103-114`).
 Словарь действий закрыт: `group.create` · `group.remove` · `group.grant` · `group.ungrant` ·
-`group.join` · `group.leave` · `server.remove`, и с T1 — `agent.create` · `agent.grant` ·
-`agent.ungrant` · `agent.revoke` (`src/journal/access-edit-record.ts`).
+`group.join` · `group.leave` · `server.remove`, с T1 — `agent.create` · `agent.grant` ·
+`agent.ungrant` · `agent.revoke`, и с S2 (2026-09-03) — `vault.set` · `vault.remove` · `vault.rekey`
+(`src/journal/access-edit-record.ts`; у `vault.set`/`vault.remove` поле `vaultEntry` — имя секрета,
+никогда не значение; гейт и запись — поправка ADR-0003 от 2026-09-03).
 
 **Модель актора — три случая, и третий назван честно** (`src/journal/access-edit-record.ts:62-66`):
 

@@ -2,6 +2,7 @@ import { ulid } from 'ulid'
 import type { AdminRole } from '../admin/constants.js'
 import type { AgentGrant } from '../agents/schema.js'
 import { redact } from '../redact/redact.js'
+import { SECRET_NAME_PATTERN } from '../vault/constants.js'
 import type { ClientServerDirection, JournalRecord } from './record.js'
 
 /**
@@ -18,7 +19,9 @@ import type { ClientServerDirection, JournalRecord } from './record.js'
  * Layering: the journal must not depend on `src/groups/**` (the group store
  * depends on the journal, not the other way round), so the action union is
  * declared here in journal terms; only the grant SHAPE is borrowed as a type
- * from `agents/schema.ts`, which the group store already shares (G1).
+ * from `agents/schema.ts`, which the group store already shares (G1). The
+ * vault's NAME pattern is borrowed the same way (`vault/constants.ts` holds
+ * constants only; `signing.ts` already reaches into `vault/files.ts`).
  *
  * Attribution is separable from agent traffic BY CONSTRUCTION: the kind is
  * its own, the reserved `plane_access` session id can never be a registry
@@ -58,6 +61,12 @@ export type AccessEditAction =
   | 'agent.grant'
   | 'agent.ungrant'
   | 'agent.revoke'
+  // Vault mutations (owner decision S2, 2026-09-03): replacing a secret
+  // replaces the identity a server uses against an external system, so the
+  // journal must show WHO swapped it — by the secret's name, never its value.
+  | 'vault.set'
+  | 'vault.remove'
+  | 'vault.rekey'
 
 /**
  * WHO made the change: the authenticated admin, their role at the time, and
@@ -84,6 +93,18 @@ export interface AccessEditInfo {
   readonly group?: string
   readonly server?: string
   readonly agent?: string
+  /**
+   * `vault.set` / `vault.remove`: the NAME of the secret (S2) — never its
+   * value; the record has no field for one and must not grow one. The builder
+   * holds this to the vault's own name pattern, so a value handed over where
+   * the name belongs is refused rather than written. `vault.rekey` names none.
+   *
+   * Not called `secret`: the journal's redaction (the single path in) blanks
+   * the value of ANY key containing that word (`REDACT_KEY_PATTERNS`), and an
+   * exemption would weaken the invariant for one field. `vaultEntry` passes
+   * both the substring and the whole-token rules and says what it holds.
+   */
+  readonly vaultEntry?: string
   /** The grant written by `group.grant` — the same shape agents carry (G1). */
   readonly grant?: AgentGrant
   /** `server.remove` cascade: agents whose personal grant for the server was dropped. */
@@ -123,6 +144,7 @@ export interface BuildAccessEditRecordInput {
  * producer the same way `policy-edit-record.ts` does.
  */
 export function buildAccessEditRecord(input: BuildAccessEditRecordInput): JournalRecord {
+  assertSecretName(input.info.vaultEntry)
   const now = input.clock ?? Date.now
   const record: JournalRecord = {
     id: ulid(),
@@ -130,9 +152,37 @@ export function buildAccessEditRecord(input: BuildAccessEditRecordInput): Journa
     sessionId: ACCESS_EDIT_SESSION_ID,
     direction: ACCESS_EDIT_DIRECTION,
     kind: 'access-edit',
-    payload: redact(flatInfoOf(input.info)),
+    payload: payloadOf(input.info),
   }
   return Object.freeze(record)
+}
+
+/**
+ * The redacted payload with `vaultEntry` spliced back in verbatim. The name
+ * has already passed `SECRET_NAME_PATTERN` — a closed vocabulary, never free
+ * text — yet a legitimate name such as `sk-openai-prod-key` matches the
+ * VALUE patterns the redactor uses for real keys and would come out as
+ * `[REDACTED]`, erasing the one fact decision S2 keeps: which secret was
+ * swapped (review of the 2026-09-03 change). Everything else stays under the
+ * single redaction path.
+ */
+function payloadOf(info: AccessEditInfo): unknown {
+  const redacted = redact(flatInfoOf(info))
+  if (info.vaultEntry === undefined || typeof redacted !== 'object' || redacted === null) return redacted
+  return { ...(redacted as Record<string, unknown>), vaultEntry: info.vaultEntry }
+}
+
+/**
+ * The one field of this kind whose VALUE could be mistaken for a secret. A
+ * caller that hands the secret where its name belongs is refused — and refused
+ * without the string being repeated: the journal's writer prints builder
+ * errors to stderr (`journalAccessEdit`), which must never become the leak.
+ */
+function assertSecretName(vaultEntry: string | undefined): void {
+  if (vaultEntry === undefined || SECRET_NAME_PATTERN.test(vaultEntry)) return
+  throw new Error(
+    `access-edit: "vaultEntry" must be a vault secret name matching ${SECRET_NAME_PATTERN}`,
+  )
 }
 
 /**
@@ -147,6 +197,7 @@ function flatInfoOf(info: AccessEditInfo): Record<string, unknown> {
     ...(info.group !== undefined ? { group: info.group } : {}),
     ...(info.server !== undefined ? { server: info.server } : {}),
     ...(info.agent !== undefined ? { agent: info.agent } : {}),
+    ...(info.vaultEntry !== undefined ? { vaultEntry: info.vaultEntry } : {}),
     ...(info.grant !== undefined ? { grant: flatGrantOf(info.grant) } : {}),
     ...(info.affectedAgents !== undefined ? { affectedAgents: [...info.affectedAgents] } : {}),
     ...(info.affectedGroups !== undefined ? { affectedGroups: [...info.affectedGroups] } : {}),

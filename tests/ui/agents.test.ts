@@ -279,6 +279,41 @@ describe('error handling and attribution', () => {
     expect(accessEdits).toEqual([])
   })
 
+  test('the refusal shows the server name without invisible characters (review of S1)', async () => {
+    await store.createAgent('bot')
+    const RTL_OVERRIDE = String.fromCodePoint(0x202e)
+
+    const result = await handlers.agentsGrant(
+      postCtx({ agent: 'bot', server: `gh${RTL_OVERRIDE}ost`, tools: 'x' }, session('owner')),
+    )
+
+    expect(asResponseStatus(result)).toBe(400)
+    expect(bodyOf(result)).toContain('unknown server &quot;ghost&quot;')
+    expect(bodyOf(result)).not.toContain(RTL_OVERRIDE)
+  })
+
+  test('a registry that throws on the existence check is contained, not a crash (review of S1)', async () => {
+    await store.createAgent('bot')
+    const broken = createAgentsHandlers({
+      agentsStore: store,
+      groups,
+      registry: {
+        listServers: async () => [],
+        getServer: async () => {
+          throw new Error('registry.json is unreadable')
+        },
+      },
+      audit: (e) => audit.push(e),
+    })
+
+    const result = await broken.agentsGrant(postCtx({ agent: 'bot', server: 'ghost', tools: 'x' }, session('owner')))
+
+    expect(result.kind).toBe('response')
+    expect(asResponseStatus(result)).toBeGreaterThanOrEqual(400)
+    expect((await store.getAgent('bot'))?.grants).toEqual({})
+    expect(audit).toEqual([])
+  })
+
   test('a missing session is refused (server never dispatches this, but fail-closed)', async () => {
     const result = await handlers.agentsPage(getCtx(undefined))
     expect(result.kind).toBe('response')

@@ -352,6 +352,7 @@ mcp-journal serve [--port N] [--host H] [--policy <path>] [--fail-closed] [--all
 mcp-journal server add <name> --transport stdio|http ...
 mcp-journal server list | show <name> | remove <name> [--prune-grants]
 mcp-journal vault init | set <name> | list | remove <name> | rekey
+                                                  # set/remove/rekey need MCP_ADMIN_TOKEN (owner); init and list do not
 mcp-journal agent create <name> | list | revoke <name>
 mcp-journal agent grant <agent> <server> [--tools a,b,prefix*] | ungrant <agent> <server>
                                                   # every agent mutation needs MCP_ADMIN_TOKEN (owner); list does not
@@ -491,12 +492,13 @@ than a syntax error — so they are CLI-managed.
 The whole sequence, from an empty plane to a working, journaled tool call:
 
 ```
+mcp-journal admin add alice --role owner  # prints your personal token ONCE
+export MCP_ADMIN_TOKEN=<that token>
 mcp-journal vault init
 mcp-journal server add github --transport stdio \
   --command "npx" --args "-y,@modelcontextprotocol/server-github" \
   --env GITHUB_PERSONAL_ACCESS_TOKEN=vault:github-pat
 mcp-journal vault set github-pat        # value comes from stdin
-export MCP_ADMIN_TOKEN=<your personal admin token, role owner>
 mcp-journal agent create research-bot   # prints the token ONCE
 mcp-journal agent grant research-bot github --tools "get_*,list_*,search_*"
 ```
@@ -514,6 +516,19 @@ Step by step:
 3. **`vault set github-pat`** reads the secret from **stdin**, never from
    `argv` (which every process on the host can read out of `ps`), and stores
    it encrypted. There is deliberately no `vault get`.
+
+   Since 2026-09-03, `vault set`, `vault remove` and `vault rekey` need a
+   personal admin token of role `owner` in `MCP_ADMIN_TOKEN`, exactly like
+   `agent *` and `group *`, and each one is journaled as an `access-edit`
+   record with the action `vault.set` / `vault.remove` / `vault.rekey`, the
+   admin's name, and the **secret's name only** (field `vaultEntry`; the value
+   never reaches the journal, and `rekey` names no secret at all). Replacing a
+   secret replaces the identity a server uses against an external system, so
+   the journal has to show who swapped it. `vault init` (bootstrap, before any
+   admin exists) and `vault list` need no token — hence the order of a first
+   setup: `admin add <name> --role owner` → `vault init` → `vault set`. The
+   token is attribution, not protection: the same-uid trust boundary below is
+   unchanged (`docs/adr/0003-vault-crypto.md`, amendment 2026-09-03).
 4. **`agent create`** mints a 32-byte token and prints it exactly once; only
    its SHA-256 hash is stored. Stealing `agents.json` yields no usable token.
 5. **`agent grant`** is the grant matrix: this agent, this server, these tool

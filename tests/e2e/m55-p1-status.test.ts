@@ -334,10 +334,15 @@ describe('scenario 5 — vault values never surface on any probe-facing plane', 
       const fixture = await spawnHttpFixture()
       try {
         expect((await plane.run(['vault', 'init'])).code).toBe(0)
+        // `vault set` needs an owner token (owner decision S2, 2026-09-03).
+        const vaultOwner = await mintAdminToken('vault-owner', 'owner')
         expect(
           (
             await plane.run(['vault', 'set', 'probe-secret'], {
-              vault: { readSecretInput: () => Promise.resolve(SECRET) },
+              vault: {
+                env: { [ADMIN_TOKEN_ENV_VAR]: vaultOwner },
+                readSecretInput: () => Promise.resolve(SECRET),
+              },
             })
           ).code,
         ).toBe(0)

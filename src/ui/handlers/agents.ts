@@ -17,6 +17,7 @@ import type { AccessEditInfo } from '../../journal/record.js'
 import { StoreWriteRejectedError } from '../../policy/store.js'
 import type { RegistryStore } from '../../registry/store.js'
 import type { UiSession } from '../auth.js'
+import { displayName } from '../display-name.js'
 import {
   AUDIT_RECORD_DROPPED_WARNING,
   BODY_FORBIDDEN,
@@ -249,8 +250,12 @@ export function createAgentsHandlers(deps: AgentsHandlersDeps): AgentsHandlers {
     // so a server nobody registered is refused HERE, before the write, in the
     // words `group grant` uses (owner decision S1, 2026-09-03). Nothing is
     // stored, attributed or journalled for a refusal.
-    if ((await registry.getServer(server)) === undefined) {
-      return refusal(`unknown server "${server}"`, session)
+    try {
+      if ((await registry.getServer(server)) === undefined) {
+        return refusal(`unknown server "${displayName(server).text}"`, session)
+      }
+    } catch (error) {
+      return storeFailure(error, session)
     }
     const toolsValue = parseGrantValue(form.tools)
     const tools = toolsValue === undefined ? [] : toolsValue

@@ -2,12 +2,16 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { ADMIN_TOKEN_ENV_VAR } from '../../src/admin/constants.js'
+import { createAdminStore } from '../../src/admin/store.js'
 import { runVault, type VaultCmdDeps } from '../../src/cli/vault-cmd.js'
 
 let journalDir: string
+let ownerToken: string | undefined
 
 beforeEach(async () => {
   journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-vault-cmd-'))
+  ownerToken = undefined
 })
 
 afterEach(async () => {
@@ -31,9 +35,23 @@ function fakeIo(): {
   }
 }
 
-/** Deps with a fake stdin: `vault set` must never read the value from argv. */
+/**
+ * Deps with a fake stdin and NO admin token: `init`/`list` and the usage
+ * errors. `env: {}` keeps a token exported in the developer's own shell out of
+ * the command under test (`vault set` must never read the value from argv).
+ */
 function deps(stdinValue = ''): VaultCmdDeps {
-  return { journalDir, readSecretInput: async () => stdinValue }
+  return { journalDir, env: {}, readSecretInput: async () => stdinValue }
+}
+
+/**
+ * The same deps as a named owner. Since owner decision S2 (2026-09-03) every
+ * `set`/`remove`/`rekey` needs `MCP_ADMIN_TOKEN` of role `owner`; the gate
+ * itself is pinned in `vault-cmd-token.test.ts`, this suite only threads it.
+ */
+async function ownerDeps(stdinValue = ''): Promise<VaultCmdDeps> {
+  ownerToken ??= (await createAdminStore({ journalDir }).createAdmin('alice', 'owner')).token
+  return { ...deps(stdinValue), env: { [ADMIN_TOKEN_ENV_VAR]: ownerToken } }
 }
 
 describe('dispatch', () => {
@@ -58,9 +76,9 @@ describe('dispatch', () => {
   test('there is deliberately no "vault get": it is rejected as unknown', async () => {
     const io = fakeIo()
     await runVault(['init'], fakeIo(), deps())
-    await runVault(['set', 'a'], fakeIo(), deps('value'))
+    await runVault(['set', 'a'], fakeIo(), await ownerDeps('value'))
 
-    const code = await runVault(['get', 'a'], io, deps())
+    const code = await runVault(['get', 'a'], io, await ownerDeps())
 
     expect(code).toBe(1)
     expect(io.out()).not.toContain('value')
@@ -93,7 +111,7 @@ describe('vault set', () => {
     await runVault(['init'], fakeIo(), deps())
     const io = fakeIo()
 
-    const code = await runVault(['set', 'github-pat'], io, deps('tok-value-xyz'))
+    const code = await runVault(['set', 'github-pat'], io, await ownerDeps('tok-value-xyz'))
 
     expect(code).toBe(0)
     expect(io.out()).toContain('github-pat')
@@ -114,7 +132,7 @@ describe('vault set', () => {
     await runVault(['init'], fakeIo(), deps())
     const io = fakeIo()
 
-    const code = await runVault(['set', 'a'], io, deps(''))
+    const code = await runVault(['set', 'a'], io, await ownerDeps(''))
 
     expect(code).toBe(1)
     expect(io.err()).toContain('empty')
@@ -124,7 +142,7 @@ describe('vault set', () => {
     await runVault(['init'], fakeIo(), deps())
     const io = fakeIo()
 
-    const code = await runVault(['set', 'Bad_Name'], io, deps('v'))
+    const code = await runVault(['set', 'Bad_Name'], io, await ownerDeps('v'))
 
     expect(code).toBe(1)
     expect(io.err()).toContain('name')
@@ -133,7 +151,7 @@ describe('vault set', () => {
   test('uninitialized vault → exit 1 with a "vault init" hint', async () => {
     const io = fakeIo()
 
-    const code = await runVault(['set', 'a'], io, deps('v'))
+    const code = await runVault(['set', 'a'], io, await ownerDeps('v'))
 
     expect(code).toBe(1)
     expect(io.err()).toContain('vault init')
@@ -154,7 +172,7 @@ describe('vault list', () => {
   test('lists names with created/updated dates, never values', async () => {
     const now = (): number => 1_700_000_000_000
     await runVault(['init'], fakeIo(), { ...deps(), now })
-    await runVault(['set', 'github-pat'], fakeIo(), { ...deps('tok-value-xyz'), now })
+    await runVault(['set', 'github-pat'], fakeIo(), { ...(await ownerDeps('tok-value-xyz')), now })
     const io = fakeIo()
 
     const code = await runVault(['list'], io, { ...deps(), now })
@@ -178,10 +196,10 @@ describe('vault list', () => {
 describe('vault remove', () => {
   test('removes an existing secret, exit 0', async () => {
     await runVault(['init'], fakeIo(), deps())
-    await runVault(['set', 'a'], fakeIo(), deps('v'))
+    await runVault(['set', 'a'], fakeIo(), await ownerDeps('v'))
     const io = fakeIo()
 
-    const code = await runVault(['remove', 'a'], io, deps())
+    const code = await runVault(['remove', 'a'], io, await ownerDeps())
 
     expect(code).toBe(0)
     const listIo = fakeIo()
@@ -193,7 +211,7 @@ describe('vault remove', () => {
     await runVault(['init'], fakeIo(), deps())
     const io = fakeIo()
 
-    const code = await runVault(['remove', 'missing'], io, deps())
+    const code = await runVault(['remove', 'missing'], io, await ownerDeps())
 
     expect(code).toBe(1)
     expect(io.err()).toContain('missing')
@@ -212,10 +230,10 @@ describe('vault remove', () => {
 describe('vault rekey', () => {
   test('rekeys an initialized vault, exit 0, secrets survive', async () => {
     await runVault(['init'], fakeIo(), deps())
-    await runVault(['set', 'a'], fakeIo(), deps('keep-me'))
+    await runVault(['set', 'a'], fakeIo(), await ownerDeps('keep-me'))
     const io = fakeIo()
 
-    const code = await runVault(['rekey'], io, deps())
+    const code = await runVault(['rekey'], io, await ownerDeps())
 
     expect(code).toBe(0)
     const listIo = fakeIo()
@@ -226,7 +244,7 @@ describe('vault rekey', () => {
   test('uninitialized vault → exit 1 with a "vault init" hint', async () => {
     const io = fakeIo()
 
-    const code = await runVault(['rekey'], io, deps())
+    const code = await runVault(['rekey'], io, await ownerDeps())
 
     expect(code).toBe(1)
     expect(io.err()).toContain('vault init')

@@ -3,6 +3,8 @@ import { copyFile, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { ADMIN_TOKEN_ENV_VAR } from '../../src/admin/constants.js'
+import { createAdminStore } from '../../src/admin/store.js'
 import { runVault } from '../../src/cli/vault-cmd.js'
 import {
   VAULT_ENC_FILE_NAME,
@@ -132,7 +134,15 @@ describe('marker: a secret value never leaves the vault through any output', () 
         },
       }
     }
-    const deps = { journalDir, readSecretInput: async () => SECRET_VALUE }
+    // `set`/`rekey`/`remove` run as a named owner (owner decision S2,
+    // 2026-09-03): the audit line and the journal record they add are two
+    // more outputs this sweep must find clean.
+    const { token } = await createAdminStore({ journalDir }).createAdmin('alice', 'owner')
+    const deps = {
+      journalDir,
+      env: { [ADMIN_TOKEN_ENV_VAR]: token },
+      readSecretInput: async () => SECRET_VALUE,
+    }
 
     expect(await runVault(['init'], io(), deps)).toBe(0)
     expect(await runVault(['set', 'marker-secret'], io(), deps)).toBe(0)
