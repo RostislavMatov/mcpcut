@@ -8,6 +8,7 @@ import { runAgentCommand } from '../../src/cli/agent-cmd.js'
 import { createAgentsStore } from '../../src/agents/store.js'
 import { GROUPS_FILE_NAME } from '../../src/groups/constants.js'
 import { createGroupsStore } from '../../src/groups/store.js'
+import { createRegistryStore } from '../../src/registry/store.js'
 
 /**
  * M4 Task 6: `agent grant --resources/--prompts`. The pre-M4 CLI surface is
@@ -21,6 +22,10 @@ let ownerToken: string
 beforeEach(async () => {
   journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-agent-grants-'))
   ownerToken = (await createAdminStore({ journalDir }).createAdmin('alice', 'owner')).token
+  // Every case here grants `github`, and `agent grant` refuses a server the
+  // registry does not hold (owner decision S1, 2026-09-03): registered once,
+  // so the cases stay about the flags.
+  await createRegistryStore(journalDir).addServer({ name: 'github', transport: 'stdio', command: 'node' })
 })
 
 afterEach(async () => {

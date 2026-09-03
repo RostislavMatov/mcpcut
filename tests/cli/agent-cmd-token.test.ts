@@ -8,6 +8,7 @@ import { createAgentsStore } from '../../src/agents/store.js'
 import { runAgentCommand, type AgentCliOptions } from '../../src/cli/agent-cmd.js'
 import { createGroupsStore } from '../../src/groups/store.js'
 import { ACCESS_EDIT_SESSION_ID } from '../../src/journal/access-edit-record.js'
+import { createRegistryStore } from '../../src/registry/store.js'
 import { readJournalRecords } from '../support/journal-rows.js'
 
 /**
@@ -67,6 +68,11 @@ async function ownerOpts(): Promise<AgentCliOptions> {
 
 function agents(): ReturnType<typeof createAgentsStore> {
   return createAgentsStore({ journalDir })
+}
+
+/** Registers a stdio server so `agent grant` may name it (owner decision S1, 2026-09-03). */
+async function seedServer(name: string): Promise<void> {
+  await createRegistryStore(journalDir).addServer({ name, transport: 'stdio', command: 'node' })
 }
 
 /** Every `access-edit` payload written under the reserved session, oldest first. */
@@ -203,6 +209,7 @@ describe('agent mutations are attributed and journalled (T4/T1)', () => {
 
   test('grant: the record carries the grant that was written', async () => {
     const opts = await ownerOpts()
+    await seedServer('github')
     await runAgentCommand(['create', 'research-bot'], fakeIo(), opts)
     const io = fakeIo()
 
@@ -229,6 +236,7 @@ describe('agent mutations are attributed and journalled (T4/T1)', () => {
     // groups' (wider) grant back. The warning says so; the record stays the
     // plain `agent.ungrant`.
     const opts = await ownerOpts()
+    await seedServer('github')
     await runAgentCommand(['create', 'research-bot'], fakeIo(), opts)
     await runAgentCommand(['grant', 'research-bot', 'github', '--tools', 'read_file'], fakeIo(), opts)
     const groups = createGroupsStore({ journalDir })
@@ -272,12 +280,32 @@ describe('agent mutations are attributed and journalled (T4/T1)', () => {
     // Arrange — a grant for an agent nobody created never lands, so an
     // `agent.grant` record would show an auditor a change that never happened.
     const opts = await ownerOpts()
+    await seedServer('github')
     const io = fakeIo()
 
     const code = await runAgentCommand(['grant', 'nobody', 'github'], io, opts)
 
     expect(code).toBe(1)
     expect(await accessRecords()).toHaveLength(0)
+  })
+
+  test('a grant to an unregistered server writes NO record and NO audit line (S1)', async () => {
+    // Arrange — the agent exists; the server does not. The refusal comes
+    // before the write, so there is no change to attribute.
+    const opts = await ownerOpts()
+    await runAgentCommand(['create', 'research-bot'], fakeIo(), opts)
+    const io = fakeIo()
+
+    // Act
+    const code = await runAgentCommand(['grant', 'research-bot', 'ghost'], io, opts)
+
+    // Assert
+    expect(code).toBe(1)
+    expect(io.err()).toContain('unknown server "ghost"')
+    expect(io.err()).not.toContain('[audit]')
+    expect((await agents().getAgent('research-bot'))?.grants).toEqual({})
+    // Only the `agent.create` of the Arrange step is in the journal.
+    expect((await accessRecords()).map((record) => record.action)).toEqual(['agent.create'])
   })
 
   test('a dropped journal record is said out loud but keeps exit 0', async () => {

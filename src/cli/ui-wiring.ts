@@ -326,6 +326,12 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
   const agents = createAgentsHandlers({
     agentsStore: deps.agents,
     groups: { listGroups: () => groups.listGroups() },
+    // The same registry port the group handlers take: a personal grant may
+    // only name a server the plane has (owner decision S1, 2026-09-03).
+    registry: {
+      listServers: () => deps.registry.listServers(),
+      getServer: (name) => deps.registry.getServer(name),
+    },
     audit,
     // Personal grants share the group edits' writer (decision T1): one
     // `access-edit` category, one attribution shape, one drop diagnostic.

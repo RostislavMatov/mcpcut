@@ -15,6 +15,7 @@ import type { GroupRecord } from '../../groups/schema.js'
 import type { GroupsStore } from '../../groups/store.js'
 import type { AccessEditInfo } from '../../journal/record.js'
 import { StoreWriteRejectedError } from '../../policy/store.js'
+import type { RegistryStore } from '../../registry/store.js'
 import type { UiSession } from '../auth.js'
 import {
   AUDIT_RECORD_DROPPED_WARNING,
@@ -73,6 +74,13 @@ export interface AgentsHandlersDeps {
    * membership is edited on `/groups` only.
    */
   readonly groups: Pick<GroupsStore, 'listGroups'>
+  /**
+   * Read side of the registry: a grant may only name a server the plane has
+   * (owner decision S1, 2026-09-03 — the check `handlers/groups.ts` already
+   * makes for group grants). Required, not optional: a handler that cannot ask
+   * the registry cannot refuse, and refusing is the point.
+   */
+  readonly registry: Pick<RegistryStore, 'listServers' | 'getServer'>
   readonly audit?: UiAuditSink
   /**
    * Journal port for access changes (owner decision T1, 2026-09-01), injected
@@ -109,6 +117,11 @@ function fields(ctx: UiRequestContext): Readonly<Record<string, string>> {
   return parseBodyFields(ctx.body, headerValue(ctx.headers, 'content-type'))
 }
 
+/** A readable refusal: 400 with the reason and a way back to `/agents`. */
+function refusal(message: string, session: UiSession): UiResult {
+  return htmlResult(HTTP_STATUS_BAD_REQUEST, renderAgentNotice({ message, ok: false, session }))
+}
+
 /**
  * Agent-store errors caused by what the operator typed. `AgentsFileInvalidError`
  * is deliberately ABSENT: a corrupt `agents.json` is a broken plane, not a bad
@@ -135,12 +148,11 @@ const AGENT_INPUT_ERRORS: readonly ErrorClass[] = [
  */
 function storeFailure(error: unknown, session: UiSession): UiResult {
   if (!isKnownStoreError(error, AGENT_INPUT_ERRORS)) return internalErrorResult()
-  const message = error instanceof Error ? error.message : 'unexpected error'
-  return htmlResult(HTTP_STATUS_BAD_REQUEST, renderAgentNotice({ message, ok: false, session }))
+  return refusal(error instanceof Error ? error.message : 'unexpected error', session)
 }
 
 export function createAgentsHandlers(deps: AgentsHandlersDeps): AgentsHandlers {
-  const { agentsStore, groups, audit } = deps
+  const { agentsStore, groups, registry, audit } = deps
 
   function record(session: UiSession, action: string, target: string): void {
     audit?.({ actor: 'ui', adminName: session.adminName, action, target })
@@ -210,9 +222,7 @@ export function createAgentsHandlers(deps: AgentsHandlersDeps): AgentsHandlers {
     const session = ctx.session
     if (session === undefined) return FORBIDDEN
     const name = fields(ctx).name?.trim() ?? ''
-    if (name === '') {
-      return htmlResult(HTTP_STATUS_BAD_REQUEST, renderAgentNotice({ message: 'agent name is required', ok: false, session }))
-    }
+    if (name === '') return refusal('agent name is required', session)
     try {
       const created = await agentsStore.createAgent(name)
       record(session, 'agents.create', name)
@@ -234,8 +244,13 @@ export function createAgentsHandlers(deps: AgentsHandlersDeps): AgentsHandlers {
     const form = fields(ctx)
     const agent = form.agent?.trim() ?? ''
     const server = form.server?.trim() ?? ''
-    if (agent === '' || server === '') {
-      return htmlResult(HTTP_STATUS_BAD_REQUEST, renderAgentNotice({ message: 'agent and server are required', ok: false, session }))
+    if (agent === '' || server === '') return refusal('agent and server are required', session)
+    // The store deliberately does not know the registry (`agents/constants.ts`),
+    // so a server nobody registered is refused HERE, before the write, in the
+    // words `group grant` uses (owner decision S1, 2026-09-03). Nothing is
+    // stored, attributed or journalled for a refusal.
+    if ((await registry.getServer(server)) === undefined) {
+      return refusal(`unknown server "${server}"`, session)
     }
     const toolsValue = parseGrantValue(form.tools)
     const tools = toolsValue === undefined ? [] : toolsValue
@@ -268,9 +283,7 @@ export function createAgentsHandlers(deps: AgentsHandlersDeps): AgentsHandlers {
     const form = fields(ctx)
     const agent = form.agent?.trim() ?? ''
     const server = form.server?.trim() ?? ''
-    if (agent === '' || server === '') {
-      return htmlResult(HTTP_STATUS_BAD_REQUEST, renderAgentNotice({ message: 'agent and server are required', ok: false, session }))
-    }
+    if (agent === '' || server === '') return refusal('agent and server are required', session)
     try {
       const shadowed = await shadowedFallback(agent, server)
       if (shadowed !== undefined && form.confirm !== 'true') {
@@ -313,9 +326,7 @@ export function createAgentsHandlers(deps: AgentsHandlersDeps): AgentsHandlers {
     const session = ctx.session
     if (session === undefined) return FORBIDDEN
     const agent = fields(ctx).agent?.trim() ?? ''
-    if (agent === '') {
-      return htmlResult(HTTP_STATUS_BAD_REQUEST, renderAgentNotice({ message: 'agent is required', ok: false, session }))
-    }
+    if (agent === '') return refusal('agent is required', session)
     try {
       await agentsStore.revokeAgent(agent)
       record(session, 'agents.revoke', agent)

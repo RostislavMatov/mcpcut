@@ -6,6 +6,7 @@ import { ADMIN_TOKEN_ENV_VAR } from '../../src/admin/constants.js'
 import { createAdminStore } from '../../src/admin/store.js'
 import { runAgentCommand } from '../../src/cli/agent-cmd.js'
 import { createAgentsStore } from '../../src/agents/store.js'
+import { createRegistryStore } from '../../src/registry/store.js'
 
 let journalDir: string
 let ownerToken: string
@@ -43,6 +44,14 @@ function fakeIo(): {
  */
 function run(args: string[], io = fakeIo()): Promise<number> {
   return runAgentCommand(args, io, { journalDir, env: { [ADMIN_TOKEN_ENV_VAR]: ownerToken } })
+}
+
+/**
+ * Registers a stdio server so a grant may name it: `agent grant` refuses a
+ * server the registry does not hold (owner decision S1, 2026-09-03).
+ */
+async function seedServer(name: string): Promise<void> {
+  await createRegistryStore(journalDir).addServer({ name, transport: 'stdio', command: 'node' })
 }
 
 describe('agent create', () => {
@@ -109,6 +118,8 @@ describe('agent list', () => {
   })
 
   test('shows name, created date, revoked marker, and human-readable grants', async () => {
+    await seedServer('github')
+    await seedServer('jira')
     await run(['create', 'research-bot'])
     await run(['grant', 'research-bot', 'github', '--tools', 'get_*,list_issues'])
     await run(['grant', 'research-bot', 'jira'])
@@ -132,6 +143,7 @@ describe('agent list', () => {
 
 describe('agent grant / ungrant', () => {
   test("grant without --tools grants '*' (all tools)", async () => {
+    await seedServer('github')
     await run(['create', 'research-bot'])
     const io = fakeIo()
 
@@ -143,6 +155,7 @@ describe('agent grant / ungrant', () => {
   })
 
   test('grant with --tools splits on commas and trims blanks', async () => {
+    await seedServer('github')
     await run(['create', 'research-bot'])
 
     const exitCode = await run([
@@ -169,6 +182,7 @@ describe('agent grant / ungrant', () => {
   })
 
   test('grant with a bad tool pattern → exit 1 with a clear message', async () => {
+    await seedServer('github')
     await run(['create', 'research-bot'])
     const io = fakeIo()
 
@@ -179,6 +193,7 @@ describe('agent grant / ungrant', () => {
   })
 
   test('grant to an unknown agent → exit 1', async () => {
+    await seedServer('github')
     const io = fakeIo()
 
     const exitCode = await run(['grant', 'nobody', 'github'], io)
@@ -187,7 +202,27 @@ describe('agent grant / ungrant', () => {
     expect(io.err()).toContain('nobody')
   })
 
+  test('grant to an unknown server → exit 1, "unknown server", store unchanged, no audit line (S1)', async () => {
+    // Arrange — the agent exists; the server was never registered.
+    await run(['create', 'research-bot'])
+    const io = fakeIo()
+
+    // Act
+    const exitCode = await run(['grant', 'research-bot', 'ghost'], io)
+
+    // Assert — refused before the write, with the way out on the next line;
+    // no audit line, because nothing changed.
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('unknown server "ghost"')
+    expect(io.err()).toContain('register it first: server add ghost')
+    expect(io.err()).not.toContain('[audit]')
+    expect(io.out()).toBe('')
+    const agent = await createAgentsStore({ journalDir }).getAgent('research-bot')
+    expect(agent?.grants).toEqual({})
+  })
+
   test('ungrant removes the server grant', async () => {
+    await seedServer('github')
     await run(['create', 'research-bot'])
     await run(['grant', 'research-bot', 'github'])
 
@@ -198,7 +233,26 @@ describe('agent grant / ungrant', () => {
     expect(agent?.grants).toEqual({})
   })
 
+  test('ungrant of a dangling grant (server no longer registered) still works', async () => {
+    // Arrange — the grant exists although its server does not: exactly the
+    // state `server remove --prune-grants` and manual clean-up act on, so the
+    // registry check of `grant` must not spread to `ungrant`.
+    await run(['create', 'research-bot'])
+    await createAgentsStore({ journalDir }).grantServer('research-bot', 'gone', ['read_file'])
+    const io = fakeIo()
+
+    // Act
+    const exitCode = await run(['ungrant', 'research-bot', 'gone'], io)
+
+    // Assert
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain('removed grant gone from research-bot')
+    const agent = await createAgentsStore({ journalDir }).getAgent('research-bot')
+    expect(agent?.grants).toEqual({})
+  })
+
   test('untrusted names echoed in errors are sanitized (no raw control characters)', async () => {
+    await seedServer('github')
     const io = fakeIo()
 
     const exitCode = await run(['grant', 'evil\u0007name', 'github'], io)

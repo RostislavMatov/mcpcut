@@ -14,7 +14,7 @@ import {
 import { createGroupsStore } from '../groups/store.js'
 import { formatReadableField } from '../journal/format.js'
 import type { JournalSinkOptions } from '../journal/sink.js'
-import { pairTarget } from './access-cmd-write.js'
+import { pairTarget, requireRegisteredServer } from './access-cmd-write.js'
 import { formatAgentLine, formatGrantLines, summaryOf } from './agent-cmd-format.js'
 import { recordChange, requireOwner, warnIfGroupsUncovered } from './agent-cmd-write.js'
 import { resolveGrantFlags } from './grant-flags.js'
@@ -257,7 +257,12 @@ async function runGrant(
   const actor = await requireOwner(io, opts)
   if (actor === undefined) return 1
 
+  // Refused BEFORE the write (owner decision S1, 2026-09-03): the plane
+  // cannot attach an agent to a server it does not have, and a typo must not
+  // become a grant waiting for whatever is registered under that name later.
   const { agentName, serverName } = parsed
+  if (!(await requireRegisteredServer(io, opts, serverName, { registerHint: true }))) return 1
+
   const agent = await store.grantServer(agentName, serverName, parsed.tools, parsed.methods)
   const grant = agent.grants[serverName]
   if (grant === undefined) throw new Error('grant vanished right after it was written')
