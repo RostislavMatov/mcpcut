@@ -1,5 +1,7 @@
 # mcp-journal
 
+[![CI](https://img.shields.io/badge/CI-GitHub%20Actions-informational)](.github/workflows/ci.yml) [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 A transparent stdio proxy for MCP (Model Context Protocol) servers. It sits
 between an AI agent and a real MCP server, forwards traffic byte-for-byte in
 both directions, and writes a persistent, secret-redacted journal of the
@@ -11,8 +13,8 @@ everything unmodified.
 
 ## Status
 
-What exists today, and what does not. This table is the source of truth — the
-pitch and landing material must not claim more than it does.
+What exists today, and what does not. This table is the source of truth — no
+other text about the project may claim more than it does.
 
 | Capability | Status | Evidence |
 |---|---|---|
@@ -30,7 +32,7 @@ pitch and landing material must not claim more than it does.
 | explicit retention pruning (`prune`) | shipped, **no defaults** | prune + marker tests |
 | admin UI / approval queue | shipped | e2e + UI test suites, TS + security reviews, manual browser smoke (`docs/smoke-m4.md`), `docs/adr/0004-admin-ui-architecture.md` |
 | named admin accounts (owner/operator/viewer) | shipped | admin CLI + role-enforcement tests |
-| whole-product security audit (pilot-ready gate) | passed 2026-09-02, **internal** | `docs/security-audit-2026-09.md` — 0 CRITICAL, 4 HIGH fixed in the same wave; an independent pass before the first partner is an open owner decision |
+| whole-product security audit | passed 2026-09-02, **internal** | `docs/security-audit-2026-09.md` — 0 CRITICAL, 4 HIGH fixed in the same wave; no independent pass has been done (ADR-0011), reports via `SECURITY.md` |
 
 The journal is a persistent, append-oriented, secret-redacted SQLite database
 (`journal.db`; JSONL is the export format — `mcp-journal export` — and the

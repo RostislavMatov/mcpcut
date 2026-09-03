@@ -2,6 +2,7 @@
   "name": "mcp-journal",
   "version": "0.1.0",
   "description": "Transparent stdio proxy for MCP servers with a persistent, secret-redacted JSONL journal",
+  "license": "Apache-2.0",
   "type": "module",
   "bin": {
     "mcp-journal": "./dist/cli.js"
