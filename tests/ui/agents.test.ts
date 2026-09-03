@@ -11,6 +11,7 @@ import {
 } from '../../src/agents/store.js'
 import { createGroupsStore, type GroupsStore } from '../../src/groups/store.js'
 import { StoreWriteRejectedError } from '../../src/policy/store.js'
+import { createRegistryStore, type RegistryStore } from '../../src/registry/store.js'
 import type { GroupRecord } from '../../src/groups/schema.js'
 import type { AccessEditInfo } from '../../src/journal/record.js'
 import type { UiSession } from '../../src/ui/auth.js'
@@ -73,6 +74,7 @@ function bodyOf(result: UiResult): string {
 let journalDir: string
 let store: AgentsStore
 let groups: GroupsStore
+let registry: RegistryStore
 let audit: UiAuditEvent[]
 /** Every `access-edit` the handlers handed to the injected journal port. */
 let accessEdits: AccessEditInfo[]
@@ -82,11 +84,13 @@ beforeEach(() => {
   journalDir = mkdtempSync(join(tmpdir(), 'mcp-ui-agents-'))
   store = createAgentsStore({ journalDir })
   groups = createGroupsStore({ journalDir })
+  registry = createRegistryStore(journalDir)
   audit = []
   accessEdits = []
   handlers = createAgentsHandlers({
     agentsStore: store,
     groups,
+    registry,
     audit: (event) => audit.push(event),
     journalAccessEdit: async (info) => {
       accessEdits.push(info)
@@ -98,6 +102,14 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(journalDir, { recursive: true, force: true })
 })
+
+/**
+ * Registers a stdio server so a grant may name it: the grant handler refuses
+ * a server the registry does not hold (owner decision S1, 2026-09-03).
+ */
+async function seedServer(name: string): Promise<void> {
+  await registry.addServer({ name, transport: 'stdio', command: 'node' })
+}
 
 describe('agent matrix rendering', () => {
   test('renders agent × server × (tools/resources/prompts) from agents.json', async () => {
@@ -137,6 +149,7 @@ describe('agent matrix rendering', () => {
 
 describe('grant / ungrant / revoke through the store', () => {
   test('grant writes through the store and is visible after reload', async () => {
+    await seedServer('github')
     await store.createAgent('bot')
 
     const granted = await handlers.agentsGrant(
@@ -153,6 +166,7 @@ describe('grant / ungrant / revoke through the store', () => {
   })
 
   test('a lone * grants everything; resources/prompts stay unset when blank', async () => {
+    await seedServer('gh')
     await store.createAgent('bot')
     await handlers.agentsGrant(postCtx({ agent: 'bot', server: 'gh', tools: '*' }, session('owner')))
 
@@ -183,6 +197,7 @@ describe('grant / ungrant / revoke through the store', () => {
   })
 
   test('a concurrent CLI edit is not lost (store lock serializes writes)', async () => {
+    await seedServer('ui-server')
     await store.createAgent('bot')
     await handlers.agentsGrant(postCtx({ agent: 'bot', server: 'ui-server', tools: 'a' }, session('owner')))
     // A separate store instance == a separate process editing the same file.
@@ -218,6 +233,7 @@ describe('create issues a one-time token', () => {
   })
 
   test('the end-to-end "issue a scoped key" flow works from the panel', async () => {
+    await seedServer('github')
     await handlers.agentsCreate(postCtx({ name: 'scoped-bot' }, session('owner')))
     await handlers.agentsGrant(
       postCtx({ agent: 'scoped-bot', server: 'github', tools: 'read_*' }, session('owner')),
@@ -229,6 +245,7 @@ describe('create issues a one-time token', () => {
 
 describe('error handling and attribution', () => {
   test('an action on a nonexistent agent yields a readable 400, not a 500', async () => {
+    await seedServer('github')
     const result = await handlers.agentsGrant(
       postCtx({ agent: 'ghost', server: 'github', tools: 'x' }, session('owner')),
     )
@@ -238,10 +255,28 @@ describe('error handling and attribution', () => {
   })
 
   test('every successful mutation is attributed to actor "ui" + admin name', async () => {
+    await seedServer('gh')
     await store.createAgent('bot')
     await handlers.agentsGrant(postCtx({ agent: 'bot', server: 'gh', tools: 'a' }, session('owner', 'alice')))
 
     expect(audit).toContainEqual({ actor: 'ui', adminName: 'alice', action: 'agents.grant', target: 'bot/gh' })
+  })
+
+  test('a grant to an unregistered server is refused: 400 notice, store unchanged, journal port not called (S1)', async () => {
+    // Arrange — the agent exists; the server was never registered.
+    await store.createAgent('bot')
+
+    // Act
+    const result = await handlers.agentsGrant(
+      postCtx({ agent: 'bot', server: 'ghost', tools: 'x' }, session('owner')),
+    )
+
+    // Assert — the same wording `group grant` uses, nothing written anywhere.
+    expect(asResponseStatus(result)).toBe(400)
+    expect(bodyOf(result)).toContain('unknown server &quot;ghost&quot;')
+    expect((await store.getAgent('bot'))?.grants).toEqual({})
+    expect(audit).toEqual([])
+    expect(accessEdits).toEqual([])
   })
 
   test('a missing session is refused (server never dispatches this, but fail-closed)', async () => {
@@ -283,8 +318,9 @@ describe('store failures are classified, not flattened to 400 (T-2)', () => {
 
   test('an unrecognized store error is a detail-free 500, not a 400 echoing it', async () => {
     const secretish = 'EACCES: /home/alice/.mcp-journal/agents.json.lock held by pid 4242'
-    const failing = createAgentsHandlers({ agentsStore: brokenStore(new Error(secretish)), groups })
+    const failing = createAgentsHandlers({ agentsStore: brokenStore(new Error(secretish)), groups, registry })
     const admin = session('owner')
+    await seedServer('github')
 
     for (const result of [
       await failing.agentsCreate(postCtx({ name: 'bot' }, admin)),
@@ -304,6 +340,7 @@ describe('store failures are classified, not flattened to 400 (T-2)', () => {
         new AgentsFileInvalidError(new ZodError([{ code: 'custom', path: [], message: 'corrupt' }])),
       ),
       groups,
+      registry,
     })
     const result = await failing.agentsCreate(postCtx({ name: 'bot' }, session('owner')))
     if (result.kind === 'response') expect(result.status).toBe(500)
@@ -311,7 +348,7 @@ describe('store failures are classified, not flattened to 400 (T-2)', () => {
 
   test('a capped write (StoreWriteRejectedError) is a readable 400, not a 500 (U6)', async () => {
     const rejected = new StoreWriteRejectedError('/tmp/agents.json', new Error('too many agents'))
-    const failing = createAgentsHandlers({ agentsStore: brokenStore(rejected), groups })
+    const failing = createAgentsHandlers({ agentsStore: brokenStore(rejected), groups, registry })
 
     const result = await failing.agentsCreate(postCtx({ name: 'bot' }, session('owner')))
 
@@ -421,6 +458,7 @@ describe('ungrant of an overriding personal grant (U1)', () => {
     const forgedHandlers = createAgentsHandlers({
       agentsStore: store,
       groups: { listGroups: async () => [forged] },
+      registry,
       audit: (event) => audit.push(event),
     })
 
@@ -737,6 +775,7 @@ describe('personal grant edits are journalled (T1)', () => {
 
   test('grant records agent.grant with the grant that was actually written', async () => {
     // Arrange
+    await seedServer('github')
     await store.createAgent('bot')
 
     // Act
@@ -774,6 +813,7 @@ describe('personal grant edits are journalled (T1)', () => {
 
   test('a refused edit leaves no record — the journal must not show a phantom grant', async () => {
     // Act — no such agent, so nothing was written.
+    await seedServer('gh')
     const result = await handlers.agentsGrant(postCtx({ agent: 'ghost', server: 'gh', tools: 'x' }, admin()))
 
     // Assert
@@ -810,6 +850,7 @@ describe('personal grant edits are journalled (T1)', () => {
     const failing = createAgentsHandlers({
       agentsStore: store,
       groups,
+      registry,
       journalAccessEdit: () => Promise.reject(new Error('journal sink is down')),
     })
     await store.createAgent('bot')
@@ -828,8 +869,10 @@ describe('personal grant edits are journalled (T1)', () => {
     const dropping = createAgentsHandlers({
       agentsStore: store,
       groups,
+      registry,
       journalAccessEdit: async () => ({ written: false }),
     })
+    await seedServer('postgres')
     await store.createAgent('bot')
 
     // Act
@@ -845,6 +888,7 @@ describe('personal grant edits are journalled (T1)', () => {
 
   test('a writer answering written: true → the same notice without the warning', async () => {
     // Arrange
+    await seedServer('postgres')
     await store.createAgent('bot')
 
     // Act
@@ -859,7 +903,7 @@ describe('personal grant edits are journalled (T1)', () => {
 
   test('without the port the handlers still work (a plane wired before T1)', async () => {
     // Arrange
-    const portless = createAgentsHandlers({ agentsStore: store, groups })
+    const portless = createAgentsHandlers({ agentsStore: store, groups, registry })
 
     // Act
     const result = await portless.agentsCreate(postCtx({ name: 'bot' }, admin()))

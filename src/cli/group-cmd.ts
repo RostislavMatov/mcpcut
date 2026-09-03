@@ -17,7 +17,6 @@ import {
 import { formatReadableField } from '../journal/format.js'
 import type { JournalSinkOptions } from '../journal/sink.js'
 import { StoreCorruptError, StoreLockError, StoreWriteRejectedError } from '../policy/store.js'
-import { createRegistryStore } from '../registry/store.js'
 import {
   hasPositionals,
   oneName,
@@ -25,7 +24,7 @@ import {
   twoNames,
   USAGE,
 } from './group-cmd-args.js'
-import { pairTarget } from './access-cmd-write.js'
+import { pairTarget, requireRegisteredServer } from './access-cmd-write.js'
 import {
   formatGrantEcho,
   formatGroupDetail,
@@ -240,12 +239,10 @@ async function runGrant(
   if (actor === undefined) return 1
 
   // A grant for a server nobody registered is a typo, not a policy: the
-  // registry is the source of truth for what a group can name.
-  const registered = await createRegistryStore(opts.journalDir).getServer(parsed.server)
-  if (registered === undefined) {
-    io.stderr.write(`unknown server "${formatReadableField(parsed.server)}"\n`)
-    return 1
-  }
+  // registry is the source of truth for what a group can name. The same gate
+  // now fronts `agent grant` (owner decision S1); the group refusal keeps its
+  // one-line wording.
+  if (!(await requireRegisteredServer(io, opts, parsed.server, { registerHint: false }))) return 1
 
   const group = await store.grantServer(parsed.group, parsed.server, parsed.tools, parsed.methods)
   const grant = group.grants[parsed.server]

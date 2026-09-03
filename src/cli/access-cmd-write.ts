@@ -3,6 +3,7 @@ import type { AccessEditInfo } from '../journal/access-edit-record.js'
 import { formatReadableField } from '../journal/format.js'
 import type { JournalSinkOptions } from '../journal/sink.js'
 import type { Role } from '../admin/authz.js'
+import { createRegistryStore } from '../registry/store.js'
 import { requireAdminFromEnv, type AdminRefusalWording, type RequiredAdmin } from './admin-token.js'
 
 /**
@@ -64,6 +65,39 @@ export async function requireAccessOwner(
     io,
     wording,
   )
+}
+
+/** How `requireRegisteredServer` words its refusal. */
+export interface RegisteredServerWording {
+  /** Adds `register it first: server add <name> ...` under the refusal. */
+  readonly registerHint: boolean
+}
+
+/**
+ * The registry gate in front of a grant: a server nobody registered is a
+ * typo, not a policy, and the registry is the source of truth for what a
+ * grant may name. `group grant` phrased this first; owner decision S1
+ * (2026-09-03, security audit M5) put `agent grant` behind the SAME check,
+ * so the refusal has one wording. The stores deliberately do not know the
+ * registry (`agents/constants.ts`), which makes the command layer — the one
+ * that has both — the place to refuse.
+ *
+ * Returns `true` when the server is registered. Otherwise the refusal is
+ * already on stderr and the caller exits 1 having written nothing: no store
+ * change, no audit line, no `access-edit` record.
+ */
+export async function requireRegisteredServer(
+  io: AccessWriteIo,
+  opts: Pick<AccessWriteOptions, 'journalDir'>,
+  server: string,
+  wording: RegisteredServerWording,
+): Promise<boolean> {
+  const registered = await createRegistryStore(opts.journalDir).getServer(server)
+  if (registered !== undefined) return true
+  const name = formatReadableField(server)
+  io.stderr.write(`unknown server "${name}"\n`)
+  if (wording.registerHint) io.stderr.write(`register it first: server add ${name} ...\n`)
+  return false
 }
 
 /**

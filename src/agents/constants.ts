@@ -35,8 +35,13 @@ export const AGENT_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/
 
 /**
  * Server names inside `grants` use the registry name format. Whether the
- * server actually EXISTS in the registry is checked at the CLI layer (Wave
- * 4); this store deliberately has no dependency on `src/registry`.
+ * server actually EXISTS in the registry is checked by the layer that has
+ * both stores, not here: `cli/access-cmd-write.ts` (`requireRegisteredServer`,
+ * in front of `agent grant` and `group grant`) and the UI grant handlers
+ * (`ui/handlers/agents.ts`, `ui/handlers/groups.ts`) refuse an unregistered
+ * name before the write (owner decision S1, 2026-09-03). This store
+ * deliberately has no dependency on `src/registry`, so `ungrant` keeps
+ * working for a grant whose server was since removed.
  */
 export const GRANT_SERVER_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/
 

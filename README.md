@@ -518,7 +518,9 @@ Step by step:
    its SHA-256 hash is stored. Stealing `agents.json` yields no usable token.
 5. **`agent grant`** is the grant matrix: this agent, this server, these tool
    patterns. Anything not granted is invisible in `tools/list` and denied on
-   call — before any policy rule is even consulted.
+   call — before any policy rule is even consulted. The server must already be
+   registered: a grant naming a server the registry does not hold is refused
+   (`unknown server "x"`, exit 1, nothing written), the same as `group grant`.
 6. **`create`, `grant`, `ungrant` and `revoke` need a personal admin token** of
    role `owner` in `MCP_ADMIN_TOKEN` (`admin add <name> --role owner` mints
    one); `agent list` needs none. Each mutation prints an audit line on stderr
