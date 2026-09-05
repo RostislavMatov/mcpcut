@@ -16,7 +16,6 @@ import { DATA_DIR_ENV_VAR, DEFAULT_DATA_DIR_NAME } from '../setup/constants.js'
 import { defaultInstallConfig } from '../setup/defaults.js'
 import { loadInstallConfigSync, type InstallConfigLoad } from '../setup/load.js'
 import { formatInstallConfigErrors, installConfigSchema, type InstallConfig } from '../setup/schema.js'
-import { InvalidSupervisorEnvError, withResolvedSupervisor } from '../setup/supervisor.js'
 import { writeInstallConfig } from '../setup/write.js'
 import { parseSetupArgs, SETUP_USAGE, type SetupArgs } from './setup-args.js'
 import {
@@ -88,14 +87,9 @@ export async function runSetupCommand(
   try {
     return await runPreparedSetup(parsed.args, io, opts)
   } catch (error: unknown) {
-    // An environment variable that cannot mean what it says is a typo, and an
-    // errno is the host refusing — both get a line. Anything else is this
+    // An errno is the host refusing and gets a line. Anything else is this
     // plane being wrong about itself and keeps its stack trace
     // (`keygen-cmd.ts` / `service-cmd.ts` form).
-    if (error instanceof InvalidSupervisorEnvError) {
-      io.stderr.write(`${error.message}\n`)
-      return 1
-    }
     if (errnoCodeOf(error) === undefined) throw error
     io.stderr.write(hostFault(describeErrno(error)))
     return 1
@@ -112,13 +106,13 @@ async function runPreparedSetup(
   const config = prepareConfig(io, context, args)
   if (config === undefined) return 1
 
-  // The config as this host runs it: `MCPCUT_SUPERVISOR` decides who owns the
-  // processes, but it is NOT written to the file — it describes the host, not
-  // the install (SEC-M3).
-  const running = withResolvedSupervisor(config, context.env)
+  // Who owns the processes comes from the config alone — the file this run is
+  // about to write. There is no runtime override to reconcile it with (owner
+  // decision 2026-09-05, ADR-0012 §9), so the manager `--start` uses and the
+  // one a later `mcpcut start` builds cannot disagree.
   const manager = createServiceManager({
     dataDir: config.dataDir,
-    config: running,
+    config,
     env: context.env,
     ...(opts.now !== undefined ? { now: opts.now } : {}),
     ...opts.managerDeps,
@@ -132,7 +126,7 @@ async function runPreparedSetup(
   await prepareSigningKey(io, config.dataDir)
   if (!(await prepareAdmin(io, config.dataDir, args, opts.now))) return 1
 
-  return await startServices(io, running, args, manager)
+  return await startServices(io, config, args, manager)
 }
 
 /**
@@ -220,7 +214,10 @@ function withFlags(base: InstallConfig, args: SetupArgs, cwd: string): InstallCo
       ...base.ui,
       ...(args.uiHost !== undefined ? { host: args.uiHost } : {}),
       ...(args.uiPort !== undefined ? { port: args.uiPort } : {}),
-      ...(args.behindTls === true ? { behindTls: true } : {}),
+      // Written whenever the operator said either word: `--behind-tls` is
+      // remembered in the file, so `--no-behind-tls` has to be able to write
+      // the `false` that takes it back.
+      ...(args.behindTls !== undefined ? { behindTls: args.behindTls } : {}),
     },
     serve: {
       ...base.serve,

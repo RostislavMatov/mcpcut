@@ -21,19 +21,15 @@ All notable changes to this project are documented here. The format follows
   data directory, runs the checks (directory, bindings, databases, policy,
   network exposure), initialises the vault and the signing key, and mints the
   first `owner` admin before the first `ui` start, so the one-time token never
-  lands in a daemon log.
+  lands in a daemon log. Flags are overlaid on the config a previous run wrote,
+  so a rerun keeps what it was not asked about; `--no-behind-tls` is how the
+  `--behind-tls` claim is taken back without hand-editing the file.
 - **`start` / `stop` / `status` / `logs`**: `ui` and `serve` run as detached
   services that survive the terminal, with pid and log files under
   `<data dir>/run/`. `status` reports `running` only when the pid is alive
   **and** the service answers on its port. `run/` and the files in it stay
   owner-only: a start refuses otherwise, and `setup` reports the same condition
   as a `run dir` row in its preflight.
-- **`MCPCUT_SUPERVISOR`** (`mcpcut` | `external`): a runtime override of the
-  install config's `supervisor`, for a container whose services belong to
-  compose. It outranks the config file for `start` / `stop` / `status` and for
-  `setup --start`, and `setup` never writes it into the config — the variable
-  describes the host, not the install. A value outside the two words is
-  refused, never ignored.
 - **`MCP_JOURNAL_DIR` must be an absolute path**, and it is honoured by every
   command including the service ones. `setup --yes` refuses when the exported
   value and the data directory it would write disagree, rather than preparing

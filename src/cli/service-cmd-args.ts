@@ -1,7 +1,7 @@
 import { parseArgs } from 'node:util'
 import { formatReadableField } from '../journal/format.js'
 import { LOG_TAIL_DEFAULT_LINES, SERVICE_NAMES, type ServiceName } from '../services/constants.js'
-import { CLI_NAME } from '../setup/constants.js'
+import { SERVICE_USAGE } from './operator-usage.js'
 import type { ServiceCommandName } from './service-cmd.js'
 
 /**
@@ -12,14 +12,6 @@ import type { ServiceCommandName } from './service-cmd.js'
  * `ServiceCommandName` is imported as a TYPE only, so the pair has exactly one
  * runtime edge (command → args) rather than a cycle.
  */
-
-const SERVICE_USAGE =
-  'Usage:\n' +
-  `  ${CLI_NAME} start|stop [ui|serve]      Start or stop the services as detached daemons\n` +
-  `  ${CLI_NAME} status [--json]            Show whether each service runs (pid alive AND answering)\n` +
-  `  ${CLI_NAME} logs <ui|serve> [--lines N]\n` +
-  `                                         Print the tail of a service log ` +
-  `(default ${LOG_TAIL_DEFAULT_LINES} lines)\n`
 
 /**
  * `ui` first on the way up, `serve` first on the way down. Neither service

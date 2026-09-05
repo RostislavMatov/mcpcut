@@ -51,10 +51,13 @@ export const UI_PORT_ENV_VAR = 'MCPCUT_UI_PORT'
 export const SERVE_HOST_ENV_VAR = 'MCPCUT_SERVE_HOST'
 export const SERVE_PORT_ENV_VAR = 'MCPCUT_SERVE_PORT'
 
-/** Overrides `supervisor` — a container runs the services, `mcpcut` only reports. */
-export const SUPERVISOR_ENV_VAR = 'MCPCUT_SUPERVISOR'
-
-/** Who owns the service processes: this CLI's own daemons, or something outside (compose). */
+/**
+ * Who owns the service processes: this CLI's own daemons, or something outside
+ * (compose, systemd). The answer lives ONLY in the config's `supervisor` field
+ * — there is no environment override (owner decision 2026-09-05, ADR-0012 §9):
+ * it is a question for a human at first run, which the interactive wizard asks
+ * and the Docker entrypoint answers with `setup --yes --supervisor external`.
+ */
 export const SUPERVISORS = ['mcpcut', 'external'] as const
 
 /** One of `SUPERVISORS`. */

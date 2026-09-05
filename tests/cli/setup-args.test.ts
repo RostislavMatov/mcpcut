@@ -115,6 +115,24 @@ describe('parseSetupArgs: the flags a non-interactive install is described by', 
     expect(parsed.message).toBe('Invalid --supervisor "systemd": expected one of mcpcut, external.')
   })
 
+  test('records --no-behind-tls as an explicit false, so a rerun can take the claim back', () => {
+    const parsed = parseSetupArgs(['--yes', '--no-behind-tls'])
+
+    expect(parsed).toEqual({
+      ok: true,
+      args: { yes: true, force: false, start: false, noAdmin: false, behindTls: false },
+    })
+  })
+
+  test('refuses --behind-tls together with --no-behind-tls: they ask for opposite things', () => {
+    const parsed = parseSetupArgs(['--yes', '--behind-tls', '--no-behind-tls'])
+
+    expect(parsed.ok).toBe(false)
+    if (parsed.ok) throw new Error('expected a refusal')
+    expect(parsed.message).toContain('--behind-tls')
+    expect(parsed.message).toContain('--no-behind-tls')
+  })
+
   test('refuses --admin together with --no-admin: they ask for opposite things', () => {
     const parsed = parseSetupArgs(['--yes', '--admin', 'ops', '--no-admin'])
 
@@ -139,8 +157,9 @@ describe('SETUP_USAGE', () => {
     expect(SETUP_USAGE).toContain('--data-dir')
     expect(SETUP_USAGE).toContain('--admin <name>|--no-admin')
     expect(SETUP_USAGE).toContain('--supervisor mcpcut|external')
-    // `--behind-tls` has no `--no-behind-tls`, so a rerun cannot take it back:
-    // the synopsis has to say so where an operator reads the flags.
+    // `--behind-tls` survives a rerun that does not mention it, so the synopsis
+    // has to name the flag that takes it back where an operator reads the flags.
+    expect(SETUP_USAGE).toContain('--behind-tls|--no-behind-tls')
     expect(SETUP_USAGE).toContain('--behind-tls is remembered')
     expect(SETUP_USAGE.endsWith('\n')).toBe(true)
   })

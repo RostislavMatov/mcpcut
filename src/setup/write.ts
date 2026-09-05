@@ -1,6 +1,7 @@
 import { chmod } from 'node:fs/promises'
+import { dirname } from 'node:path'
 import { writeFileAtomic } from '../vault/files.js'
-import { INSTALL_CONFIG_FILE_MODE } from './constants.js'
+import { INSTALL_CONFIG_DIR_MODE, INSTALL_CONFIG_FILE_MODE } from './constants.js'
 import { formatInstallConfigErrors, installConfigSchema, type InstallConfig } from './schema.js'
 
 /**
@@ -38,6 +39,18 @@ export class InstallConfigWriteRejectedError extends Error {
  * 0600, so the mode is already right on every path this code takes today;
  * the call states the requirement at the file that owns it rather than
  * leaving it as an inherited property of another module's helper.
+ *
+ * The directory's `chmod` is NOT belt and braces. `writeFileAtomic` creates
+ * the parent 0700 but leaves an EXISTING one alone, and `~/.mcpcut` may well
+ * predate this command — an operator who made it by hand, or a `umask 022`
+ * that another tool created it under. The config holds no secrets by
+ * construction (paths, ports, a supervisor word), so this is hygiene rather
+ * than confidentiality; but a world-listable `~/.mcpcut` still tells every
+ * co-tenant of the host that a control plane lives here and where its data
+ * directory is, which is a starting point nobody needs to be handed. An errno
+ * propagates (EPERM on a directory owned by someone else is exactly the case
+ * an operator must be told about, not one to paper over): `setup`'s errno
+ * boundary renders it as `setup: <code>: <message>`.
  */
 export async function writeInstallConfig(path: string, config: InstallConfig): Promise<void> {
   const validated = installConfigSchema.safeParse(config)
@@ -47,4 +60,5 @@ export async function writeInstallConfig(path: string, config: InstallConfig): P
 
   await writeFileAtomic(path, `${JSON.stringify(config, null, 2)}\n`)
   await chmod(path, INSTALL_CONFIG_FILE_MODE)
+  await chmod(dirname(path), INSTALL_CONFIG_DIR_MODE)
 }
