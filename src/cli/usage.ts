@@ -1,4 +1,13 @@
-/** The dispatcher's top-level usage text (one place, imported by cli.ts). */
+import { SERVICE_SYNOPSIS_LINES, SETUP_SYNOPSIS_LINES } from './operator-usage.js'
+
+/**
+ * The dispatcher's top-level usage text (one place, imported by cli.ts).
+ *
+ * The `setup` and `start|stop|status|logs` rows are SPLICED IN from
+ * `./operator-usage.js` rather than restated here: those two commands also
+ * print a usage of their own when they refuse, and two hand-written copies of
+ * the same table had already drifted apart once (`tests/cli/usage.test.ts`).
+ */
 export const USAGE = `Usage: (mcpcut and mcp-journal are the same binary -- either name runs every command below)
   mcp-journal wrap [--server <name>] [--policy <path>] [--no-policy] [--fail-closed] -- <cmd> [args...]
                                          Run a wrapped MCP server ad hoc, journaling all traffic
@@ -8,13 +17,8 @@ export const USAGE = `Usage: (mcpcut and mcp-journal are the same binary -- eith
                                          Run the HTTP front for remote agents (default 127.0.0.1:8090)
   mcp-journal ui [--port N] [--host H] [--behind-tls] [--allowed-host <h>]
                                          Run the local admin UI (default 127.0.0.1:8091)
-  mcpcut setup --yes [--data-dir <dir>] [--ui-host H] [--ui-port N] [--serve-host H] [--serve-port N]
-               [--behind-tls] [--admin <name>|--no-admin] [--supervisor mcpcut|external] [--start] [--force]
-                                         Write the install config, prepare the data directory, run the
-                                         checks and mint the first owner (interactive setup: later)
-  mcpcut start|stop [ui|serve]           Start/stop the services as detached daemons (pid + log in <data dir>/run)
-  mcpcut status [--json]                 Show whether each service runs (pid alive AND answering)
-  mcpcut logs <ui|serve> [--lines N]     Print the tail of a service log
+${SETUP_SYNOPSIS_LINES.join('\n')}
+${SERVICE_SYNOPSIS_LINES.join('\n')}
   mcp-journal admin add <name> --role owner|operator|viewer
                                          Create a named admin (prints its token once)
   mcp-journal admin list|remove <name>|rotate <name>|role <name> <role>

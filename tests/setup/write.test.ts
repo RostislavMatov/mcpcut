@@ -1,4 +1,4 @@
-import { access, mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises'
+import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
@@ -60,6 +60,19 @@ describe('writeInstallConfig', () => {
     await writeInstallConfig(configPath, defaultInstallConfig('/var/lib/mcpcut'))
 
     expect(modeOf((await stat(join(home, CONFIG_DIR_NAME))).mode)).toBe(INSTALL_CONFIG_DIR_MODE)
+  })
+
+  test('tightens a config directory that already existed world-listable', async () => {
+    const configDir = join(home, CONFIG_DIR_NAME)
+    await mkdir(configDir, { recursive: true })
+    // Said outright rather than through `mkdir`'s mode: the umask masks that
+    // one, so a run under `umask 077` would create the directory 0700 and the
+    // test would pass without the writer doing anything.
+    await chmod(configDir, 0o755)
+
+    await writeInstallConfig(configPath, defaultInstallConfig('/var/lib/mcpcut'))
+
+    expect(modeOf((await stat(configDir)).mode)).toBe(INSTALL_CONFIG_DIR_MODE)
   })
 
   test('replaces an existing config without leaving a temporary file behind', async () => {

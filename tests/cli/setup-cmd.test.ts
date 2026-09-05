@@ -15,7 +15,6 @@ import {
   CONFIG_DIR_NAME,
   CONFIG_FILE_NAME,
   DATA_DIR_ENV_VAR,
-  SUPERVISOR_ENV_VAR,
 } from '../../src/setup/constants.js'
 import { installConfigSchema } from '../../src/setup/schema.js'
 import { VAULT_KEY_FILE_NAME } from '../../src/vault/constants.js'
@@ -299,6 +298,20 @@ describe('setup --yes: the overlay rule', () => {
     expect(String(written.serve.port)).toBe(args[args.indexOf('--serve-port') + 1])
   })
 
+  test('a rerun with --no-behind-tls writes the false that takes the claim back', async () => {
+    // Arrange: an install that once claimed TLS in front of it.
+    expect(await runSetupCommand(await fullRunArgs(['--behind-tls']), fakeIo(), { env, home })).toBe(0)
+    expect(installConfigSchema.parse(await readConfig()).ui.behindTls).toBe(true)
+
+    // Act: the claim is withdrawn from the CLI, not by hand-editing the file.
+    const io = fakeIo()
+    const exitCode = await runSetupCommand(['--yes', '--no-behind-tls'], io, { env, home })
+
+    // Assert
+    expect(exitCode).toBe(0)
+    expect(installConfigSchema.parse(await readConfig()).ui.behindTls).toBe(false)
+  })
+
   test('honours an injected config load and an injected config path', async () => {
     const elsewhere = join(home, 'somewhere', 'install.json')
     const io = fakeIo()
@@ -489,48 +502,6 @@ describe('setup --yes with MCP_JOURNAL_DIR exported', () => {
     })
 
     expect(exitCode).toBe(0)
-  })
-})
-
-/**
- * `MCPCUT_SUPERVISOR` is a RUNTIME override (SEC-M3): it says who owns the
- * processes on this host, not what the install is, so `setup` obeys it and
- * does not write it into the config file.
- */
-describe('setup --yes with MCPCUT_SUPERVISOR exported', () => {
-  test('starts nothing under external, and leaves the config file unchanged', async () => {
-    const io = fakeIo()
-    const spawned: string[] = []
-    const recordingSpawn = ((command: string) => {
-      spawned.push(command)
-      throw new Error('setup must not spawn under MCPCUT_SUPERVISOR=external')
-    }) as unknown as Parameters<typeof createServiceManager>[0]['spawn']
-
-    const exitCode = await runSetupCommand(await fullRunArgs(['--start']), io, {
-      env: { [SUPERVISOR_ENV_VAR]: 'external' },
-      home,
-      ...(recordingSpawn !== undefined ? { managerDeps: { spawn: recordingSpawn } } : {}),
-    })
-
-    expect(exitCode).toBe(0)
-    expect(io.out()).toContain('managed externally')
-    expect(spawned).toEqual([])
-    // The environment describes the host, not the install: the file keeps quiet.
-    expect(installConfigSchema.parse(await readConfig()).supervisor).toBeUndefined()
-  })
-
-  test('refuses a value outside the closed list before it writes anything', async () => {
-    const io = fakeIo()
-
-    const exitCode = await runSetupCommand(await fullRunArgs(), io, {
-      env: { [SUPERVISOR_ENV_VAR]: 'systemd' },
-      home,
-    })
-
-    expect(exitCode).toBe(1)
-    expect(io.err()).toContain(SUPERVISOR_ENV_VAR)
-    expect(io.err()).toContain('systemd')
-    expect(await exists(configPathOf())).toBe(false)
   })
 })
 

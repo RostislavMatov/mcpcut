@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { runServiceCommand } from '../../src/cli/service-cmd.js'
 import { RUN_DIR_NAME } from '../../src/services/constants.js'
 import type { ServiceManagerDeps } from '../../src/services/manager.js'
-import { DATA_DIR_ENV_VAR, SUPERVISOR_ENV_VAR } from '../../src/setup/constants.js'
+import { DATA_DIR_ENV_VAR } from '../../src/setup/constants.js'
 import { defaultInstallConfig } from '../../src/setup/defaults.js'
 import type { InstallConfigLoad } from '../../src/setup/load.js'
 
@@ -111,11 +111,13 @@ describe('the data directory the services are managed in', () => {
 })
 
 /**
- * `MCPCUT_SUPERVISOR` (SEC-M3): the variable was declared and documented from
- * the first wave and never read, so a container that set it still got a CLI
- * willing to spawn a second copy of every daemon compose already runs.
+ * The supervisor: read from the install config and from nowhere else (owner
+ * decision 2026-09-05, ADR-0012 §9). The environment used to be able to
+ * override it, which meant `start` could be told at run time to stand down;
+ * now the only writer is `setup`, and this is what proves the CLI passes the
+ * field through to the manager rather than inventing one.
  */
-describe('MCPCUT_SUPERVISOR', () => {
+describe('config.supervisor', () => {
   let dataDir: string
 
   beforeEach(async () => {
@@ -126,8 +128,12 @@ describe('MCPCUT_SUPERVISOR', () => {
     await rm(dataDir, { recursive: true, force: true })
   })
 
-  function installFor(): InstallConfigLoad {
-    return { kind: 'ok', path: CONFIG_PATH, config: defaultInstallConfig(dataDir) }
+  function externalInstall(): InstallConfigLoad {
+    return {
+      kind: 'ok',
+      path: CONFIG_PATH,
+      config: { ...defaultInstallConfig(dataDir), supervisor: 'external' },
+    }
   }
 
   test('external turns start into a report, and nothing is spawned', async () => {
@@ -139,8 +145,8 @@ describe('MCPCUT_SUPERVISOR', () => {
     }) as unknown as NonNullable<ServiceManagerDeps['spawn']>
 
     const exitCode = await runServiceCommand('start', [], io, {
-      install: installFor(),
-      env: { [SUPERVISOR_ENV_VAR]: 'external' },
+      install: externalInstall(),
+      env: {},
       managerDeps: {
         spawn: recordingSpawn,
         cliPath: FAKE_SERVICE_PATH,
@@ -151,19 +157,5 @@ describe('MCPCUT_SUPERVISOR', () => {
     expect(exitCode).toBe(0)
     expect(io.out()).toContain('external')
     expect(spawned).toEqual([])
-  })
-
-  test('a value outside the closed list refuses the command instead of guessing', async () => {
-    const io = fakeIo()
-
-    const exitCode = await runServiceCommand('status', [], io, {
-      install: installFor(),
-      env: { [SUPERVISOR_ENV_VAR]: 'systemd' },
-    })
-
-    expect(exitCode).toBe(1)
-    expect(io.err()).toContain('MCPCUT_SUPERVISOR')
-    expect(io.err()).toContain('systemd')
-    expect(io.out()).toBe('')
   })
 })

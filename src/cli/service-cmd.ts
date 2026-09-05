@@ -18,7 +18,6 @@ import {
 import { CLI_NAME } from '../setup/constants.js'
 import { resolveDataDir } from '../setup/data-dir.js'
 import { loadInstallConfigSync, type InstallConfigLoad } from '../setup/load.js'
-import { InvalidSupervisorEnvError, withResolvedSupervisor } from '../setup/supervisor.js'
 import { parseServiceArgs, type OkServiceArgs } from './service-cmd-args.js'
 
 /**
@@ -100,12 +99,6 @@ export async function runServiceCommand(
     const manager = opts.manager ?? managerFor(install, opts)
     return await runVerb(command, parsed, manager, io)
   } catch (error: unknown) {
-    // An environment variable that cannot mean what it says is an operator's
-    // typo, not a bug: one line, no stack.
-    if (error instanceof InvalidSupervisorEnvError) {
-      io.stderr.write(`${error.message}\n`)
-      return EXIT_FAILURE
-    }
     // A failure to reach the run directory (EACCES on the data dir, ENOSPC
     // writing a pid file) is an operator's situation too. Anything else is
     // this plane being wrong about itself and keeps its stack trace
@@ -117,14 +110,18 @@ export async function runServiceCommand(
 }
 
 /**
- * Builds the manager this install describes, on the ranking the rest of the
- * plane uses: `MCP_JOURNAL_DIR` above `config.dataDir` for the directory, and
- * `MCPCUT_SUPERVISOR` above `config.supervisor` for who owns the processes.
+ * Builds the manager this install describes: `MCP_JOURNAL_DIR` above
+ * `config.dataDir` for the directory, and `config.supervisor` — alone — for
+ * who owns the processes.
  *
  * Reading `config.dataDir` alone was the TS-H3 / SEC-M5 fault: with the
  * variable exported, `setup` prepared one directory while these commands
  * started daemons in another — and the `ui` that came up in the unprepared one
  * would bootstrap a second owner and print its token into `run/ui.log`.
+ *
+ * The supervisor has no such override, and deliberately so (owner decision
+ * 2026-09-05, ADR-0012 §9): who runs the services is answered once, by a
+ * human, at install time. `start` runs unattended and must not ask.
  */
 function managerFor(
   install: Extract<InstallConfigLoad, { kind: 'ok' }>,
@@ -133,7 +130,7 @@ function managerFor(
   const env = opts.env ?? process.env
   return createServiceManager({
     dataDir: opts.journalDir ?? resolveDataDir({ env, load: install }).dataDir,
-    config: withResolvedSupervisor(install.config, env),
+    config: install.config,
     env,
     ...opts.managerDeps,
   })

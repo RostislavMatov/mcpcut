@@ -1,6 +1,6 @@
 import { parseArgs } from 'node:util'
 import { formatReadableField } from '../journal/format.js'
-import { CLI_NAME, SUPERVISORS, type Supervisor } from '../setup/constants.js'
+import { SUPERVISORS, type Supervisor } from '../setup/constants.js'
 import { MAX_TCP_PORT } from './serve-constants.js'
 
 /**
@@ -16,14 +16,12 @@ import { MAX_TCP_PORT } from './serve-constants.js'
  * the default value" are different facts and the type keeps them apart.
  */
 
-export const SETUP_USAGE = `Usage:
-  ${CLI_NAME} setup --yes [--data-dir <dir>] [--ui-host H] [--ui-port N] [--serve-host H] [--serve-port N]
-               [--behind-tls] [--admin <name>|--no-admin] [--supervisor ${SUPERVISORS.join('|')}] [--start] [--force]
-                                         Write the install config, prepare the data directory, run the
-                                         checks and mint the first owner (interactive setup: later)
-                                         --behind-tls is remembered across reruns and there is no flag
-                                         that takes it back: edit the config file to drop it
-`
+/**
+ * Re-exported, not written here: the same synopsis is spliced into the global
+ * `--help` table, and one text is the only way the two can never disagree
+ * (`./operator-usage.ts`).
+ */
+export { SETUP_USAGE } from './operator-usage.js'
 
 /** What the operator asked for. Absent fields were not typed and are not overlaid. */
 export interface SetupArgs {
@@ -55,6 +53,7 @@ interface SetupFlagValues {
   readonly force?: boolean | undefined
   readonly start?: boolean | undefined
   readonly 'behind-tls'?: boolean | undefined
+  readonly 'no-behind-tls'?: boolean | undefined
   readonly 'no-admin'?: boolean | undefined
   readonly 'data-dir'?: string | undefined
   readonly 'ui-host'?: string | undefined
@@ -80,11 +79,11 @@ export function parseSetupArgs(args: readonly string[]): SetupArgsResult {
   const admin = parsed.values.admin
   const noAdmin = parsed.values['no-admin'] === true
   if (admin !== undefined && noAdmin) {
-    return {
-      ok: false,
-      message: '--admin and --no-admin ask for opposite things: pass one or neither.',
-    }
+    return { ok: false, message: oppositeFlags('--admin', '--no-admin') }
   }
+
+  const behindTls = parseBehindTlsFlags(parsed.values)
+  if (!behindTls.ok) return behindTls
 
   return {
     ok: true,
@@ -93,10 +92,7 @@ export function parseSetupArgs(args: readonly string[]): SetupArgsResult {
       force: parsed.values.force === true,
       start: parsed.values.start === true,
       noAdmin,
-      // `--behind-tls` is recorded only when typed. Absent, the config keeps
-      // whatever an earlier run put there; there is no `--no-behind-tls`, so
-      // a `false` here could only ever be an unasked-for reset.
-      ...(parsed.values['behind-tls'] === true ? { behindTls: true } : {}),
+      ...(behindTls.behindTls !== undefined ? { behindTls: behindTls.behindTls } : {}),
       ...optionalString('dataDir', parsed.values['data-dir']),
       ...optionalString('uiHost', parsed.values['ui-host']),
       ...(uiPort.port !== undefined ? { uiPort: uiPort.port } : {}),
@@ -127,6 +123,7 @@ function parseFlags(args: readonly string[]): FlagsResult {
         force: { type: 'boolean' },
         start: { type: 'boolean' },
         'behind-tls': { type: 'boolean' },
+        'no-behind-tls': { type: 'boolean' },
         'no-admin': { type: 'boolean' },
         'data-dir': { type: 'string' },
         'ui-host': { type: 'string' },
@@ -186,6 +183,38 @@ function parseSupervisorFlag(raw: string | undefined): SupervisorResult {
     }
   }
   return { ok: true, supervisor: match }
+}
+
+type BehindTlsResult =
+  | { readonly ok: true; readonly behindTls: boolean | undefined }
+  | { readonly ok: false; readonly message: string }
+
+/**
+ * `--behind-tls` / `--no-behind-tls`, as an explicit tri-state.
+ *
+ * `undefined` means neither was typed, and the config keeps whatever an
+ * earlier run put there — `behindTls` is written to the file, so it survives a
+ * rerun that does not mention it. That is why the negative flag exists at all:
+ * without it the claim "TLS is terminated in front of me" could be made from
+ * the CLI but only ever taken back by hand-editing the config, which is the
+ * one flag whose staleness silences an exposure warning.
+ */
+function parseBehindTlsFlags(values: SetupFlagValues): BehindTlsResult {
+  const on = values['behind-tls'] === true
+  const off = values['no-behind-tls'] === true
+  if (on && off) return { ok: false, message: oppositeFlags('--behind-tls', '--no-behind-tls') }
+  if (on) return { ok: true, behindTls: true }
+  if (off) return { ok: true, behindTls: false }
+  return { ok: true, behindTls: undefined }
+}
+
+/**
+ * One sentence for every pair of flags that contradict each other. Refused
+ * rather than resolved by precedence: an operator who typed both meant one of
+ * them, and there is no way to tell which.
+ */
+function oppositeFlags(positive: string, negative: string): string {
+  return `${positive} and ${negative} ask for opposite things: pass one or neither.`
 }
 
 /**
