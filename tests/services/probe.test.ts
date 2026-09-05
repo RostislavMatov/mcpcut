@@ -1,0 +1,228 @@
+import { createServer as createHttpServer, type Server as HttpServer } from 'node:http'
+import {
+  createServer as createNetServer,
+  type AddressInfo,
+  type Server as NetServer,
+  type Socket,
+} from 'node:net'
+import { afterEach, describe, expect, test } from 'vitest'
+import { PROBE_TIMEOUT_MS } from '../../src/services/constants.js'
+import { hostAuthority } from '../../src/services/authority.js'
+import { probeHostFor, probeService, probeServe, probeUi } from '../../src/services/probe.js'
+
+/**
+ * The readiness probes of the service manager (mcpcut phase 1, Task 8) — the
+ * same two questions the compose healthchecks ask: does `ui` answer `GET
+ * /login` with a 2xx, and does something accept a TCP connection on `serve`'s
+ * port. Real sockets throughout: a probe whose only proof is a mock has not
+ * been shown to survive `fetch`'s habit of throwing on a closed port.
+ */
+
+/** Short deadline for the negative cases so a failing probe cannot stall the suite. */
+const FAST_TIMEOUT_MS = 500
+
+const cleanups: Array<() => Promise<void>> = []
+
+afterEach(async () => {
+  for (const cleanup of cleanups.splice(0).reverse()) {
+    await cleanup().catch(() => undefined)
+  }
+})
+
+function onDispose(cleanup: () => Promise<void>): void {
+  cleanups.push(cleanup)
+}
+
+function closeHttp(server: HttpServer): Promise<void> {
+  return new Promise((resolve) => {
+    server.closeAllConnections()
+    server.close(() => resolve())
+  })
+}
+
+function closeNet(server: NetServer): Promise<void> {
+  return new Promise((resolve) => {
+    server.close(() => resolve())
+  })
+}
+
+/** Starts an HTTP server that answers `/login` with `status`; returns its ephemeral port. */
+async function startHttp(status: number): Promise<number> {
+  const server = createHttpServer((req, res) => {
+    res.writeHead(req.url === '/login' ? status : 404)
+    res.end()
+  })
+  onDispose(() => closeHttp(server))
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
+  return (server.address() as AddressInfo).port
+}
+
+/**
+ * Starts a bare TCP listener; returns its ephemeral port. Accepted sockets
+ * are destroyed rather than half-closed: an HTTP client's keep-alive pool
+ * would hold a half-closed socket open and `close()` would never resolve.
+ */
+async function startTcp(): Promise<number> {
+  const sockets = new Set<Socket>()
+  const server = createNetServer((socket) => {
+    sockets.add(socket)
+    socket.on('close', () => sockets.delete(socket))
+    socket.destroy()
+  })
+  onDispose(async () => {
+    for (const socket of sockets) socket.destroy()
+    await closeNet(server)
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
+  return (server.address() as AddressInfo).port
+}
+
+/** Reserves an ephemeral port and immediately gives it back, so nothing listens on it. */
+async function closedPort(): Promise<number> {
+  const server = createNetServer()
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
+  const { port } = server.address() as AddressInfo
+  await closeNet(server)
+  return port
+}
+
+describe('probeHostFor', () => {
+  test('maps the IPv4 wildcard to loopback, because nothing can connect to 0.0.0.0', () => {
+    expect(probeHostFor('0.0.0.0')).toBe('127.0.0.1')
+  })
+
+  test('maps both spellings of the IPv6 wildcard to loopback', () => {
+    expect(probeHostFor('::')).toBe('::1')
+    expect(probeHostFor('::0')).toBe('::1')
+  })
+
+  test('leaves a concrete address alone — a service bound to it does not listen on loopback', () => {
+    expect(probeHostFor('10.0.0.5')).toBe('10.0.0.5')
+    expect(probeHostFor('127.0.0.1')).toBe('127.0.0.1')
+    expect(probeHostFor('::1')).toBe('::1')
+    expect(probeHostFor('localhost')).toBe('localhost')
+  })
+})
+
+describe('probeUi', () => {
+  test('is true when /login answers 200', async () => {
+    const port = await startHttp(200)
+
+    expect(await probeUi('127.0.0.1', port, PROBE_TIMEOUT_MS)).toBe(true)
+  })
+
+  test('is false when /login answers 500 — a listening but broken service is not ready', async () => {
+    const port = await startHttp(500)
+
+    expect(await probeUi('127.0.0.1', port, PROBE_TIMEOUT_MS)).toBe(false)
+  })
+
+  test('is false, not a rejection, when nothing listens on the port', async () => {
+    const port = await closedPort()
+    const startedAt = Date.now()
+
+    expect(await probeUi('127.0.0.1', port, FAST_TIMEOUT_MS)).toBe(false)
+    expect(Date.now() - startedAt).toBeLessThan(FAST_TIMEOUT_MS * 4)
+  })
+
+  test('is false when the answer does not arrive before the timeout', async () => {
+    const server = createHttpServer(() => {
+      // Never answers: the probe's own deadline has to end this.
+    })
+    onDispose(() => closeHttp(server))
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
+    const { port } = server.address() as AddressInfo
+
+    expect(await probeUi('127.0.0.1', port, FAST_TIMEOUT_MS)).toBe(false)
+  })
+
+  test('reaches a service bound to the IPv4 wildcard via loopback', async () => {
+    const server = createHttpServer((req, res) => {
+      res.writeHead(req.url === '/login' ? 200 : 404)
+      res.end()
+    })
+    onDispose(() => closeHttp(server))
+    await new Promise<void>((resolve) => server.listen(0, '0.0.0.0', () => resolve()))
+    const { port } = server.address() as AddressInfo
+
+    expect(await probeUi('0.0.0.0', port, PROBE_TIMEOUT_MS)).toBe(true)
+  })
+})
+
+describe('probeServe', () => {
+  test('is true when a TCP listener accepts the connection', async () => {
+    const port = await startTcp()
+
+    expect(await probeServe('127.0.0.1', port, PROBE_TIMEOUT_MS)).toBe(true)
+  })
+
+  test('is false when the port is closed', async () => {
+    const port = await closedPort()
+
+    expect(await probeServe('127.0.0.1', port, FAST_TIMEOUT_MS)).toBe(false)
+  })
+
+  test('leaves no socket behind after a successful probe', async () => {
+    const port = await startTcp()
+    const before = process.getActiveResourcesInfo().length
+
+    expect(await probeServe('127.0.0.1', port, PROBE_TIMEOUT_MS)).toBe(true)
+
+    // The probe must destroy its socket and clear its timer, or `mcpcut
+    // status` in a poll loop would leak a handle per call.
+    expect(process.getActiveResourcesInfo().length).toBeLessThanOrEqual(before)
+  })
+})
+
+describe('probeService', () => {
+  test('asks ui for /login and is satisfied by a 200', async () => {
+    const port = await startHttp(200)
+
+    expect(await probeService('ui', '127.0.0.1', port)).toBe(true)
+  })
+
+  test('is not satisfied by a bare TCP listener when the service is ui', async () => {
+    const port = await startTcp()
+
+    expect(await probeService('ui', '127.0.0.1', port, FAST_TIMEOUT_MS)).toBe(false)
+  })
+
+  test('is satisfied by a bare TCP listener when the service is serve', async () => {
+    const port = await startTcp()
+
+    expect(await probeService('serve', '127.0.0.1', port)).toBe(true)
+  })
+
+  test('is false for either service when nothing listens', async () => {
+    const port = await closedPort()
+
+    expect(await probeService('ui', '127.0.0.1', port, FAST_TIMEOUT_MS)).toBe(false)
+    expect(await probeService('serve', '127.0.0.1', port, FAST_TIMEOUT_MS)).toBe(false)
+  })
+})
+
+describe('bracketed IPv6 literals (an operator writes both spellings)', () => {
+  test('brackets a bare IPv6 address exactly once', () => {
+    expect(hostAuthority('::1', 8091)).toBe('[::1]:8091')
+  })
+
+  test('does not bracket an address that is already bracketed', () => {
+    // `http://[[::1]]:8091` is not a URL: the config spelling `[::1]` is as
+    // legitimate as `::1`, and both have to reach the same authority.
+    expect(hostAuthority('[::1]', 8091)).toBe('[::1]:8091')
+  })
+
+  test('leaves an IPv4 address and a hostname alone', () => {
+    expect(hostAuthority('127.0.0.1', 8090)).toBe('127.0.0.1:8090')
+    expect(hostAuthority('console.example', 80)).toBe('console.example:80')
+  })
+
+  test('rewrites a bracketed IPv6 wildcard to loopback, as it does the bare one', () => {
+    expect(probeHostFor('[::]')).toBe('::1')
+    expect(probeHostFor('::')).toBe('::1')
+  })
+
+  test('dials a bracketed loopback literal as the address it names', () => {
+    expect(probeHostFor('[::1]')).toBe('::1')
+  })
+})

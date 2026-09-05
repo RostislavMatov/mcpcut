@@ -1,6 +1,14 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { describe, expect, test } from 'vitest'
 
 /**
@@ -566,5 +574,206 @@ describe('Ed25519/signing crypto primitives are reached through the named signin
     )
     expect(cryptoNamedImportsOf("import { randomBytes } from 'node:crypto'")).toEqual(['randomBytes'])
     expect(cryptoNamedImportsOf('/** never imports node:crypto directly */')).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The install/services layer (`mcpcut` phase 1, ADR-0012). `src/setup/**`
+// reads and writes the install config; `src/services/**` starts, stops and
+// probes the two long-running services. Both are OPERATOR surfaces in exactly
+// the sense ADR-0004 gives the admin UI: they arrange processes and files, they
+// never carry agent traffic and they never resolve a secret's value. The same
+// three matchers that guard the UI guard them, so the rule cannot drift apart
+// from the one it mirrors — and, as there, the file set is derived from the
+// directories rather than listed, so a module added later is covered the moment
+// it lands.
+// ---------------------------------------------------------------------------
+
+/** The two operator-surface directories, recursively. */
+const OPERATOR_SURFACE_DIRS: readonly string[] = ['src/setup', 'src/services']
+
+function operatorSurfaceFiles(): string[] {
+  return collectTransportFiles(PROJECT_ROOT, OPERATOR_SURFACE_DIRS, new Set())
+}
+
+describe('the install config and the service manager are operator surfaces too', () => {
+  test.each(operatorSurfaceFiles())(
+    '%s imports no ui/proxy/transport module and no vault secret value',
+    (relativePath) => {
+      const source = readFileSync(join(PROJECT_ROOT, relativePath), 'utf8')
+
+      const forbidden = importSpecifiersOf(source).filter(
+        (specifier) =>
+          isTrafficSpecifier(specifier) ||
+          isUiSpecifier(specifier) ||
+          isVaultValueSpecifier(specifier),
+      )
+
+      expect(forbidden).toEqual([])
+    },
+  )
+
+  test('both directories exist and contribute files, so the rule is not vacuous', () => {
+    for (const dir of OPERATOR_SURFACE_DIRS) {
+      const files = collectTransportFiles(PROJECT_ROOT, [dir], new Set())
+      expect(files.length, `${dir} contributes no .ts file`).toBeGreaterThan(0)
+      for (const file of files) expect(file.startsWith(`${dir}/`)).toBe(true)
+    }
+    // Guards the guard: the three matchers really do catch what this rule bans.
+    expect(isTrafficSpecifier('../proxy/spawn.js')).toBe(true)
+    expect(isTrafficSpecifier('../transport/http/server.js')).toBe(true)
+    expect(isUiSpecifier('../ui/server.js')).toBe(true)
+    expect(isVaultValueSpecifier('../vault/resolve.js')).toBe(true)
+    // …and that the neighbouring, permitted vault module is NOT caught: the
+    // config writer reuses `vault/files.ts` for its atomic write.
+    expect(isVaultValueSpecifier('../vault/files.js')).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The `src/config.ts` import chain (plan task 4). `JOURNAL_DIR` is resolved at
+// IMPORT time, which puts every module the resolution reaches into a cycle
+// hazard: `cli/ui-constants.ts` pulls `admin/constants.ts`, which computes its
+// paths from `JOURNAL_DIR` at import time, so a single edge from the chain into
+// it would close the loop `config.ts → setup/* → ui-constants → admin/constants
+// → config.ts`. Under ESM's live bindings that is not `undefined` at runtime:
+// it is a `ReferenceError` thrown from `admin/constants.ts` while the module
+// graph is still evaluating — every command of the CLI dead on arrival, with a
+// stack trace that names neither `config.ts` nor the import that closed the
+// loop. Hence a mechanical rule: the chain imports `zod`, `node:*`, the
+// import-free leaves (`cli/serve-constants.ts`, `errno.ts`), and its own
+// siblings — nothing else.
+//
+// The chain is WALKED, not listed (TS-M5): a hardcoded list of five files
+// leaves a sixth one, added by the next wave and imported by `load.ts`,
+// unguarded until somebody remembers to list it. `setup/defaults.ts`,
+// `setup/bind.ts`, `setup/checks.ts` and `setup/write.ts` are not reachable
+// from `config.ts` and may import what they like.
+// ---------------------------------------------------------------------------
+
+/** Where the walk starts. Its own imports are the chain's entry points. */
+const CONFIG_CHAIN_ROOT = 'src/config.ts'
+
+/** The members that must be reached, so the rule can never run on an empty set. */
+const CONFIG_CHAIN_REQUIRED: readonly string[] = [
+  'src/setup/constants.ts',
+  'src/setup/schema.ts',
+  'src/setup/config-path.ts',
+  'src/setup/load.ts',
+  'src/setup/data-dir.ts',
+]
+
+/** The non-sibling modules the chain may import: neither has imports of its own. */
+const CONFIG_CHAIN_ALLOWED_MODULES: readonly string[] = ['../cli/serve-constants.js', '../errno.js']
+
+/**
+ * True for a specifier a REACHED file is allowed to use: the validator, the
+ * platform, an import-free leaf, or a direct sibling in its own directory. A
+ * nested `./sub/x.js` is deliberately NOT allowed — the point is that the whole
+ * chain is visible in one directory listing.
+ */
+function isAllowedConfigChainSpecifier(specifier: string): boolean {
+  return (
+    specifier === 'zod' ||
+    specifier.startsWith('node:') ||
+    CONFIG_CHAIN_ALLOWED_MODULES.includes(specifier) ||
+    /^\.\/[^/]+\.js$/.test(specifier)
+  )
+}
+
+/** The repo-relative `.ts` file a relative specifier names, when it exists. */
+function resolveRelativeSpecifier(fromFile: string, specifier: string): string | undefined {
+  if (!specifier.startsWith('.')) return undefined
+  const resolved = join(dirname(fromFile), specifier.replace(/\.js$/, '.ts'))
+  return existsSync(join(PROJECT_ROOT, resolved)) ? resolved : undefined
+}
+
+interface ChainMember {
+  readonly file: string
+  readonly specifiers: readonly string[]
+}
+
+/**
+ * Every file `src/config.ts` reaches at import time, breadth-first, excluding
+ * the root itself: the root's own `./setup/*.js` entry points are how the
+ * chain is entered, and each of them is then checked in its own right.
+ */
+export function walkConfigChain(root: string = CONFIG_CHAIN_ROOT): ChainMember[] {
+  const members: ChainMember[] = []
+  const seen = new Set<string>([root])
+  const queue: string[] = [root]
+
+  while (queue.length > 0) {
+    const file = queue.shift() as string
+    const specifiers = importSpecifiersOf(readFileSync(join(PROJECT_ROOT, file), 'utf8'))
+    if (file !== root) members.push({ file, specifiers })
+    for (const specifier of specifiers) {
+      const next = resolveRelativeSpecifier(file, specifier)
+      if (next === undefined || seen.has(next)) continue
+      seen.add(next)
+      queue.push(next)
+    }
+  }
+  return members.sort((left, right) => left.file.localeCompare(right.file))
+}
+
+function chainCases(): Array<readonly [string, readonly string[]]> {
+  return walkConfigChain().map((member) => [member.file, member.specifiers] as const)
+}
+
+describe('the src/config.ts import chain stays free of the cycle that would blank JOURNAL_DIR', () => {
+  test.each(chainCases())(
+    '%s imports only zod, node:*, the import-free leaves and its own siblings',
+    (_file, specifiers) => {
+      const offending = specifiers.filter(
+        (specifier) => !isAllowedConfigChainSpecifier(specifier),
+      )
+
+      expect(offending).toEqual([])
+    },
+  )
+
+  test('the walk reaches every module the resolution is made of (the rule is not vacuous)', () => {
+    const reached = walkConfigChain().map((member) => member.file)
+
+    for (const required of CONFIG_CHAIN_REQUIRED) {
+      expect(reached).toContain(required)
+    }
+  })
+
+  test('the allowlist rejects exactly the specifiers that would close the cycle', () => {
+    // Guards the guard: were `isAllowedConfigChainSpecifier` to go permissive,
+    // the test above would pass no matter what the chain imported.
+    for (const forbidden of [
+      '../config.js',
+      '../cli/ui-constants.js',
+      '../admin/constants.js',
+      '../admin/store.js',
+      '../ui/constants.js',
+      '../net/origin-host.js',
+      './nested/deep.js',
+    ]) {
+      expect(isAllowedConfigChainSpecifier(forbidden), `${forbidden} must stay forbidden`).toBe(
+        false,
+      )
+    }
+    for (const allowed of ['zod', 'node:path', 'node:fs', ...CONFIG_CHAIN_ALLOWED_MODULES, './schema.js']) {
+      expect(isAllowedConfigChainSpecifier(allowed), `${allowed} must stay allowed`).toBe(true)
+    }
+  })
+
+  test('the allowed leaves really have no imports, which is why they are allowed', () => {
+    for (const leaf of ['src/cli/serve-constants.ts', 'src/errno.ts']) {
+      expect(importSpecifiersOf(readFileSync(join(PROJECT_ROOT, leaf), 'utf8')), leaf).toEqual([])
+    }
+  })
+
+  test('a file added to the chain is covered without being listed anywhere', () => {
+    // The walk is the whole point of TS-M5: prove it follows an edge rather
+    // than a list, by walking a fixture whose graph nobody has enumerated.
+    const reached = walkConfigChain('src/setup/load.ts').map((member) => member.file)
+
+    expect(reached).toContain('src/setup/schema.ts')
+    expect(reached).toContain('src/errno.ts')
   })
 })

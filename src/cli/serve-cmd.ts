@@ -14,19 +14,19 @@ import { createReloadingPolicy } from './policy-reload.js'
 import { guardDiagnostics } from '../proxy/diagnostics.js'
 import { createGroupsStore, type GroupsStore } from '../groups/store.js'
 import { createRegistryStore, type RegistryStore } from '../registry/store.js'
+import {
+  InvalidBindEnvError,
+  resolveServeDefaults,
+  type ServeServiceDefaults,
+} from '../setup/bind.js'
+import { loadInstallConfigSync } from '../setup/load.js'
 import { preflightDatabases } from '../store/preflight.js'
 import { createHttpFront, type HttpFront } from '../transport/http/server.js'
 import { isRejectedOriginFlagValue } from '../net/origin-host.js'
 import { resolveVaultRefs } from '../vault/resolve.js'
 import { createVaultStore, type VaultStore } from '../vault/store.js'
 import { ulid } from 'ulid'
-import {
-  DEFAULT_SERVE_HOST,
-  DEFAULT_SERVE_PORT,
-  MAX_TCP_PORT,
-  SERVE_USAGE,
-  type ServeCliIo,
-} from './serve-constants.js'
+import { MAX_TCP_PORT, SERVE_USAGE, type ServeCliIo } from './serve-constants.js'
 import { describeBindFailure } from './bind-failure.js'
 import { createServeHooks } from './serve-hooks.js'
 import { createServeSessionFactory } from './serve-runtime.js'
@@ -96,6 +96,12 @@ export interface ServeCommandOptions {
   readonly signals?: readonly NodeJS.Signals[]
   /** Called once the socket is bound, with the handle that can shut it down. */
   readonly onListening?: (handle: ServeHandle) => void
+  /**
+   * What every absent flag falls back to (phase 1, task 5). Defaults to the
+   * environment-plus-install-config resolution; injected by tests and by any
+   * caller that already read the config.
+   */
+  readonly bindDefaults?: ServeServiceDefaults
   readonly killEscalationMs?: number
   /**
    * @internal test-only seam for injecting a failing journal batch commit
@@ -124,7 +130,7 @@ interface ServeFlags {
 type FlagResult = { readonly flags: ServeFlags } | { readonly error: string }
 
 /** Parses serve's flags strictly: an unknown option is a hard error. */
-function parseServeFlags(argv: readonly string[]): FlagResult {
+function parseServeFlags(argv: readonly string[], defaults: ServeServiceDefaults): FlagResult {
   let values: Record<string, unknown>
   try {
     const parsed = parseArgs({
@@ -144,42 +150,81 @@ function parseServeFlags(argv: readonly string[]): FlagResult {
   } catch {
     return { error: 'Unknown or malformed option(s) in serve command.' }
   }
+  return buildServeFlags(values, defaults)
+}
 
-  const port = parsePort(values['port'])
+/**
+ * Merges the parsed flags over `defaults` (phase 1, task 5): a flag the
+ * operator typed always wins, and only a flag that is absent takes the
+ * configured value. For the repeatable flags "absent" means "not given once" —
+ * a single `--allowed-host` replaces the configured list rather than adding to
+ * it, so what the command line says is what the front screens against.
+ */
+function buildServeFlags(
+  values: Record<string, unknown>,
+  defaults: ServeServiceDefaults,
+): FlagResult {
+  const port = parsePort(values['port'], defaults.port)
   if (port === null) {
     return { error: `Invalid --port "${String(values['port'])}": expected 0..${MAX_TCP_PORT}.` }
   }
-  const host = typeof values['host'] === 'string' ? values['host'] : DEFAULT_SERVE_HOST
+  const host = typeof values['host'] === 'string' ? values['host'] : defaults.host
   if (host.length === 0) {
     return { error: 'Invalid --host: expected a non-empty address.' }
   }
-  const allowedOrigins = Array.isArray(values['allowed-origin'])
+  // Only the flag's own values are screened here: the install config's schema
+  // already refuses the opaque origin, so a config value cannot reach this.
+  const flagOrigins = Array.isArray(values['allowed-origin'])
     ? (values['allowed-origin'] as string[])
-    : []
-  if (allowedOrigins.some(isRejectedOriginFlagValue)) {
+    : undefined
+  if (flagOrigins?.some(isRejectedOriginFlagValue) === true) {
     return { error: `Invalid --allowed-origin "null": the opaque origin can never be allowed.` }
   }
+  const flagHosts = Array.isArray(values['allowed-host'])
+    ? (values['allowed-host'] as string[])
+    : undefined
+  const policyPath = typeof values['policy'] === 'string' ? values['policy'] : defaults.policy
 
   return {
     flags: {
       port,
       host,
-      policyPath: typeof values['policy'] === 'string' ? values['policy'] : undefined,
-      failClosed: values['fail-closed'] === true,
-      allowedOrigins,
-      allowedHosts: Array.isArray(values['allowed-host'])
-        ? (values['allowed-host'] as string[])
-        : [],
+      policyPath,
+      // `--fail-closed` only ever turns fail-closed ON (see `applyFailClosed`),
+      // so a config that asks for it cannot be softened by omitting the flag.
+      failClosed: values['fail-closed'] === true ? true : (defaults.failClosed ?? false),
+      allowedOrigins: flagOrigins ?? defaults.allowedOrigins ?? [],
+      allowedHosts: flagHosts ?? defaults.allowedHosts ?? [],
     },
   }
 }
 
 /** `0` (any free port) through 65535; anything else is a usage error. */
-function parsePort(raw: unknown): number | null {
-  if (raw === undefined) return DEFAULT_SERVE_PORT
+function parsePort(raw: unknown, fallback: number): number | null {
+  if (raw === undefined) return fallback
   if (typeof raw !== 'string' || !/^\d+$/.test(raw)) return null
   const port = Number(raw)
   return port <= MAX_TCP_PORT ? port : null
+}
+
+type DefaultsResult = { readonly defaults: ServeServiceDefaults } | { readonly error: string }
+
+/**
+ * The defaults this run falls back to: the caller's, or the environment and
+ * install config resolved here. An unusable `MCPCUT_SERVE_PORT` is refused in
+ * the same words an unusable `--port` gets — a front listening where nobody
+ * chose is worse than a start that explains itself.
+ */
+function resolveDefaults(opts: ServeCommandOptions): DefaultsResult {
+  if (opts.bindDefaults !== undefined) return { defaults: opts.bindDefaults }
+  try {
+    return {
+      defaults: resolveServeDefaults(process.env, loadInstallConfigSync({ env: process.env })),
+    }
+  } catch (error: unknown) {
+    if (error instanceof InvalidBindEnvError) return { error: error.message }
+    throw error
+  }
 }
 
 type PolicyOutcome = { readonly policy: PolicyProvider } | { readonly exitCode: number }
@@ -329,7 +374,12 @@ export async function runServe(
   // Guarded so a stderr failure reported as a diagnostic cannot re-enter
   // stderr (see `proxy/diagnostics.ts`: the orphaned-proxy 100% CPU loop).
   const io: ServeCliIo = { ...rawIo, stderr: guardDiagnostics(rawIo.stderr) }
-  const parsed = parseServeFlags(argv)
+  const resolved = resolveDefaults(opts)
+  if ('error' in resolved) {
+    io.stderr.write(`${resolved.error}\n\n${SERVE_USAGE}`)
+    return EXIT_STARTUP_FAILURE
+  }
+  const parsed = parseServeFlags(argv, resolved.defaults)
   if ('error' in parsed) {
     io.stderr.write(`${parsed.error}\n\n${SERVE_USAGE}`)
     return EXIT_STARTUP_FAILURE

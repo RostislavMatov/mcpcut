@@ -1,0 +1,206 @@
+import { parseArgs } from 'node:util'
+import { formatReadableField } from '../journal/format.js'
+import { CLI_NAME, SUPERVISORS, type Supervisor } from '../setup/constants.js'
+import { MAX_TCP_PORT } from './serve-constants.js'
+
+/**
+ * The argument layer of `mcpcut setup` (phase 1, Task 14): usage text, flag
+ * shapes and the one value the command runs on. Split from `setup-cmd.ts` the
+ * way `server-add-args.ts` is split from `server-cmd.ts` — this module knows
+ * only about argv and never touches disk, a store or a stream.
+ *
+ * Every flag is OPTIONAL in the result, and deliberately so: `setup` overlays
+ * only what the operator actually typed onto the config that already exists,
+ * so a rerun that passes `--ui-port` alone must not silently reset the
+ * `behindTls` or `allowedHosts` an earlier run wrote. "Not given" and "given
+ * the default value" are different facts and the type keeps them apart.
+ */
+
+export const SETUP_USAGE = `Usage:
+  ${CLI_NAME} setup --yes [--data-dir <dir>] [--ui-host H] [--ui-port N] [--serve-host H] [--serve-port N]
+               [--behind-tls] [--admin <name>|--no-admin] [--supervisor ${SUPERVISORS.join('|')}] [--start] [--force]
+                                         Write the install config, prepare the data directory, run the
+                                         checks and mint the first owner (interactive setup: later)
+                                         --behind-tls is remembered across reruns and there is no flag
+                                         that takes it back: edit the config file to drop it
+`
+
+/** What the operator asked for. Absent fields were not typed and are not overlaid. */
+export interface SetupArgs {
+  /** The non-interactive acknowledgement; without it `setup` only points at the wizard to come. */
+  readonly yes: boolean
+  /** Overwrite an install config this build cannot read. */
+  readonly force: boolean
+  /** Start both services once the install is prepared. */
+  readonly start: boolean
+  /** Leave the install with no admin, accepting the bootstrap-token-in-the-log path. */
+  readonly noAdmin: boolean
+  readonly behindTls?: boolean
+  readonly dataDir?: string
+  readonly uiHost?: string
+  readonly uiPort?: number
+  readonly serveHost?: string
+  readonly servePort?: number
+  readonly admin?: string
+  readonly supervisor?: Supervisor
+}
+
+export type SetupArgsResult =
+  | { readonly ok: true; readonly args: SetupArgs }
+  | { readonly ok: false; readonly message: string }
+
+/** Flag values straight out of `parseArgs`, before any of them means anything. */
+interface SetupFlagValues {
+  readonly yes?: boolean | undefined
+  readonly force?: boolean | undefined
+  readonly start?: boolean | undefined
+  readonly 'behind-tls'?: boolean | undefined
+  readonly 'no-admin'?: boolean | undefined
+  readonly 'data-dir'?: string | undefined
+  readonly 'ui-host'?: string | undefined
+  readonly 'ui-port'?: string | undefined
+  readonly 'serve-host'?: string | undefined
+  readonly 'serve-port'?: string | undefined
+  readonly admin?: string | undefined
+  readonly supervisor?: string | undefined
+}
+
+/** Parses `setup` argv; every refusal is a sentence, never a bare `undefined`. */
+export function parseSetupArgs(args: readonly string[]): SetupArgsResult {
+  const parsed = parseFlags(args)
+  if (!parsed.ok) return parsed
+
+  const uiPort = parsePortFlag('--ui-port', parsed.values['ui-port'])
+  if (!uiPort.ok) return uiPort
+  const servePort = parsePortFlag('--serve-port', parsed.values['serve-port'])
+  if (!servePort.ok) return servePort
+  const supervisor = parseSupervisorFlag(parsed.values.supervisor)
+  if (!supervisor.ok) return supervisor
+
+  const admin = parsed.values.admin
+  const noAdmin = parsed.values['no-admin'] === true
+  if (admin !== undefined && noAdmin) {
+    return {
+      ok: false,
+      message: '--admin and --no-admin ask for opposite things: pass one or neither.',
+    }
+  }
+
+  return {
+    ok: true,
+    args: {
+      yes: parsed.values.yes === true,
+      force: parsed.values.force === true,
+      start: parsed.values.start === true,
+      noAdmin,
+      // `--behind-tls` is recorded only when typed. Absent, the config keeps
+      // whatever an earlier run put there; there is no `--no-behind-tls`, so
+      // a `false` here could only ever be an unasked-for reset.
+      ...(parsed.values['behind-tls'] === true ? { behindTls: true } : {}),
+      ...optionalString('dataDir', parsed.values['data-dir']),
+      ...optionalString('uiHost', parsed.values['ui-host']),
+      ...(uiPort.port !== undefined ? { uiPort: uiPort.port } : {}),
+      ...optionalString('serveHost', parsed.values['serve-host']),
+      ...(servePort.port !== undefined ? { servePort: servePort.port } : {}),
+      ...optionalString('admin', admin),
+      ...(supervisor.supervisor !== undefined ? { supervisor: supervisor.supervisor } : {}),
+    },
+  }
+}
+
+type FlagsResult =
+  | { readonly ok: true; readonly values: SetupFlagValues }
+  | { readonly ok: false; readonly message: string }
+
+/**
+ * Strict `parseArgs` with no positionals: `setup` is described entirely by
+ * flags, and a stray word is far more likely to be a typo'd flag value than
+ * something to ignore. `parseArgs`'s own message already names the offending
+ * token, so it is passed through (sanitized — the token is operator input).
+ */
+function parseFlags(args: readonly string[]): FlagsResult {
+  try {
+    const parsed = parseArgs({
+      args: [...args],
+      options: {
+        yes: { type: 'boolean' },
+        force: { type: 'boolean' },
+        start: { type: 'boolean' },
+        'behind-tls': { type: 'boolean' },
+        'no-admin': { type: 'boolean' },
+        'data-dir': { type: 'string' },
+        'ui-host': { type: 'string' },
+        'ui-port': { type: 'string' },
+        'serve-host': { type: 'string' },
+        'serve-port': { type: 'string' },
+        admin: { type: 'string' },
+        supervisor: { type: 'string' },
+      },
+      allowPositionals: true,
+      strict: true,
+    })
+    if (parsed.positionals.length > 0) {
+      return {
+        ok: false,
+        message: `setup takes no positional arguments (got: ${formatReadableField(parsed.positionals.join(' '))})`,
+      }
+    }
+    return { ok: true, values: parsed.values }
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error)
+    return { ok: false, message: formatReadableField(message) }
+  }
+}
+
+type PortResult =
+  | { readonly ok: true; readonly port: number | undefined }
+  | { readonly ok: false; readonly message: string }
+
+/**
+ * `0..MAX_TCP_PORT`, digits only — the same rule and the same sentence
+ * `parseUiFlags` applies to `--port`, so the two surfaces refuse identically.
+ */
+function parsePortFlag(flag: string, raw: string | undefined): PortResult {
+  if (raw === undefined) return { ok: true, port: undefined }
+  if (!/^\d+$/.test(raw) || Number(raw) > MAX_TCP_PORT) {
+    return {
+      ok: false,
+      message: `Invalid ${flag} "${formatReadableField(raw)}": expected 0..${MAX_TCP_PORT}.`,
+    }
+  }
+  return { ok: true, port: Number(raw) }
+}
+
+type SupervisorResult =
+  | { readonly ok: true; readonly supervisor: Supervisor | undefined }
+  | { readonly ok: false; readonly message: string }
+
+/** The closed list is checked here, not by the schema, so the refusal names the flag. */
+function parseSupervisorFlag(raw: string | undefined): SupervisorResult {
+  if (raw === undefined) return { ok: true, supervisor: undefined }
+  const match = SUPERVISORS.find((supervisor) => supervisor === raw)
+  if (match === undefined) {
+    return {
+      ok: false,
+      message: `Invalid --supervisor "${formatReadableField(raw)}": expected one of ${SUPERVISORS.join(', ')}.`,
+    }
+  }
+  return { ok: true, supervisor: match }
+}
+
+/**
+ * Conditional spread of one string field, so `exactOptionalPropertyTypes` stays
+ * honest.
+ *
+ * `K extends keyof SetupArgs`, not `K extends string`: with the looser bound a
+ * mistyped key (`'uiHst'`) produced a perfectly valid `Record<'uiHst', string>`
+ * that the result object then absorbed and nobody ever read — the flag would
+ * silently stop working (TS-M6). The narrower bound also rejects a string
+ * spread onto a numeric field (`uiPort`).
+ */
+function optionalString<K extends keyof SetupArgs>(
+  key: K,
+  value: string | undefined,
+): Record<K, string> | Record<string, never> {
+  return value === undefined ? {} : ({ [key]: value } as Record<K, string>)
+}

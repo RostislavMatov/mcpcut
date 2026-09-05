@@ -3,6 +3,16 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { dispatch, type CliIo } from '../../src/cli.js'
+import type {
+  ServiceManager,
+  ServiceStatus,
+  StartResult,
+  StopResult,
+} from '../../src/services/manager.js'
+import type { ServiceName } from '../../src/services/constants.js'
+import type { DataDirResolution } from '../../src/setup/data-dir.js'
+import { defaultInstallConfig } from '../../src/setup/defaults.js'
+import type { InstallConfigLoad } from '../../src/setup/load.js'
 import type { JournalRecord } from '../../src/journal/record.js'
 import { createJournalSink } from '../../src/journal/sink.js'
 import { createClientHarness } from '../proxy/harness.js'
@@ -349,5 +359,172 @@ describe('dispatch: keygen', () => {
 
     expect(exitCode).toBe(0)
     expect(io.out()).toContain('-----BEGIN PUBLIC KEY-----')
+  })
+})
+
+/**
+ * An unusable install config (phase 1, task 4): every command refuses with the
+ * path and the faults, rather than falling back to `$HOME` and quietly working
+ * on a directory the operator did not choose. `--help` and `setup` are the two
+ * exemptions — they are how the operator finds out what to do about it.
+ */
+describe('dispatch: an unusable install config', () => {
+  const BROKEN_CONFIG_PATH = '/home/op/.mcpcut/config.json'
+
+  const broken: DataDirResolution = {
+    dataDir: '/home/op/.mcp-journal',
+    source: 'default',
+    configPath: BROKEN_CONFIG_PATH,
+    problem: ['dataDir: dataDir must be an absolute path'],
+  }
+
+  test('refuses an ordinary command with the config path and the fault', async () => {
+    const io = fakeIo()
+
+    const exitCode = await dispatch(['server', 'list'], io, { install: broken })
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain(BROKEN_CONFIG_PATH)
+    expect(io.err()).toContain('dataDir: dataDir must be an absolute path')
+    expect(io.out()).toBe('')
+  })
+
+  test('still prints usage for --help, which is where the operator looks next', async () => {
+    const io = fakeIo()
+
+    const exitCode = await dispatch(['--help'], io, { install: broken })
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain('Usage:')
+    expect(io.err()).toBe('')
+  })
+
+  test('does not block setup, the command that rewrites the broken file', async () => {
+    const io = fakeIo()
+
+    // No `--yes`: the cheapest path through the real command, and one that
+    // never touches disk — the seams keep even the config lookup off `$HOME`.
+    const exitCode = await dispatch(['setup'], io, {
+      install: broken,
+      setup: { env: {}, home: tempDir, cwd: tempDir },
+    })
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).not.toContain('is unusable')
+    expect(io.err()).toContain('Interactive setup arrives with the console')
+    expect(io.err()).toContain('mcpcut setup --yes')
+  })
+
+  test('a usable resolution routes as before', async () => {
+    const io = fakeIo()
+    const usable: DataDirResolution = {
+      dataDir: '/home/op/.mcp-journal',
+      source: 'default',
+      configPath: BROKEN_CONFIG_PATH,
+    }
+
+    const exitCode = await dispatch(['server', 'list'], io, {
+      install: usable,
+      server: { journalDir: join(tempDir, 'registry') },
+    })
+
+    expect(exitCode).toBe(0)
+  })
+})
+
+/**
+ * The service verbs (phase 1, task 12) are four top-level commands rather than
+ * one `service` sub-router: `mcpcut start` is what an operator types, and a
+ * sub-router would have made it `mcpcut service start`.
+ */
+describe('dispatch: start|stop|status|logs', () => {
+  const SERVICE_CONFIG_PATH = '/home/op/.mcpcut/config.json'
+
+  const install: InstallConfigLoad = {
+    kind: 'ok',
+    path: SERVICE_CONFIG_PATH,
+    config: defaultInstallConfig('/var/lib/mcpcut'),
+  }
+
+  interface RoutingManager extends ServiceManager {
+    readonly calls: readonly string[]
+  }
+
+  /** Answers every verb the same way, and records which one was asked. */
+  function routingManager(): RoutingManager {
+    const calls: string[] = []
+    const statusOf = (service: ServiceName): ServiceStatus => ({
+      service,
+      state: 'running',
+      host: '127.0.0.1',
+      port: service === 'ui' ? 8091 : 8090,
+      pid: 42,
+      logPath: `/var/lib/mcpcut/run/${service}.log`,
+    })
+    return {
+      calls,
+      start: async (service): Promise<StartResult> => {
+        calls.push(`start ${service}`)
+        return { kind: 'already-running', status: statusOf(service) }
+      },
+      stop: async (service): Promise<StopResult> => {
+        calls.push(`stop ${service}`)
+        return { kind: 'not-running' }
+      },
+      status: async (service) => {
+        calls.push(`status ${service}`)
+        return statusOf(service)
+      },
+      logs: async (service, lines) => {
+        calls.push(`logs ${service} ${String(lines)}`)
+        return ['a log line']
+      },
+    }
+  }
+
+  test('routes start to the service manager, ui first', async () => {
+    const io = fakeIo()
+    const manager = routingManager()
+
+    const exitCode = await dispatch(['start'], io, { services: { manager, install } })
+
+    expect(exitCode).toBe(0)
+    expect(manager.calls).toEqual(['start ui', 'start serve'])
+    expect(io.out()).toContain('already running pid 42')
+  })
+
+  test('routes stop to the service manager, serve first', async () => {
+    const io = fakeIo()
+    const manager = routingManager()
+
+    const exitCode = await dispatch(['stop'], io, { services: { manager, install } })
+
+    expect(exitCode).toBe(0)
+    expect(manager.calls).toEqual(['stop serve', 'stop ui'])
+    expect(io.out()).toContain('not running')
+  })
+
+  test('routes status, passing --json through', async () => {
+    const io = fakeIo()
+    const manager = routingManager()
+
+    const exitCode = await dispatch(['status', '--json'], io, { services: { manager, install } })
+
+    expect(exitCode).toBe(0)
+    expect(manager.calls).toEqual(['status ui', 'status serve'])
+    expect(JSON.parse(io.out())).toHaveLength(2)
+  })
+
+  test('routes logs with its service name and --lines', async () => {
+    const io = fakeIo()
+    const manager = routingManager()
+
+    const exitCode = await dispatch(['logs', 'serve', '--lines', '7'], io, {
+      services: { manager, install },
+    })
+
+    expect(exitCode).toBe(0)
+    expect(manager.calls).toEqual(['logs serve 7'])
+    expect(io.out()).toBe('a log line\n')
   })
 })

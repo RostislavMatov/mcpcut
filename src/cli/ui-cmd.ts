@@ -7,6 +7,12 @@ import { formatReadableField } from '../journal/format.js'
 import { isRejectedOriginFlagValue } from '../net/origin-host.js'
 import { INVENTORY_FILE_NAME } from '../policy/inventory.js'
 import { createRegistryStore, type RegistryStore } from '../registry/store.js'
+import {
+  InvalidBindEnvError,
+  resolveUiDefaults,
+  type UiServiceDefaults,
+} from '../setup/bind.js'
+import { loadInstallConfigSync } from '../setup/load.js'
 import { preflightDatabases } from '../store/preflight.js'
 import { createSessionManager } from '../ui/auth.js'
 import { createUiServer, type UiServer } from '../ui/server.js'
@@ -18,8 +24,6 @@ import { MAX_TCP_PORT } from './serve-constants.js'
 import {
   BOOTSTRAP_ADMIN_NAME,
   bootstrapNotice,
-  DEFAULT_UI_HOST,
-  DEFAULT_UI_PORT,
   DEFAULT_UI_SIGNALS,
   EXIT_STARTUP_FAILURE,
   trustedProxyHeaderNotice,
@@ -82,6 +86,12 @@ export interface UiCommandOptions {
   readonly signals?: readonly NodeJS.Signals[]
   /** Called once the socket is bound, with the handle that can shut it down. */
   readonly onListening?: (handle: UiHandle) => void
+  /**
+   * What every absent flag falls back to (phase 1, task 5). Defaults to the
+   * environment-plus-install-config resolution; injected by tests and by any
+   * caller that already read the config.
+   */
+  readonly bindDefaults?: UiServiceDefaults
 }
 
 const DEFAULT_IO: UiCliIo = { stdout: process.stdout, stderr: process.stderr }
@@ -102,7 +112,7 @@ const HEADER_NAME_PATTERN = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/
 type FlagResult = { readonly flags: UiFlags } | { readonly error: string }
 
 /** Parses `ui`'s flags strictly: an unknown option is a hard error. */
-function parseUiFlags(argv: readonly string[]): FlagResult {
+function parseUiFlags(argv: readonly string[], defaults: UiServiceDefaults): FlagResult {
   let values: Record<string, unknown>
   try {
     values = parseArgs({
@@ -121,46 +131,87 @@ function parseUiFlags(argv: readonly string[]): FlagResult {
   } catch {
     return { error: 'Unknown or malformed option(s) in ui command.' }
   }
+  return buildUiFlags(values, defaults)
+}
 
-  const port = parsePort(values['port'])
+/**
+ * Merges the parsed flags over `defaults` (phase 1, task 5): a flag the
+ * operator typed always wins, and only a flag that is absent takes the
+ * configured value. For the repeatable flags "absent" means "not given once" —
+ * a single `--allowed-host` replaces the configured list rather than adding to
+ * it, so what the command line says is what the server screens against.
+ */
+function buildUiFlags(values: Record<string, unknown>, defaults: UiServiceDefaults): FlagResult {
+  const port = parsePort(values['port'], defaults.port)
   if (port === null) {
     return { error: `Invalid --port "${String(values['port'])}": expected 0..${MAX_TCP_PORT}.` }
   }
-  const host = typeof values['host'] === 'string' ? values['host'] : DEFAULT_UI_HOST
+  const host = typeof values['host'] === 'string' ? values['host'] : defaults.host
   if (host.length === 0) {
     return { error: 'Invalid --host: expected a non-empty address.' }
   }
-  const allowedOrigins = Array.isArray(values['allowed-origin'])
+  // Only the flag's own values are screened here: the install config's schema
+  // already refuses the opaque origin, so a config value cannot reach this.
+  const flagOrigins = Array.isArray(values['allowed-origin'])
     ? (values['allowed-origin'] as string[])
-    : []
-  if (allowedOrigins.some(isRejectedOriginFlagValue)) {
+    : undefined
+  if (flagOrigins?.some(isRejectedOriginFlagValue) === true) {
     return { error: `Invalid --allowed-origin "null": the opaque origin can never be allowed.` }
   }
-  const rawProxyHeader = values['trusted-proxy-header']
-  if (rawProxyHeader !== undefined && !HEADER_NAME_PATTERN.test(String(rawProxyHeader))) {
+  // Checked after the merge, so a header name coming from the config is held
+  // to the same grammar; the wording stays the flag's, which is the slot the
+  // value fills and the only spelling a reader can act on.
+  const proxyHeader =
+    typeof values['trusted-proxy-header'] === 'string'
+      ? values['trusted-proxy-header']
+      : defaults.trustedProxyHeader
+  if (proxyHeader !== undefined && !HEADER_NAME_PATTERN.test(proxyHeader)) {
     return {
-      error: `Invalid --trusted-proxy-header "${String(rawProxyHeader)}": expected a header name (e.g. x-forwarded-for).`,
+      error: `Invalid --trusted-proxy-header "${proxyHeader}": expected a header name (e.g. x-forwarded-for).`,
     }
   }
+  const flagHosts = Array.isArray(values['allowed-host'])
+    ? (values['allowed-host'] as string[])
+    : undefined
 
   return {
     flags: {
       port,
       host,
-      behindTls: values['behind-tls'] === true,
-      allowedHosts: Array.isArray(values['allowed-host']) ? (values['allowed-host'] as string[]) : [],
-      allowedOrigins,
-      ...(typeof rawProxyHeader === 'string' ? { trustedProxyHeader: rawProxyHeader } : {}),
+      behindTls: values['behind-tls'] === true ? true : (defaults.behindTls ?? false),
+      allowedHosts: flagHosts ?? defaults.allowedHosts ?? [],
+      allowedOrigins: flagOrigins ?? defaults.allowedOrigins ?? [],
+      ...(proxyHeader !== undefined ? { trustedProxyHeader: proxyHeader } : {}),
     },
   }
 }
 
 /** `0` (any free port) through 65535; anything else is a usage error. */
-function parsePort(raw: unknown): number | null {
-  if (raw === undefined) return DEFAULT_UI_PORT
+function parsePort(raw: unknown, fallback: number): number | null {
+  if (raw === undefined) return fallback
   if (typeof raw !== 'string' || !/^\d+$/.test(raw)) return null
   const port = Number(raw)
   return port <= MAX_TCP_PORT ? port : null
+}
+
+type DefaultsResult = { readonly defaults: UiServiceDefaults } | { readonly error: string }
+
+/**
+ * The defaults this run falls back to: the caller's, or the environment and
+ * install config resolved here. An unusable `MCPCUT_UI_PORT` is refused in the
+ * same words an unusable `--port` gets — a bind address nobody chose is worse
+ * than a start that explains itself.
+ */
+function resolveDefaults(opts: UiCommandOptions): DefaultsResult {
+  if (opts.bindDefaults !== undefined) return { defaults: opts.bindDefaults }
+  try {
+    return {
+      defaults: resolveUiDefaults(process.env, loadInstallConfigSync({ env: process.env })),
+    }
+  } catch (error: unknown) {
+    if (error instanceof InvalidBindEnvError) return { error: error.message }
+    throw error
+  }
 }
 
 /** Everything one run owns, built once and torn down together. */
@@ -270,7 +321,12 @@ export async function runUi(
   io: UiCliIo = DEFAULT_IO,
   opts: UiCommandOptions = {},
 ): Promise<number> {
-  const parsed = parseUiFlags(argv)
+  const resolved = resolveDefaults(opts)
+  if ('error' in resolved) {
+    io.stderr.write(`${resolved.error}\n\n${UI_USAGE}`)
+    return EXIT_STARTUP_FAILURE
+  }
+  const parsed = parseUiFlags(argv, resolved.defaults)
   if ('error' in parsed) {
     io.stderr.write(`${parsed.error}\n\n${UI_USAGE}`)
     return EXIT_STARTUP_FAILURE

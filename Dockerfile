@@ -33,8 +33,9 @@ COPY package.json ./
 # requires its licence to travel with the redistributed font.
 COPY src/ui/assets/LICENSE-Silkscreen-OFL.txt ./dist/ui/assets/
 
-# The data directory is `JOURNAL_DIR` — `$HOME/.mcp-journal` in src/config.ts,
-# with no environment override — so `HOME` is what places it. Creating it here
+# The data directory is `JOURNAL_DIR` — `$HOME/.mcp-journal` in src/config.ts
+# unless `MCP_JOURNAL_DIR` or `~/.mcpcut/config.json` overrides it; this image
+# sets neither, so `HOME` is still what places it. Creating it here
 # with the runtime user's ownership and the owner-only mode the code expects
 # (JOURNAL_DIR_MODE 0o700) makes Docker seed a fresh named volume with both.
 RUN mkdir -p /home/node/.mcp-journal \

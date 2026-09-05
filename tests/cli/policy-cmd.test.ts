@@ -4,6 +4,8 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { resolveConnectPolicy } from '../../src/cli/connect-policy.js'
 import { runPolicyShow, runPolicyValidate } from '../../src/cli/policy-cmd.js'
+import { defaultInstallConfig } from '../../src/setup/defaults.js'
+import type { InstallConfigLoad } from '../../src/setup/load.js'
 
 let cwd: string
 let journalDir: string
@@ -40,6 +42,23 @@ const VALID_POLICY = {
       classOverrides: { list_issues: 'read' },
     },
   },
+}
+
+/**
+ * No install config in sight. `--entry-point serve` reads `serve.policy` from
+ * one (TS-M7), and a test that asserts which file an entry point loads must
+ * not depend on whether the developer running it has an install of their own.
+ */
+const NO_INSTALL: InstallConfigLoad = { kind: 'absent', path: '/nonexistent/mcpcut/config.json' }
+
+/** An install whose `serve` front is configured to load `policyPath`. */
+function installWithServePolicy(policyPath: string): InstallConfigLoad {
+  const base = defaultInstallConfig('/srv/plane')
+  return {
+    kind: 'ok',
+    path: '/home/op/.mcpcut/config.json',
+    config: { ...base, serve: { ...base.serve, policy: policyPath } },
+  }
 }
 
 async function writePolicyFile(dir: string, content: unknown): Promise<string> {
@@ -377,7 +396,12 @@ describe('runPolicyShow --entry-point', () => {
     const { projectPath } = await writeAllThreeSources()
     const io = fakeIo()
 
-    const exitCode = await runPolicyShow(['--entry-point', 'serve'], io, { cwd, journalDir, env: {} })
+    const exitCode = await runPolicyShow(['--entry-point', 'serve'], io, {
+      cwd,
+      journalDir,
+      env: {},
+      install: NO_INSTALL,
+    })
 
     expect(exitCode).toBe(0)
     expect(io.out()).toContain(projectPath)
@@ -390,7 +414,12 @@ describe('runPolicyShow --entry-point', () => {
     const serveIo = fakeIo()
     const connectIo = fakeIo()
 
-    await runPolicyShow(['--entry-point', 'serve'], serveIo, { cwd, journalDir, env: {} })
+    await runPolicyShow(['--entry-point', 'serve'], serveIo, {
+      cwd,
+      journalDir,
+      env: {},
+      install: NO_INSTALL,
+    })
     await runPolicyShow(['--entry-point', 'connect'], connectIo, { cwd, journalDir, env: {} })
 
     expect(serveIo.out()).toContain(projectPath)
@@ -496,7 +525,12 @@ describe('runPolicyShow --entry-point', () => {
     await writeAllThreeSources()
     const io = fakeIo()
 
-    await runPolicyShow(['--entry-point', 'serve'], io, { cwd, journalDir, env: {} })
+    await runPolicyShow(['--entry-point', 'serve'], io, {
+      cwd,
+      journalDir,
+      env: {},
+      install: NO_INSTALL,
+    })
 
     expect(io.out()).toContain('entry point: serve (operator-launched)')
     expect(io.out()).not.toContain('none given')
@@ -512,6 +546,78 @@ describe('runPolicyShow --entry-point', () => {
  * ever learning that a second answer exists, so the bare command has to name
  * the view it is showing and point at the flag that shows the others.
  */
+/**
+ * `serve` takes its policy path from the install config when no `--policy` is
+ * given (TS-M7). `policy show --entry-point serve` is the command an operator
+ * uses to find out which file that entry point really loads, so it has to know
+ * about the same source — otherwise it confidently names a file `serve` does
+ * not read.
+ */
+describe('runPolicyShow --entry-point serve: the install config', () => {
+  test("names the install config's serve.policy as the source", async () => {
+    const configured = join(journalDir, 'from-install.json')
+    await writeFile(
+      configured,
+      JSON.stringify({ ...VALID_POLICY, servers: { installed: { defaultDecision: 'deny' } } }),
+      'utf8',
+    )
+    const io = fakeIo()
+
+    const exitCode = await runPolicyShow(['--entry-point', 'serve'], io, {
+      cwd,
+      journalDir,
+      env: {},
+      install: installWithServePolicy(configured),
+    })
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain(configured)
+    expect(io.out()).toContain('installed')
+  })
+
+  test('an explicit --policy still outranks it, as the flag does everywhere', async () => {
+    const configured = join(journalDir, 'from-install.json')
+    await writeFile(configured, JSON.stringify(VALID_POLICY), 'utf8')
+    const explicit = await writePolicyFile(cwd, {
+      ...VALID_POLICY,
+      servers: { flagged: { defaultDecision: 'deny' } },
+    })
+    const io = fakeIo()
+
+    const exitCode = await runPolicyShow(['--entry-point', 'serve', '--policy', explicit], io, {
+      cwd,
+      journalDir,
+      env: {},
+      install: installWithServePolicy(configured),
+    })
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain(explicit)
+    expect(io.out()).not.toContain(configured)
+  })
+
+  test('the other entry points do not read it: connect resolves as it always has', async () => {
+    const configured = join(journalDir, 'from-install.json')
+    await writeFile(configured, JSON.stringify(VALID_POLICY), 'utf8')
+    const statePath = await writePolicyFile(journalDir, {
+      ...VALID_POLICY,
+      servers: { stated: { defaultDecision: 'deny' } },
+    })
+    const io = fakeIo()
+
+    const exitCode = await runPolicyShow(['--entry-point', 'connect'], io, {
+      cwd,
+      journalDir,
+      env: {},
+      install: installWithServePolicy(configured),
+    })
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain(statePath)
+    expect(io.out()).not.toContain(configured)
+  })
+})
+
 describe('runPolicyShow without --entry-point', () => {
   test('names the operator-launched view it represents', async () => {
     await mkdir(join(cwd, '.mcp-journal'), { recursive: true })

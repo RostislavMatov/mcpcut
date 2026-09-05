@@ -15,6 +15,8 @@ import { runPolicyShow, runPolicyValidate, type PolicyCliOptions } from './cli/p
 import { runPolicySet } from './cli/policy-set-cmd.js'
 import { runQuarantine, type RunQuarantineOptions } from './cli/quarantine-cmd.js'
 import { runServe, type ServeCommandOptions } from './cli/serve-cmd.js'
+import { runServiceCommand, type ServiceCliOptions } from './cli/service-cmd.js'
+import { runSetupCommand, type SetupCliOptions } from './cli/setup-cmd.js'
 import {
   runServerAdd,
   runServerList,
@@ -29,6 +31,8 @@ import { runPruneCommand, type PruneCommandOptions } from './cli/prune-cmd.js'
 import { runVerifyCommand, type VerifyCommandOptions } from './cli/verify-cmd.js'
 import { runWrapCommand, type WrapCommandOptions } from './cli/wrap-cmd.js'
 import { USAGE } from './cli/usage.js'
+import { JOURNAL_DIR_RESOLUTION } from './config.js'
+import { describeDataDirProblem, type DataDirResolution } from './setup/data-dir.js'
 
 /**
  * Thin argv-dispatch entry point. All real logic lives in tested modules
@@ -72,6 +76,21 @@ export interface DispatchOptions {
   readonly verify?: VerifyCommandOptions
   readonly prune?: PruneCommandOptions
   readonly keygen?: KeygenCommandOptions
+  readonly services?: ServiceCliOptions
+  readonly setup?: SetupCliOptions
+  /** Data-directory resolution to judge. Defaults to the process-wide one. */
+  readonly install?: DataDirResolution
+}
+
+/**
+ * The commands that still run on an unusable install config (phase 1, task 4):
+ * the two that explain the CLI. `setup` is exempt too — it is the command that
+ * rewrites the broken file — but it never reaches this gate: it is routed
+ * ahead of it. Everything else refuses; falling back to `$HOME` would silently
+ * operate on a different plane than the operator configured.
+ */
+function isConfigProblemExempt(command: string | undefined): boolean {
+  return command === undefined || command === '--help' || command === '-h'
 }
 
 const DEFAULT_IO: CliIo = { stdout: process.stdout, stderr: process.stderr }
@@ -84,6 +103,16 @@ export async function dispatch(
   const command = argv[0]
   const rest = [...argv.slice(1)]
 
+  // `setup` routes ahead of the broken-config gate below: it is the command
+  // that rewrites the broken file, so the gate must never see it.
+  if (command === 'setup') return runSetupCommand(rest, io, opts.setup)
+
+  const configProblem = describeDataDirProblem(opts.install ?? JOURNAL_DIR_RESOLUTION)
+  if (configProblem !== undefined && !isConfigProblemExempt(command)) {
+    io.stderr.write(configProblem)
+    return 1
+  }
+
   if (command === undefined || command === '--help' || command === '-h') {
     io.stdout.write(USAGE)
     return 0
@@ -92,6 +121,9 @@ export async function dispatch(
   if (command === 'connect') return runConnect(rest, io, opts.connect)
   if (command === 'serve') return runServe(rest, io, opts.serve)
   if (command === 'ui') return runUi(rest, io, opts.ui)
+  if (command === 'start' || command === 'stop' || command === 'status' || command === 'logs') {
+    return runServiceCommand(command, rest, io, opts.services)
+  }
   if (command === 'admin') return runAdminCommand(rest, io, opts.admin)
   if (command === 'server') return runServerCommand(rest, io, opts.server)
   if (command === 'vault') return runVault(rest, io, opts.vault)
