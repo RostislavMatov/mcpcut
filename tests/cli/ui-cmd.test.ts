@@ -3,15 +3,16 @@ import { request as httpRequest, type IncomingMessage } from 'node:http'
 import { createServer as createNetServer, type AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, test } from 'vitest'
+import { afterEach, describe, expect, test, vi } from 'vitest'
 import { collectPersistedBytes } from '../support/persisted-bytes.js'
 import { writeCorruptDatabase } from '../support/corrupt-db.js'
 import { ADMINS_FILE_NAME } from '../../src/admin/constants.js'
 import { createAdminStore } from '../../src/admin/store.js'
-import { runUi, type UiHandle } from '../../src/cli/ui-cmd.js'
+import { runUi, type UiCommandOptions, type UiHandle } from '../../src/cli/ui-cmd.js'
 import { BOOTSTRAP_ADMIN_NAME, UI_USAGE } from '../../src/cli/ui-constants.js'
 import { openInventoryStore } from '../../src/policy/inventory-store.js'
 import { DEFAULT_UI_HOST, DEFAULT_UI_PORT } from '../../src/ui/constants.js'
+import { UI_PORT_ENV_VAR } from '../../src/setup/constants.js'
 
 /**
  * `mcp-journal ui` (M4 Task 16): the admin UI's process entry point, driven
@@ -859,5 +860,105 @@ describe('runUi: graceful shutdown', () => {
     expect(await fixture.shutdown()).toBe(0)
 
     expect(fixture.io.outText()).toBe('')
+  })
+})
+
+/**
+ * Bind defaults from the install config (phase 1, task 5): `ui` falls back to
+ * them for every flag the operator did not type, and to the historical
+ * constants when there is no config at all. A flag always outranks them —
+ * `mcpcut start` passes the configured values ON the command line, so the two
+ * must agree about who wins.
+ */
+describe('runUi: bind defaults when a flag is absent', () => {
+  interface StartedUi {
+    readonly handle: UiHandle
+    readonly io: CapturedIo
+    readonly exit: Promise<number>
+  }
+
+  /** Boots one run with explicit `bindDefaults` and no `--port`/`--host` unless given. */
+  async function startWithDefaults(
+    argv: readonly string[],
+    bindDefaults: UiCommandOptions['bindDefaults'],
+  ): Promise<StartedUi> {
+    const io = captureIo()
+    let handle: UiHandle | undefined
+    const exit = runUi(argv, io, {
+      journalDir: await makeJournalDir(),
+      signals: [],
+      queuePollIntervalMs: POLL_INTERVAL_MS,
+      ...(bindDefaults !== undefined ? { bindDefaults } : {}),
+      onListening: (started) => {
+        handle = started
+      },
+    })
+    exit.catch(() => undefined)
+    await waitUntil(() => handle !== undefined, 'the ui to bind')
+    const started = handle as UiHandle
+    onDispose(async () => {
+      await started.shutdown()
+      await exit
+    })
+    return { handle: started, io, exit }
+  }
+
+  test('binds the host and port from the defaults when neither flag is given', async () => {
+    const started = await startWithDefaults([], { host: '127.0.0.1', port: 0 })
+
+    expect(started.handle.host).toBe('127.0.0.1')
+    expect(started.handle.port).toBeGreaterThan(0)
+    expect(started.io.errText()).toContain(`listening on http://127.0.0.1:${started.handle.port}`)
+  })
+
+  test('an explicit --port 0 still wins over a configured port', async () => {
+    const started = await startWithDefaults(['--port', '0'], { host: '127.0.0.1', port: 1 })
+
+    // Port 1 is privileged and would have been refused; an ephemeral port
+    // proves the flag, not the config, decided the bind.
+    expect(started.handle.port).toBeGreaterThan(1)
+  })
+
+  test('a configured trusted proxy header applies when the flag is absent', async () => {
+    const started = await startWithDefaults([], {
+      host: '127.0.0.1',
+      port: 0,
+      trustedProxyHeader: 'x-config-forwarded-for',
+    })
+
+    expect(started.io.errText()).toContain('x-config-forwarded-for')
+  })
+
+  test('the flag overrides a configured trusted proxy header', async () => {
+    const started = await startWithDefaults(
+      ['--trusted-proxy-header', 'x-flag-forwarded-for'],
+      { host: '127.0.0.1', port: 0, trustedProxyHeader: 'x-config-forwarded-for' },
+    )
+
+    expect(started.io.errText()).toContain('x-flag-forwarded-for')
+    expect(started.io.errText()).not.toContain('x-config-forwarded-for')
+  })
+
+  test('an unusable MCPCUT_UI_PORT refuses the start and names the variable', async () => {
+    vi.stubEnv(UI_PORT_ENV_VAR, 'abc')
+    try {
+      const io = captureIo()
+      let listened = false
+
+      const code = await runUi([], io, {
+        journalDir: await makeJournalDir(),
+        signals: [],
+        onListening: () => {
+          listened = true
+        },
+      })
+
+      expect(code).toBe(1)
+      expect(listened).toBe(false)
+      expect(io.errText()).toContain(`Invalid ${UI_PORT_ENV_VAR} "abc": expected 0..65535.`)
+      expect(io.outText()).toBe('')
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 })

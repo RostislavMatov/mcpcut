@@ -1,7 +1,7 @@
-import { rm } from 'node:fs/promises'
+import { rm, writeFile } from 'node:fs/promises'
 import { createServer as createNetServer, type AddressInfo } from 'node:net'
 import { join } from 'node:path'
-import { afterEach, describe, expect, test } from 'vitest'
+import { afterEach, describe, expect, test, vi } from 'vitest'
 import { writeCorruptDatabase } from '../support/corrupt-db.js'
 import {
   ADR_0002_REFERENCE,
@@ -12,6 +12,8 @@ import {
   REFUSAL_NO_GRANT,
 } from '../../src/cli/serve-constants.js'
 import { runServe, type ServeHandle } from '../../src/cli/serve-cmd.js'
+import type { ServeServiceDefaults } from '../../src/setup/bind.js'
+import { SERVE_PORT_ENV_VAR } from '../../src/setup/constants.js'
 import type { JournalRecord } from '../../src/journal/record.js'
 import {
   addStdioServer,
@@ -550,5 +552,120 @@ describe('runServe: revocation and graceful shutdown', () => {
     await handle!.shutdown()
     expect(await exit).toBe(0)
     expect(process.listenerCount('SIGINT')).toBe(before)
+  })
+})
+
+/**
+ * Bind defaults from the install config (phase 1, task 5): `serve` falls back
+ * to them for every flag the operator did not type, and to the historical
+ * constants when there is no config at all. A flag always outranks them.
+ */
+describe('runServe: bind defaults when a flag is absent', () => {
+  interface StartedServe {
+    readonly handle: ServeHandle
+    readonly io: ReturnType<typeof captureIo>
+  }
+
+  /** Boots one run with explicit `bindDefaults` and only the argv given. */
+  async function startWithDefaults(
+    argv: readonly string[],
+    bindDefaults: ServeServiceDefaults,
+    journalDir: string,
+  ): Promise<StartedServe> {
+    const io = captureIo()
+    let handle: ServeHandle | undefined
+    const exit = runServe(argv, io, {
+      journalDir,
+      signals: [],
+      bindDefaults,
+      onListening: (started) => {
+        handle = started
+      },
+    })
+    exit.catch(() => undefined)
+    await waitUntil(() => handle !== undefined, 'the front to bind')
+    const started = handle as ServeHandle
+    onDispose(async () => {
+      await started.shutdown()
+      await exit
+    })
+    return { handle: started, io }
+  }
+
+  test('binds the host and port from the defaults when neither flag is given', async () => {
+    const { journalDir } = await createJournalDir()
+
+    const started = await startWithDefaults([], { host: '127.0.0.1', port: 0 }, journalDir)
+
+    expect(started.handle.host).toBe('127.0.0.1')
+    expect(started.handle.port).toBeGreaterThan(0)
+    expect(started.io.errText()).toContain(`listening on http://127.0.0.1:${started.handle.port}`)
+  })
+
+  test('an explicit --port 0 still wins over a configured port', async () => {
+    const { journalDir } = await createJournalDir()
+
+    const started = await startWithDefaults(
+      ['--port', '0'],
+      { host: '127.0.0.1', port: 1 },
+      journalDir,
+    )
+
+    // Port 1 is privileged and would have been refused; an ephemeral port
+    // proves the flag, not the config, decided the bind.
+    expect(started.handle.port).toBeGreaterThan(1)
+  })
+
+  test('a configured policy path is loaded when --policy is absent', async () => {
+    const { journalDir } = await createJournalDir()
+    const configuredPolicy = join(journalDir, 'configured-policy.json')
+    await writeFile(configuredPolicy, JSON.stringify({ version: 1, defaultDecision: 'allow' }), 'utf8')
+
+    const started = await startWithDefaults(
+      [],
+      { host: '127.0.0.1', port: 0, policy: configuredPolicy },
+      journalDir,
+    )
+
+    expect(started.io.errText()).toContain(`policy loaded from ${configuredPolicy}`)
+  })
+
+  test('the --policy flag overrides the configured path', async () => {
+    const { journalDir, policyPath } = await createJournalDir()
+    const configuredPolicy = join(journalDir, 'configured-policy.json')
+    await writeFile(configuredPolicy, JSON.stringify({ version: 1, defaultDecision: 'allow' }), 'utf8')
+
+    const started = await startWithDefaults(
+      ['--policy', policyPath],
+      { host: '127.0.0.1', port: 0, policy: configuredPolicy },
+      journalDir,
+    )
+
+    expect(started.io.errText()).toContain(`policy loaded from ${policyPath}`)
+    expect(started.io.errText()).not.toContain(configuredPolicy)
+  })
+
+  test('an unusable MCPCUT_SERVE_PORT refuses the start and names the variable', async () => {
+    vi.stubEnv(SERVE_PORT_ENV_VAR, 'abc')
+    try {
+      const { journalDir } = await createJournalDir()
+      const io = captureIo()
+      let listened = false
+
+      const code = await runServe([], io, {
+        journalDir,
+        signals: [],
+        onListening: () => {
+          listened = true
+        },
+      })
+
+      expect(code).toBe(1)
+      expect(listened).toBe(false)
+      expect(io.errText()).toContain(`Invalid ${SERVE_PORT_ENV_VAR} "abc": expected 0..65535.`)
+      expect(io.outText()).toBe('')
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 })

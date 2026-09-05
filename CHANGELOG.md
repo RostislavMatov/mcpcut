@@ -6,6 +6,39 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`mcpcut` binary**: a second `bin` entry pointing at the same file as
+  `mcp-journal` — the two names are one dispatcher with identical behaviour.
+- **Install config** `~/.mcpcut/config.json` (path overridable with
+  `MCPCUT_CONFIG`): the data directory and the `ui` / `serve` bindings, resolved
+  at process start with the priority **flag > environment variable > config >
+  default**. `MCP_JOURNAL_DIR` overrides the data directory without a config
+  file; with neither, the directory stays `$HOME/.mcp-journal` as before. A
+  config that cannot be read or does not validate makes every command except
+  `--help` and `setup` refuse, naming the file and the problems.
+- **`setup --yes`**: non-interactive install — writes the config, prepares the
+  data directory, runs the checks (directory, bindings, databases, policy,
+  network exposure), initialises the vault and the signing key, and mints the
+  first `owner` admin before the first `ui` start, so the one-time token never
+  lands in a daemon log.
+- **`start` / `stop` / `status` / `logs`**: `ui` and `serve` run as detached
+  services that survive the terminal, with pid and log files under
+  `<data dir>/run/`. `status` reports `running` only when the pid is alive
+  **and** the service answers on its port. `run/` and the files in it stay
+  owner-only: a start refuses otherwise, and `setup` reports the same condition
+  as a `run dir` row in its preflight.
+- **`MCPCUT_SUPERVISOR`** (`mcpcut` | `external`): a runtime override of the
+  install config's `supervisor`, for a container whose services belong to
+  compose. It outranks the config file for `start` / `stop` / `status` and for
+  `setup --start`, and `setup` never writes it into the config — the variable
+  describes the host, not the install. A value outside the two words is
+  refused, never ignored.
+- **`MCP_JOURNAL_DIR` must be an absolute path**, and it is honoured by every
+  command including the service ones. `setup --yes` refuses when the exported
+  value and the data directory it would write disagree, rather than preparing
+  one directory while the daemons serve another.
+
 ## [0.1.0] — 2026-09-03
 
 First public release, under the Apache License 2.0.

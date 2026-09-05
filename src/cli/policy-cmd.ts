@@ -9,11 +9,11 @@ import type { Policy } from '../policy/schema.js'
 import {
   ENTRY_POINTS,
   isEntryPoint,
-  resolvePolicySource,
   type EntryPoint,
   type ResolvedPolicySource,
 } from '../policy/source.js'
-import { policyFlagRefusal, policySourceIgnoredNote } from './connect-constants.js'
+import type { InstallConfigLoad } from '../setup/load.js'
+import { resolveShowSource } from './policy-show-source.js'
 import { BARE_SHOW_TRUST_CLASS, BARE_SHOW_VIEW_LINES, HOT_RELOAD_JSON, HOT_RELOAD_LINE } from './policy-show-constants.js'
 
 /**
@@ -40,8 +40,16 @@ export interface PolicyCliIo {
   readonly stderr: PolicyCliWritable
 }
 
-/** Options threaded through to `loadPolicy`, minus `explicitPath` (that comes from CLI args, not test wiring). */
-export type PolicyCliOptions = Omit<LoadPolicyOptions, 'explicitPath'>
+/**
+ * Options threaded through to `loadPolicy`, minus `explicitPath` (that comes
+ * from CLI args, not test wiring), plus the install config `--entry-point
+ * serve` reads its default policy path from. The install is a seam rather than
+ * a constant so a test asserting which file an entry point loads does not
+ * depend on whether the developer running it has an install of their own.
+ */
+export type PolicyCliOptions = Omit<LoadPolicyOptions, 'explicitPath'> & {
+  readonly install?: InstallConfigLoad
+}
 
 const DEFAULT_IO: PolicyCliIo = { stdout: process.stdout, stderr: process.stderr }
 
@@ -224,52 +232,6 @@ export async function runPolicyShow(
   }
 
   return reportLoadedShow(result.sourcePath, result.policy, { server, json, resolution: source.resolution }, io)
-}
-
-type ShowSource =
-  | { readonly status: 'refused' }
-  | {
-      readonly status: 'resolved'
-      readonly loadOptions: LoadPolicyOptions
-      readonly resolution: ResolvedPolicySource | undefined
-    }
-
-/**
- * Without `--entry-point`, `policy show` resolves the way it always has (this
- * command is itself operator-launched). With it, resolution is delegated to
- * `policy/source.ts` so the printed source is the one that entry point would
- * really load -- including its refusals and its ignored-source notes, which is
- * the whole point of the flag (ADR-0005).
- */
-async function resolveShowSource(
-  view: { readonly entryPoint: EntryPoint | undefined; readonly explicitPath: string | undefined },
-  io: PolicyCliIo,
-  opts: PolicyCliOptions,
-): Promise<ShowSource> {
-  if (view.entryPoint === undefined) {
-    return {
-      status: 'resolved',
-      loadOptions: { ...opts, ...(view.explicitPath !== undefined ? { explicitPath: view.explicitPath } : {}) },
-      resolution: undefined,
-    }
-  }
-
-  const journalDir = opts.journalDir ?? JOURNAL_DIR
-  const resolution = await resolvePolicySource({
-    entryPoint: view.entryPoint,
-    journalDir,
-    ...(opts.env !== undefined ? { env: opts.env } : {}),
-    ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
-    ...(opts.readFile !== undefined ? { readFile: opts.readFile } : {}),
-    ...(view.explicitPath !== undefined ? { explicitPath: view.explicitPath } : {}),
-    notes: { write: (chunk) => io.stderr.write(chunk), render: policySourceIgnoredNote },
-  })
-
-  if (resolution.status === 'refused') {
-    io.stderr.write(policyFlagRefusal(journalDir))
-    return { status: 'refused' }
-  }
-  return { status: 'resolved', loadOptions: resolution.loadOptions, resolution }
 }
 
 interface ShowView {

@@ -5,7 +5,8 @@
   "license": "Apache-2.0",
   "type": "module",
   "bin": {
-    "mcp-journal": "./dist/cli.js"
+    "mcp-journal": "./dist/cli.js",
+    "mcpcut": "./dist/cli.js"
   },
   "main": "./dist/cli.js",
   "engines": {

@@ -354,7 +354,7 @@ export const CONTENT_SECURITY_POLICY =
  * the McpCut console design (2026-08-22). One constant, so a rename is one
  * edit and the tests that pin the title format follow it automatically.
  */
-export const BRAND_NAME = 'McpCut'
+export { BRAND_NAME } from '../brand.js'
 
 /**
  * The status-line suffix in the header ("journal · local instance"). The UI
