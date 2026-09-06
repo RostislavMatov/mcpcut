@@ -4,6 +4,8 @@ import {
   SERVICE_USAGE,
   SETUP_SYNOPSIS_LINES,
   SETUP_USAGE,
+  TUI_SYNOPSIS_LINES,
+  TUI_USAGE,
   USAGE_DESCRIPTION_COLUMN,
 } from '../../src/cli/operator-usage.js'
 import { USAGE } from '../../src/cli/usage.js'
@@ -29,6 +31,7 @@ function occurrencesOf(haystack: string, needle: string): number {
 const BLOCKS = [
   ['setup', SETUP_USAGE, SETUP_SYNOPSIS_LINES],
   ['start|stop|status|logs', SERVICE_USAGE, SERVICE_SYNOPSIS_LINES],
+  ['tui', TUI_USAGE, TUI_SYNOPSIS_LINES],
 ] as const
 
 describe.each(BLOCKS)('the %s synopsis', (_name, usage, lines) => {

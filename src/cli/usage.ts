@@ -1,10 +1,14 @@
-import { SERVICE_SYNOPSIS_LINES, SETUP_SYNOPSIS_LINES } from './operator-usage.js'
+import {
+  SERVICE_SYNOPSIS_LINES,
+  SETUP_SYNOPSIS_LINES,
+  TUI_SYNOPSIS_LINES,
+} from './operator-usage.js'
 
 /**
  * The dispatcher's top-level usage text (one place, imported by cli.ts).
  *
- * The `setup` and `start|stop|status|logs` rows are SPLICED IN from
- * `./operator-usage.js` rather than restated here: those two commands also
+ * The `setup`, `start|stop|status|logs` and `tui` rows are SPLICED IN from
+ * `./operator-usage.js` rather than restated here: those commands also
  * print a usage of their own when they refuse, and two hand-written copies of
  * the same table had already drifted apart once (`tests/cli/usage.test.ts`).
  */
@@ -19,10 +23,16 @@ export const USAGE = `Usage: (mcpcut and mcp-journal are the same binary -- eith
                                          Run the local admin UI (default 127.0.0.1:8091)
 ${SETUP_SYNOPSIS_LINES.join('\n')}
 ${SERVICE_SYNOPSIS_LINES.join('\n')}
+${TUI_SYNOPSIS_LINES.join('\n')}
   mcp-journal admin add <name> --role owner|operator|viewer
                                          Create a named admin (prints its token once)
   mcp-journal admin list|remove <name>|rotate <name>|role <name> <role>
-                                         Inspect or edit admin identities
+                                         Inspect or edit admin identities (owner token via
+                                         MCP_ADMIN_TOKEN; the FIRST admin of an empty store needs
+                                         none, and every change is journaled under its author)
+  mcp-journal admin rotate <name> --recover
+                                         Break glass: mint a fresh token with NO admin token, when
+                                         the last owner lost theirs (recorded as unattributed)
   mcp-journal server add <name> --transport stdio|http ...
                                          Register an MCP server (see server add --help);
                                          probes it once right after registration

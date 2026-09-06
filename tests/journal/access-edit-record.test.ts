@@ -537,3 +537,81 @@ describe('vault.* access-edit records (S2)', () => {
     expect(rendered).toContain('alice')
   })
 })
+
+// --- admin.* actions (owner decision 2026-09-06) -----------------------------
+
+describe('admin.* access-edit records', () => {
+  /** `admin add bob --role operator`, made by a named owner. */
+  function adminAddRecord(): JournalRecord {
+    return buildAccessEditRecord({
+      info: {
+        actor: { adminName: 'alice', role: 'owner', via: 'cli' },
+        action: 'admin.add',
+        admin: 'bob',
+        targetRole: 'operator',
+      },
+      clock: () => FIXED_NOW_MS,
+    })
+  }
+
+  test('an admin.add record names the admin, the role given and who gave it', () => {
+    expect(adminAddRecord().payload).toEqual({
+      actor: { adminName: 'alice', role: 'owner', via: 'cli' },
+      action: 'admin.add',
+      admin: 'bob',
+      targetRole: 'operator',
+    })
+  })
+
+  test('the fields an action does not use stay ABSENT, not undefined', () => {
+    const payload = buildAccessEditRecord({
+      info: {
+        actor: { adminName: 'alice', role: 'owner', via: 'cli' },
+        action: 'admin.remove',
+        admin: 'bob',
+      },
+      clock: () => FIXED_NOW_MS,
+    }).payload as Record<string, unknown>
+
+    expect(Object.keys(payload).sort()).toEqual(['action', 'actor', 'admin'])
+    expect(Object.hasOwn(payload, 'targetRole')).toBe(false)
+    expect(Object.hasOwn(payload, 'recovery')).toBe(false)
+  })
+
+  test('a break-glass rotation is recorded with the flag and nobody named', () => {
+    const payload = buildAccessEditRecord({
+      info: {
+        actor: { adminName: null, role: null, via: 'cli' },
+        action: 'admin.rotate',
+        admin: 'alice',
+        recovery: true,
+      },
+      clock: () => FIXED_NOW_MS,
+    }).payload as Record<string, unknown>
+
+    expect(payload['actor']).toEqual({ adminName: null, role: null, via: 'cli' })
+    expect(payload['recovery']).toBe(true)
+  })
+
+  test('search filters match an admin edit by kind and name; decision filters never do', () => {
+    const record = adminAddRecord()
+
+    expect(matchesFilters(record, { kind: 'access-edit' })).toBe(true)
+    expect(matchesFilters(record, { text: 'bob' })).toBe(true)
+    expect(matchesFilters(record, { text: 'alice' })).toBe(true)
+    // Minting an admin is not a call an agent made against a server.
+    expect(matchesFilters(record, { outcome: 'allow' })).toBe(false)
+    expect(matchesFilters(record, { agentName: 'bob' })).toBe(false)
+  })
+
+  test('the UI journal row renders an admin edit with its action, admin and role', () => {
+    const rendered = render(
+      renderRecordRow(adminAddRecord(), { hasLatency: false, withSession: false }),
+    )
+
+    expect(rendered).toContain('access-edit')
+    expect(rendered).toContain('admin.add')
+    expect(rendered).toContain('bob')
+    expect(rendered).toContain('operator')
+  })
+})

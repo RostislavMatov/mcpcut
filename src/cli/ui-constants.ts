@@ -1,4 +1,4 @@
-import { ADMIN_ROLES } from '../admin/constants.js'
+import { ADMIN_ROLES, ADMIN_TOKEN_ENV_VAR } from '../admin/constants.js'
 import { DEFAULT_UI_HOST, DEFAULT_UI_PORT } from '../ui/constants.js'
 
 /**
@@ -87,8 +87,12 @@ export const ADMIN_USAGE = `Usage:
   admin list                             List admins with roles and dates (never hashes)
   admin remove <name>                    Revoke an admin (the last owner cannot be removed)
   admin rotate <name>                    Mint a fresh token; kills that admin's live sessions
+  admin rotate <name> --recover          Same, with NO admin token: the way back in when the last
+                                         owner lost theirs (recorded as an unattributed recovery)
   admin role <name> <${ADMIN_ROLES.join('|')}>
                                          Change an admin's role (the last owner cannot be demoted)
+Every command needs a personal admin token in ${ADMIN_TOKEN_ENV_VAR} (role owner); the FIRST admin
+of an empty store needs none, and every change is recorded in the journal under the admin who made it.
 `
 
 /**

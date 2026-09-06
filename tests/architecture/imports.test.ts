@@ -578,25 +578,26 @@ describe('Ed25519/signing crypto primitives are reached through the named signin
 })
 
 // ---------------------------------------------------------------------------
-// The install/services layer (`mcpcut` phase 1, ADR-0012). `src/setup/**`
-// reads and writes the install config; `src/services/**` starts, stops and
-// probes the two long-running services. Both are OPERATOR surfaces in exactly
-// the sense ADR-0004 gives the admin UI: they arrange processes and files, they
-// never carry agent traffic and they never resolve a secret's value. The same
-// three matchers that guard the UI guard them, so the rule cannot drift apart
-// from the one it mirrors — and, as there, the file set is derived from the
-// directories rather than listed, so a module added later is covered the moment
-// it lands.
+// The install/services/console layer (`mcpcut` phases 1-2, ADR-0012).
+// `src/setup/**` reads and writes the install config; `src/services/**` starts,
+// stops and probes the two long-running services; `src/tui/**` is the terminal
+// console an operator drives them from. All three are OPERATOR surfaces in
+// exactly the sense ADR-0004 gives the admin UI: they arrange processes and
+// files, they never carry agent traffic and they never resolve a secret's
+// value. The same three matchers that guard the UI guard them, so the rule
+// cannot drift apart from the one it mirrors — and, as there, the file set is
+// derived from the directories rather than listed, so a module added later is
+// covered the moment it lands.
 // ---------------------------------------------------------------------------
 
-/** The two operator-surface directories, recursively. */
-const OPERATOR_SURFACE_DIRS: readonly string[] = ['src/setup', 'src/services']
+/** The three operator-surface directories, recursively. */
+const OPERATOR_SURFACE_DIRS: readonly string[] = ['src/setup', 'src/services', 'src/tui']
 
 function operatorSurfaceFiles(): string[] {
   return collectTransportFiles(PROJECT_ROOT, OPERATOR_SURFACE_DIRS, new Set())
 }
 
-describe('the install config and the service manager are operator surfaces too', () => {
+describe('the install config, the service manager and the console are operator surfaces too', () => {
   test.each(operatorSurfaceFiles())(
     '%s imports no ui/proxy/transport module and no vault secret value',
     (relativePath) => {
@@ -613,7 +614,7 @@ describe('the install config and the service manager are operator surfaces too',
     },
   )
 
-  test('both directories exist and contribute files, so the rule is not vacuous', () => {
+  test('every directory exists and contributes files, so the rule is not vacuous', () => {
     for (const dir of OPERATOR_SURFACE_DIRS) {
       const files = collectTransportFiles(PROJECT_ROOT, [dir], new Set())
       expect(files.length, `${dir} contributes no .ts file`).toBeGreaterThan(0)
@@ -627,6 +628,70 @@ describe('the install config and the service manager are operator surfaces too',
     // …and that the neighbouring, permitted vault module is NOT caught: the
     // config writer reuses `vault/files.ts` for its atomic write.
     expect(isVaultValueSpecifier('../vault/files.js')).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// No command module imports the dispatcher that routes it (`mcpcut` phase 2,
+// task 1). `src/cli.ts` is the argv router: it imports every `cli/*-cmd.ts`,
+// so an edge back into it from anywhere under `src/` would drag the whole CLI
+// into the importer's module graph — for `src/tui/**` that would mean a
+// runtime edge to every command module merely to NAME `DispatchOptions`. The
+// types the dispatcher speaks therefore live in the leaf
+// `src/cli/dispatch-types.ts` (the `cli/serve-constants.ts` precedent) and
+// `cli.ts` re-exports them, so the leaf must itself stay type-only.
+// ---------------------------------------------------------------------------
+
+/** Matches a specifier that names the dispatcher module itself. */
+function isDispatcherSpecifier(specifier: string): boolean {
+  return /(?:^|\/)cli\.js$/.test(specifier)
+}
+
+/** Every `.ts` under `src/`, recursively, except the dispatcher itself. */
+function nonDispatcherFiles(): string[] {
+  return collectTransportFiles(PROJECT_ROOT, ['src'], new Set(['src/cli.ts']))
+}
+
+const DISPATCH_TYPES_MODULE = 'src/cli/dispatch-types.ts'
+
+describe('no command module imports the dispatcher that routes it', () => {
+  test('nothing under src/ imports cli.js', () => {
+    const offenders = nonDispatcherFiles().flatMap((relativePath) =>
+      importSpecifiersOf(readFileSync(join(PROJECT_ROOT, relativePath), 'utf8'))
+        .filter(isDispatcherSpecifier)
+        .map((specifier) => `${relativePath} imports ${specifier}`),
+    )
+
+    expect(offenders).toEqual([])
+  })
+
+  test('the checked set covers the command modules and excludes only the router', () => {
+    const files = nonDispatcherFiles()
+
+    expect(files).toContain(DISPATCH_TYPES_MODULE)
+    expect(files).toContain('src/cli/admin-cmd.ts')
+    expect(files).not.toContain('src/cli.ts')
+  })
+
+  test('the matcher catches a reach for the dispatcher but not for its neighbours', () => {
+    // Guards the guard: were the matcher to go lax, the rule above would pass
+    // no matter which module imported the router.
+    expect(isDispatcherSpecifier('../cli.js')).toBe(true)
+    expect(isDispatcherSpecifier('./cli.js')).toBe(true)
+    expect(isDispatcherSpecifier('./cli/usage.js')).toBe(false)
+    expect(isDispatcherSpecifier('./cli/dispatch-types.js')).toBe(false)
+  })
+
+  test('dispatch-types.ts imports types only, so the leaf stays a leaf at runtime', () => {
+    // A single VALUE import here would pull every `cli/*-cmd.ts` into the
+    // module graph of anything that merely names `DispatchOptions`.
+    const lines = readFileSync(join(PROJECT_ROOT, DISPATCH_TYPES_MODULE), 'utf8').split('\n')
+
+    const valueImports = lines.filter(
+      (line) => line.includes(" from '") && !line.startsWith('import type'),
+    )
+
+    expect(valueImports).toEqual([])
   })
 })
 

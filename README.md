@@ -373,8 +373,8 @@ mcp-journal quarantine reject <server> <tool>
 mcp-journal approvals list [--json]
 mcp-journal approvals approve <id> [--reason TEXT]   # needs MCP_ADMIN_TOKEN
 mcp-journal approvals deny <id> [--reason TEXT]      # needs MCP_ADMIN_TOKEN
-mcp-journal admin add <name> --role owner|operator|viewer
-mcp-journal admin list | remove <name> | rotate <name> | role <name> owner|operator|viewer
+mcp-journal admin add <name> --role owner|operator|viewer            # needs MCP_ADMIN_TOKEN (owner) once an admin exists
+mcp-journal admin list | remove <name> | rotate <name> [--recover] | role <name> owner|operator|viewer
 mcp-journal ui [--port 8091] [--host 127.0.0.1] [--behind-tls]
                [--allowed-host <host[:port]>]... [--allowed-origin <origin>]... [--trusted-proxy-header <name>]
 mcp-journal migrate
@@ -494,7 +494,7 @@ than a syntax error — so they are CLI-managed.
 The whole sequence, from an empty plane to a working, journaled tool call:
 
 ```
-mcp-journal admin add alice --role owner  # prints your personal token ONCE
+mcp-journal admin add alice --role owner  # the first admin needs no token; prints yours ONCE
 export MCP_ADMIN_TOKEN=<that token>
 mcp-journal vault init
 mcp-journal server add github --transport stdio \
@@ -760,7 +760,9 @@ nothing here belongs in browser history:
 ```
 
 Copy it before it scrolls away; there is no second printing. Rotate it with
-`mcp-journal admin rotate owner`.
+`mcp-journal admin rotate owner` (with your token in `MCP_ADMIN_TOKEN`), or — if
+that token is the one you lost — `mcp-journal admin rotate owner --recover`,
+which needs none and leaves a journal record marked `recovery: true`.
 
 ### Admins and roles
 
@@ -779,12 +781,22 @@ are exactly three roles, fixed (no custom/scoped roles in this release):
 Manage accounts from the CLI:
 
 ```
+export MCP_ADMIN_TOKEN=<your personal owner token>          # every admin command below needs it,
+                                                             # except the very first `admin add` on an empty plane
 mcp-journal admin add <name> --role owner|operator|viewer   # prints the token ONCE
 mcp-journal admin list                                       # names, roles, dates — never token hashes
 mcp-journal admin rotate <name>                               # new token; old one dies immediately
+mcp-journal admin rotate <name> --recover                     # the same without a token: for an owner who lost theirs
 mcp-journal admin remove <name>
 mcp-journal admin role <name> <role>
 ```
+
+Every `add`, `rotate`, `role` and `remove` — from the CLI, the web UI or the
+console — writes an `access-edit` journal record (`admin.add` … `admin.remove`)
+naming the admin who did it, so the audit export shows who created an owner
+or rotated a token, not only that it happened. The two token-free paths (the
+first `add` on an empty plane, and `rotate --recover`) write the same record
+with no admin name, and `--recover` marks it `recovery: true`.
 
 `owner`-only management is also available from the UI itself. Rotating,
 removing, or changing an admin's role kills that admin's live sessions

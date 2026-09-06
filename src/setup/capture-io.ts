@@ -48,3 +48,61 @@ export function captureIo(): CapturedIo {
         .join('; '),
   }
 }
+
+export interface CapturedBothIo {
+  readonly io: { readonly stdout: CaptureWritable; readonly stderr: CaptureWritable }
+  /** Everything written to stdout, exactly as the command wrote it. */
+  out(): string
+  /** Everything written to stderr, exactly as the command wrote it. */
+  err(): string
+  /** True once a write past the limit was dropped from either stream. */
+  truncated(): boolean
+}
+
+/**
+ * Captures both streams and folds nothing.
+ *
+ * The console runs every action through the same `dispatch` a shell would and
+ * shows the result in its output pane, so it needs the text as printed --
+ * blank lines, alignment and all -- and it needs stdout as well as stderr: the
+ * answer to `admin list` is on one, the refusal is on the other, and the pane
+ * shows both. Splitting into lines and making them safe to draw is the
+ * console's job (`src/tui/output.ts`), not this capsule's.
+ */
+export function captureBothIo(limitChars = Number.POSITIVE_INFINITY): CapturedBothIo {
+  const out = boundedChunks(limitChars)
+  const err = boundedChunks(limitChars)
+  return {
+    io: {
+      stdout: { write: out.write },
+      stderr: { write: err.write },
+    },
+    out: out.text,
+    err: err.text,
+    truncated: () => out.truncated() || err.truncated(),
+  }
+}
+
+/** One stream's chunks, refusing anything past `limitChars` and remembering that it did. */
+function boundedChunks(limitChars: number): {
+  write(chunk: string): boolean
+  text(): string
+  truncated(): boolean
+} {
+  const chunks: string[] = []
+  let length = 0
+  let truncated = false
+  return {
+    write: (chunk: string) => {
+      if (length + chunk.length > limitChars) {
+        truncated = true
+        return true
+      }
+      chunks.push(chunk)
+      length += chunk.length
+      return true
+    },
+    text: () => chunks.join(''),
+    truncated: () => truncated,
+  }
+}

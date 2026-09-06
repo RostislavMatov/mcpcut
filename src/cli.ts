@@ -1,22 +1,23 @@
 #!/usr/bin/env node
 import { realpathSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
-import { runAdminCommand, type AdminCliOptions } from './cli/admin-cmd.js'
-import { runAgentCommand, type AgentCliOptions } from './cli/agent-cmd.js'
-import { runGroupCommand, type GroupCliOptions } from './cli/group-cmd.js'
-import { runApprovals, type ApprovalsCliOptions } from './cli/approvals-cmd.js'
-import { runBackupCommand, type BackupCommandOptions } from './cli/backup-cmd.js'
-import { runConnect, type ConnectDeps } from './cli/connect-cmd.js'
-import { runExportCommand, type ExportCommandOptions } from './cli/export-cmd.js'
+import { runAdminCommand } from './cli/admin-cmd.js'
+import { runAgentCommand } from './cli/agent-cmd.js'
+import { runGroupCommand } from './cli/group-cmd.js'
+import { runApprovals } from './cli/approvals-cmd.js'
+import { runBackupCommand } from './cli/backup-cmd.js'
+import { runConnect } from './cli/connect-cmd.js'
+import { runExportCommand } from './cli/export-cmd.js'
 import { runJournalCommandGroup } from './cli/journal-cmds.js'
-import { runKeygenCommand, type KeygenCommandOptions } from './cli/keygen-cmd.js'
-import { runMigrateCommand, type MigrateCommandOptions } from './cli/migrate-cmd.js'
+import { runKeygenCommand } from './cli/keygen-cmd.js'
+import { runMigrateCommand } from './cli/migrate-cmd.js'
 import { runPolicyShow, runPolicyValidate, type PolicyCliOptions } from './cli/policy-cmd.js'
 import { runPolicySet } from './cli/policy-set-cmd.js'
-import { runQuarantine, type RunQuarantineOptions } from './cli/quarantine-cmd.js'
-import { runServe, type ServeCommandOptions } from './cli/serve-cmd.js'
-import { runServiceCommand, type ServiceCliOptions } from './cli/service-cmd.js'
-import { runSetupCommand, type SetupCliOptions } from './cli/setup-cmd.js'
+import { runQuarantine } from './cli/quarantine-cmd.js'
+import { runServe } from './cli/serve-cmd.js'
+import { runServiceCommand } from './cli/service-cmd.js'
+import { runSetupCommand } from './cli/setup-cmd.js'
+import { isInteractiveTerminal, runTui } from './cli/tui-cmd.js'
 import {
   runServerAdd,
   runServerList,
@@ -25,14 +26,15 @@ import {
   type ServerCliOptions,
 } from './cli/server-cmd.js'
 import { runServerRefresh } from './cli/server-status-cmd.js'
-import { runUi, type UiCommandOptions } from './cli/ui-cmd.js'
-import { runVault, type VaultCmdDeps } from './cli/vault-cmd.js'
-import { runPruneCommand, type PruneCommandOptions } from './cli/prune-cmd.js'
-import { runVerifyCommand, type VerifyCommandOptions } from './cli/verify-cmd.js'
-import { runWrapCommand, type WrapCommandOptions } from './cli/wrap-cmd.js'
+import { runUi } from './cli/ui-cmd.js'
+import { runVault } from './cli/vault-cmd.js'
+import { runPruneCommand } from './cli/prune-cmd.js'
+import { runVerifyCommand } from './cli/verify-cmd.js'
+import { runWrapCommand } from './cli/wrap-cmd.js'
 import { USAGE } from './cli/usage.js'
 import { JOURNAL_DIR_RESOLUTION } from './config.js'
-import { describeDataDirProblem, type DataDirResolution } from './setup/data-dir.js'
+import { describeDataDirProblem } from './setup/data-dir.js'
+import type { CliIo, DispatchOptions } from './cli/dispatch-types.js'
 
 /**
  * Thin argv-dispatch entry point. All real logic lives in tested modules
@@ -44,53 +46,27 @@ import { describeDataDirProblem, type DataDirResolution } from './setup/data-dir
  * the real process stdio -- see `tests/cli/dispatch.test.ts`.
  */
 
-/** Minimal writable-stream shape the dispatcher and its subcommands need. */
-export interface CliWritable {
-  write(chunk: string): unknown
-}
-
-export interface CliIo {
-  readonly stdout: CliWritable
-  readonly stderr: CliWritable
-}
-
-/** Test-only seams for each subcommand, so `tests/cli/dispatch.test.ts` can isolate every command from real disk state. */
-export interface DispatchOptions {
-  /** Journal directory override for `sessions`/`show`. Defaults to JOURNAL_DIR. */
-  readonly journalDir?: string
-  readonly wrap?: WrapCommandOptions
-  readonly policy?: PolicyCliOptions
-  readonly quarantine?: RunQuarantineOptions
-  readonly approvals?: ApprovalsCliOptions
-  readonly server?: ServerCliOptions
-  readonly vault?: VaultCmdDeps
-  readonly agent?: AgentCliOptions
-  readonly group?: GroupCliOptions
-  readonly connect?: ConnectDeps
-  readonly serve?: ServeCommandOptions
-  readonly ui?: UiCommandOptions
-  readonly admin?: AdminCliOptions
-  readonly migrate?: MigrateCommandOptions
-  readonly export?: ExportCommandOptions
-  readonly backup?: BackupCommandOptions
-  readonly verify?: VerifyCommandOptions
-  readonly prune?: PruneCommandOptions
-  readonly keygen?: KeygenCommandOptions
-  readonly services?: ServiceCliOptions
-  readonly setup?: SetupCliOptions
-  /** Data-directory resolution to judge. Defaults to the process-wide one. */
-  readonly install?: DataDirResolution
-}
+/**
+ * The io shapes and the seam bag live in the leaf `cli/dispatch-types.ts`, so
+ * a command module can name them without importing this router. Re-exported
+ * here because that is where callers and tests have always imported them from.
+ */
+export type { CliIo, CliWritable, DispatchOptions } from './cli/dispatch-types.js'
 
 /**
- * The commands that still run on an unusable install config (phase 1, task 4):
- * the two that explain the CLI. `setup` is exempt too — it is the command that
- * rewrites the broken file — but it never reaches this gate: it is routed
- * ahead of it. Everything else refuses; falling back to `$HOME` would silently
- * operate on a different plane than the operator configured.
+ * The only commands that still run on an unusable install config (phase 1,
+ * task 4): the two that explain the CLI. `setup` is exempt too — it is the
+ * command that rewrites the broken file — but it never reaches this gate: it
+ * is routed ahead of it. Everything else refuses; falling back to `$HOME`
+ * would silently operate on a different plane than the operator configured.
+ *
+ * A bare interactive invocation is deliberately NOT exempt (phase 2, task
+ * 15): a console opened over the wrong data directory is worse than a refusal
+ * that names the file. A bare invocation outside a terminal never reaches the
+ * gate either — it is the usage, and it is answered above.
  */
-function isConfigProblemExempt(command: string | undefined): boolean {
-  return command === undefined || command === '--help' || command === '-h'
+function isHelpFlag(command: string | undefined): boolean {
+  return command === '--help' || command === '-h'
 }
 
 const DEFAULT_IO: CliIo = { stdout: process.stdout, stderr: process.stderr }
@@ -107,16 +83,27 @@ export async function dispatch(
   // that rewrites the broken file, so the gate must never see it.
   if (command === 'setup') return runSetupCommand(rest, io, opts.setup)
 
+  // A pipe, a script, CI: a bare invocation prints the usage, as it always
+  // has — and ahead of the config gate, as it always has. Nothing that runs
+  // unattended starts depending on a file it never needed.
+  if (command === undefined && !isInteractiveTerminal(opts.tui)) {
+    io.stdout.write(USAGE)
+    return 0
+  }
+
   const configProblem = describeDataDirProblem(opts.install ?? JOURNAL_DIR_RESOLUTION)
-  if (configProblem !== undefined && !isConfigProblemExempt(command)) {
+  if (configProblem !== undefined && !isHelpFlag(command)) {
     io.stderr.write(configProblem)
     return 1
   }
 
-  if (command === undefined || command === '--help' || command === '-h') {
+  if (isHelpFlag(command)) {
     io.stdout.write(USAGE)
     return 0
   }
+  // What is left of a bare invocation is a terminal asking for the console.
+  if (command === undefined) return runTui([], io, { ...opts.tui, dispatch, entry: 'bare' })
+  if (command === 'tui') return runTui(rest, io, { ...opts.tui, dispatch, entry: 'explicit' })
   if (command === 'wrap') return runWrapCommand(rest, io, opts.wrap)
   if (command === 'connect') return runConnect(rest, io, opts.connect)
   if (command === 'serve') return runServe(rest, io, opts.serve)

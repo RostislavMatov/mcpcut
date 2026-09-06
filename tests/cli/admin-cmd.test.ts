@@ -2,9 +2,11 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
-import { ADMINS_FILE_NAME } from '../../src/admin/constants.js'
+import { ADMIN_TOKEN_ENV_VAR, ADMINS_FILE_NAME } from '../../src/admin/constants.js'
 import { createAdminStore } from '../../src/admin/store.js'
 import { runAdminCommand, type AdminCliIo } from '../../src/cli/admin-cmd.js'
+import { ACCESS_EDIT_SESSION_ID } from '../../src/journal/access-edit-record.js'
+import { readJournalRecords } from '../support/journal-rows.js'
 
 /**
  * `mcp-journal admin add|list|remove|rotate|role` (M4 Task 16): the CLI half of
@@ -12,8 +14,15 @@ import { runAdminCommand, type AdminCliIo } from '../../src/cli/admin-cmd.js'
  *
  * The load-bearing guarantee these tests exist for is the one-time token: a
  * plaintext admin token must appear EXACTLY once, on stdout, and must never
- * reach `admins.json` (only its sha256 hash does). Every assertion about that
- * scans the real store file rather than trusting the store's API contract.
+ * reach `admins.json` (only its sha256 hash does) — nor the journal record
+ * the change now leaves. Every assertion about that scans the real store file
+ * (and the real `journal.db`) rather than trusting an API contract.
+ *
+ * Since the owner decision of 2026-09-06 every one of these commands needs a
+ * personal owner token in `MCP_ADMIN_TOKEN`, with two exemptions the tests
+ * below pin: the FIRST admin of an empty store (there is nobody to hold a
+ * token yet) and `admin rotate --recover` (the way back in when the last
+ * owner lost theirs). Both are recorded with an unattributed actor.
  *
  * Everything runs against a temp journal dir — the real `~/.mcp-journal` is
  * never touched.
@@ -23,9 +32,12 @@ const CLOCK_ISO = '2026-08-11T10:00:00.000Z'
 const TOKEN_PATTERN = /mcpa_[A-Za-z0-9_-]+/g
 
 let journalDir: string
+/** The token of the owner every gated invocation below runs as; `''` until one is seeded. */
+let ownerToken: string
 
 beforeEach(async () => {
   journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-admin-cmd-'))
+  ownerToken = ''
 })
 
 afterEach(async () => {
@@ -48,16 +60,41 @@ function captureIo(): CapturedIo {
   }
 }
 
-/** Runs one `admin ...` invocation against the temp journal dir. */
+/**
+ * Runs one `admin ...` invocation against the temp journal dir, as the owner
+ * `seedOwner` minted. The environment is always an object of this test's own
+ * making: a token exported in the developer's shell must never reach the
+ * command under test.
+ */
 async function runAdmin(
   args: readonly string[],
   io: CapturedIo = captureIo(),
+  env: NodeJS.ProcessEnv = { [ADMIN_TOKEN_ENV_VAR]: ownerToken },
 ): Promise<{ code: number; io: CapturedIo }> {
   const code = await runAdminCommand([...args], io, {
     journalDir,
     clock: () => new Date(CLOCK_ISO),
+    env,
   })
   return { code, io }
+}
+
+/**
+ * Mints the first owner the way an operator would — `admin add` on an empty
+ * store, which needs no token — and remembers its token as the one every
+ * later invocation runs as.
+ */
+async function seedOwner(name = 'alice'): Promise<string> {
+  const { code, io } = await runAdmin(['add', name, '--role', 'owner'])
+  expect(code, io.errText()).toBe(0)
+  ownerToken = tokensIn(io.outText())[0] as string
+  return ownerToken
+}
+
+/** Every `access-edit` record in the temp journal, in commit order. */
+async function accessRecords(): Promise<Array<Record<string, unknown>>> {
+  const records = await readJournalRecords(journalDir, ACCESS_EDIT_SESSION_ID)
+  return records.map((record) => record.payload as Record<string, unknown>)
 }
 
 /** Raw contents of `admins.json`, or `''` when the file does not exist. */
@@ -108,7 +145,7 @@ describe('admin add', () => {
   })
 
   test('a duplicate name is refused with exit 1 and no second token', async () => {
-    await runAdmin(['add', 'alice', '--role', 'owner'])
+    await seedOwner('alice')
 
     const { code, io } = await runAdmin(['add', 'alice', '--role', 'viewer'])
 
@@ -167,7 +204,7 @@ describe('admin add', () => {
 
 describe('admin list', () => {
   test('shows name, role and dates but never a token hash', async () => {
-    await runAdmin(['add', 'alice', '--role', 'owner'])
+    await seedOwner('alice')
     await runAdmin(['add', 'bob', '--role', 'viewer'])
     const store = createAdminStore({ journalDir })
     const hash = (await store.getActiveAdmin('alice'))?.tokenHash as string
@@ -187,8 +224,11 @@ describe('admin list', () => {
   })
 
   test('shows the rotation date once an admin has been rotated', async () => {
-    await runAdmin(['add', 'alice', '--role', 'owner'])
-    await runAdmin(['rotate', 'alice'])
+    const rotated = await seedOwner('alice')
+    const { io: rotation } = await runAdmin(['rotate', 'alice'])
+    // Rotating the owner invalidates the token every later call runs as.
+    expect(tokensIn(rotation.outText())[0]).not.toBe(rotated)
+    ownerToken = tokensIn(rotation.outText())[0] as string
 
     const { io } = await runAdmin(['list'])
 
@@ -203,7 +243,7 @@ describe('admin list', () => {
   })
 
   test('revoked admins are not listed', async () => {
-    await runAdmin(['add', 'alice', '--role', 'owner'])
+    await seedOwner('alice')
     await runAdmin(['add', 'bob', '--role', 'viewer'])
     await runAdmin(['remove', 'bob'])
 
@@ -220,7 +260,7 @@ describe('admin list', () => {
 
 describe('admin remove', () => {
   test('refuses to remove the last remaining owner', async () => {
-    await runAdmin(['add', 'alice', '--role', 'owner'])
+    await seedOwner('alice')
     await runAdmin(['add', 'bob', '--role', 'operator'])
 
     const { code, io } = await runAdmin(['remove', 'alice'])
@@ -232,7 +272,7 @@ describe('admin remove', () => {
   })
 
   test('removes a non-last owner', async () => {
-    await runAdmin(['add', 'alice', '--role', 'owner'])
+    await seedOwner('alice')
     await runAdmin(['add', 'carol', '--role', 'owner'])
 
     const { code } = await runAdmin(['remove', 'carol'])
@@ -244,6 +284,8 @@ describe('admin remove', () => {
   })
 
   test('an unknown admin is an error, not a silent success', async () => {
+    await seedOwner('alice')
+
     const { code, io } = await runAdmin(['remove', 'nobody'])
 
     expect(code).toBe(1)
@@ -264,8 +306,7 @@ describe('admin remove', () => {
 
 describe('admin rotate', () => {
   test('prints a fresh token once and replaces the stored hash', async () => {
-    const first = await runAdmin(['add', 'alice', '--role', 'owner'])
-    const firstToken = tokensIn(first.io.outText())[0] as string
+    const firstToken = await seedOwner('alice')
     const store = createAdminStore({ journalDir })
     const firstHash = (await store.getActiveAdmin('alice'))?.tokenHash as string
 
@@ -284,7 +325,7 @@ describe('admin rotate', () => {
   })
 
   test('warns against redirecting stdout, on the same stream as the fresh token', async () => {
-    await runAdmin(['add', 'alice', '--role', 'owner'])
+    await seedOwner('alice')
 
     const { io } = await runAdmin(['rotate', 'alice'])
 
@@ -292,6 +333,8 @@ describe('admin rotate', () => {
   })
 
   test('an unknown admin is refused', async () => {
+    await seedOwner('alice')
+
     const { code, io } = await runAdmin(['rotate', 'nobody'])
 
     expect(code).toBe(1)
@@ -312,7 +355,7 @@ describe('admin rotate', () => {
 
 describe('admin role', () => {
   test('changes an admin role', async () => {
-    await runAdmin(['add', 'alice', '--role', 'owner'])
+    await seedOwner('alice')
     await runAdmin(['add', 'bob', '--role', 'viewer'])
 
     const { code, io } = await runAdmin(['role', 'bob', 'operator'])
@@ -324,7 +367,7 @@ describe('admin role', () => {
   })
 
   test('refuses to demote the last owner', async () => {
-    await runAdmin(['add', 'alice', '--role', 'owner'])
+    await seedOwner('alice')
 
     const { code, io } = await runAdmin(['role', 'alice', 'viewer'])
 
@@ -335,7 +378,7 @@ describe('admin role', () => {
   })
 
   test('an invalid role is refused', async () => {
-    await runAdmin(['add', 'alice', '--role', 'owner'])
+    await seedOwner('alice')
 
     const { code, io } = await runAdmin(['role', 'alice', 'root'])
 
@@ -376,7 +419,7 @@ describe('admin subcommand dispatch', () => {
     const io = captureIo()
 
     const code = await dispatch(['admin', 'add', 'alice', '--role', 'owner'], io, {
-      admin: { journalDir, clock: () => new Date(CLOCK_ISO) },
+      admin: { journalDir, clock: () => new Date(CLOCK_ISO), env: {} },
     })
 
     expect(code).toBe(0)
@@ -391,5 +434,243 @@ describe('admin subcommand dispatch', () => {
 
     expect(code).toBe(1)
     expect(io.errText().length).toBeGreaterThan(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The owner gate and the access-edit records (owner decision 2026-09-06)
+// ---------------------------------------------------------------------------
+
+describe('the owner gate in front of admin *', () => {
+  test('the first admin of an empty store needs no token', async () => {
+    const { code, io } = await runAdmin(['add', 'root', '--role', 'owner'], captureIo(), {})
+
+    expect(code, io.errText()).toBe(0)
+    expect(tokensIn(io.outText())).toHaveLength(1)
+  })
+
+  test('a second admin without a token is refused, and nothing is created', async () => {
+    await seedOwner('alice')
+
+    const { code, io } = await runAdmin(['add', 'bob', '--role', 'viewer'], captureIo(), {})
+
+    expect(code).toBe(1)
+    expect(io.errText()).toContain('Refusing to change admins: no admin token.')
+    expect(io.errText()).toContain(ADMIN_TOKEN_ENV_VAR)
+    expect(tokensIn(io.outText())).toEqual([])
+    expect(await createAdminStore({ journalDir }).getActiveAdmin('bob')).toBeUndefined()
+  })
+
+  test('a token that matches no admin is refused', async () => {
+    await seedOwner('alice')
+
+    const { code, io } = await runAdmin(['add', 'bob', '--role', 'viewer'], captureIo(), {
+      [ADMIN_TOKEN_ENV_VAR]: 'mcpa_not-a-real-token',
+    })
+
+    expect(code).toBe(1)
+    expect(io.errText()).toContain('does not match any active admin')
+  })
+
+  test.each([
+    ['add', ['add', 'bob', '--role', 'viewer']],
+    ['rotate', ['rotate', 'alice']],
+    ['role', ['role', 'alice', 'operator']],
+    ['remove', ['remove', 'alice']],
+    ['list', ['list']],
+  ])('an operator token may not %s', async (_name, args) => {
+    await seedOwner('alice')
+    const { io: added } = await runAdmin(['add', 'op', '--role', 'operator'])
+    const operatorToken = tokensIn(added.outText())[0] as string
+
+    const { code, io } = await runAdmin([...args], captureIo(), {
+      [ADMIN_TOKEN_ENV_VAR]: operatorToken,
+    })
+
+    expect(code).toBe(1)
+    expect(io.errText()).toContain('role "owner" is required')
+    expect(io.errText()).toContain('may not manage admins')
+  })
+
+  test('list needs a token once the store holds an admin', async () => {
+    await seedOwner('alice')
+
+    const refused = await runAdmin(['list'], captureIo(), {})
+    const allowed = await runAdmin(['list'])
+
+    expect(refused.code).toBe(1)
+    expect(refused.io.errText()).toContain('Refusing to list admins: no admin token.')
+    expect(refused.io.outText()).toBe('')
+    expect(allowed.code).toBe(0)
+    expect(allowed.io.outText()).toContain('alice')
+  })
+
+  test('list on an empty store needs none', async () => {
+    const { code, io } = await runAdmin(['list'], captureIo(), {})
+
+    expect(code).toBe(0)
+    expect(io.outText()).toContain('no admins')
+  })
+})
+
+describe('the access-edit record every admin mutation leaves', () => {
+  test('the bootstrap add is recorded with an unattributed actor', async () => {
+    await runAdmin(['add', 'root', '--role', 'owner'], captureIo(), {})
+
+    expect(await accessRecords()).toEqual([
+      {
+        actor: { adminName: null, role: null, via: 'cli' },
+        action: 'admin.add',
+        admin: 'root',
+        targetRole: 'owner',
+      },
+    ])
+  })
+
+  test('add names the admin, the role given and the owner who gave it', async () => {
+    await seedOwner('alice')
+
+    const { io } = await runAdmin(['add', 'bob', '--role', 'operator'])
+
+    expect(io.errText()).toContain('[audit] admin add by alice (owner): bob')
+    expect((await accessRecords())[1]).toEqual({
+      actor: { adminName: 'alice', role: 'owner', via: 'cli' },
+      action: 'admin.add',
+      admin: 'bob',
+      targetRole: 'operator',
+    })
+  })
+
+  test('rotate, role and remove each leave exactly one record', async () => {
+    await seedOwner('alice')
+    await runAdmin(['add', 'bob', '--role', 'viewer'])
+
+    await runAdmin(['rotate', 'bob'])
+    await runAdmin(['role', 'bob', 'operator'])
+    await runAdmin(['remove', 'bob'])
+
+    expect((await accessRecords()).slice(2)).toEqual([
+      {
+        actor: { adminName: 'alice', role: 'owner', via: 'cli' },
+        action: 'admin.rotate',
+        admin: 'bob',
+      },
+      {
+        actor: { adminName: 'alice', role: 'owner', via: 'cli' },
+        action: 'admin.role',
+        admin: 'bob',
+        targetRole: 'operator',
+      },
+      {
+        actor: { adminName: 'alice', role: 'owner', via: 'cli' },
+        action: 'admin.remove',
+        admin: 'bob',
+      },
+    ])
+  })
+
+  test('list is read-only: it writes no record', async () => {
+    await seedOwner('alice')
+
+    await runAdmin(['list'])
+
+    expect(await accessRecords()).toHaveLength(1)
+  })
+
+  test('a refused mutation writes no record at all', async () => {
+    await seedOwner('alice')
+
+    await runAdmin(['add', 'bob', '--role', 'viewer'], captureIo(), {})
+    await runAdmin(['remove', 'nobody'])
+
+    expect(await accessRecords()).toHaveLength(1)
+  })
+
+  test('no record ever carries a plaintext token', async () => {
+    await seedOwner('alice')
+    await runAdmin(['add', 'bob', '--role', 'viewer'])
+    await runAdmin(['rotate', 'bob'])
+    await runAdmin(['rotate', 'carol', '--recover'])
+
+    const text = JSON.stringify(await accessRecords())
+
+    expect(tokensIn(text)).toEqual([])
+    expect(text).not.toContain('token')
+  })
+})
+
+describe('admin rotate --recover', () => {
+  test('mints a fresh token with no admin token at all', async () => {
+    const firstToken = await seedOwner('alice')
+
+    const { code, io } = await runAdmin(['rotate', 'alice', '--recover'], captureIo(), {})
+
+    expect(code, io.errText()).toBe(0)
+    const tokens = tokensIn(io.outText())
+    expect(tokens).toHaveLength(1)
+    expect(tokens[0]).not.toBe(firstToken)
+  })
+
+  test('is recorded as an unattributed recovery', async () => {
+    await seedOwner('alice')
+
+    const { io } = await runAdmin(['rotate', 'alice', '--recover'], captureIo(), {})
+
+    expect(io.errText()).toContain('[audit] admin rotate by unattributed: alice')
+    expect((await accessRecords())[1]).toEqual({
+      actor: { adminName: null, role: null, via: 'cli' },
+      action: 'admin.rotate',
+      admin: 'alice',
+      recovery: true,
+    })
+  })
+
+  test('an ordinary rotate carries no recovery flag', async () => {
+    await seedOwner('alice')
+    await runAdmin(['add', 'bob', '--role', 'viewer'])
+
+    await runAdmin(['rotate', 'bob'])
+
+    expect((await accessRecords())[2]).not.toHaveProperty('recovery')
+  })
+
+  test('an unknown admin is still refused, and nothing is recorded', async () => {
+    await seedOwner('alice')
+
+    const { code, io } = await runAdmin(['rotate', 'nobody', '--recover'], captureIo(), {})
+
+    expect(code).toBe(1)
+    expect(tokensIn(io.outText())).toEqual([])
+    expect(await accessRecords()).toHaveLength(1)
+  })
+
+  test('the usage block names the flag and the token rule', async () => {
+    const { io } = await runAdmin(['frobnicate'])
+
+    expect(io.errText()).toContain('--recover')
+    expect(io.errText()).toContain(ADMIN_TOKEN_ENV_VAR)
+  })
+
+  test('--recover is not a flag of the other subcommands', async () => {
+    await seedOwner('alice')
+
+    const { code, io } = await runAdmin(['remove', 'alice', '--recover'])
+
+    expect(code).toBe(1)
+    expect(io.errText()).toContain('Usage')
+  })
+})
+
+describe('admin list: the refusal explains a read, not a change', () => {
+  test('without a token the refusal names the owner rule of the listing itself', async () => {
+    await seedOwner()
+    const io = captureIo()
+
+    const code = await runAdminCommand(['list'], io, { journalDir, env: {} })
+
+    expect(code).toBe(1)
+    expect(io.errText()).toContain('Refusing to list admins')
+    expect(io.errText()).toContain('the list of admins is for owners')
+    expect(io.errText()).not.toContain('records which admin made it')
   })
 })

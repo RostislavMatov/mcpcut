@@ -31,8 +31,12 @@ import { CLI_NAME, SUPERVISORS } from '../setup/constants.js'
  */
 export const USAGE_DESCRIPTION_COLUMN = 41
 
-/** Left margin of every row of the table. */
-const ROW_INDENT = '  '
+/**
+ * Left margin of every row of the table. Exported for the same reason as the
+ * column above: a guard that reads the table back (the console's catalogue
+ * parity test) has to know where a row starts without counting spaces.
+ */
+export const ROW_INDENT = '  '
 
 /** Indent of a description that stands on its own line, with no command beside it. */
 const DESCRIPTION_INDENT = ' '.repeat(USAGE_DESCRIPTION_COLUMN)
@@ -69,6 +73,17 @@ export const SERVICE_SYNOPSIS_LINES: readonly string[] = [
   `${ROW_INDENT}${CLI_NAME} logs <ui|serve> [--lines N]     Print the tail of a service log (default ${LOG_TAIL_DEFAULT_LINES} lines)`,
 ]
 
+/**
+ * `mcpcut tui`. The row has to say what a BARE `mcpcut` does as well: that is
+ * the invocation most operators will type, it does two different things
+ * depending on whether stdout is a terminal, and there is no other row in the
+ * table where a reader would look for it.
+ */
+export const TUI_SYNOPSIS_LINES: readonly string[] = [
+  `${ROW_INDENT}${`${CLI_NAME} tui`.padEnd(USAGE_DESCRIPTION_COLUMN - ROW_INDENT.length)}Open the interactive console (a bare "${CLI_NAME}" on a terminal does the same;`,
+  `${DESCRIPTION_INDENT}in a pipe a bare "${CLI_NAME}" prints this help)`,
+]
+
 /** One command's own usage: its synopsis under a header, and nothing else. */
 function usageOf(lines: readonly string[]): string {
   return `Usage:\n${lines.join('\n')}\n`
@@ -79,3 +94,6 @@ export const SETUP_USAGE = usageOf(SETUP_SYNOPSIS_LINES)
 
 /** What `start`/`stop`/`status`/`logs` print when they refuse. */
 export const SERVICE_USAGE = usageOf(SERVICE_SYNOPSIS_LINES)
+
+/** What `tui` prints when it refuses (no terminal, or arguments it has no use for). */
+export const TUI_USAGE = usageOf(TUI_SYNOPSIS_LINES)

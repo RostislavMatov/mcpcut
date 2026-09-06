@@ -95,6 +95,10 @@ ADR — следствия того, что эту рамку не трогал�
 >   `MCP_ADMIN_TOKEN` роли `owner`. Обоснование — не «как у групп», а G2: персональный грант есть
 >   **сужающий** инструмент модели (он перекрывает группы по серверу целиком), поэтому его снятие —
 >   расширение доступа, и оно обязано быть именным.
+>
+> **Решение владельца A1 (2026-09-06, консоль `mcpcut` фаза 2)**: тот же гейт и та же запись у
+> `admin add|list|rotate|role|remove` — «для работы с данными админов нужен доступ, должны быть права
+> и журналирование». Исключения бутстрапа и восстановления (`--recover`) — в поправке к ADR-0004.
 > - **T5**: `server remove <неизвестное имя>` больше **ничего не чинит**. Незарегистрированное имя —
 >   отказ с кодом 1, ничего не пишется; если гранты висят, к отказу добавляется подсказка
 >   `dangling grants: N agent grants, M groups — prune with: server remove --prune-grants x`. Починка
@@ -213,6 +217,8 @@ G3 назвал направление ссылки — `memberOf: [...]` в з�
 | `POST /agents/create`, `/grant`, `/ungrant`, `/revoke` | `owner` (T4, было `operator`) |
 | CLI `agent list` | токен не нужен |
 | CLI `agent create`, `grant`, `ungrant`, `revoke` | `owner` через `MCP_ADMIN_TOKEN` (T4, раньше токена не требовалось) |
+| `GET /admins`, `POST /admins/add`, `/remove`, `/rotate`, `/role` | `owner` (как и раньше); с 2026-09-06 каждая мутация пишет `access-edit` `admin.*` |
+| CLI `admin add`, `list`, `rotate`, `role`, `remove` | `owner` через `MCP_ADMIN_TOKEN` (решение владельца A1, 2026-09-06; раньше токена не требовалось); исключения — пустой стор (`add`/`list`) и `admin rotate <name> --recover` |
 
 **Порог у групп и у персональных грантов теперь один — `owner` (T4, 2026-09-01).** До этого решения
 `/agents/grant` и `/agents/ungrant` были доступны `operator`'у, а CLI `agent grant/ungrant` не
