@@ -76,7 +76,10 @@ function seamsFor(journalDir: string): DispatchOptions {
     // command under test; `asOwner()` puts this plane's own token back in.
     vault: { journalDir, env: {} },
     agent: { journalDir, env: {} },
-    admin: { journalDir },
+    // `env: {}` for the same reason as the seams above: since the owner
+    // decision of 2026-09-06 `admin *` resolves `MCP_ADMIN_TOKEN` too, and a
+    // token exported in the developer's shell must not reach it.
+    admin: { journalDir, env: {} },
     // `journalDir` here is where `approvals approve|deny` looks up the admin
     // behind `MCP_ADMIN_TOKEN`; `env: {}` keeps a token exported in the
     // developer's own shell from reaching the command under test.
@@ -168,8 +171,13 @@ export async function createCliApprover(
   name: string,
   role: AdminRole = 'operator',
 ): Promise<DispatchOptions> {
+  // Since the owner decision of 2026-09-06 only the FIRST admin of an empty
+  // store may be created without a token, so this plane's owner is minted
+  // first (that bootstrap) and this admin is created AS that owner — which is
+  // what an operator would do too.
+  const owner = await asOwner(plane)
   const argv = ['admin', 'add', name, '--role', role]
-  const token = tokenFrom(expectOk(argv, await plane.run(argv)), 'admin add')
+  const token = tokenFrom(expectOk(argv, await plane.run(argv, owner)), 'admin add')
   return { approvals: { env: { [ADMIN_TOKEN_ENV_VAR]: token } } }
 }
 
@@ -195,10 +203,12 @@ export function asOwner(plane: Plane): Promise<DispatchOptions> {
 }
 
 async function mintOwner(plane: Plane): Promise<DispatchOptions> {
+  // The bootstrap `admin add`: the store is empty the first time this runs,
+  // which is the one path that needs no token (2026-09-06).
   const argv = ['admin', 'add', CLI_OWNER, '--role', 'owner']
   const token = tokenFrom(expectOk(argv, await plane.run(argv)), 'admin add')
   const env = { [ADMIN_TOKEN_ENV_VAR]: token }
-  return { agent: { env }, vault: { env } }
+  return { agent: { env }, vault: { env }, admin: { env } }
 }
 
 /** `agent create` + `agent grant` for a server that is already registered. */

@@ -67,12 +67,23 @@ export type AccessEditAction =
   | 'vault.set'
   | 'vault.remove'
   | 'vault.rekey'
+  // Admin identities (owner decision 2026-09-06): an admin IS the authority
+  // every other record is attributed to, so who minted, rotated, re-roled or
+  // removed one belongs in the same category — otherwise the chain of
+  // attribution stops one link short of its own root.
+  | 'admin.add'
+  | 'admin.rotate'
+  | 'admin.role'
+  | 'admin.remove'
 
 /**
  * WHO made the change: the authenticated admin, their role at the time, and
- * the surface. Both name and role are `null` ONLY for an unattributed CLI
- * `server remove` (no admin token in the environment) — "nobody named" is a
- * fact about that shell, kept verbatim rather than faked into a name.
+ * the surface. Both name and role are `null` on the three paths where there
+ * is genuinely nobody to name — an unattributed CLI `server remove` (no admin
+ * token in the environment), the bootstrap `admin add` on an empty store
+ * (nobody holds a token yet), and `admin rotate --recover` (the way back in
+ * when the last owner lost theirs). "Nobody named" is a fact about that
+ * shell, kept verbatim rather than faked into a name.
  */
 export interface AccessEditActor {
   readonly adminName: string | null
@@ -107,6 +118,21 @@ export interface AccessEditInfo {
   readonly vaultEntry?: string
   /** The grant written by `group.grant` — the same shape agents carry (G1). */
   readonly grant?: AgentGrant
+  /**
+   * `admin.*`: the admin the change is ABOUT, by name (owner decision
+   * 2026-09-06). Never the same field as `actor.adminName`, which says who
+   * made it — an owner rotating their own token fills both with one name, and
+   * the record still has to say which is which.
+   */
+  readonly admin?: string
+  /** `admin.add` / `admin.role`: the role the admin was given. */
+  readonly targetRole?: AdminRole
+  /**
+   * `admin.rotate --recover` only: this rotation ran with no admin token, the
+   * break-glass path for an owner who lost theirs. Present ONLY when true, so
+   * an auditor scanning for the flag finds the recoveries and nothing else.
+   */
+  readonly recovery?: true
   /** `server.remove` cascade: agents whose personal grant for the server was dropped. */
   readonly affectedAgents?: readonly string[]
   /** `server.remove` cascade: groups whose grant for the server was dropped. */
@@ -198,6 +224,9 @@ function flatInfoOf(info: AccessEditInfo): Record<string, unknown> {
     ...(info.server !== undefined ? { server: info.server } : {}),
     ...(info.agent !== undefined ? { agent: info.agent } : {}),
     ...(info.vaultEntry !== undefined ? { vaultEntry: info.vaultEntry } : {}),
+    ...(info.admin !== undefined ? { admin: info.admin } : {}),
+    ...(info.targetRole !== undefined ? { targetRole: info.targetRole } : {}),
+    ...(info.recovery !== undefined ? { recovery: info.recovery } : {}),
     ...(info.grant !== undefined ? { grant: flatGrantOf(info.grant) } : {}),
     ...(info.affectedAgents !== undefined ? { affectedAgents: [...info.affectedAgents] } : {}),
     ...(info.affectedGroups !== undefined ? { affectedGroups: [...info.affectedGroups] } : {}),

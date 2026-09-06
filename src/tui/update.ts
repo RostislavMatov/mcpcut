@@ -1,0 +1,41 @@
+import { EXIT_OK } from './constants.js'
+import type { KeyEvent } from './keys.js'
+import type { Model, Msg, Step } from './model.js'
+import { updateMain } from './update-main.js'
+import { updateSignin } from './update-signin.js'
+import { noEffects, quit } from './update-step.js'
+
+/**
+ * The console's reducer (mcpcut phase 2, Task 9): one pure function from a
+ * model and a message to the next model and the effects it asks for. Nothing
+ * here reads a terminal, a store or a clock, which is what lets every screen
+ * and every exit path be asserted without one.
+ *
+ * This module holds only what is true on EVERY screen — a resize, the
+ * interrupt key, and the rule that a run in flight owns the keyboard — and
+ * hands the rest to `update-signin.ts` and `update-main.ts`.
+ */
+
+/** In raw mode `Ctrl-C` is an ordinary key: no `SIGINT` arrives, so we answer it. */
+const INTERRUPT_KEY = 'c'
+
+export function update(model: Model, msg: Msg): Step {
+  // A resize is not a keystroke and applies mid-run: the frame drawn after it
+  // must fit the terminal that exists now, whatever else is going on.
+  if (msg.kind === 'resize') return noEffects({ ...model, size: msg.size })
+  if (msg.kind === 'key' && isInterrupt(msg.key)) return quit(model, EXIT_OK)
+
+  const { screen } = model
+  if (screen.kind === 'signin') return updateSignin(model, screen, msg)
+
+  // A command is running: the keyboard is deaf until it answers, so a second
+  // Enter cannot queue a second run behind the first. Ctrl-C above still gets
+  // the operator out.
+  if (msg.kind === 'key' && screen.busy !== undefined) return noEffects(model)
+
+  return updateMain(model, screen, msg)
+}
+
+function isInterrupt(key: KeyEvent): boolean {
+  return key.kind === 'ctrl' && key.char === INTERRUPT_KEY
+}

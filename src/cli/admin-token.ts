@@ -61,6 +61,12 @@ export interface AdminRefusalWording {
   readonly verb: string
   /** Extra clause inside the role parenthesis, after `role "owner" is required`. */
   readonly roleDetail?: string
+  /**
+   * Why the token is needed, when it is not "so the <noun> records which admin
+   * made it" — a read that is limited to a role rather than a change that is
+   * attributed to a person.
+   */
+  readonly purpose?: string
 }
 
 /** Minimal stderr shape the refusals are written to (tests inject a capture object). */
@@ -77,7 +83,7 @@ export interface RequiredAdmin {
 function missingTokenMessage(minRole: Role, wording: AdminRefusalWording): string {
   return (
     `Refusing to ${wording.action}: no admin token. Set ${ADMIN_TOKEN_ENV_VAR} to your personal admin token ` +
-    `(role "${minRole}") so the ${wording.noun} records which admin made it.\n` +
+    `(role "${minRole}") ${wording.purpose ?? `so the ${wording.noun} records which admin made it`}.\n` +
     `Get one with: mcp-journal admin add <name> --role ${minRole}   (existing admin: mcp-journal admin rotate <name>)\n`
   )
 }

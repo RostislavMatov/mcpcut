@@ -28,7 +28,7 @@ import { requireAdminFromEnv, type AdminRefusalWording, type RequiredAdmin } fro
 export const ACCESS_MIN_ROLE: Role = 'owner'
 
 /** Which store the change landed in — the first word of the audit line. */
-export type AccessSubject = 'group' | 'agent' | 'vault'
+export type AccessSubject = 'group' | 'agent' | 'vault' | 'admin'
 
 /** The mutating subcommands, as they appear in the audit line. */
 export type AccessOp =
@@ -41,6 +41,28 @@ export type AccessOp =
   | 'revoke'
   | 'set'
   | 'rekey'
+  | 'add'
+  | 'rotate'
+  | 'role'
+
+/**
+ * Nobody named. Two `admin` paths run with no token by construction (owner
+ * decision 2026-09-06): the bootstrap `admin add` on an empty store, where
+ * nobody holds a token yet, and `admin rotate --recover`, the way back in
+ * when the last owner lost theirs. Both are RECORDED — with this actor, the
+ * same "nobody named" the unattributed CLI `server remove` writes — rather
+ * than left out of the journal or faked into a name.
+ */
+export const UNATTRIBUTED_ACTOR = Object.freeze({ adminName: null, role: null }) as UnattributedActor
+
+/** The shape of {@link UNATTRIBUTED_ACTOR}, so a caller can type a variable holding it. */
+export interface UnattributedActor {
+  readonly adminName: null
+  readonly role: null
+}
+
+/** Who a CLI access change is attributed to: a named admin, or nobody at all. */
+export type AccessActor = RequiredAdmin | UnattributedActor
 
 /** Minimal stderr shape the audit line and refusals are written to. */
 export interface AccessWriteIo {
@@ -119,10 +141,16 @@ export async function requireRegisteredServer(
 export function auditLineOf(
   subject: AccessSubject,
   op: AccessOp,
-  actor: RequiredAdmin,
+  actor: AccessActor,
   target: string,
 ): string {
-  return `[audit] ${subject} ${op} by ${formatReadableField(actor.adminName)} (${actor.role}): ${target}\n`
+  return `[audit] ${subject} ${op} by ${whoOf(actor)}: ${target}\n`
+}
+
+/** The actor as the audit line names them — the same word `server remove` uses for nobody. */
+function whoOf(actor: AccessActor): string {
+  if (actor.adminName === null) return 'unattributed'
+  return `${formatReadableField(actor.adminName)} (${actor.role})`
 }
 
 /** `<group>/<server>` or `<agent>/<server>` — the two-part target, both halves sanitized. */
@@ -133,7 +161,7 @@ export function pairTarget(first: string, second: string): string {
 export interface RecordAccessChangeInput {
   readonly io: AccessWriteIo
   readonly opts: AccessWriteOptions
-  readonly actor: RequiredAdmin
+  readonly actor: AccessActor
   readonly subject: AccessSubject
   readonly op: AccessOp
   /** The names the change touched, already sanitized for the terminal. */

@@ -8,6 +8,13 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Interactive console** (`mcpcut tui`, or a bare `mcpcut` on a terminal that
+  has an install config): sign in with an admin token, browse Home and Admins,
+  run every action through the same CLI command it shows you — the session
+  token travels in the environment seam, never in argv. A bare `mcpcut` in a
+  pipe still prints the usage; without a config on a terminal it points at
+  `setup --yes`. The first-run wizard and the remaining sections follow in
+  later waves.
 - **`mcpcut` binary**: a second `bin` entry pointing at the same file as
   `mcp-journal` — the two names are one dispatcher with identical behaviour.
 - **Install config** `~/.mcpcut/config.json` (path overridable with
@@ -34,6 +41,19 @@ All notable changes to this project are documented here. The format follows
   command including the service ones. `setup --yes` refuses when the exported
   value and the data directory it would write disagree, rather than preparing
   one directory while the daemons serve another.
+
+### Changed
+
+- **`admin add|list|rotate|role|remove` now need a personal admin token** of role
+  `owner` in `MCP_ADMIN_TOKEN`, and every mutation writes an `access-edit`
+  journal record (`admin.add|rotate|role|remove`) naming the admin who made it —
+  the same treatment `vault *`, `agent *` and `group *` already had. The web
+  UI's admin page writes the same record. Two deliberate exceptions: on an
+  empty plane (no admins yet) `admin add` and `admin list` need no token, and
+  `admin rotate <name> --recover` mints a fresh token without one — the way back
+  in for an owner who lost theirs; the record then carries `recovery: true` and
+  no admin name, so an auditor can tell it apart. Scripts that ran `admin add`
+  after the first admin must export the owner token first.
 
 ## [0.1.0] — 2026-09-03
 

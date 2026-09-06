@@ -9,7 +9,9 @@ import {
   type AdminRecord,
   type AdminStore,
 } from '../../src/admin/store.js'
+import type { AccessEditInfo } from '../../src/journal/access-edit-record.js'
 import type { UiSession } from '../../src/ui/auth.js'
+import { AUDIT_RECORD_DROPPED_WARNING } from '../../src/ui/constants.js'
 import type { UiAuditEvent } from '../../src/ui/handlers/agents.js'
 import { createAdminsHandlers, type AdminsHandlers } from '../../src/ui/handlers/admins.js'
 import { renderAdminsPage } from '../../src/ui/pages/admins.js'
@@ -59,13 +61,22 @@ function bodyOf(result: UiResult): string {
 let journalDir: string
 let store: AdminStore
 let audit: UiAuditEvent[]
+let accessEdits: AccessEditInfo[]
 let handlers: AdminsHandlers
 
 beforeEach(async () => {
   journalDir = mkdtempSync(join(tmpdir(), 'mcp-ui-admins-'))
   store = createAdminStore({ journalDir })
   audit = []
-  handlers = createAdminsHandlers({ adminStore: store, audit: (event) => audit.push(event) })
+  accessEdits = []
+  handlers = createAdminsHandlers({
+    adminStore: store,
+    audit: (event) => audit.push(event),
+    journalAccessEdit: async (info) => {
+      accessEdits.push(info)
+      return { written: true }
+    },
+  })
   // A baseline owner so the roster is never empty and last-owner rules apply.
   await store.createAdmin('owner-admin', 'owner')
 })
@@ -175,6 +186,93 @@ describe('attribution', () => {
     await store.createAdmin('bob', 'operator')
     await handlers.adminsRole(postCtx({ name: 'bob', role: 'viewer' }, session('owner', 'alice')))
     expect(audit).toContainEqual({ actor: 'ui', adminName: 'alice', action: 'admins.role', target: 'bob:viewer' })
+  })
+})
+
+describe('the access-edit record every admin mutation leaves (owner decision 2026-09-06)', () => {
+  /** The actor of every record below: the signed-in admin of `session()`. */
+  const actor = { adminName: 'alice', role: 'owner', via: 'ui' } as const
+
+  test('add names the admin and the role given', async () => {
+    await handlers.adminsAdd(postCtx({ name: 'carol', role: 'operator' }, session('owner', 'alice')))
+
+    expect(accessEdits).toEqual([
+      { actor, action: 'admin.add', admin: 'carol', targetRole: 'operator' },
+    ])
+  })
+
+  test('rotate, role and remove each leave exactly one record', async () => {
+    await store.createAdmin('bob', 'operator')
+
+    await handlers.adminsRotate(postCtx({ name: 'bob' }, session('owner', 'alice')))
+    await handlers.adminsRole(postCtx({ name: 'bob', role: 'viewer' }, session('owner', 'alice')))
+    await handlers.adminsRemove(postCtx({ name: 'bob' }, session('owner', 'alice')))
+
+    expect(accessEdits).toEqual([
+      { actor, action: 'admin.rotate', admin: 'bob' },
+      { actor, action: 'admin.role', admin: 'bob', targetRole: 'viewer' },
+      { actor, action: 'admin.remove', admin: 'bob' },
+    ])
+  })
+
+  test('the one-time token never reaches a record', async () => {
+    await handlers.adminsAdd(postCtx({ name: 'carol', role: 'operator' }, session('owner', 'alice')))
+    await handlers.adminsRotate(postCtx({ name: 'carol' }, session('owner', 'alice')))
+
+    expect(JSON.stringify(accessEdits)).not.toContain('mcpa_')
+  })
+
+  test('reading the roster writes no record', async () => {
+    await handlers.adminsPage(getCtx(session()))
+
+    expect(accessEdits).toEqual([])
+  })
+
+  test('a refused mutation writes no record', async () => {
+    await handlers.adminsRemove(postCtx({ name: 'owner-admin' }, session()))
+    await handlers.adminsAdd(postCtx({ name: 'dave', role: 'superuser' }, session()))
+
+    expect(accessEdits).toEqual([])
+  })
+
+  test('a writer answering written: false → the change stands and the notice carries the warning', async () => {
+    const dropping = createAdminsHandlers({
+      adminStore: store,
+      journalAccessEdit: async () => ({ written: false }),
+    })
+    await store.createAdmin('bob', 'operator')
+
+    const result = await dropping.adminsRole(postCtx({ name: 'bob', role: 'viewer' }, session()))
+
+    if (result.kind === 'response') expect(result.status).toBe(200)
+    expect(bodyOf(result)).toContain(AUDIT_RECORD_DROPPED_WARNING)
+    expect(bodyOf(result)).toContain('class="notice ok ad-notice"')
+    expect((await store.getActiveAdmin('bob'))?.role).toBe('viewer')
+  })
+
+  test('a journal port that rejects cannot turn a completed change into a 500', async () => {
+    const failing = createAdminsHandlers({
+      adminStore: store,
+      journalAccessEdit: () => Promise.reject(new Error('journal sink is down')),
+    })
+    await store.createAdmin('bob', 'operator')
+
+    const result = await failing.adminsRemove(postCtx({ name: 'bob' }, session()))
+
+    if (result.kind === 'response') expect(result.status).toBe(200)
+    expect(bodyOf(result)).toContain(AUDIT_RECORD_DROPPED_WARNING)
+    expect(await store.getActiveAdmin('bob')).toBeUndefined()
+  })
+
+  test('a plane assembled without a journal port still applies the change, with no warning', async () => {
+    const portless = createAdminsHandlers({ adminStore: store })
+    await store.createAdmin('bob', 'operator')
+
+    const result = await portless.adminsRemove(postCtx({ name: 'bob' }, session()))
+
+    if (result.kind === 'response') expect(result.status).toBe(200)
+    expect(bodyOf(result)).not.toContain(AUDIT_RECORD_DROPPED_WARNING)
+    expect(await store.getActiveAdmin('bob')).toBeUndefined()
   })
 })
 

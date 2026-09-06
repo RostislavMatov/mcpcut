@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -15,7 +16,10 @@ import { defaultInstallConfig } from '../../src/setup/defaults.js'
 import type { InstallConfigLoad } from '../../src/setup/load.js'
 import type { JournalRecord } from '../../src/journal/record.js'
 import { createJournalSink } from '../../src/journal/sink.js'
+import { TUI_NOT_A_TTY } from '../../src/cli/tui-constants.js'
+import { plainStyle } from '../../src/tui/ansi.js'
 import { createClientHarness } from '../proxy/harness.js'
+import { createFakeTerminal, waitForScreen } from '../tui/support/fake-terminal.js'
 
 /**
  * Dispatcher-level routing tests: every subcommand is driven through
@@ -526,5 +530,141 @@ describe('dispatch: start|stop|status|logs', () => {
     expect(exitCode).toBe(0)
     expect(manager.calls).toEqual(['logs serve 7'])
     expect(io.out()).toBe('a log line\n')
+  })
+})
+
+/**
+ * A bare `mcpcut` (phase 2, task 15) means one of four things, and the
+ * difference is what it is being typed into.
+ *
+ * In a pipe, a script or CI it is what it has always been: the usage, exit 0,
+ * ahead of every gate — nothing that runs unattended may start depending on a
+ * config file it never needed. On a terminal it is a request for the console,
+ * and that request goes through the same broken-config gate every other
+ * command does: a console opened over the wrong data directory is worse than
+ * a refusal that names the file.
+ */
+describe('dispatch: a bare invocation', () => {
+  const CONFIG_PATH = '/home/op/.mcpcut/config.json'
+
+  const broken: DataDirResolution = {
+    dataDir: '/home/op/.mcp-journal',
+    source: 'default',
+    configPath: CONFIG_PATH,
+    problem: ['dataDir: dataDir must be an absolute path'],
+  }
+
+  test('prints usage outside a terminal, as it always has', async () => {
+    const io = fakeIo()
+
+    const exitCode = await dispatch([], io, { tui: { isTty: false } })
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain('Usage:')
+    expect(io.err()).toBe('')
+  })
+
+  test('prints usage outside a terminal even when the install config is broken', async () => {
+    const io = fakeIo()
+
+    const exitCode = await dispatch([], io, { install: broken, tui: { isTty: false } })
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain('Usage:')
+    expect(io.err()).toBe('')
+  })
+
+  test('on a terminal without a config, points at setup rather than opening', async () => {
+    const io = fakeIo()
+
+    const exitCode = await dispatch([], io, {
+      tui: { isTty: true, env: {}, install: { kind: 'absent', path: CONFIG_PATH } },
+    })
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain(CONFIG_PATH)
+    expect(io.err()).toContain('setup --yes')
+    expect(io.out()).toBe('')
+  })
+
+  test('on a terminal with a broken config, refuses like every other command', async () => {
+    const io = fakeIo()
+
+    const exitCode = await dispatch([], io, { install: broken, tui: { isTty: true, env: {} } })
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain(CONFIG_PATH)
+    expect(io.err()).toContain('dataDir: dataDir must be an absolute path')
+    expect(io.out()).toBe('')
+  })
+
+  test('on a terminal with a usable config, opens the console', async () => {
+    const io = fakeIo()
+    const fake = createFakeTerminal()
+    const usable: DataDirResolution = {
+      dataDir: '/home/op/.mcp-journal',
+      source: 'config',
+      configPath: CONFIG_PATH,
+    }
+    const install: InstallConfigLoad = {
+      kind: 'ok',
+      path: CONFIG_PATH,
+      config: defaultInstallConfig('/var/lib/mcpcut'),
+    }
+
+    const running = dispatch([], io, {
+      install: usable,
+      tui: {
+        isTty: true,
+        env: {},
+        install,
+        terminal: fake.terminal,
+        style: plainStyle,
+        processEvents: new EventEmitter(),
+        escapeCodeTimeoutMs: 10,
+      },
+    })
+    await waitForScreen(fake, (screen) => screen.includes('Sign in'), 'the sign-in screen')
+    fake.type('\x03')
+
+    expect(await running).toBe(0)
+    expect(fake.restored()).toBe(true)
+  })
+})
+
+describe('dispatch: tui', () => {
+  test('refuses outside a terminal, pointing back at the commands', async () => {
+    const io = fakeIo()
+
+    const exitCode = await dispatch(['tui'], io, { tui: { isTty: false } })
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toBe(TUI_NOT_A_TTY)
+  })
+
+  test('routes --help through to the tui usage', async () => {
+    const io = fakeIo()
+
+    const exitCode = await dispatch(['tui', '--help'], io, { tui: { isTty: false } })
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain('tui')
+    expect(io.out()).toContain('Usage:')
+  })
+
+  test('a top-level --help still prints the full usage over a broken config', async () => {
+    const io = fakeIo()
+    const broken: DataDirResolution = {
+      dataDir: '/home/op/.mcp-journal',
+      source: 'default',
+      configPath: '/home/op/.mcpcut/config.json',
+      problem: ['dataDir: dataDir must be an absolute path'],
+    }
+
+    const exitCode = await dispatch(['--help'], io, { install: broken })
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain('Usage:')
+    expect(io.err()).toBe('')
   })
 })

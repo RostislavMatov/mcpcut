@@ -337,7 +337,14 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
     // `access-edit` category, one attribution shape, one drop diagnostic.
     journalAccessEdit: writeAccessEdit,
   })
-  const admins = createAdminsHandlers({ adminStore: deps.adminStore, audit })
+  // Admin identities share the same writer (owner decision 2026-09-06): who
+  // minted, rotated, re-roled or removed an admin is the root of every other
+  // record's attribution, so it belongs in the same `access-edit` category.
+  const admins = createAdminsHandlers({
+    adminStore: deps.adminStore,
+    audit,
+    journalAccessEdit: writeAccessEdit,
+  })
 
   const handlers: UiHandlers = Object.freeze({
     loginPage: createLoginPage(),
