@@ -6,6 +6,7 @@ import { PassThrough } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { createAdminStore } from '../../src/admin/store.js'
 import type { CliWritable, DispatchFn } from '../../src/cli/dispatch-types.js'
+import { defaultInstallConfig } from '../../src/setup/defaults.js'
 import { ENTER_SCREEN, LEAVE_SCREEN, plainStyle, type Style } from '../../src/tui/ansi.js'
 import {
   ACTIVE_MARKER,
@@ -15,9 +16,21 @@ import {
   SECRET_MASK_CHAR,
   SIGNIN_TITLE,
   WINDOWS_UNSUPPORTED_REASON,
+  WIZARD_TITLE_FIRST_RUN,
 } from '../../src/tui/constants.js'
-import { createTokenCell, type TokenCell } from '../../src/tui/runtime-effects.js'
-import { runConsole, type ConsoleDeps, type TuiTerminal } from '../../src/tui/runtime.js'
+import type { Model, Msg, TerminalSize } from '../../src/tui/model.js'
+import {
+  createTokenCell,
+  createWizardOutcomeCell,
+  type TokenCell,
+} from '../../src/tui/runtime-effects.js'
+import {
+  createLoop,
+  runConsole,
+  type ConsoleDeps,
+  type TuiTerminal,
+} from '../../src/tui/runtime.js'
+import { wizardScreenOf, type WizardPrefill } from '../../src/tui/wizard-fields.js'
 import { createFakeTerminal, waitForScreen, type FakeTerminal } from './support/fake-terminal.js'
 
 /**
@@ -106,6 +119,8 @@ interface StartOptions {
   readonly style?: Style
   readonly columns?: number
   readonly rows?: number
+  /** The screen the console opens on; the sign-in screen when absent. */
+  readonly initial?: (size: TerminalSize) => Model
 }
 
 function depsOf(
@@ -143,15 +158,16 @@ function startConsole(options: StartOptions = {}): Harness {
   })
   const processEvents = new EventEmitter()
   const stderr = captureStderr()
-  const exit = runConsole(
-    depsOf(
+  const exit = runConsole({
+    ...depsOf(
       options.terminal ?? fake.terminal,
       processEvents,
       stderr,
       options.dispatch ?? quietDispatch,
       options.style ?? plainStyle,
     ),
-  )
+    ...(options.initial !== undefined ? { initial: options.initial } : {}),
+  })
   const harness: Harness = { fake, processEvents, exit, errText: () => stderr.text() }
   running.push({ harness })
   return harness
@@ -183,6 +199,149 @@ async function signedInConsole(options: StartOptions = {}): Promise<{
 // ---------------------------------------------------------------------------
 // Opening and leaving
 // ---------------------------------------------------------------------------
+
+describe('runConsole: the initial screen seam', () => {
+  /** What `mcpcut` hands the wizard when no config exists yet. */
+  function wizardPrefill(): WizardPrefill {
+    return {
+      mode: 'first-run',
+      configPath: '/home/alice/.mcpcut/config.json',
+      config: defaultInstallConfig('/var/lib/x'),
+    }
+  }
+
+  test('opens on the screen the caller built, not on the sign-in screen', async () => {
+    const prefill = wizardPrefill()
+    const harness = startConsole({
+      initial: (size) => ({ screen: wizardScreenOf(prefill), size }),
+    })
+
+    await waitForScreen(
+      harness.fake,
+      (screen) => screen.includes(WIZARD_TITLE_FIRST_RUN),
+      'the first-run wizard',
+    )
+
+    harness.fake.type('\x03')
+    await expect(harness.exit).resolves.toBe(EXIT_OK)
+    expect(harness.fake.restored()).toBe(true)
+  })
+
+  test('is asked for the terminal size once, and the sign-in screen stands without it', async () => {
+    const sizes: TerminalSize[] = []
+    const harness = startConsole({
+      columns: 100,
+      rows: 30,
+      initial: (size) => {
+        sizes.push(size)
+        return { screen: wizardScreenOf(wizardPrefill()), size }
+      },
+    })
+
+    await waitForScreen(
+      harness.fake,
+      (screen) => screen.includes(WIZARD_TITLE_FIRST_RUN),
+      'the first-run wizard',
+    )
+    harness.fake.resize(120, 40)
+
+    expect(sizes).toEqual([{ columns: 100, rows: 30 }])
+    harness.fake.type('\x03')
+    await expect(harness.exit).resolves.toBe(EXIT_OK)
+  })
+
+  test('without the seam the console still opens on the sign-in screen', async () => {
+    const harness = startConsole()
+
+    await waitForScreen(harness.fake, (screen) => screen.includes(SIGNIN_TITLE), 'the sign-in screen')
+
+    expect(harness.fake.screen()).not.toContain(WIZARD_TITLE_FIRST_RUN)
+    harness.fake.type('\x03')
+    await expect(harness.exit).resolves.toBe(EXIT_OK)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The effect queue
+// ---------------------------------------------------------------------------
+
+describe('the queue: what a settled console still owes the wizard', () => {
+  /** An install whose services belong to Compose, so `setup` alone finishes the wizard. */
+  function externalPrefill(): WizardPrefill {
+    const config = defaultInstallConfig('/var/lib/x')
+
+    return {
+      mode: 'first-run',
+      configPath: '/home/alice/.mcpcut/config.json',
+      config: { ...config, supervisor: 'external' },
+    }
+  }
+
+  /** A dispatcher that takes the command and never answers. */
+  const neverAnswers: DispatchFn = () => new Promise<number>(() => undefined)
+
+  const SETUP_STDOUT = 'admin: owner\nrole: owner\ntoken: mcpa_x\n'
+
+  const ENTER: Msg = { kind: 'key', key: { kind: 'enter' } }
+  const YES: Msg = { kind: 'key', key: { kind: 'char', char: 'y' } }
+  const SETUP_DONE: Msg = {
+    kind: 'wizard-run-result',
+    step: 'setup',
+    result: {
+      argv: ['setup', '--yes'],
+      display: ['setup', '--yes'],
+      exitCode: EXIT_OK,
+      stdout: SETUP_STDOUT,
+      stderr: '',
+    },
+  }
+
+  test('the wizard answer is left in the cell with a run still in flight', () => {
+    // The queue is made busy on purpose: `setup` is dispatched and never
+    // answers, so every later link of the chain is stuck behind it. The
+    // wizard reaches its final screen anyway — the result is folded in from
+    // outside — and the answer it hands back must not wait on the queue,
+    // because the drain that follows a quit is bounded.
+    const outcome = createWizardOutcomeCell()
+    const fake = createFakeTerminal()
+    const base = depsOf(fake.terminal, new EventEmitter(), captureStderr(), neverAnswers)
+    const loop = createLoop({
+      ...base,
+      effects: { ...base.effects, wizard: { outcome } },
+      initial: (size) => ({ screen: wizardScreenOf(externalPrefill()), size }),
+    })
+
+    loop.step(ENTER)
+    loop.step(SETUP_DONE)
+    loop.step(YES)
+
+    expect(outcome.get()).toBe('sign-in')
+    expect(loop.exitCode()).toBe(EXIT_OK)
+  })
+
+  test('the run that never answered is still the one the queue is stuck on', async () => {
+    // Guards the guard: without a busy queue the test above would pass on a
+    // `wizard-finish` that only runs when the chain drains.
+    const dispatched: string[][] = []
+    const fake = createFakeTerminal()
+    const base = depsOf(fake.terminal, new EventEmitter(), captureStderr(), (argv) => {
+      dispatched.push([...argv])
+      return new Promise<number>(() => undefined)
+    })
+    const loop = createLoop({
+      ...base,
+      effects: { ...base.effects, wizard: { outcome: createWizardOutcomeCell() } },
+      initial: (size) => ({ screen: wizardScreenOf(externalPrefill()), size }),
+    })
+
+    loop.step(ENTER)
+    // The queue hands an effect to the dispatcher a microtask later.
+    await new Promise((resolve) => setImmediate(resolve))
+
+    expect(dispatched).toHaveLength(1)
+    expect(dispatched[0]?.[0]).toBe('setup')
+  })
+})
 
 describe('runConsole: opening the screen', () => {
   test('enters the alternate screen before it draws anything, on the sign-in screen', async () => {

@@ -130,20 +130,30 @@ function screenOf(chunks: readonly string[]): string {
  * and — for anything that runs a command — a promise, and a fixed wait would
  * be either flaky or slow. The failure names what was being waited for and
  * shows the frame that was on screen instead.
+ *
+ * `timeoutMs` is a parameter rather than the constant because the first-run
+ * wizard waits on WHOLE commands: a refused `setup` spends a probe timeout on
+ * the port it could not bind, which is already the default deadline.
  */
 export async function waitForScreen(
   fake: FakeTerminal,
   predicate: (screen: string) => boolean,
   what: string,
+  timeoutMs: number = WAIT_TIMEOUT_MS,
 ): Promise<void> {
   await waitUntil(
     () => predicate(fake.screen()),
     () => `${what}; the last frame was:\n${fake.screen()}`,
+    timeoutMs,
   )
 }
 
-async function waitUntil(predicate: () => boolean, describe: () => string): Promise<void> {
-  const deadline = Date.now() + WAIT_TIMEOUT_MS
+async function waitUntil(
+  predicate: () => boolean,
+  describe: () => string,
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
   while (!predicate()) {
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${describe()}`)
     await sleep(POLL_INTERVAL_MS)

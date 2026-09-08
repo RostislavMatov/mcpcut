@@ -2,6 +2,7 @@ import { padRight, type Style } from './ansi.js'
 import type { Model } from './model.js'
 import { renderMain } from './render-main.js'
 import { blankRows, renderSignIn } from './render-panes.js'
+import { renderWizard } from './render-wizard.js'
 
 /**
  * The console's renderer (mcpcut phase 2, Task 10): a model and a style in,
@@ -24,12 +25,21 @@ import { blankRows, renderSignIn } from './render-panes.js'
  */
 export function render(model: Model, style: Style): readonly string[] {
   const { columns, rows } = model.size
-  const lines =
-    model.screen.kind === 'signin'
-      ? renderSignIn(model.screen, model.size, style)
-      : renderMain(model.screen, model.size, style)
 
-  return exactlyRows(lines, rows, columns)
+  return exactlyRows(screenLines(model, style), rows, columns)
+}
+
+/** One screen kind, one renderer — exhaustive, so a fourth screen breaks the build. */
+function screenLines(model: Model, style: Style): readonly string[] {
+  const { screen } = model
+  switch (screen.kind) {
+    case 'signin':
+      return renderSignIn(screen, model.size, style)
+    case 'wizard':
+      return renderWizard(screen, model.size, style)
+    case 'main':
+      return renderMain(screen, model.size, style)
+  }
 }
 
 /** Cuts a frame down to the terminal's rows, or pads it out to them. */

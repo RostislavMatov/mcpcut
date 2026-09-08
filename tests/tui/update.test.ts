@@ -24,8 +24,10 @@ import {
 } from '../../src/tui/model.js'
 import { outputPanelOf, type OutputPanel, type RunResult } from '../../src/tui/output.js'
 import type { ServiceSummary } from '../../src/tui/services-summary.js'
+import { defaultInstallConfig } from '../../src/setup/defaults.js'
 import { update } from '../../src/tui/update.js'
 import { EMPTY_TOKEN_NOTICE } from '../../src/tui/update-signin.js'
+import { wizardScreenOf } from '../../src/tui/wizard-fields.js'
 
 /**
  * The reducer is the whole of the console's behaviour: every keystroke, every
@@ -77,6 +79,18 @@ function mainScreen(patch: Partial<MainScreen> = {}, role: Role = 'owner'): Main
 
 function mainModel(patch: Partial<MainScreen> = {}, role: Role = 'owner'): Model {
   return { screen: mainScreen(patch, role), size: SIZE }
+}
+
+/**
+ * A wizard on its form. The stage-by-stage behaviour is asserted in
+ * `update-wizard.test.ts`; what belongs here is that `update` routes to it and
+ * that its branches keep the invariants the other screens keep.
+ */
+function wizardModel(): Model {
+  const config = defaultInstallConfig('/var/lib/x')
+  const screen = wizardScreenOf({ mode: 'first-run', configPath: '/home/op/.mcpcut/config.json', config })
+
+  return { screen, size: SIZE }
 }
 
 function mainOf(model: Model): MainScreen {
@@ -824,6 +838,13 @@ describe('update: nothing mutates the model it was handed', () => {
     ['main: help', mainModel(), char('?')],
     ['main: quit question', mainModel({ output: panelOf(1, { stdout: ONE_TIME_STDOUT }) }), char('q')],
     ['main: resize', mainModel(), { kind: 'resize', size: { columns: 40, rows: 10 } }],
+    ['wizard: typing', wizardModel(), char('z')],
+    ['wizard: deploy', wizardModel(), key('enter')],
+    [
+      'wizard: finished step',
+      update(wizardModel(), key('enter')).model,
+      { kind: 'wizard-run-result', step: 'setup', result: { ...runResult, stdout: 'admin: owner\ntoken: mcpa_x\n' } },
+    ],
   ]
 
   test.each(cases)('%s', (_name, model, msg) => {

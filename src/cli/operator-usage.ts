@@ -49,17 +49,22 @@ const DESCRIPTION_INDENT = ' '.repeat(USAGE_DESCRIPTION_COLUMN)
 const FLAG_CONTINUATION_INDENT = ' '.repeat(ROW_INDENT.length + `${CLI_NAME} setup `.length)
 
 /**
- * `mcpcut setup`. The `--behind-tls` note earns its line: the flag is written
- * into the config and therefore survives a rerun that does not mention it, so
- * the flag that takes it back has to be named where the flags are read.
+ * `mcpcut setup`. Two rows, because the command is two commands: on a terminal
+ * without `--yes` it is the interactive setup, and with `--yes` it is the
+ * non-interactive run the wizard itself performs. The `--behind-tls` note
+ * earns its line: the flag is written into the config and therefore survives a
+ * rerun that does not mention it, so the flag that takes it back has to be
+ * named where the flags are read.
  */
 export const SETUP_SYNOPSIS_LINES: readonly string[] = [
+  `${ROW_INDENT}${`${CLI_NAME} setup`.padEnd(USAGE_DESCRIPTION_COLUMN - ROW_INDENT.length)}Interactive setup on a terminal: the same questions as the flags below`,
   `${ROW_INDENT}${CLI_NAME} setup --yes [--data-dir <dir>] [--ui-host H] [--ui-port N] [--serve-host H] [--serve-port N]`,
   `${FLAG_CONTINUATION_INDENT}[--behind-tls|--no-behind-tls] [--admin <name>|--no-admin] [--supervisor ${SUPERVISORS.join('|')}]`,
   `${FLAG_CONTINUATION_INDENT}[--start] [--force]`,
   `${DESCRIPTION_INDENT}Write the install config, prepare the data directory, run the`,
-  `${DESCRIPTION_INDENT}checks and mint the first owner (interactive setup: later)`,
+  `${DESCRIPTION_INDENT}checks and mint the first owner`,
   `${DESCRIPTION_INDENT}--behind-tls is remembered across reruns; --no-behind-tls takes it back`,
+  `${DESCRIPTION_INDENT}--force, --no-admin and --start apply to --yes only`,
 ]
 
 /**

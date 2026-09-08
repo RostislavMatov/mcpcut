@@ -696,6 +696,44 @@ describe('no command module imports the dispatcher that routes it', () => {
 })
 
 // ---------------------------------------------------------------------------
+// `setup-cmd.ts` does not import the console that hosts its interactive half
+// (`mcpcut` phase 3, task 14). Without `--yes` the command opens the first-run
+// wizard, and it does so through a `wizard` seam the entry point hands it —
+// never by importing `tui-cmd.ts`. The direction matters: `tui-cmd.ts` already
+// reaches `setup-cmd.ts`'s neighbour `setup-args.ts` through `tui-wizard.ts`,
+// so an edge back the other way would close `tui-cmd → setup-cmd → tui-cmd`
+// the first time somebody names `SetupCliOptions` from the console side. The
+// one console-side module `setup-cmd.ts` may import is the leaf `./tty.js`,
+// which exists precisely so both sides can ask about a terminal without
+// importing each other.
+// ---------------------------------------------------------------------------
+
+const SETUP_COMMAND_MODULE = 'src/cli/setup-cmd.ts'
+
+/** Matches a specifier that names the console's command module. */
+function isTuiCommandSpecifier(specifier: string): boolean {
+  return /(?:^|\/)tui-cmd\.js$/.test(specifier)
+}
+
+describe('setup-cmd.ts holds the wizard as a seam, not as an import', () => {
+  test('it does not import tui-cmd.js', () => {
+    const source = readFileSync(join(PROJECT_ROOT, SETUP_COMMAND_MODULE), 'utf8')
+
+    expect(importSpecifiersOf(source).filter(isTuiCommandSpecifier)).toEqual([])
+  })
+
+  test('the matcher catches the console module but not its neighbours', () => {
+    // Guards the guard: were it to go lax, the rule above would pass whatever
+    // `setup-cmd.ts` imported.
+    expect(isTuiCommandSpecifier('./tui-cmd.js')).toBe(true)
+    expect(isTuiCommandSpecifier('../cli/tui-cmd.js')).toBe(true)
+    expect(isTuiCommandSpecifier('./tui-constants.js')).toBe(false)
+    expect(isTuiCommandSpecifier('./tui-wizard.js')).toBe(false)
+    expect(isTuiCommandSpecifier('./tty.js')).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // The `src/config.ts` import chain (plan task 4). `JOURNAL_DIR` is resolved at
 // IMPORT time, which puts every module the resolution reaches into a cycle
 // hazard: `cli/ui-constants.ts` pulls `admin/constants.ts`, which computes its
@@ -840,5 +878,48 @@ describe('the src/config.ts import chain stays free of the cycle that would blan
 
     expect(reached).toContain('src/setup/schema.ts')
     expect(reached).toContain('src/errno.ts')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// `src/tui/constants.ts` names `./model.js` in types only (`mcpcut` phase 3).
+// The two modules point at each other: `model.ts` imports `SIGNIN_TOKEN_LABEL`
+// as a VALUE, and `constants.ts` names `DeployStepId` and its neighbours back.
+// That is legal only while the second edge is erased at compile time — one
+// value import here and the pair becomes a runtime cycle, whose loser is
+// whichever module the loader reaches first (a `constants.ts` evaluated
+// mid-`model.ts` sees an empty binding). Type-only is the whole reason it
+// holds, so it is asserted rather than remembered.
+// ---------------------------------------------------------------------------
+
+const TUI_CONSTANTS_MODULE = 'src/tui/constants.ts'
+
+/** Every `import … from './model.js'` statement of a source, whole. */
+function modelImportsOf(source: string): string[] {
+  // Anchored at a line start and stopped by the next one, so a lazy body
+  // cannot swallow the statements above it into one match.
+  const pattern = /^import\s(?:(?!\nimport)[\s\S])*?from\s+'\.\/model\.js'/gm
+
+  return [...source.matchAll(pattern)].map((match) => match[0])
+}
+
+describe('tui/constants.ts imports the model as types only', () => {
+  test('no value import of ./model.js closes the cycle at runtime', () => {
+    const source = readFileSync(join(PROJECT_ROOT, TUI_CONSTANTS_MODULE), 'utf8')
+    const statements = modelImportsOf(source)
+
+    expect(statements.length).toBeGreaterThan(0)
+    expect(statements.filter((statement) => !statement.startsWith('import type'))).toEqual([])
+  })
+
+  test('the matcher sees a value import, a multi-line one included', () => {
+    // Guards the guard: were the matcher to miss a form, the rule above would
+    // pass no matter what `constants.ts` imported.
+    expect(modelImportsOf("import { Msg } from './model.js'\n")).toEqual([
+      "import { Msg } from './model.js'",
+    ])
+    expect(modelImportsOf("import {\n  Msg,\n} from './model.js'\n")).toHaveLength(1)
+    expect(modelImportsOf("import type { Msg } from './model.js'\n")[0]).toContain('import type')
+    expect(modelImportsOf("import { Msg } from './modelling.js'\n")).toEqual([])
   })
 })

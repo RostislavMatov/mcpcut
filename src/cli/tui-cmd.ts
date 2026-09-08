@@ -1,12 +1,16 @@
+import { homedir } from 'node:os'
 import { ansiStyle, type Style } from '../tui/ansi.js'
 import { DEFAULT_TUI_SIGNALS, ESCAPE_CODE_TIMEOUT_MS } from '../tui/constants.js'
 import { createTokenCell } from '../tui/runtime-effects.js'
-import { runConsole, type TuiTerminal } from '../tui/runtime.js'
+import { runConsole, type ConsoleDeps, type TuiTerminal } from '../tui/runtime.js'
 import { describeDataDirProblem, resolveDataDir } from '../setup/data-dir.js'
 import { loadInstallConfigSync, type InstallConfigLoad } from '../setup/load.js'
 import type { DispatchFn, DispatchOptions } from './dispatch-types.js'
 import { TUI_USAGE } from './operator-usage.js'
-import { bareNoConfigHint, TUI_NOT_A_TTY, TUI_NOT_WIRED, TUI_NO_ARGUMENTS } from './tui-constants.js'
+import type { SetupArgs } from './setup-args.js'
+import { defaultTerminal, isInteractiveTerminal } from './tty.js'
+import { TUI_NOT_A_TTY, TUI_NOT_WIRED, TUI_NO_ARGUMENTS } from './tui-constants.js'
+import { defaultReopen, runWizard, wizardPrefillOf, type ReopenFn } from './tui-wizard.js'
 import type { UiCliIo } from './ui-constants.js'
 
 /**
@@ -26,11 +30,13 @@ import type { UiCliIo } from './ui-constants.js'
  * — a console over a directory the operator did not configure is worse than a
  * refusal that names the file.
  *
- * The two entry points differ in exactly one place. A bare `mcpcut` with no
- * config is a first run, and until the wizard exists (a later phase) it is
- * sent to `setup`; an explicit `mcpcut tui` is a deliberate request and opens
- * over the default data directory, which is what an install that inherited a
- * journal without ever running `setup` has always used.
+ * The three entry points differ in exactly one place: which screen opens. A
+ * bare `mcpcut` with no config is a first run and opens the WIZARD, as does
+ * `mcpcut setup` without `--yes` whether or not a config exists (there it is
+ * an edit of the install that is already there). An explicit `mcpcut tui` is a
+ * deliberate request for the console and opens over the default data
+ * directory, which is what an install that inherited a journal without ever
+ * running `setup` has always used.
  *
  * The io shape is `UiCliIo` — declared structurally, like every other command
  * module, so nothing here imports the dispatcher that routes it. The
@@ -38,7 +44,7 @@ import type { UiCliIo } from './ui-constants.js'
  * console runs every action through.
  */
 
-export type TuiEntry = 'bare' | 'explicit'
+export type TuiEntry = 'bare' | 'explicit' | 'setup'
 
 /** Test seams: every process-, environment- and terminal-dependent input. */
 export interface TuiCommandOptions {
@@ -65,30 +71,24 @@ export interface TuiCommandOptions {
   readonly signals?: readonly NodeJS.Signals[]
   readonly escapeCodeTimeoutMs?: number
   readonly platform?: NodeJS.Platform
-  /** Which invocation asked for the console; only the missing-config path differs. */
+  /** Which invocation asked for the console; only which screen opens differs. */
   readonly entry?: TuiEntry
-}
-
-/** The terminal a console opens on when the caller names none. */
-function defaultTerminal(): TuiTerminal {
-  return { input: process.stdin, output: process.stdout }
+  /** The flags `mcpcut setup` was given, which prefill the wizard's form. */
+  readonly setupArgs?: SetupArgs
+  /** Home directory the default data dir is built from. Defaults to `homedir()`. */
+  readonly home?: string
+  /** Working directory a relative `--data-dir` is resolved against. Defaults to `process.cwd()`. */
+  readonly cwd?: string
+  /** How the wizard asks for the sign-in screen; the default spawns this build again. */
+  readonly reopen?: ReopenFn
 }
 
 /**
- * Whether a console can be drawn at all: both halves have to be a terminal,
- * since the console reads keys from one and paints frames on the other.
- *
- * Exported because the dispatcher asks the same question about a bare
- * invocation — in a pipe or a script that is a request for the usage, not for
- * a screen — and both answers must come from one place.
+ * Re-exported, not written here: the wizard asks the same question before it
+ * opens, and `tty.ts` is the leaf both sides can import without importing each
+ * other (`./tty.js`).
  */
-export function isInteractiveTerminal(
-  opts: Pick<TuiCommandOptions, 'isTty' | 'terminal'> = {},
-): boolean {
-  if (opts.isTty !== undefined) return opts.isTty
-  const terminal = opts.terminal ?? defaultTerminal()
-  return terminal.input.isTTY === true && terminal.output.isTTY === true
-}
+export { isInteractiveTerminal } from './tty.js'
 
 export async function runTui(
   args: readonly string[],
@@ -120,17 +120,44 @@ export async function runTui(
     return 1
   }
 
-  if (opts.entry === 'bare' && install.kind === 'absent') {
-    io.stderr.write(bareNoConfigHint(install.path))
-    return 1
-  }
-
   const dispatch = opts.dispatch
   // A wiring fault, not an operator one, so it throws rather than printing:
   // there is no exit code that would make an un-wired console meaningful.
   if (dispatch === undefined) throw new Error(TUI_NOT_WIRED)
 
-  return await runConsole({
+  const consoleDeps = consoleDepsOf(opts, io, env, dispatch)
+  if (opts.entry === 'setup' || (opts.entry === 'bare' && install.kind === 'absent')) {
+    const prefill = wizardPrefillOf({
+      install,
+      env,
+      home: opts.home ?? homedir(),
+      cwd: opts.cwd ?? process.cwd(),
+      ...(opts.setupArgs !== undefined ? { args: opts.setupArgs } : {}),
+    })
+    return await runWizard({
+      console: consoleDeps,
+      prefill,
+      // The default reopen says what went wrong on the command's own stderr,
+      // which is the stream the operator is looking at once the console is gone.
+      reopen: opts.reopen ?? ((argv) => defaultReopen(argv, io.stderr)),
+    })
+  }
+
+  return await runConsole(consoleDeps)
+}
+
+/**
+ * Everything a console runs on except the screen it opens with — the wizard
+ * brings its own, the sign-in screen is the runtime's default — so both paths
+ * are handed the same terminal, the same seams and the same session cell.
+ */
+function consoleDepsOf(
+  opts: TuiCommandOptions,
+  io: UiCliIo,
+  env: NodeJS.ProcessEnv,
+  dispatch: DispatchFn,
+): Omit<ConsoleDeps, 'initial'> {
+  return {
     terminal: opts.terminal ?? defaultTerminal(),
     style: opts.style ?? ansiStyle,
     stderr: io.stderr,
@@ -145,7 +172,7 @@ export async function runTui(
     signals: opts.signals ?? DEFAULT_TUI_SIGNALS,
     escapeCodeTimeoutMs: opts.escapeCodeTimeoutMs ?? ESCAPE_CODE_TIMEOUT_MS,
     platform: opts.platform ?? process.platform,
-  })
+  }
 }
 
 /**

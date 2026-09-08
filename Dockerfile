@@ -32,16 +32,21 @@ COPY package.json ./
 # The Silkscreen face is embedded in `dist/ui/assets/fonts.js`; the OFL
 # requires its licence to travel with the redistributed font.
 COPY src/ui/assets/LICENSE-Silkscreen-OFL.txt ./dist/ui/assets/
+COPY docker/entrypoint.sh ./docker/entrypoint.sh
 
-# The data directory is `JOURNAL_DIR` — `$HOME/.mcp-journal` in src/config.ts
-# unless `MCP_JOURNAL_DIR` or `~/.mcpcut/config.json` overrides it; this image
-# sets neither, so `HOME` is still what places it. Creating it here
-# with the runtime user's ownership and the owner-only mode the code expects
-# (JOURNAL_DIR_MODE 0o700) makes Docker seed a fresh named volume with both.
-RUN mkdir -p /home/node/.mcp-journal \
+# The data directory is `JOURNAL_DIR`. `HOME` is no longer the only thing that
+# places it: on the first start of `ui` or `serve` the entrypoint writes
+# `~/.mcpcut/config.json` from the `MCPCUT_*` environment (`setup --yes
+# --supervisor external`), and from then on the config is what src/config.ts
+# reads. Both directories are created here with the runtime user's ownership
+# and the owner-only mode the code expects (JOURNAL_DIR_MODE 0o700), so Docker
+# seeds a fresh named volume mounted on either of them with both.
+RUN mkdir -p /home/node/.mcp-journal /home/node/.mcpcut \
  && chown -R node:node /home/node \
- && chmod 700 /home/node/.mcp-journal
+ && chmod 700 /home/node/.mcp-journal /home/node/.mcpcut \
+ && chmod +x /app/docker/entrypoint.sh /app/dist/cli.js \
+ && ln -s /app/dist/cli.js /usr/local/bin/mcpcut
 
 USER node
-ENTRYPOINT ["node", "/app/dist/cli.js"]
+ENTRYPOINT ["/app/docker/entrypoint.sh"]
 CMD ["--help"]

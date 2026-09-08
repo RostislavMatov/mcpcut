@@ -1,5 +1,13 @@
 import { describe, expect, test } from 'vitest'
-import { parseSetupArgs, SETUP_USAGE } from '../../src/cli/setup-args.js'
+import {
+  NO_SETUP_ARGS,
+  overlaySetupArgs,
+  parseSetupArgs,
+  SETUP_USAGE,
+  type SetupArgs,
+} from '../../src/cli/setup-args.js'
+import { defaultInstallConfig } from '../../src/setup/defaults.js'
+import type { InstallConfig } from '../../src/setup/schema.js'
 import { MAX_TCP_PORT } from '../../src/cli/serve-constants.js'
 
 /**
@@ -148,6 +156,77 @@ describe('parseSetupArgs: the flags a non-interactive install is described by', 
     expect(parsed.ok).toBe(false)
     if (parsed.ok) throw new Error('expected a refusal')
     expect(parsed.message).not.toContain('')
+  })
+})
+
+
+describe('overlaySetupArgs: the flags the operator typed, laid over the config that exists', () => {
+  const base: InstallConfig = {
+    ...defaultInstallConfig('/var/lib/mcpcut'),
+    ui: {
+      ...defaultInstallConfig('/var/lib/mcpcut').ui,
+      host: '127.0.0.1',
+      port: 7777,
+      behindTls: true,
+      allowedHosts: ['mcpcut.example'],
+    },
+  }
+
+  test('overlays only the fields that were given', () => {
+    const overlaid = overlaySetupArgs(base, { ...NO_SETUP_ARGS, uiPort: 9001 }, '/work')
+
+    expect(overlaid.ui.port).toBe(9001)
+    expect(overlaid.ui.host).toBe('127.0.0.1')
+    expect(overlaid.dataDir).toBe(base.dataDir)
+    expect(overlaid.serve).toEqual(base.serve)
+  })
+
+  test('NO_SETUP_ARGS changes nothing at all', () => {
+    expect(overlaySetupArgs(base, NO_SETUP_ARGS, '/work')).toEqual(base)
+  })
+
+  test('writes behindTls: false, so --no-behind-tls can take the claim back', () => {
+    const args: SetupArgs = { ...NO_SETUP_ARGS, behindTls: false }
+
+    expect(overlaySetupArgs(base, args, '/work').ui.behindTls).toBe(false)
+  })
+
+  test('resolves a relative --data-dir against the cwd and leaves an absolute one alone', () => {
+    expect(overlaySetupArgs(base, { ...NO_SETUP_ARGS, dataDir: 'data' }, '/work').dataDir).toBe(
+      '/work/data',
+    )
+    expect(overlaySetupArgs(base, { ...NO_SETUP_ARGS, dataDir: '/srv/d' }, '/work').dataDir).toBe(
+      '/srv/d',
+    )
+  })
+
+  test('fields setup has no flag for survive the overlay', () => {
+    const overlaid = overlaySetupArgs(
+      base,
+      {
+        ...NO_SETUP_ARGS,
+        uiHost: '0.0.0.0',
+        serveHost: '0.0.0.0',
+        servePort: 9002,
+        supervisor: 'external',
+      },
+      '/work',
+    )
+
+    expect(overlaid.ui.allowedHosts).toEqual(['mcpcut.example'])
+    expect(overlaid.ui.behindTls).toBe(true)
+    expect(overlaid.ui.host).toBe('0.0.0.0')
+    expect(overlaid.serve.host).toBe('0.0.0.0')
+    expect(overlaid.serve.port).toBe(9002)
+    expect(overlaid.supervisor).toBe('external')
+  })
+
+  test('never mutates the config it was handed', () => {
+    const snapshot = structuredClone(base)
+
+    overlaySetupArgs(base, { ...NO_SETUP_ARGS, uiPort: 9001, dataDir: 'data' }, '/work')
+
+    expect(base).toEqual(snapshot)
   })
 })
 

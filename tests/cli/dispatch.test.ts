@@ -18,6 +18,7 @@ import type { JournalRecord } from '../../src/journal/record.js'
 import { createJournalSink } from '../../src/journal/sink.js'
 import { TUI_NOT_A_TTY } from '../../src/cli/tui-constants.js'
 import { plainStyle } from '../../src/tui/ansi.js'
+import { WIZARD_TITLE_FIRST_RUN } from '../../src/tui/constants.js'
 import { createClientHarness } from '../proxy/harness.js'
 import { createFakeTerminal, waitForScreen } from '../tui/support/fake-terminal.js'
 
@@ -410,12 +411,13 @@ describe('dispatch: an unusable install config', () => {
     // never touches disk — the seams keep even the config lookup off `$HOME`.
     const exitCode = await dispatch(['setup'], io, {
       install: broken,
+      tui: { isTty: false },
       setup: { env: {}, home: tempDir, cwd: tempDir },
     })
 
     expect(exitCode).toBe(1)
     expect(io.err()).not.toContain('is unusable')
-    expect(io.err()).toContain('Interactive setup arrives with the console')
+    expect(io.err()).toContain('needs a terminal')
     expect(io.err()).toContain('mcpcut setup --yes')
   })
 
@@ -574,17 +576,29 @@ describe('dispatch: a bare invocation', () => {
     expect(io.err()).toBe('')
   })
 
-  test('on a terminal without a config, points at setup rather than opening', async () => {
+  test('on a terminal without a config, opens the first-run wizard', async () => {
     const io = fakeIo()
+    const fake = createFakeTerminal()
 
-    const exitCode = await dispatch([], io, {
-      tui: { isTty: true, env: {}, install: { kind: 'absent', path: CONFIG_PATH } },
+    const running = dispatch([], io, {
+      tui: {
+        isTty: true,
+        env: {},
+        install: { kind: 'absent', path: CONFIG_PATH },
+        home: tempDir,
+        cwd: tempDir,
+        terminal: fake.terminal,
+        style: plainStyle,
+        processEvents: new EventEmitter(),
+        escapeCodeTimeoutMs: 10,
+      },
     })
+    await waitForScreen(fake, (screen) => screen.includes('Data dir'), 'the wizard form')
+    fake.type('\x03')
 
-    expect(exitCode).toBe(1)
-    expect(io.err()).toContain(CONFIG_PATH)
-    expect(io.err()).toContain('setup --yes')
-    expect(io.out()).toBe('')
+    expect(await running).toBe(0)
+    expect(fake.restored()).toBe(true)
+    expect(io.err()).toBe('')
   })
 
   test('on a terminal with a broken config, refuses like every other command', async () => {
@@ -629,6 +643,37 @@ describe('dispatch: a bare invocation', () => {
 
     expect(await running).toBe(0)
     expect(fake.restored()).toBe(true)
+  })
+})
+
+describe('dispatch: setup without --yes on a terminal', () => {
+  test('opens the wizard the CLI entry point wires in', async () => {
+    const io = fakeIo()
+    const fake = createFakeTerminal()
+
+    const running = dispatch(['setup'], io, {
+      tui: {
+        isTty: true,
+        env: {},
+        install: { kind: 'absent', path: join(tempDir, 'config.json') },
+        home: tempDir,
+        cwd: tempDir,
+        terminal: fake.terminal,
+        style: plainStyle,
+        processEvents: new EventEmitter(),
+        escapeCodeTimeoutMs: 10,
+      },
+      setup: { env: {}, home: tempDir },
+    })
+    await waitForScreen(
+      fake,
+      (screen) => screen.includes(WIZARD_TITLE_FIRST_RUN),
+      'the first-run wizard',
+    )
+    fake.type('\x03')
+
+    expect(await running).toBe(0)
+    expect(io.err()).toBe('')
   })
 })
 

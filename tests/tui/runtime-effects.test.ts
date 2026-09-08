@@ -11,6 +11,7 @@ import { OUTPUT_CUT_NOTE, OUTPUT_MAX_CHARS } from '../../src/tui/constants.js'
 import type { Effect, Msg, RunRequest } from '../../src/tui/model.js'
 import {
   createTokenCell,
+  createWizardOutcomeCell,
   executeEffect,
   type EffectDeps,
   type TokenCell,
@@ -462,6 +463,157 @@ describe('executeEffect — refresh-services', () => {
 
     expect(message).toEqual({ kind: 'services', statuses: undefined })
     expect(dispatch.calls).toHaveLength(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// wizard-run and wizard-finish
+// ---------------------------------------------------------------------------
+
+/** One rung of the deploy ladder; `setup` is the rung that mints the first admin. */
+const WIZARD_REQUEST: RunRequest = {
+  actionId: 'setup',
+  argv: ['setup', '--yes', '--data-dir', '/var/lib/x'],
+  display: ['setup', '--yes', '--data-dir', '/var/lib/x'],
+}
+
+/** The `Msg` a rung answered with, or a failure naming what came back instead. */
+function wizardResultOf(message: Msg | undefined): Extract<Msg, { kind: 'wizard-run-result' }> {
+  if (message?.kind !== 'wizard-run-result') {
+    throw new Error(`expected a wizard-run-result, got ${message?.kind}`)
+  }
+  return message
+}
+
+describe('executeEffect — wizard-run', () => {
+  test("dispatches the step's argv with the console's own environment on the seams", async () => {
+    const cell = createTokenCell()
+    const dispatch = recordingDispatch((io) => {
+      io.stdout.write('admin: owner\n')
+      return 0
+    })
+    const deps = depsOf(dispatch.fn, cell)
+
+    const message = await executeEffect(
+      { kind: 'wizard-run', step: 'setup', request: WIZARD_REQUEST },
+      deps,
+    )
+
+    const call = dispatch.calls[0]
+    expect(call?.argv).toEqual(['setup', '--yes', '--data-dir', '/var/lib/x'])
+    expect(call?.opts?.setup?.env).toBe(deps.env)
+    expect(call?.opts?.services?.env).toBe(deps.env)
+    expect(message).toEqual({
+      kind: 'wizard-run-result',
+      step: 'setup',
+      result: {
+        argv: WIZARD_REQUEST.argv,
+        display: WIZARD_REQUEST.display,
+        exitCode: 0,
+        stdout: 'admin: owner\n',
+        stderr: '',
+      },
+    })
+  })
+
+  test('runs with an empty session cell: there is no admin to resolve yet', async () => {
+    const cell = createTokenCell()
+    const dispatch = recordingDispatch()
+
+    const message = await executeEffect(
+      { kind: 'wizard-run', step: 'start-ui', request: WIZARD_REQUEST },
+      depsOf(dispatch.fn, cell),
+    )
+
+    expect(dispatch.calls).toHaveLength(1)
+    expect(dispatch.calls[0]?.opts?.setup?.env?.[ADMIN_TOKEN_ENV_VAR]).toBeUndefined()
+    expect(cell.get()).toBeUndefined()
+    expect(wizardResultOf(message).step).toBe('start-ui')
+  })
+
+  test('a command that throws becomes a failed rung, not a crashed wizard', async () => {
+    const dispatch = recordingDispatch((io) => {
+      io.stdout.write('check  data dir\n')
+      throw new Error('the port is taken')
+    })
+
+    const message = await executeEffect(
+      { kind: 'wizard-run', step: 'setup', request: WIZARD_REQUEST },
+      depsOf(dispatch.fn, createTokenCell()),
+    )
+
+    const { result } = wizardResultOf(message)
+    expect(result.exitCode).toBe(1)
+    expect(result.stdout).toBe('check  data dir\n')
+    expect(result.stderr).toContain('the port is taken')
+  })
+
+  test('a rung that prints more than the console keeps is cut, and the pane says so', async () => {
+    const dispatch = recordingDispatch((io) => {
+      io.stdout.write('x'.repeat(OUTPUT_MAX_CHARS + 1))
+      return 0
+    })
+
+    const message = await executeEffect(
+      { kind: 'wizard-run', step: 'setup', request: WIZARD_REQUEST },
+      depsOf(dispatch.fn, createTokenCell()),
+    )
+
+    expect(wizardResultOf(message).result.stderr).toContain(OUTPUT_CUT_NOTE)
+  })
+
+  test('the exit code of a refusal is reported as it came back', async () => {
+    const dispatch = recordingDispatch((io) => {
+      io.stderr.write('config already exists\n')
+      return 2
+    })
+
+    const message = await executeEffect(
+      { kind: 'wizard-run', step: 'setup', request: WIZARD_REQUEST },
+      depsOf(dispatch.fn, createTokenCell()),
+    )
+
+    expect(wizardResultOf(message).result).toMatchObject({
+      exitCode: 2,
+      stderr: 'config already exists\n',
+    })
+  })
+})
+
+describe('createWizardOutcomeCell', () => {
+  test('starts empty, holds what it is given, and can be emptied again', () => {
+    const cell = createWizardOutcomeCell()
+
+    expect(cell.get()).toBeUndefined()
+
+    cell.set('sign-in')
+    expect(cell.get()).toBe('sign-in')
+
+    cell.set(undefined)
+    expect(cell.get()).toBeUndefined()
+  })
+})
+
+describe('executeEffect — wizard-finish', () => {
+  test('records the outcome the runtime reopens the console for', async () => {
+    const outcome = createWizardOutcomeCell()
+    const dispatch = recordingDispatch()
+    const deps: EffectDeps = { ...depsOf(dispatch.fn, createTokenCell()), wizard: { outcome } }
+
+    const message = await executeEffect({ kind: 'wizard-finish' }, deps)
+
+    expect(message).toBeUndefined()
+    expect(outcome.get()).toBe('sign-in')
+    expect(dispatch.calls).toHaveLength(0)
+  })
+
+  test('a runtime with no wizard seam is not a crash', async () => {
+    const message = await executeEffect(
+      { kind: 'wizard-finish' },
+      depsOf(recordingDispatch().fn, createTokenCell()),
+    )
+
+    expect(message).toBeUndefined()
   })
 })
 

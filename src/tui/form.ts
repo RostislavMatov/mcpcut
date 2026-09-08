@@ -108,6 +108,20 @@ export function editFocused(form: Form, key: KeyEvent): Form {
   return { ...form, fields: form.fields.map((each, index) => (index === form.focus ? edited : each)) }
 }
 
+/**
+ * The whole key rule of a form, in one place: the focus keys move the focus,
+ * and every other keystroke is the focused field's business. Both screens that
+ * show a form fold their keys through this, so `Tab` means the same thing on
+ * the wizard as it does on an action pane. Like `editFocused`, a key that
+ * changed nothing returns the very same form.
+ */
+export function applyFormKey(form: Form, key: KeyEvent): Form {
+  if (key.kind === 'tab' || key.kind === 'down') return focusNext(form)
+  if (key.kind === 'backtab' || key.kind === 'up') return focusPrevious(form)
+
+  return editFocused(form, key)
+}
+
 function editField(field: FieldState, key: KeyEvent): FieldState {
   switch (field.spec.kind) {
     case 'text':

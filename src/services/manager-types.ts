@@ -117,7 +117,7 @@ export interface ManagerContext {
  * service started by `mcpcut` runs the same code as the `mcpcut` that started
  * it even when the shell's PATH says otherwise.
  */
-const DEFAULT_CLI_PATH = fileURLToPath(new URL('../cli.js', import.meta.url))
+export const DEFAULT_CLI_PATH = fileURLToPath(new URL('../cli.js', import.meta.url))
 
 /** Fills in every default once, so no step has to know what a default is. */
 export function managerContextOf(deps: ServiceManagerDeps): ManagerContext {

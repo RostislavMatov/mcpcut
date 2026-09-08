@@ -17,6 +17,16 @@ import type { ServiceSummary } from './services-summary.js'
  * else — so no frame rendered from a `Model` and no reducer branch can leak
  * the secret; the token lives in the runtime's `TokenCell` and travels to
  * `dispatch` through the `env` seam only (`session-env.ts`).
+ *
+ * The first-run wizard (phase 3) adds a third screen with two deliberate
+ * departures. Its `form` lives on the SCREEN rather than on a stage, so
+ * "back to the form" after a failed deploy returns the values the operator
+ * typed rather than the prefill. And `MintedAdmin` is the one exception to
+ * "never in a frame": the owner token `setup` just minted is shown once, on
+ * the final screen, because the alternative is an operator hunting it out of
+ * a daemon log. It enters the model when `setup` finishes, survives only as
+ * far as the `done` stage (`deploying` carries it between the rungs and never
+ * draws it), and leaves with the screen.
  */
 
 export interface TerminalSize {
@@ -50,6 +60,61 @@ export type Pane =
   | { readonly kind: 'help' }
   | { readonly kind: 'quit-confirm' }
 
+/** Whether the wizard is writing an install's first config, or editing one that exists. */
+export type WizardMode = 'first-run' | 'edit'
+
+/** The three commands the wizard runs, in order; both `start-*` are skipped under an external supervisor. */
+export type DeployStepId = 'setup' | 'start-ui' | 'start-serve'
+
+export type DeployStepState = 'pending' | 'running' | 'done' | 'failed' | 'skipped'
+
+/** One rung of the deploy ladder; `detail` is the sentence beside the marker. */
+export interface DeployStep {
+  readonly id: DeployStepId
+  readonly state: DeployStepState
+  readonly detail?: string
+}
+
+/** The first admin as `setup` reported it — shown once on the final screen, never elsewhere. */
+export interface MintedAdmin {
+  readonly name: string
+  readonly token: string
+}
+
+/** Where the wizard has got to; the form itself lives on the screen, not here. */
+export type WizardStage =
+  | { readonly kind: 'form'; readonly notice?: string }
+  | {
+      readonly kind: 'confirm-exposure'
+      readonly request: RunRequest
+      readonly warnings: readonly string[]
+    }
+  /**
+   * A step is in flight (`steps` has exactly one `running`); `output` is the
+   * transcript of the last finished step. `admin` rides along from the moment
+   * `setup` minted it until the `done` stage shows it — `setup`'s transcript
+   * is gone by then, pushed out of `output` by the `start` runs, and no frame
+   * of this stage draws it.
+   */
+  | {
+      readonly kind: 'deploying'
+      readonly steps: readonly DeployStep[]
+      readonly output?: OutputPanel
+      readonly admin?: MintedAdmin
+    }
+  | {
+      readonly kind: 'setup-failed'
+      readonly steps: readonly DeployStep[]
+      readonly output: OutputPanel
+    }
+  | {
+      readonly kind: 'done'
+      readonly steps: readonly DeployStep[]
+      readonly admin?: MintedAdmin
+      /** `q` with the token on screen asks first; this is the question being asked. */
+      readonly quitAsked: boolean
+    }
+
 export type Screen =
   | {
       readonly kind: 'signin'
@@ -70,10 +135,18 @@ export type Screen =
       /** The run in flight; every key except Ctrl-C is ignored while set. */
       readonly busy?: RunRequest
     }
+  | {
+      readonly kind: 'wizard'
+      readonly mode: WizardMode
+      readonly configPath: string
+      readonly form: Form
+      readonly stage: WizardStage
+    }
 
-/** The two screens by name, for the reducers and renderers that handle one of them. */
+/** The three screens by name, for the reducers and renderers that handle one of them. */
 export type MainScreen = Extract<Screen, { kind: 'main' }>
 export type SigninScreen = Extract<Screen, { kind: 'signin' }>
+export type WizardScreen = Extract<Screen, { kind: 'wizard' }>
 
 export interface Model {
   readonly screen: Screen
@@ -87,12 +160,21 @@ export type Msg =
   | { readonly kind: 'run-result'; readonly result: RunResult }
   | { readonly kind: 'services'; readonly statuses: readonly ServiceSummary[] | undefined }
   | { readonly kind: 'session-lost' }
+  | {
+      readonly kind: 'wizard-run-result'
+      readonly step: DeployStepId
+      readonly result: RunResult
+    }
 
 export type Effect =
   | { readonly kind: 'signin'; readonly token: string }
   | { readonly kind: 'run'; readonly request: RunRequest }
   | { readonly kind: 'refresh-services' }
   | { readonly kind: 'quit'; readonly exitCode: number }
+  /** One rung of the deploy ladder: dispatched with no session, since there is no admin yet. */
+  | { readonly kind: 'wizard-run'; readonly step: DeployStepId; readonly request: RunRequest }
+  /** The operator asked for the sign-in screen; the runtime reopens the console. */
+  | { readonly kind: 'wizard-finish' }
 
 /** One reducer step: the next model and the effects it requests, in order. */
 export interface Step {

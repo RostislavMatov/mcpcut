@@ -1,15 +1,6 @@
 import { visibleActions } from './catalogue/index.js'
 import type { ActionSpec } from './catalogue/types.js'
-import {
-  editFocused,
-  focusNext,
-  focusPrevious,
-  type Form,
-  type FormValues,
-  isValid,
-  validateForm,
-  valuesOf,
-} from './form.js'
+import { applyFormKey, type FormValues, isValid, validateForm, valuesOf } from './form.js'
 import type { KeyEvent } from './keys.js'
 import type { Model, Pane, RunRequest, Step } from './model.js'
 import { ACTIONS_PANE, type MainScreen, noEffects, withMain } from './update-step.js'
@@ -78,16 +69,8 @@ export function updateFormPane(
   if (key.kind === 'escape') return withMain(model, screen, { pane: ACTIONS_PANE })
   if (key.kind === 'enter') return runForm(model, screen, pane)
 
-  const form = movedFocus(pane.form, key) ?? editFocused(pane.form, key)
+  const form = applyFormKey(pane.form, key)
   return form === pane.form ? noEffects(model) : withMain(model, screen, { pane: { ...pane, form } })
-}
-
-/** The focus keys, or `undefined` when the keystroke is the field's business. */
-function movedFocus(form: Form, key: KeyEvent): Form | undefined {
-  if (key.kind === 'tab' || key.kind === 'down') return focusNext(form)
-  if (key.kind === 'backtab' || key.kind === 'up') return focusPrevious(form)
-
-  return undefined
 }
 
 /**

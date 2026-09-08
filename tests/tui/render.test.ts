@@ -33,7 +33,9 @@ import { outputPanelOf, type OutputPanel } from '../../src/tui/output.js'
 import { render } from '../../src/tui/render.js'
 import { SIGNIN_BUSY_TEXT, SIGNIN_FOOTER } from '../../src/tui/render-panes.js'
 import { servicesHeaderPart, type ServiceSummary } from '../../src/tui/services-summary.js'
+import { wizardScreenOf } from '../../src/tui/wizard-fields.js'
 import { CLI_NAME } from '../../src/setup/constants.js'
+import { defaultInstallConfig } from '../../src/setup/defaults.js'
 
 /**
  * The renderer is the console's only writer of frames, so its contract is a
@@ -78,6 +80,16 @@ function mainModel(patch: MainPatch = {}, size: TerminalSize = DEFAULT_SIZE): Mo
 
 function typed(form: Form, text: string): Form {
   return [...text].reduce((current, char) => editFocused(current, { kind: 'char', char }), form)
+}
+
+function wizardModel(size: TerminalSize = DEFAULT_SIZE): Model {
+  const screen = wizardScreenOf({
+    mode: 'first-run',
+    configPath: '/home/op/.mcpcut/config.json',
+    config: defaultInstallConfig('/var/lib/x'),
+  })
+
+  return { screen, size }
 }
 
 function signinModel(text: string, size: TerminalSize = DEFAULT_SIZE): Model {
@@ -130,6 +142,13 @@ describe('render: the shape of a frame', () => {
       const model = mainModel({ output: numberedOutput(40), sectionIndex: 1 }, size)
 
       const lines = render(model, plainStyle)
+
+      expect(lines).toHaveLength(size.rows)
+      expect(lines.every((line) => line.length === size.columns)).toBe(true)
+    })
+
+    test(`the wizard is exactly ${size.rows} lines of exactly ${size.columns} columns`, () => {
+      const lines = render(wizardModel(size), plainStyle)
 
       expect(lines).toHaveLength(size.rows)
       expect(lines.every((line) => line.length === size.columns)).toBe(true)

@@ -418,6 +418,9 @@ describe('an install with no config', () => {
     expect(manager.calls).toEqual([])
     expect(io.err()).toContain('Refusing to start services')
     expect(io.err()).toContain(CONFIG_PATH)
+    // Both ways to an install: the wizard an operator types, and the flags a
+    // script does — `start` itself never asks anything.
+    expect(io.err()).toContain('mcpcut (interactive setup)')
     expect(io.err()).toContain('mcpcut setup --yes')
     expect(io.out()).toBe('')
   })

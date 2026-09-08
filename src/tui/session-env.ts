@@ -41,13 +41,20 @@ export const SESSION_ENV_SEAMS = [
 ] as const
 
 /**
- * The caller's dispatch options with the session environment on every seam of
+ * The caller's dispatch options with `env` on every seam of
  * `SESSION_ENV_SEAMS`, and nothing else changed. Written out seam by seam,
  * the way `accessWriteOptionsOf` lays out the vault's: a typed spread keeps
  * each seam's own fields (`services.manager`, `admin.journalDir`) and lets the
  * compiler refuse a seam that has no `env` to set.
+ *
+ * The environment is whatever the caller means by it. `withSessionToken`
+ * below means "the signed-in operator"; the first-run wizard (phase 3) means
+ * the console's own environment with no token in it at all, because the
+ * install it is about to create has no admin yet — and `setup` mints one.
+ * Passing the console's `MCPCUT_CONFIG` down this way is the point: `setup`
+ * writes the config there and `start` reads it back from the same place.
  */
-export function withSessionToken(base: DispatchOptions, env: NodeJS.ProcessEnv): DispatchOptions {
+export function withSeamEnv(base: DispatchOptions, env: NodeJS.ProcessEnv): DispatchOptions {
   return {
     ...base,
     approvals: { ...base.approvals, env },
@@ -60,6 +67,15 @@ export function withSessionToken(base: DispatchOptions, env: NodeJS.ProcessEnv):
     setup: { ...base.setup, env },
     admin: { ...base.admin, env },
   }
+}
+
+/**
+ * The same seams, with an environment that carries the session's token — the
+ * name the console's own runs go by, so the security property this module is
+ * read for stays greppable.
+ */
+export function withSessionToken(base: DispatchOptions, env: NodeJS.ProcessEnv): DispatchOptions {
+  return withSeamEnv(base, env)
 }
 
 /** The process environment plus the session's token, as the seams above expect it. */

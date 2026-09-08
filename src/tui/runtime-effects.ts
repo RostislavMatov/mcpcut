@@ -3,10 +3,11 @@ import { adminFromEnv, type TokenAdmin } from '../cli/admin-token.js'
 import type { DispatchFn, DispatchOptions } from '../cli/dispatch-types.js'
 import { captureBothIo, type CapturedBothIo } from '../setup/capture-io.js'
 import { OUTPUT_CUT_NOTE, OUTPUT_MAX_CHARS } from './constants.js'
-import type { Effect, Msg, RunRequest } from './model.js'
+import type { DeployStepId, Effect, Msg, RunRequest } from './model.js'
+import type { RunResult } from './output.js'
 import { messageOf } from './runtime-terminal.js'
 import { parseServicesJson } from './services-summary.js'
-import { sessionEnvOf, withSessionToken } from './session-env.js'
+import { sessionEnvOf, withSeamEnv, withSessionToken } from './session-env.js'
 
 /**
  * The effect executor (mcpcut phase 2, task 12): everything the console does
@@ -26,7 +27,10 @@ import { sessionEnvOf, withSessionToken } from './session-env.js'
  * rotated or removed from a shell must stop working in a console that is
  * already open — so every run re-resolves before it dispatches, exactly as the
  * web UI re-checks its session on every request. The old token's hash simply
- * no longer matches, and the console falls back to its sign-in screen.
+ * no longer matches, and the console falls back to its sign-in screen. The
+ * first-run wizard (phase 3) is the one documented exception: `wizard-run`
+ * dispatches with no session at all, because the install it is building has
+ * no admin to resolve until `setup` has minted one — see `runWizardCommand`.
  *
  * The third discipline is survival: no command may take the console down. A
  * `dispatch` that throws, or answers with something that is not an exit code,
@@ -55,6 +59,36 @@ export function createTokenCell(): TokenCell {
   }
 }
 
+/**
+ * What the wizard asked the runtime for once its last screen is done. One
+ * value today — the operator wants the sign-in screen — and it is a named
+ * type rather than a boolean so a second answer (phase 5's "just quit") is an
+ * addition here rather than a re-reading of `true`.
+ */
+export type WizardOutcome = 'sign-in'
+
+/** The wizard's own mutable cell: the single channel out of an effect. */
+export interface WizardOutcomeCell {
+  get(): WizardOutcome | undefined
+  set(outcome: WizardOutcome | undefined): void
+}
+
+/** A fresh, empty cell; the value lives in the closure, as `createTokenCell`'s does. */
+export function createWizardOutcomeCell(): WizardOutcomeCell {
+  let outcome: WizardOutcome | undefined
+  return {
+    get: () => outcome,
+    set: (next: WizardOutcome | undefined) => {
+      outcome = next
+    },
+  }
+}
+
+/** What the first-run wizard needs of the runtime: somewhere to leave its answer. */
+export interface WizardDeps {
+  readonly outcome: WizardOutcomeCell
+}
+
 /** What executing an effect needs: the dispatcher, its seams, and the session. */
 export interface EffectDeps {
   readonly dispatch: DispatchFn
@@ -64,6 +98,8 @@ export interface EffectDeps {
   /** Journal directory holding the admin store; defaults to the process-wide one. */
   readonly journalDir?: string
   readonly token: TokenCell
+  /** Present only while the first-run wizard is on screen (phase 3). */
+  readonly wizard?: WizardDeps
 }
 
 /** What a run reports when the command itself never got to answer. */
@@ -77,6 +113,23 @@ const NO_SERVICES: Msg = { kind: 'services', statuses: undefined }
 
 const SESSION_LOST: Msg = { kind: 'session-lost' }
 
+/** The one outcome the wizard can ask for today. */
+const WIZARD_SIGN_IN: WizardOutcome = 'sign-in'
+
+/**
+ * Leaves the wizard's answer in its cell.
+ *
+ * Synchronous, and exported for that reason: the runtime writes the cell in
+ * the same turn as the step that asked for it, because the quit beside it
+ * settles the console and a bounded drain is no place for the one answer the
+ * wizard exists to hand back. The runtime reads the cell after `runConsole`
+ * has given the terminal back, and only then reopens the console on its
+ * sign-in screen.
+ */
+export function finishWizard(deps: EffectDeps): void {
+  deps.wizard?.outcome.set(WIZARD_SIGN_IN)
+}
+
 export async function executeEffect(effect: Effect, deps: EffectDeps): Promise<Msg | undefined> {
   switch (effect.kind) {
     case 'signin':
@@ -85,6 +138,13 @@ export async function executeEffect(effect: Effect, deps: EffectDeps): Promise<M
       return runCommand(effect.request, deps)
     case 'refresh-services':
       return refreshServices(deps)
+    case 'wizard-run':
+      return runWizardCommand(effect.step, effect.request, deps)
+    case 'wizard-finish':
+      // The runtime answers this one in `enqueue`; the case is here so the
+      // switch stays exhaustive and a direct call still does the right thing.
+      finishWizard(deps)
+      return undefined
     case 'quit':
       return undefined
   }
@@ -144,21 +204,65 @@ async function runCommand(request: RunRequest, deps: EffectDeps): Promise<Msg> {
     return SESSION_LOST
   }
   const captured = captureBothIo(OUTPUT_MAX_CHARS)
-  const outcome = await dispatchCaptured(request.argv, captured, token, deps)
+  const outcome = await dispatchCaptured(request.argv, captured, optionsFor(token, deps), deps)
+  return { kind: 'run-result', result: runResultOf(request, captured, outcome) }
+}
+
+/**
+ * One rung of the first-run wizard's deploy ladder (`setup --yes`,
+ * `start ui`, `start serve`).
+ *
+ * Deliberately NOT `runCommand`: it neither checks session freshness nor
+ * reads `TokenCell`, because at this point in an install THERE IS NO ADMIN —
+ * `setup` is the command that mints the first one. Demanding a resolved
+ * session here would refuse the very run that creates the session, and there
+ * is nothing to attribute yet: the wizard's own commands are journaled by
+ * `setup` itself, under the admin it creates.
+ *
+ * The seams still get an environment — the console's own, through
+ * `withSeamEnv` — so an `MCPCUT_CONFIG` the operator exported reaches both
+ * the `setup` that writes that file and the `start` that reads it. It carries
+ * no `MCP_ADMIN_TOKEN` of ours; a stale one inherited from the shell is the
+ * operator's own environment and is passed through unchanged, exactly as it
+ * would be had they typed `mcpcut setup --yes` themselves.
+ */
+async function runWizardCommand(
+  step: DeployStepId,
+  request: RunRequest,
+  deps: EffectDeps,
+): Promise<Msg> {
+  const captured = captureBothIo(OUTPUT_MAX_CHARS)
+  const outcome = await dispatchCaptured(
+    request.argv,
+    captured,
+    withSeamEnv(deps.dispatchOptions, deps.env),
+    deps,
+  )
+  return { kind: 'wizard-run-result', step, result: runResultOf(request, captured, outcome) }
+}
+
+/**
+ * A finished dispatch as the output pane takes it. The failure that stood in
+ * for an exit code, and the note that the capture was cut, are appended to
+ * stderr rather than invented as fields — the pane draws what a command
+ * wrote, and both of these are things the operator must read.
+ */
+function runResultOf(
+  request: RunRequest,
+  captured: CapturedBothIo,
+  outcome: DispatchOutcome,
+): RunResult {
   const stderrWithFailure =
     outcome.failure === undefined ? captured.err() : appended(captured.err(), outcome.failure)
   const stderr = captured.truncated()
     ? appended(stderrWithFailure, OUTPUT_CUT_NOTE)
     : stderrWithFailure
   return {
-    kind: 'run-result',
-    result: {
-      argv: request.argv,
-      display: request.display,
-      exitCode: outcome.code,
-      stdout: captured.out(),
-      stderr,
-    },
+    argv: request.argv,
+    display: request.display,
+    exitCode: outcome.code,
+    stdout: captured.out(),
+    stderr,
   }
 }
 
@@ -173,15 +277,19 @@ interface DispatchOutcome {
  * be programming errors are answers here instead: a rejection, and a
  * resolution that is not an exit code (a `dispatch` seam under test, or a
  * command that fell off the end of its switch).
+ *
+ * The options are the caller's, not built here: a run of the signed-in
+ * console carries the session token on its seams, a rung of the wizard
+ * carries the console's plain environment.
  */
 async function dispatchCaptured(
   argv: readonly string[],
   captured: CapturedBothIo,
-  token: string,
+  options: DispatchOptions,
   deps: EffectDeps,
 ): Promise<DispatchOutcome> {
   try {
-    const answer = await deps.dispatch([...argv], captured.io, optionsFor(token, deps))
+    const answer = await deps.dispatch([...argv], captured.io, options)
     return { code: Number.isInteger(answer) ? answer : FAILED_RUN_EXIT_CODE }
   } catch (error: unknown) {
     return { code: FAILED_RUN_EXIT_CODE, failure: messageOf(error) }

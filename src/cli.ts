@@ -81,7 +81,17 @@ export async function dispatch(
 
   // `setup` routes ahead of the broken-config gate below: it is the command
   // that rewrites the broken file, so the gate must never see it.
-  if (command === 'setup') return runSetupCommand(rest, io, opts.setup)
+  if (command === 'setup') {
+    return runSetupCommand(rest, io, {
+      ...opts.setup,
+      ...(opts.tui?.isTty !== undefined ? { isTty: opts.tui.isTty } : {}),
+      ...(opts.tui?.terminal !== undefined ? { terminal: opts.tui.terminal } : {}),
+      // The wizard is `runTui` with the wizard entry: the console module owns
+      // the screen, this router owns the wiring, and `setup-cmd.ts` knows
+      // neither — it holds a function it was handed.
+      wizard: (args) => runTui([], io, { ...opts.tui, dispatch, entry: 'setup', setupArgs: args }),
+    })
+  }
 
   // A pipe, a script, CI: a bare invocation prints the usage, as it always
   // has — and ahead of the config gate, as it always has. Nothing that runs

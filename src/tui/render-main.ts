@@ -8,8 +8,10 @@ import {
   FOOTER_ROWS,
   FORM_HELP_FOOTER,
   HEADER_ROWS,
+  HEADER_SEPARATOR,
   INACTIVE_MARKER,
   KEY_HELP_FOOTER,
+  RULE_CHAR,
 } from './constants.js'
 import type { MainScreen, TerminalSize } from './model.js'
 import { firstVisibleIndex, paneLines } from './render-panes.js'
@@ -31,14 +33,8 @@ import { servicesHeaderPart } from './services-summary.js'
  * operator who shrank a window wants their session back, not a refusal.
  */
 
-/** Separator between the fields of the title line. */
-const HEADER_SEPARATOR = ' · '
-
 /** Separator between two tabs of the section bar. */
 const TAB_SEPARATOR = '  '
-
-/** The rule under the header. */
-const RULE_CHAR = '─'
 
 /** How the body's columns divide up, once the terminal has had its say. */
 interface BodyWidths {

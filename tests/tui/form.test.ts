@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import { ADMIN_NAME_PATTERN, ADMIN_ROLES } from '../../src/admin/constants.js'
 import {
+  applyFormKey,
   clearSecrets,
   editFocused,
   focusNext,
@@ -432,5 +433,46 @@ describe('editFocused: a stale verdict', () => {
 
     expect(edited.fields[0]?.value).toBe('a')
     expect(edited.fields[0]?.error).toBeUndefined()
+  })
+})
+
+describe('applyFormKey: the one key rule both screens share', () => {
+  test('Tab and ↓ move the focus to the next field', () => {
+    const form = formOf([nameField, roleField])
+
+    expect(applyFormKey(form, { kind: 'tab' }).focus).toBe(1)
+    expect(applyFormKey(form, { kind: 'down' }).focus).toBe(1)
+  })
+
+  test('Shift-Tab and ↑ move the focus to the previous field, wrapping', () => {
+    const form = formOf([nameField, roleField])
+
+    expect(applyFormKey(form, { kind: 'backtab' }).focus).toBe(1)
+    expect(applyFormKey(form, { kind: 'up' }).focus).toBe(1)
+  })
+
+  test('anything else is the focused field\'s business', () => {
+    const form = formOf([nameField, roleField])
+
+    const typed = applyFormKey(form, char('a'))
+
+    expect(typed.fields[0]?.value).toBe('a')
+    expect(typed.focus).toBe(0)
+  })
+
+  test('a key the field has no use for returns the very same form', () => {
+    const form = formOf([nameField, roleField])
+
+    expect(applyFormKey(form, { kind: 'left' })).toBe(form)
+  })
+
+  test('it never mutates the form it was given', () => {
+    const form = formOf([nameField, roleField])
+    const before = structuredClone({ fields: form.fields.map((f) => f.value), focus: form.focus })
+
+    applyFormKey(applyFormKey(form, { kind: 'tab' }), char('x'))
+
+    expect(form.focus).toBe(before.focus)
+    expect(form.fields.map((f) => f.value)).toEqual(before.fields)
   })
 })
