@@ -4,6 +4,7 @@ import type { Model, Msg, Step } from './model.js'
 import { updateMain } from './update-main.js'
 import { updateSignin } from './update-signin.js'
 import { noEffects, quit } from './update-step.js'
+import { updateWizard } from './update-wizard.js'
 
 /**
  * The console's reducer (mcpcut phase 2, Task 9): one pure function from a
@@ -13,7 +14,8 @@ import { noEffects, quit } from './update-step.js'
  *
  * This module holds only what is true on EVERY screen — a resize, the
  * interrupt key, and the rule that a run in flight owns the keyboard — and
- * hands the rest to `update-signin.ts` and `update-main.ts`.
+ * hands the rest to `update-signin.ts`, `update-wizard.ts` and
+ * `update-main.ts`.
  */
 
 /** In raw mode `Ctrl-C` is an ordinary key: no `SIGINT` arrives, so we answer it. */
@@ -27,6 +29,8 @@ export function update(model: Model, msg: Msg): Step {
 
   const { screen } = model
   if (screen.kind === 'signin') return updateSignin(model, screen, msg)
+
+  if (screen.kind === 'wizard') return updateWizard(model, screen, msg)
 
   // A command is running: the keyboard is deaf until it answers, so a second
   // Enter cannot queue a second run behind the first. Ctrl-C above still gets

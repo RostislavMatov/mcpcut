@@ -1,13 +1,17 @@
+import { resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { formatReadableField } from '../journal/format.js'
 import { SUPERVISORS, type Supervisor } from '../setup/constants.js'
+import type { InstallConfig } from '../setup/schema.js'
 import { MAX_TCP_PORT } from './serve-constants.js'
 
 /**
  * The argument layer of `mcpcut setup` (phase 1, Task 14): usage text, flag
  * shapes and the one value the command runs on. Split from `setup-cmd.ts` the
  * way `server-add-args.ts` is split from `server-cmd.ts` — this module knows
- * only about argv and never touches disk, a store or a stream.
+ * only about argv and never touches disk, a store or a stream. The overlay
+ * below is no exception: `resolve(cwd, dataDir)` is `node:path` computing a
+ * string, and never asks the filesystem whether the directory exists.
  *
  * Every flag is OPTIONAL in the result, and deliberately so: `setup` overlays
  * only what the operator actually typed onto the config that already exists,
@@ -41,6 +45,43 @@ export interface SetupArgs {
   readonly servePort?: number
   readonly admin?: string
   readonly supervisor?: Supervisor
+}
+
+/**
+ * Nothing was typed. The value a caller that has no argv at all overlays — the
+ * first-run wizard, which fills the config from a form rather than from flags
+ * and must still go through one overlay so both surfaces write the same shape.
+ */
+export const NO_SETUP_ARGS: SetupArgs = { yes: false, force: false, start: false, noAdmin: false }
+
+/**
+ * The base config with the flags the operator actually typed laid over it.
+ * Immutable throughout: a rerun that passes `--ui-port` alone must keep the
+ * `behindTls`, `allowedHosts` and `trustedProxyHeader` an earlier run wrote,
+ * so every field that was not asked about is carried across untouched.
+ */
+export function overlaySetupArgs(base: InstallConfig, args: SetupArgs, cwd: string): InstallConfig {
+  return {
+    ...base,
+    // `resolve` returns an absolute path unchanged, so this is the one branch
+    // that handles both spellings of `--data-dir`.
+    ...(args.dataDir !== undefined ? { dataDir: resolve(cwd, args.dataDir) } : {}),
+    ui: {
+      ...base.ui,
+      ...(args.uiHost !== undefined ? { host: args.uiHost } : {}),
+      ...(args.uiPort !== undefined ? { port: args.uiPort } : {}),
+      // Written whenever the operator said either word: `--behind-tls` is
+      // remembered in the file, so `--no-behind-tls` has to be able to write
+      // the `false` that takes it back.
+      ...(args.behindTls !== undefined ? { behindTls: args.behindTls } : {}),
+    },
+    serve: {
+      ...base.serve,
+      ...(args.serveHost !== undefined ? { host: args.serveHost } : {}),
+      ...(args.servePort !== undefined ? { port: args.servePort } : {}),
+    },
+    ...(args.supervisor !== undefined ? { supervisor: args.supervisor } : {}),
+  }
 }
 
 export type SetupArgsResult =

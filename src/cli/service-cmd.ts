@@ -260,8 +260,11 @@ function missingConfigMessage(
     )
   }
   if (command === 'status') return `status: no install config at ${install.path}\n`
+  // Both ways to an install, in the order an operator meets them: the wizard a
+  // bare `mcpcut` opens on a terminal, and the flags a script uses. `start`
+  // itself stays non-interactive — it runs with nobody watching.
   return (
     `Refusing to ${REFUSED_ACTION[command]}: no install config at ${install.path}. ` +
-    `Run: ${CLI_NAME} setup --yes [--data-dir <dir>]\n`
+    `Run: ${CLI_NAME} (interactive setup) or ${CLI_NAME} setup --yes [--data-dir <dir>]\n`
   )
 }

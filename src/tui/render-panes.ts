@@ -66,7 +66,7 @@ export function blankRows(count: number, width: number): readonly string[] {
 }
 
 /** Cuts to `rows` lines, padding with blanks when there are too few. */
-function fillTo(lines: readonly string[], rows: number, width: number): readonly string[] {
+export function fillTo(lines: readonly string[], rows: number, width: number): readonly string[] {
   if (rows <= 0) return []
   if (lines.length >= rows) return lines.slice(0, rows)
 
@@ -92,7 +92,8 @@ export function paneLines(
   return [...running, ...body]
 }
 
-function runningLine(request: RunRequest): string {
+/** The line naming the command in flight, as both the main screen and the wizard say it. */
+export function runningLine(request: RunRequest): string {
   return `${RUNNING_PREFIX}${CLI_NAME} ${request.display.join(' ')}`
 }
 
@@ -123,7 +124,7 @@ function paneBody(
  */
 function quitConfirmPane(screen: MainScreen, width: number, rows: number): readonly string[] {
   const question = [...wrapWords(QUIT_WITH_TOKEN_QUESTION, width), ''].map((line) => padRight(line, width))
-  const below = screen.output === undefined ? [] : outputPane(screen.output, width, rows - question.length)
+  const below = screen.output === undefined ? [] : outputLines(screen.output, width, rows - question.length)
   return fillTo([...question, ...below], rows, width)
 }
 
@@ -132,7 +133,7 @@ function quitConfirmPane(screen: MainScreen, width: number, rows: number): reado
  * a confirmation that hides its own "[y/N]" behind an ellipsis is worse than
  * none. A single word longer than the pane still falls to `fitWidth`.
  */
-function wrapWords(text: string, width: number): readonly string[] {
+export function wrapWords(text: string, width: number): readonly string[] {
   if (width <= 0) return [text]
   const lines: string[] = []
   let current = ''
@@ -149,7 +150,7 @@ function wrapWords(text: string, width: number): readonly string[] {
 }
 
 /** Lines that are only text: fitted, padded and filled out to the pane. */
-function plainPane(lines: readonly string[], width: number, rows: number): readonly string[] {
+export function plainPane(lines: readonly string[], width: number, rows: number): readonly string[] {
   return fillTo(
     lines.map((line) => padRight(line, width)),
     rows,
@@ -166,7 +167,7 @@ function actionsPane(screen: MainScreen, width: number, rows: number): readonly 
     return plainPane(screen.sections[screen.sectionIndex]?.intro ?? [], width, rows)
   }
 
-  return outputPane(screen.output, width, rows)
+  return outputLines(screen.output, width, rows)
 }
 
 /**
@@ -174,7 +175,7 @@ function actionsPane(screen: MainScreen, width: number, rows: number): readonly 
  * rather than following the text, so scrolling through a long output never
  * scrolls the verdict off the screen.
  */
-function outputPane(output: OutputPanel, width: number, rows: number): readonly string[] {
+export function outputLines(output: OutputPanel, width: number, rows: number): readonly string[] {
   if (rows <= 0) return []
 
   const available = Math.max(0, rows - OUTPUT_COMMAND_ROWS - OUTPUT_EXIT_ROWS)
@@ -194,13 +195,35 @@ function formPane(
   style: Style,
 ): readonly string[] {
   const title = actionTitleOf(screen, actionId)
-  const fieldRows = Math.max(0, rows - 1)
-  const first = firstVisibleIndex(form.focus, form.fields.length, fieldRows)
-  const fields = form.fields
-    .slice(first, first + fieldRows)
-    .map((field, index) => fieldLine(field, first + index === form.focus, width, style))
 
-  return fillTo([padRight(title, width), ...fields], rows, width)
+  return fillTo(
+    [padRight(title, width), ...fieldLines(form, width, rows - 1, style)],
+    rows,
+    width,
+  )
+}
+
+/**
+ * The rows of a form, scrolled so the focused field is one of them.
+ *
+ * `labelWidth` is a parameter rather than the constant because the wizard's
+ * labels are longer than the catalogue's (`TLS in front`), and a label column
+ * sized for one surface would push the other's widgets out of line.
+ */
+export function fieldLines(
+  form: Form,
+  width: number,
+  rows: number,
+  style: Style,
+  labelWidth: number = FIELD_LABEL_WIDTH,
+): readonly string[] {
+  if (rows <= 0) return []
+
+  const first = firstVisibleIndex(form.focus, form.fields.length, rows)
+
+  return form.fields
+    .slice(first, first + rows)
+    .map((field, index) => fieldLine(field, first + index === form.focus, width, style, labelWidth))
 }
 
 /** The title of the action the pane belongs to — by id, the same key the reducer runs it by. */
@@ -227,9 +250,15 @@ export function firstVisibleIndex(cursor: number, length: number, rows: number):
  * styled line is still exactly `width` characters of visible text — the
  * trailing spaces it dims are invisible either way.
  */
-function fieldLine(field: FieldState, focused: boolean, width: number, style: Style): string {
+function fieldLine(
+  field: FieldState,
+  focused: boolean,
+  width: number,
+  style: Style,
+  labelWidth: number,
+): string {
   const marker = focused ? ACTIVE_MARKER : INACTIVE_MARKER
-  const label = field.spec.label.padEnd(FIELD_LABEL_WIDTH)
+  const label = field.spec.label.padEnd(labelWidth)
   // The one line not built by `padRight` (the note is styled separately), so it sanitises itself.
   const head = fitWidth(sanitizeLine(`${marker}${label} ${widgetOf(field)}${FIELD_NOTE_GAP}`), width)
   const note = padRight(field.error ?? field.spec.hint ?? '', width - head.length)

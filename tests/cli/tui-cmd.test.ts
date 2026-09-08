@@ -1,18 +1,13 @@
 import { EventEmitter } from 'node:events'
 import { describe, expect, test } from 'vitest'
-import { dispatchOptionsFor, isInteractiveTerminal, runTui, type TuiCommandOptions } from '../../src/cli/tui-cmd.js'
+import { dispatchOptionsFor, runTui, type TuiCommandOptions } from '../../src/cli/tui-cmd.js'
 import { TUI_USAGE } from '../../src/cli/operator-usage.js'
-import {
-  bareNoConfigHint,
-  TUI_NOT_A_TTY,
-  TUI_NOT_WIRED,
-  TUI_NO_ARGUMENTS,
-} from '../../src/cli/tui-constants.js'
+import { TUI_NOT_A_TTY, TUI_NOT_WIRED, TUI_NO_ARGUMENTS } from '../../src/cli/tui-constants.js'
 import type { UiCliIo } from '../../src/cli/ui-constants.js'
 import { plainStyle } from '../../src/tui/ansi.js'
-import type { TuiOutput } from '../../src/tui/runtime.js'
 import { defaultInstallConfig } from '../../src/setup/defaults.js'
 import type { InstallConfigLoad } from '../../src/setup/load.js'
+import { WIZARD_TITLE_EDIT, WIZARD_TITLE_FIRST_RUN } from '../../src/tui/constants.js'
 import { createFakeTerminal, waitForScreen, type FakeTerminal } from '../tui/support/fake-terminal.js'
 
 /**
@@ -65,6 +60,15 @@ function fakeIo(): FakeIo {
 
 /** A dispatcher that answers every command with success and records nothing. */
 const quietDispatch = async (): Promise<number> => 0
+
+/** A dispatcher that prints what `setup --yes` prints, so the wizard can read an owner out of it. */
+const transcriptDispatch = async (
+  argv: readonly string[],
+  dispatchIo: UiCliIo,
+): Promise<number> => {
+  if (argv[0] === 'setup') dispatchIo.stdout.write('admin: owner\nrole: owner\ntoken: mcpa_x\n')
+  return 0
+}
 
 /** The seams a console opened in a test runs on: a fake terminal, no signals of its own. */
 function consoleOptions(fake: FakeTerminal, install: InstallConfigLoad): TuiCommandOptions {
@@ -134,20 +138,26 @@ describe('runTui: the terminal gate', () => {
 })
 
 describe('runTui: the install config', () => {
-  test('a bare invocation without a config points at setup instead of opening', async () => {
+  test('a bare invocation without a config opens the first-run wizard', async () => {
     const io = fakeIo()
     const fake = createFakeTerminal()
 
-    const exitCode = await runTui([], io, {
+    const running = runTui([], io, {
       ...consoleOptions(fake, absentInstall),
       entry: 'bare',
+      home: '/home/op',
+      cwd: '/w',
     })
+    await waitForScreen(
+      fake,
+      (screen) => screen.includes(WIZARD_TITLE_FIRST_RUN) && screen.includes('Data dir'),
+      'the wizard form',
+    )
+    fake.type('\x03')
 
-    expect(exitCode).toBe(1)
-    expect(io.err()).toBe(bareNoConfigHint(CONFIG_PATH))
-    expect(io.err()).toContain(CONFIG_PATH)
-    expect(io.err()).toContain('setup --yes')
-    expect(fake.frames()).toEqual([])
+    expect(await running).toBe(0)
+    expect(fake.restored()).toBe(true)
+    expect(io.err()).toBe('')
   })
 
   test('an explicit tui without a config opens over the default data directory', async () => {
@@ -182,6 +192,93 @@ describe('runTui: the install config', () => {
   })
 })
 
+describe('runTui: the setup entry opens the wizard', () => {
+  test('over a config, in edit mode, with that config in the fields', async () => {
+    const io = fakeIo()
+    const fake = createFakeTerminal()
+
+    const running = runTui([], io, {
+      ...consoleOptions(fake, okInstall),
+      entry: 'setup',
+      home: '/home/op',
+      cwd: '/w',
+    })
+    await waitForScreen(
+      fake,
+      (screen) => screen.includes(WIZARD_TITLE_EDIT) && screen.includes('/var/lib/mcpcut'),
+      'the wizard in edit mode',
+    )
+    fake.type('\x03')
+
+    expect(await running).toBe(0)
+    expect(io.err()).toBe('')
+  })
+
+  test('an unusable config is refused by the same gate every command uses', async () => {
+    const io = fakeIo()
+    const fake = createFakeTerminal()
+
+    const exitCode = await runTui([], io, {
+      ...consoleOptions(fake, invalidInstall),
+      entry: 'setup',
+      home: '/home/op',
+      cwd: '/w',
+    })
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain(CONFIG_PATH)
+    expect(io.err()).toContain('--force')
+    expect(fake.frames()).toEqual([])
+  })
+
+  test('the setup flags prefill the form', async () => {
+    const io = fakeIo()
+    const fake = createFakeTerminal()
+
+    const running = runTui([], io, {
+      ...consoleOptions(fake, absentInstall),
+      entry: 'setup',
+      home: '/home/op',
+      cwd: '/w',
+      setupArgs: { yes: false, force: false, start: false, noAdmin: false, uiPort: 18091 },
+    })
+    await waitForScreen(fake, (screen) => screen.includes('[18091'), 'the prefilled UI port')
+    fake.type('\x03')
+
+    expect(await running).toBe(0)
+  })
+
+  test('the reopen seam is asked for the console once the wizard is done', async () => {
+    const io = fakeIo()
+    const fake = createFakeTerminal()
+    const reopened: string[][] = []
+
+    const running = runTui([], io, {
+      ...consoleOptions(fake, absentInstall),
+      dispatch: transcriptDispatch,
+      entry: 'bare',
+      home: '/home/op',
+      cwd: '/w',
+      reopen: async (argv) => {
+        reopened.push([...argv])
+        return 0
+      },
+    })
+    await waitForScreen(fake, (screen) => screen.includes('Data dir'), 'the wizard form')
+    // Services by external: both starts are somebody else's business, so the
+    // ladder is one rung and the final screen arrives without a live manager.
+    fake.type('\x1b[Z')
+    fake.type('\x1b[D')
+    await waitForScreen(fake, (screen) => screen.includes('external'), 'the external supervisor')
+    fake.type('\r')
+    await waitForScreen(fake, (screen) => screen.includes('Saved it?'), 'the final screen')
+    fake.type('y')
+
+    expect(await running).toBe(0)
+    expect(reopened).toEqual([['tui']])
+  })
+})
+
 describe('runTui: wiring', () => {
   test('rejects when the dispatcher was not injected', async () => {
     const io = fakeIo()
@@ -199,41 +296,6 @@ describe('runTui: wiring', () => {
       }),
     ).rejects.toThrow(TUI_NOT_WIRED)
     expect(fake.frames()).toEqual([])
-  })
-})
-
-describe('isInteractiveTerminal', () => {
-  test('an explicit isTty answers on its own, whatever the terminal is', () => {
-    const fake = createFakeTerminal()
-
-    expect(isInteractiveTerminal({ isTty: false, terminal: fake.terminal })).toBe(false)
-    expect(isInteractiveTerminal({ isTty: true })).toBe(true)
-  })
-
-  test('a terminal whose halves are both a TTY is interactive', () => {
-    const fake = createFakeTerminal()
-
-    expect(isInteractiveTerminal({ terminal: fake.terminal })).toBe(true)
-  })
-
-  test('one half that is not a TTY is enough to refuse', () => {
-    const fake = createFakeTerminal()
-    // A redirected stdout: the console reads keys from a terminal it cannot
-    // draw on, which is not a console.
-    const pipedOutput: TuiOutput = Object.assign(new EventEmitter(), {
-      isTTY: false,
-      write: (): boolean => true,
-    })
-
-    expect(
-      isInteractiveTerminal({ terminal: { input: fake.terminal.input, output: pipedOutput } }),
-    ).toBe(false)
-  })
-
-  test('no options at all falls back to the process streams', () => {
-    // Whatever the suite runs on, the answer must be a boolean rather than a
-    // throw: `dispatch` calls this on every bare invocation.
-    expect(typeof isInteractiveTerminal()).toBe('boolean')
   })
 })
 

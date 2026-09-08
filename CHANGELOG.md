@@ -8,13 +8,21 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **First-run wizard**: a bare `mcpcut` on a terminal with no install config,
+  and `mcpcut setup` without `--yes`, open an interactive setup — prefilled data
+  directory, `ui`/`serve` binds, the first admin's name and who starts the
+  services; a non-loopback bind asks for confirmation before anything is
+  written; the wizard then deploys step by step (the same `setup --yes …`, then
+  `start ui`, `start serve`) with a live progress ladder, reports that the
+  services run in the background, shows the one-time owner token once and,
+  after you confirm you saved it, hands over to the sign-in screen. Over a data directory that already has admins the final screen says so and points at `admin rotate <name> --recover` instead of showing a token. `setup`
+  without `--yes` outside a terminal refuses with a hint.
 - **Interactive console** (`mcpcut tui`, or a bare `mcpcut` on a terminal that
   has an install config): sign in with an admin token, browse Home and Admins,
   run every action through the same CLI command it shows you — the session
   token travels in the environment seam, never in argv. A bare `mcpcut` in a
   pipe still prints the usage; without a config on a terminal it points at
-  `setup --yes`. The first-run wizard and the remaining sections follow in
-  later waves.
+  `setup --yes`. The remaining sections follow in later waves.
 - **`mcpcut` binary**: a second `bin` entry pointing at the same file as
   `mcp-journal` — the two names are one dispatcher with identical behaviour.
 - **Install config** `~/.mcpcut/config.json` (path overridable with
@@ -44,6 +52,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- **Docker**: the image's entrypoint runs `setup --yes --supervisor external`
+  on the first start of `ui`/`serve` (binds from `MCPCUT_UI_HOST`/`_PORT`,
+  `MCPCUT_SERVE_HOST`/`_PORT`; owner token in `docker compose logs ui`), the
+  install config lives on its own volume (`mcp-config`), `serve` starts after
+  `ui` is healthy, and `mcpcut` is on the image's `PATH` —
+  `docker compose exec -it ui mcpcut` opens the console.
+- `start`/`stop`/`logs` without an install config now point at `mcpcut` (the
+  interactive setup) as well as `setup --yes`.
 - **`admin add|list|rotate|role|remove` now need a personal admin token** of role
   `owner` in `MCP_ADMIN_TOKEN`, and every mutation writes an `access-edit`
   journal record (`admin.add|rotate|role|remove`) naming the admin who made it —

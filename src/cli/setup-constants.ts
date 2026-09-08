@@ -22,14 +22,17 @@ import { CLI_NAME, CONFIG_PATH_ENV_VAR, DATA_DIR_ENV_VAR } from '../setup/consta
 export const SETUP_LABEL = 'setup: '
 
 /**
- * The refusal a bare `mcpcut setup` gets. The interactive wizard is a later
- * wave (plan, "NOT Building"), and a command that silently did nothing would
- * be worse than one that says which flag turns it into the run the operator
- * wanted.
+ * The refusal `mcpcut setup` gets when it cannot open the interactive setup.
+ *
+ * Without `--yes` the command IS the wizard, and a wizard needs somewhere to
+ * draw and someone to type: in a pipe, a script or CI there is neither. Same
+ * shape as every other refusal — the fact, the condition, then the way
+ * forward, which here is the non-interactive spelling of the same run.
  */
-export const INTERACTIVE_SETUP_PENDING =
-  'Interactive setup arrives with the console (a later wave). ' +
-  `Run non-interactively: ${CLI_NAME} setup --yes …\n`
+export const SETUP_NEEDS_TTY_OR_YES =
+  `${CLI_NAME} setup without --yes opens the interactive setup and needs a terminal: ` +
+  'stdin and stdout must both be a TTY. ' +
+  `In a pipe or a script run: ${CLI_NAME} setup --yes …\n`
 
 /** The vault already had a key; nothing was generated and nothing was touched. */
 export const VAULT_ALREADY_INITIALIZED = 'vault: already initialized\n'

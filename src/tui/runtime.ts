@@ -7,9 +7,9 @@ import {
   WINDOWS_UNSUPPORTED_REASON,
 } from './constants.js'
 import { keyEventOf, type ReadlineKey } from './keys.js'
-import { initialModel, type Effect, type Model, type Msg } from './model.js'
+import { initialModel, type Effect, type Model, type Msg, type TerminalSize } from './model.js'
 import { render } from './render.js'
-import { executeEffect, type EffectDeps } from './runtime-effects.js'
+import { executeEffect, finishWizard, type EffectDeps } from './runtime-effects.js'
 import {
   attempt,
   enterTerminal,
@@ -77,6 +77,15 @@ export interface ConsoleDeps {
   readonly escapeCodeTimeoutMs: number
   /** How long a quit waits for the command in flight; defaults to `QUIT_DRAIN_TIMEOUT_MS`. */
   readonly quitDrainTimeoutMs?: number
+  /**
+   * The screen the console opens on, built from the size of the terminal it
+   * was handed; the sign-in screen when absent. The seam exists for the
+   * first-run wizard (phase 3), which is a whole screen the caller has
+   * already prefilled from a config that may not exist yet — knowledge the
+   * runtime has no business acquiring. Called exactly ONCE, at startup: a
+   * later resize takes its size from the event, not from here.
+   */
+  readonly initial?: (size: TerminalSize) => Model
   readonly platform: NodeJS.Platform
 }
 
@@ -120,8 +129,15 @@ export async function runConsole(deps: ConsoleDeps): Promise<number> {
 // The loop
 // ---------------------------------------------------------------------------
 
-/** The mutable half of a running console, behind the verbs it needs. */
-interface ConsoleLoop {
+/**
+ * The mutable half of a running console, behind the verbs it needs.
+ *
+ * Exported with `createLoop` as the seam for the messages a terminal cannot
+ * produce: a `wizard-run-result` arrives from an effect, never from a key, so
+ * the queue's own promises — what a settled console still honours, and what
+ * it drops — are asserted by driving `step` directly.
+ */
+export interface ConsoleLoop {
   /** Resolves once the console has been asked to leave; never rejects. */
   readonly finished: Promise<void>
   draw(): void
@@ -137,8 +153,8 @@ interface ConsoleLoop {
   exitCode(): number
 }
 
-function createLoop(deps: ConsoleDeps): ConsoleLoop {
-  let model: Model = initialModel(sizeOf(deps.terminal.output))
+export function createLoop(deps: ConsoleDeps): ConsoleLoop {
+  let model: Model = (deps.initial ?? initialModel)(sizeOf(deps.terminal.output))
   let settled = false
   let exitCode = EXIT_OK
   /** The first fault, kept until the alternate screen is gone: a report drawn onto it would vanish with it. */
@@ -193,6 +209,8 @@ function createLoop(deps: ConsoleDeps): ConsoleLoop {
   }
 
   const perform = async (effect: Effect): Promise<void> => {
+    // A settled console has nothing left to fold a result into, so its queue
+    // is abandoned.
     if (settled) return
     const msg = await executeEffect(effect, deps.effects)
     if (msg !== undefined) step(msg)
@@ -206,10 +224,20 @@ function createLoop(deps: ConsoleDeps): ConsoleLoop {
    * A quit is not a step in the queue: it is the operator no longer wanting
    * what the queue is doing, so it takes effect at once and `drain` bounds
    * how long the command in flight is waited for.
+   *
+   * `wizard-finish` is honoured at once for the same reason. It runs no
+   * command — it writes one cell — and the wizard's final screen asks for it
+   * in the SAME step as the quit, so a place in the queue would mean the
+   * answer waits behind whatever is in flight and is lost the moment that
+   * outlives the drain.
    */
   const enqueue = (effect: Effect): void => {
     if (effect.kind === 'quit') {
       finish(effect.exitCode)
+      return
+    }
+    if (effect.kind === 'wizard-finish') {
+      finishWizard(deps.effects)
       return
     }
     chain = chain.then(() => perform(effect)).catch(fail)

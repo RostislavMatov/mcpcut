@@ -21,9 +21,24 @@
 # a `.mcp-journal/policy.json` in it would shadow the volume's policy, and the
 # console would then be editing rules the proxies do not enforce.
 #
-# First start prints a one-time bootstrap token for the `owner` admin to the
-# ui container's stderr:  docker compose logs ui
-# If it is missed:        docker compose run --rm ui admin rotate owner
+# The first start of `ui` runs `setup --yes --supervisor external` from the
+# entrypoint: it writes the install config, prepares the data directory and
+# mints the `owner` admin, printing that one-time token to the container's
+# output. The entrypoint takes its answers from `MCPCUT_DATA_DIR`,
+# `MCPCUT_UI_HOST`/`MCPCUT_UI_PORT`, `MCPCUT_SERVE_HOST`/`MCPCUT_SERVE_PORT`
+# and `MCPCUT_ADMIN` — set them in an `environment:` block to change what the
+# install is. Do NOT set `MCP_JOURNAL_DIR` here: it outranks the config for
+# every command, so `setup` refuses the run (`dataDirConflict`) and, under
+# `set -eu` with `restart: unless-stopped`, the container crash-loops.
+#
+# One-time owner token:   docker compose logs ui
+# The console in a shell: docker compose exec -it ui mcpcut
+#
+# Rotate the owner token after the first sign-in: it went to stdout, so a copy
+# sits in this container's json-file log, readable by anyone who can run
+# `docker compose logs`. The same command recovers a token that was missed:
+#
+#   docker compose run --rm ui admin rotate owner
 
 name: mcp-control-plane
 
@@ -36,19 +51,35 @@ x-plane: &plane
     # JOURNAL_DIR from. Both databases, the vault, policy.json and the
     # installation signing key live here.
     - mcp-data:/home/node/.mcp-journal
+    # The install config, written by the entrypoint on the first start of
+    # whichever service container comes first. It is a volume of its own so
+    # that it survives `docker compose down` and a rebuilt image, and so that
+    # a second start skips setup instead of repeating it.
+    - mcp-config:/home/node/.mcpcut
   restart: unless-stopped
   # The CLI installs SIGINT/SIGTERM handlers and shuts down gracefully; give
   # in-flight batches room to commit before the daemon is killed.
   stop_grace_period: 30s
+  # Bounded on purpose: the first start prints the one-time owner token to
+  # stdout, so this log holds a credential until it rotates out. Three 10 MB
+  # files is the ceiling on how long that copy lives.
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
 
 services:
   ui:
     <<: *plane
-    # 0.0.0.0 inside the container is the only way the published port reaches
-    # it; the port itself is published to host loopback below, so the console
-    # is no more exposed than it was running bare. Host screening still admits
-    # only localhost names — reach it at http://localhost:8091.
-    command: ["ui", "--host", "0.0.0.0", "--port", "8091"]
+    # The bind is not repeated as flags: it comes from `MCPCUT_UI_HOST` /
+    # `MCPCUT_UI_PORT` → the config the entrypoint wrote (defaults
+    # 0.0.0.0:8091). 0.0.0.0 inside the container is the only way the
+    # published port reaches it; the port itself is published to host loopback
+    # below, so the console is no more exposed than it was running bare. Host
+    # screening still admits only localhost names — reach it at
+    # http://localhost:8091.
+    command: ["ui"]
     ports:
       - "127.0.0.1:8091:8091"
     # `ui` spawns registry MCP servers too — the connection probe (ADR-0008)
@@ -66,7 +97,16 @@ services:
 
   serve:
     <<: *plane
-    command: ["serve", "--host", "0.0.0.0", "--port", "8090"]
+    # Same source as `ui` above: `MCPCUT_SERVE_HOST` / `MCPCUT_SERVE_PORT` →
+    # the config the entrypoint wrote (defaults 0.0.0.0:8090).
+    command: ["serve"]
+    # `ui` writes the install config on its first start; waiting for it to be
+    # healthy means `serve` finds the config already there instead of both
+    # containers racing to run `setup` (the entrypoint's file check makes the
+    # race harmless, not impossible).
+    depends_on:
+      ui:
+        condition: service_healthy
     ports:
       - "127.0.0.1:8090:8090"
     # `serve` spawns registry MCP servers as child processes; PID 1 must reap
@@ -83,3 +123,4 @@ services:
 
 volumes:
   mcp-data:
+  mcp-config:

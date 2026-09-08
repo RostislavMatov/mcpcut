@@ -1,5 +1,6 @@
 import { BRAND_NAME } from '../brand.js'
 import { TOKEN_ONCE_NOTICE } from '../cli/ui-constants.js'
+import type { DeployStepId, DeployStepState, WizardMode } from './model.js'
 
 /**
  * The console's own constants — sizes, limits, key hints and the sentences it
@@ -20,7 +21,10 @@ import { TOKEN_ONCE_NOTICE } from '../cli/ui-constants.js'
  * `src/cli/ui-constants.ts` for the one-time-token notice, and nothing else.
  * The console is an operator surface like the admin UI, not a part of it, so
  * `src/ui/**` is off limits (`tests/architecture/imports.test.ts`) — which is
- * exactly why `BRAND_NAME` lives in a leaf of its own.
+ * exactly why `BRAND_NAME` lives in a leaf of its own. The wizard's records
+ * are keyed by the unions of `model.ts`, imported as TYPES only: `import
+ * type` is erased, so this file stays the runtime leaf `model.ts` imports
+ * back from.
  */
 
 /** Title of the console, shown in the header and on the sign-in screen. */
@@ -173,3 +177,150 @@ export function exitLine(code: number): string {
  */
 export const WINDOWS_UNSUPPORTED_REASON =
   'the console needs a POSIX terminal (raw mode and signals); on Windows use the commands directly or run under WSL'
+
+// ---------------------------------------------------------------------------
+// The first-run wizard (mcpcut phase 3, Task 1)
+//
+// Every string below is at most `DEFAULT_COLUMNS` wide, and a test says so:
+// `padRight` CUTS at the terminal's width, and phase 2 shipped a footer that
+// lost its tail on an 80-column terminal because nothing measured it.
+// ---------------------------------------------------------------------------
+
+/** Separator between the fields of a title line; shared by the main screen and the wizard. */
+export const HEADER_SEPARATOR = ' · '
+
+/** The rule under a header. */
+export const RULE_CHAR = '─'
+
+/** What the title line calls the wizard, by mode. */
+export const WIZARD_TITLE_FIRST_RUN = 'First run'
+export const WIZARD_TITLE_EDIT = 'Setup'
+
+/** The wizard's header is a title and a rule — no tab bar, since there is one screen. */
+export const WIZARD_HEADER_ROWS = 2
+
+/** Width of the label column of the wizard's form; wider than the catalogue's, for `TLS in front`. */
+export const WIZARD_LABEL_WIDTH = 12
+
+/**
+ * The two lines above the form: where the config will go, and what Enter is
+ * about to do. Said before anything is written, because the wizard's Enter
+ * deploys an install rather than opening another screen.
+ */
+export function wizardIntroLines(mode: WizardMode, configPath: string): readonly string[] {
+  const opening =
+    mode === 'edit'
+      ? `Edit this install; the config is ${configPath}.`
+      : `Welcome. A few answers set up this install; the config goes to ${configPath}.`
+
+  return [opening, 'Enter checks the host, deploys the services and shows the admin token once.']
+}
+
+export const WIZARD_FORM_FOOTER =
+  'Enter deploy · Tab/↓ next · Shift-Tab/↑ previous · ←/→ change · Esc quit'
+
+/** The confirmation a bind reachable from the network has to pass. */
+export const WIZARD_EXPOSURE_INTRO = 'Before anything is written:'
+export const WIZARD_EXPOSURE_QUESTION = 'Continue with this bind? [y/N]'
+export const WIZARD_EXPOSURE_FOOTER = 'y continue · n back to the form'
+
+/** The deploy ladder: what it is, what each rung is called, and how a state is marked. */
+export const DEPLOY_INTRO = 'Deploying — this screen updates as each step completes.'
+
+export const DEPLOY_STEP_TITLES: Readonly<Record<DeployStepId, string>> = {
+  setup: 'Checks and config',
+  'start-ui': 'Starting ui',
+  'start-serve': 'Starting serve',
+}
+
+export const DEPLOY_MARKERS: Readonly<Record<DeployStepState, string>> = {
+  pending: ' ',
+  running: '…',
+  done: '✓',
+  failed: '✗',
+  skipped: '–',
+}
+
+/** Column the rung titles are padded to, so every detail starts at the same place. */
+export const DEPLOY_TITLE_WIDTH = 22
+
+/**
+ * What the deploy transcript shows where `setup` printed the owner token.
+ *
+ * The wizard shows that token in exactly one place — the final screen, behind
+ * a confirmation — so the transcript it also travels in says where it went
+ * rather than repeating it under the ladder for as long as the services take
+ * to answer.
+ */
+export const DEPLOY_TOKEN_PLACEHOLDER = '(shown on the final screen)'
+
+/**
+ * What a rung says while its service is being waited on. The manager polls the
+ * service's probe for up to `START_READY_TIMEOUT_MS`, and one effect yields one
+ * message, so this line has to carry the whole wait on its own.
+ */
+export function deployWaitingDetail(timeoutMs: number): string {
+  return `waiting for the service to answer (up to ${Math.round(timeoutMs / 1000)} s)`
+}
+
+/** What the `setup` rung says once it is done — with and without a first admin. */
+export const DEPLOY_SETUP_DONE_DETAIL = 'config written · vault · signing key'
+export const DEPLOY_SETUP_DONE_WITH_OWNER_DETAIL =
+  'config written · vault · signing key · owner minted'
+
+/** What a `start` rung says when the services belong to something else. */
+export const DEPLOY_EXTERNAL_DETAIL = 'managed by Docker Compose or systemd (supervisor: external)'
+
+/** A rung's detail when the command left nothing else to say. */
+export function deployExitDetail(code: number): string {
+  return exitLine(code)
+}
+
+export const WIZARD_RUNNING_FOOTER = 'working… · Ctrl-C quit'
+
+/** Shown back on the form after a `setup` that did not complete. */
+export function wizardFailedNotice(exitCode: number): string {
+  return `Setup did not complete (exit ${exitCode}). Adjust the answers and press Enter to retry.`
+}
+
+export const WIZARD_FAILED_FOOTER = 'Enter back to the form · q quit'
+
+/**
+ * The three ways a deploy ends: everything up, something down, or nothing
+ * started here at all. The first is the promise that matters — the services
+ * outlive this terminal, which is the whole reason they are daemons.
+ */
+export const WIZARD_DONE_LINES: readonly string[] = [
+  'Setup complete. ui and serve run in the background and keep running after you',
+  'close this terminal (mcpcut status · mcpcut stop).',
+]
+export const WIZARD_DONE_PARTIAL_LINES: readonly string[] = [
+  'Not every service started — see "mcpcut logs <service>". The config is written;',
+  'you can still sign in.',
+]
+export const WIZARD_DONE_EXTERNAL_LINES: readonly string[] = [
+  'Config written. Services are started by Docker Compose or systemd, not from here',
+  '(supervisor: external).',
+]
+
+/**
+ * The final screen when `setup` minted nobody. The wizard never passes
+ * `--no-admin`, so the only way that happens is a data directory that already
+ * had admins — a second `mcpcut setup`, or a first run pointed at an existing
+ * install. Said in words: the ladder's missing `owner minted` is not a message.
+ */
+export const WIZARD_NO_ADMIN_LINES: readonly string[] = [
+  'No token: the data directory already had admins, so setup created none.',
+  'Sign in with an existing owner token. If the last owner lost theirs:',
+  'mcpcut admin rotate <name> --recover',
+]
+
+/** The label the owner token is printed after, once, on the final screen. */
+export function mintedAdminLine(name: string): string {
+  return `Owner token for "${name}" (shown once): `
+}
+
+/** What the final screen asks while the token is still on it, and the footers of both cases. */
+export const WIZARD_TOKEN_QUESTION = 'Saved it? [y/N] — y opens the sign-in screen'
+export const WIZARD_TOKEN_FOOTER = 'y sign in · q quit'
+export const WIZARD_DONE_FOOTER = 'Enter sign in · q quit'

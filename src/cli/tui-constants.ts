@@ -9,7 +9,7 @@ import { CLI_NAME } from '../setup/constants.js'
  * reaches a shell — stderr, before the alternate screen exists — while
  * `src/tui/constants.ts` holds what only ever appears inside a frame.
  *
- * All three refusals follow the shape the rest of the CLI uses (`setup-
+ * Both refusals follow the shape the rest of the CLI uses (`setup-
  * constants.ts`, `src/setup/data-dir.ts`): state the fact, name the file or
  * the condition, then the way forward.
  */
@@ -27,22 +27,6 @@ export const TUI_NOT_A_TTY =
 export const TUI_NO_ARGUMENTS = 'tui takes no arguments'
 
 /**
- * The hint a bare `mcpcut` on a terminal gets when the install has no config
- * yet. The interactive first-run wizard is a later phase; until it exists this
- * says the one command that produces a config, and mentions that `tui` opens
- * the console without one — an install that never ran `setup` can still look
- * at a journal it inherited.
- */
-export function bareNoConfigHint(configPath: string): string {
-  return (
-    `${CLI_NAME}: no install config at ${configPath}. ` +
-    'Interactive setup is a later wave; until then run: ' +
-    `${CLI_NAME} setup --yes [--data-dir <dir>], then ${CLI_NAME} again. ` +
-    `(${CLI_NAME} tui opens the console over the default data directory without a config.)\n`
-  )
-}
-
-/**
  * A wiring fault, not an operator one: `runTui` runs every action through the
  * dispatcher that routed it, which the entry point passes in (the console must
  * not import `cli.ts`, which imports the console — `dispatch-types.ts`). It is
@@ -50,3 +34,19 @@ export function bareNoConfigHint(configPath: string): string {
  */
 export const TUI_NOT_WIRED =
   'runTui: the dispatcher must be injected (opts.dispatch) — the CLI entry point does this'
+
+/** The way back into the console, appended to everything a failed reopen says. */
+const REOPEN_ADVICE = `Run: ${CLI_NAME}`
+
+/**
+ * The reopen never happened: the child could not be spawned at all (a missing
+ * or unreadable build, EACCES, a fork limit). The operator pressed `y` on the
+ * one-time token and is back in a shell, so the reason is said out loud —
+ * `reason` is the error's own message, never its stack and never a path.
+ */
+export function reopenFailedNotice(reason: string): string {
+  return `could not reopen the console: ${reason}. ${REOPEN_ADVICE}\n`
+}
+
+/** The console opened and was then killed; a signal exit reports `code === null`. */
+export const REOPEN_SIGNAL_NOTICE = `the console ended on a signal. ${REOPEN_ADVICE}\n`

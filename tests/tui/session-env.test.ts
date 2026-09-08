@@ -1,7 +1,12 @@
 import { describe, expect, test } from 'vitest'
 import { ADMIN_TOKEN_ENV_VAR } from '../../src/admin/constants.js'
 import type { DispatchOptions } from '../../src/cli/dispatch-types.js'
-import { SESSION_ENV_SEAMS, sessionEnvOf, withSessionToken } from '../../src/tui/session-env.js'
+import {
+  SESSION_ENV_SEAMS,
+  sessionEnvOf,
+  withSeamEnv,
+  withSessionToken,
+} from '../../src/tui/session-env.js'
 
 /**
  * The one path the session token takes into the dispatcher (mcpcut phase 2,
@@ -56,6 +61,45 @@ describe('SESSION_ENV_SEAMS', () => {
     const seamsCarryEnv: SeamsCarryEnv = true
 
     expect(seamsCarryEnv).toBe(true)
+  })
+})
+
+describe('withSeamEnv', () => {
+  test('sets the environment on every listed seam', () => {
+    const env: NodeJS.ProcessEnv = { PATH: '/usr/bin', MCPCUT_CONFIG: '/tmp/config.json' }
+
+    const options = withSeamEnv(baseOptions(), env)
+
+    for (const seam of SESSION_ENV_SEAMS) {
+      expect(options[seam]?.env, `seam ${seam}`).toBe(env)
+    }
+  })
+
+  test('adds no token: the wizard runs before the install has an admin', () => {
+    const env: NodeJS.ProcessEnv = { PATH: '/usr/bin' }
+
+    const options = withSeamEnv(baseOptions(), env)
+
+    for (const seam of SESSION_ENV_SEAMS) {
+      expect(options[seam]?.env?.[ADMIN_TOKEN_ENV_VAR], `seam ${seam}`).toBeUndefined()
+    }
+  })
+
+  test('leaves the base untouched', () => {
+    const base = baseOptions()
+    const before = structuredClone(base)
+
+    withSeamEnv(base, { PATH: '/usr/bin' })
+
+    expect(base).toEqual(before)
+  })
+
+  test('does not touch the seams whose environment means something else', () => {
+    const options = withSeamEnv(baseOptions(), { PATH: '/usr/bin' })
+
+    expect(options.journalDir).toBe('/data/journal')
+    expect(options.wrap).toBeUndefined()
+    expect(options.ui).toBeUndefined()
   })
 })
 

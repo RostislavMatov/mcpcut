@@ -1,5 +1,5 @@
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { errnoCodeOf } from '../errno.js'
 import { createServiceManager, type ServiceManager, type ServiceManagerDeps } from '../services/manager.js'
 import { checkBindExposure, checkPortFree } from '../setup/bind-checks.js'
@@ -17,15 +17,17 @@ import { defaultInstallConfig } from '../setup/defaults.js'
 import { loadInstallConfigSync, type InstallConfigLoad } from '../setup/load.js'
 import { formatInstallConfigErrors, installConfigSchema, type InstallConfig } from '../setup/schema.js'
 import { writeInstallConfig } from '../setup/write.js'
-import { parseSetupArgs, SETUP_USAGE, type SetupArgs } from './setup-args.js'
+import type { TuiTerminal } from '../tui/runtime-terminal.js'
+import { overlaySetupArgs, parseSetupArgs, SETUP_USAGE, type SetupArgs } from './setup-args.js'
 import {
   configWritten,
   dataDirConflict,
   hostFault,
-  INTERACTIVE_SETUP_PENDING,
+  SETUP_NEEDS_TTY_OR_YES,
   unusableConfigRefusal,
 } from './setup-constants.js'
 import { prepareAdmin, prepareSigningKey, prepareVault, startServices } from './setup-steps.js'
+import { isInteractiveTerminal } from './tty.js'
 import type { UiCliIo } from './ui-constants.js'
 
 /**
@@ -41,8 +43,12 @@ import type { UiCliIo } from './ui-constants.js'
  * token reaches a human on stdout instead of the daemon log the `ui` bootstrap
  * would have put it in.
  *
- * Interactive setup is a later wave (plan, "NOT Building"): without `--yes`
- * this command explains itself and exits 1.
+ * Without `--yes` this command is the INTERACTIVE setup: on a terminal it
+ * opens the first-run wizard, which asks the same questions the flags answer
+ * and then runs this very command. The wizard arrives as a seam rather than an
+ * import — a command module must not depend on the console that hosts it — so
+ * off a terminal, or wired without one, the command explains itself and
+ * exits 1.
  *
  * The io shape is declared structurally (`UiCliIo`) rather than imported from
  * `cli.ts`, the precedent `serve-constants.ts` set: no command module depends
@@ -65,6 +71,15 @@ export interface SetupCliOptions {
   readonly now?: () => Date
   /** Working directory a relative `--data-dir` is resolved against. */
   readonly cwd?: string
+  /** Overrides the TTY judgement; the default asks the terminal itself. */
+  readonly isTty?: boolean
+  /** The streams that judgement is made about. Defaults to the process ones. */
+  readonly terminal?: TuiTerminal
+  /**
+   * The interactive setup, injected by the CLI entry point; the command must
+   * not import the console that hosts it.
+   */
+  readonly wizard?: (args: SetupArgs) => Promise<number>
 }
 
 const DEFAULT_IO: UiCliIo = { stdout: process.stdout, stderr: process.stderr }
@@ -80,7 +95,10 @@ export async function runSetupCommand(
     return 1
   }
   if (!parsed.args.yes) {
-    io.stderr.write(`${INTERACTIVE_SETUP_PENDING}\n${SETUP_USAGE}`)
+    if (opts.wizard !== undefined && isInteractiveTerminal(opts)) {
+      return await opts.wizard(parsed.args)
+    }
+    io.stderr.write(`${SETUP_NEEDS_TTY_OR_YES}\n${SETUP_USAGE}`)
     return 1
   }
 
@@ -146,7 +164,7 @@ function prepareConfig(
     return undefined
   }
 
-  const candidate = withFlags(base.config, args, context.cwd)
+  const candidate = overlaySetupArgs(base.config, args, context.cwd)
   const exported = context.env[DATA_DIR_ENV_VAR]
   if (exported !== undefined && exported !== '' && exported !== candidate.dataDir) {
     io.stderr.write(dataDirConflict(exported, candidate.dataDir))
@@ -196,36 +214,6 @@ function baseConfigOf(context: SetupContext, args: SetupArgs): BaseConfig {
     return { ok: false, refusal: unusableConfigRefusal(context.load.path, context.load.problems) }
   }
   return { ok: true, config: defaultInstallConfig(join(context.home, DEFAULT_DATA_DIR_NAME)) }
-}
-
-/**
- * The base config with the flags the operator actually typed laid over it.
- * Immutable throughout: a rerun that passes `--ui-port` alone must keep the
- * `behindTls`, `allowedHosts` and `trustedProxyHeader` an earlier run wrote,
- * so every field that was not asked about is carried across untouched.
- */
-function withFlags(base: InstallConfig, args: SetupArgs, cwd: string): InstallConfig {
-  return {
-    ...base,
-    // `resolve` returns an absolute path unchanged, so this is the one branch
-    // that handles both spellings of `--data-dir`.
-    ...(args.dataDir !== undefined ? { dataDir: resolve(cwd, args.dataDir) } : {}),
-    ui: {
-      ...base.ui,
-      ...(args.uiHost !== undefined ? { host: args.uiHost } : {}),
-      ...(args.uiPort !== undefined ? { port: args.uiPort } : {}),
-      // Written whenever the operator said either word: `--behind-tls` is
-      // remembered in the file, so `--no-behind-tls` has to be able to write
-      // the `false` that takes it back.
-      ...(args.behindTls !== undefined ? { behindTls: args.behindTls } : {}),
-    },
-    serve: {
-      ...base.serve,
-      ...(args.serveHost !== undefined ? { host: args.serveHost } : {}),
-      ...(args.servePort !== undefined ? { port: args.servePort } : {}),
-    },
-    ...(args.supervisor !== undefined ? { supervisor: args.supervisor } : {}),
-  }
 }
 
 /**

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { ADMIN_TOKEN_PREFIX } from '../../src/admin/constants.js'
 import { createAdminStore } from '../../src/admin/store.js'
 import { runSetupCommand } from '../../src/cli/setup-cmd.js'
+import type { SetupArgs } from '../../src/cli/setup-args.js'
 import { TOKEN_ONCE_NOTICE, TOKEN_STDOUT_REDIRECT_WARNING } from '../../src/cli/ui-constants.js'
 import { SIGNING_KEY_FILENAME, SIGNING_PUB_FILENAME } from '../../src/journal/signing.js'
 import { createServiceManager } from '../../src/services/manager.js'
@@ -150,15 +151,46 @@ async function fullRunArgs(extra: readonly string[] = []): Promise<string[]> {
 }
 
 describe('setup without --yes', () => {
-  test('refuses, points at the console wave to come, and prints the synopsis', async () => {
+  test('refuses outside a terminal, naming both ways forward, and prints the synopsis', async () => {
     const io = fakeIo()
 
-    const exitCode = await runSetupCommand([], io, { env, home })
+    const exitCode = await runSetupCommand([], io, { env, home, isTty: false })
 
     expect(exitCode).toBe(1)
-    expect(io.err()).toContain('Interactive setup arrives with the console')
+    expect(io.err()).toContain('needs a terminal')
     expect(io.err()).toContain('mcpcut setup --yes')
     expect(io.out()).toBe('')
+    expect(await exists(configPathOf())).toBe(false)
+  })
+
+  test('refuses on a terminal too when no wizard was wired in', async () => {
+    const io = fakeIo()
+
+    const exitCode = await runSetupCommand([], io, { env, home, isTty: true })
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('needs a terminal')
+    expect(await exists(configPathOf())).toBe(false)
+  })
+
+  test('on a terminal it hands the parsed flags to the wizard and answers with its code', async () => {
+    const io = fakeIo()
+    const asked: SetupArgs[] = []
+
+    const exitCode = await runSetupCommand(['--ui-port', '18091'], io, {
+      env,
+      home,
+      isTty: true,
+      wizard: async (args) => {
+        asked.push(args)
+        return 5
+      },
+    })
+
+    expect(exitCode).toBe(5)
+    expect(asked).toHaveLength(1)
+    expect(asked[0]).toMatchObject({ yes: false, uiPort: 18091 })
+    expect(io.err()).toBe('')
     expect(await exists(configPathOf())).toBe(false)
   })
 
