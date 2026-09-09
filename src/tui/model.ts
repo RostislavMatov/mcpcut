@@ -1,5 +1,7 @@
 import type { Role } from '../admin/authz.js'
 import type { TokenAdmin } from '../cli/admin-token.js'
+import type { Supervisor } from '../setup/constants.js'
+import type { InstallConfigLoad } from '../setup/load.js'
 import type { SectionSpec } from './catalogue/types.js'
 import { SIGNIN_TOKEN_LABEL } from './constants.js'
 import { formOf, type FieldSpec, type Form } from './form.js'
@@ -51,6 +53,50 @@ export interface RunRequest {
    * `exactOptionalPropertyTypes` is on, so the key is spread in or left out.
    */
   readonly stdoutPath?: string
+  /**
+   * Not dispatched here: the runtime ends the console and this argv is run as
+   * a child on the same terminal; absent = an ordinary run.
+   */
+  readonly reopen?: true
+  /**
+   * The action prints a credential once (`ActionSpec.mintsToken`), so its
+   * output MAY hold the token pane. Carried on the request rather than read
+   * off the output, because the marker is a sentence any command's text can
+   * contain and only the action knows whether a token was really minted.
+   */
+  readonly mintsToken?: true
+}
+
+/** What the console knows about the install it runs over; absent = an install mcpcut supervises. */
+export interface InstallFacts {
+  readonly supervisor: Supervisor
+}
+
+/**
+ * The supervisor value that means "mcpcut runs the daemons itself" — the
+ * first of `SUPERVISORS`, written out rather than imported, because this
+ * module is a leaf and a VALUE import from `setup/constants.ts` would give it
+ * a runtime edge it does not otherwise have.
+ */
+export const OWN_SUPERVISOR: Supervisor = 'mcpcut'
+
+export const DEFAULT_INSTALL_FACTS: InstallFacts = { supervisor: OWN_SUPERVISOR }
+
+/**
+ * What the console takes from a config load.
+ *
+ * Only two of `InstallConfigLoad`'s three kinds can reach a console at all:
+ * `ok`, and `absent` — an install that never ran `setup` and uses the default
+ * data directory. An `invalid` config never gets here, because every command
+ * (the dispatcher, and `runTui` again as belt and braces) refuses on
+ * `describeDataDirProblem` before a frame exists — ADR-0012 §5: a broken
+ * config refuses every command rather than being guessed at. `absent`
+ * therefore means "no config, so mcpcut supervises its own daemons", which is
+ * the truth for that install and not a fall-back over an unread file.
+ */
+export function installFactsOf(install: InstallConfigLoad): InstallFacts {
+  if (install.kind !== 'ok') return DEFAULT_INSTALL_FACTS
+  return { supervisor: install.config.supervisor ?? OWN_SUPERVISOR }
 }
 
 /** The right-hand pane of the main screen. */
@@ -65,6 +111,8 @@ export type Pane =
     }
   | { readonly kind: 'help' }
   | { readonly kind: 'quit-confirm' }
+  /** A one-time token is on the output and nobody has said they saved it yet. */
+  | { readonly kind: 'token-hold' }
 
 /** Whether the wizard is writing an install's first config, or editing one that exists. */
 export type WizardMode = 'first-run' | 'edit'
@@ -127,6 +175,8 @@ export type Screen =
       readonly form: Form
       readonly notice?: string
       readonly busy: boolean
+      /** What `status` answered before anyone signed in; absent until it has. */
+      readonly services?: readonly ServiceSummary[]
     }
   | {
       readonly kind: 'main'
@@ -140,6 +190,15 @@ export type Screen =
       readonly services?: readonly ServiceSummary[]
       /** The run in flight; every key except Ctrl-C is ignored while set. */
       readonly busy?: RunRequest
+      /**
+       * The ID OF THE SECTION a quiet poll is out for; absent = no poll in
+       * flight, and the timer may arm again. It is the section rather than a
+       * flag because the answer arrives later than the keystroke that changed
+       * tabs: `update-live.ts` folds it in only when the operator is still on
+       * the tab that asked, so a late `approvals list` cannot appear under the
+       * Journal tab.
+       */
+      readonly polling?: string
     }
   | {
       readonly kind: 'wizard'
@@ -157,6 +216,8 @@ export type WizardScreen = Extract<Screen, { kind: 'wizard' }>
 export interface Model {
   readonly screen: Screen
   readonly size: TerminalSize
+  /** What the console was told about the install; absent reads as the default. */
+  readonly install?: InstallFacts
 }
 
 export type Msg =
@@ -166,6 +227,11 @@ export type Msg =
   | { readonly kind: 'run-result'; readonly result: RunResult }
   | { readonly kind: 'services'; readonly statuses: readonly ServiceSummary[] | undefined }
   | { readonly kind: 'session-lost' }
+  /** The console has drawn its first frame; nothing runs before it. */
+  | { readonly kind: 'opened' }
+  /** The auto-refresh timer fired; the reducer decides whether anything is due. */
+  | { readonly kind: 'tick' }
+  | { readonly kind: 'poll-result'; readonly result: RunResult }
   | {
       readonly kind: 'wizard-run-result'
       readonly step: DeployStepId
@@ -182,6 +248,10 @@ export type Effect =
    */
   | { readonly kind: 'run'; readonly request: RunRequest; readonly stdin?: string }
   | { readonly kind: 'refresh-services' }
+  /** The same command as `run`, run quietly: no `busy`, no running line, no stolen screen. */
+  | { readonly kind: 'poll'; readonly request: RunRequest }
+  /** Leave the console and run this argv as a child on the same terminal. */
+  | { readonly kind: 'reopen'; readonly argv: readonly string[] }
   | { readonly kind: 'quit'; readonly exitCode: number }
   /** One rung of the deploy ladder: dispatched with no session, since there is no admin yet. */
   | { readonly kind: 'wizard-run'; readonly step: DeployStepId; readonly request: RunRequest }
@@ -199,10 +269,14 @@ export const SIGNIN_FIELDS: readonly FieldSpec[] = [
   { name: 'token', label: SIGNIN_TOKEN_LABEL, kind: 'secret', required: true },
 ]
 
-export function initialModel(size: TerminalSize): Model {
+export function initialModel(
+  size: TerminalSize,
+  install: InstallFacts = DEFAULT_INSTALL_FACTS,
+): Model {
   return {
     screen: { kind: 'signin', form: formOf(SIGNIN_FIELDS), busy: false },
     size,
+    install,
   }
 }
 

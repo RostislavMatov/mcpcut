@@ -8,6 +8,7 @@ import { STATE_DB_FILE_NAME } from '../../src/policy/store-backend.js'
 import { ACTIVE_MARKER } from '../../src/tui/constants.js'
 import {
   accessRecords,
+  acknowledgeToken,
   actionTitlesIn,
   closeConsoles,
   goToSection,
@@ -72,6 +73,9 @@ const OPERATOR_SECTIONS: readonly (readonly string[])[] = [
   ['export --report', 'verify', 'verify --report'],
 ]
 
+/** The tenth section an operator sees; it has no digit key, only `Tab`. */
+const OPERATOR_SERVICES: readonly string[] = ['status', 'start', 'stop', 'logs']
+
 let journalDir: string
 let store: AdminStore
 
@@ -107,6 +111,9 @@ describe('console end to end: the audit section', () => {
       values: [AGENT_NAME],
       command: `agent create ${AGENT_NAME}`,
     })
+    // The agent's one-time token holds the pane until it is acknowledged
+    // (phase 5, plan P2); every key below is one the hold would swallow.
+    await acknowledgeToken(app)
 
     await goToSection(app, 'audit', 'owner')
     await runAction(app, { title: 'verify', values: [], command: 'verify' })
@@ -161,8 +168,16 @@ describe('console end to end: what a role is shown', () => {
       )
     }
 
-    // Nine sections and no more: the loop above left the cursor on the last
-    // of them, and one more `Tab` wraps round to the first.
+    // Ten sections and no more: the digits above reach the first nine, one
+    // `Tab` steps onto Services — the tenth, which has no digit key of its
+    // own — and one more wraps round to the first.
+    fake.type(TAB)
+    await waitForScreen(
+      fake,
+      (screen) => sameTitles(actionTitlesIn(screen), OPERATOR_SERVICES),
+      'the Services tab an operator may drive',
+    )
+
     fake.type(TAB)
     await waitForScreen(
       fake,

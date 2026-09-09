@@ -3,7 +3,7 @@ import type { ActionSpec } from './catalogue/types.js'
 import { SECRET_DISPLAY_MASK } from './constants.js'
 import { applyFormKey, type FormValues, isValid, validateForm, valuesOf } from './form.js'
 import type { KeyEvent } from './keys.js'
-import type { Model, Pane, RunRequest, Step } from './model.js'
+import type { Effect, Model, Pane, RunRequest, Step } from './model.js'
 import { ACTIONS_PANE, type MainScreen, noEffects, withMain } from './update-step.js'
 
 /**
@@ -40,7 +40,9 @@ export function isYes(key: KeyEvent): boolean {
  *
  * `stdoutPath` is spread in only when the action names an output field that
  * was filled: `exactOptionalPropertyTypes` is on, so an absent path is an
- * absent key rather than an `undefined` one.
+ * absent key rather than an `undefined` one. `reopen` and `mintsToken` ride
+ * along the same way — both are facts about the ACTION that the runtime and
+ * the output pane need after the argv has left the catalogue behind.
  *
  * Every NON-secret value is trimmed before either is built. A field is typed
  * into and pasted into, and the padding that survives is nobody's argument:
@@ -56,7 +58,26 @@ export function requestOf(action: ActionSpec, values: FormValues): RunRequest {
   const display = argv.map((arg) => (secrets.has(arg) ? SECRET_DISPLAY_MASK : arg))
   const stdoutPath = action.stdoutToField === undefined ? '' : (trimmed[action.stdoutToField] ?? '')
 
-  return { actionId: action.id, argv, display, ...(stdoutPath === '' ? {} : { stdoutPath }) }
+  return {
+    actionId: action.id,
+    argv,
+    display,
+    ...(stdoutPath === '' ? {} : { stdoutPath }),
+    ...(action.leavesConsole === true ? { reopen: true as const } : {}),
+    ...(action.mintsToken === true ? { mintsToken: true as const } : {}),
+  }
+}
+
+/**
+ * The effect a request asks for. A `reopen` request is not dispatched at all:
+ * the console ends and the argv runs as a child on the same terminal, because
+ * a console already serving the old catalogue cannot honestly host the wizard
+ * that rewrites the install underneath it (ADR-0012 §16, plan P4).
+ */
+export function effectOf(request: RunRequest, stdin?: string): Effect {
+  if (request.reopen === true) return { kind: 'reopen', argv: request.argv }
+
+  return { kind: 'run', request, ...(stdin === undefined ? {} : { stdin }) }
 }
 
 /** The values with every non-secret one trimmed; the secrets pass through untouched. */
@@ -114,11 +135,18 @@ export function submit(
     return withMain(model, screen, { pane })
   }
 
+  // A request that leaves the console never sets `busy`: nothing is running
+  // here to wait for, and a screen frozen on a run that will never answer is
+  // the last thing the operator would see.
+  if (request.reopen === true) {
+    return withMain(model, screen, { pane: ACTIONS_PANE }, [effectOf(request)])
+  }
+
   // The secret rides on the EFFECT, which the runtime consumes and drops;
   // `busy` keeps the request, and a request is part of the model.
   const stdin = stdinOf(action, values)
   return withMain(model, screen, { pane: ACTIONS_PANE, busy: request }, [
-    { kind: 'run', request, ...(stdin === undefined ? {} : { stdin }) },
+    effectOf(request, stdin),
   ])
 }
 
@@ -166,8 +194,11 @@ export function updateConfirmPane(
   key: KeyEvent,
 ): Step {
   if (!isYes(key)) return withMain(model, screen, { pane: ACTIONS_PANE })
+  if (pane.request.reopen === true) {
+    return withMain(model, screen, { pane: ACTIONS_PANE }, [effectOf(pane.request)])
+  }
 
   return withMain(model, screen, { pane: ACTIONS_PANE, busy: pane.request }, [
-    { kind: 'run', request: pane.request },
+    effectOf(pane.request),
   ])
 }

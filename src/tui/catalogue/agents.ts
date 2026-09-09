@@ -66,6 +66,7 @@ const createAction: ActionSpec = {
   command: 'agent',
   subcommand: 'create',
   fields: [agentNameField],
+  mintsToken: true,
   argv: (values) => ['agent', 'create', valueOf(values, 'name')],
   hint: 'prints the agent’s token once — copy it before leaving',
 }

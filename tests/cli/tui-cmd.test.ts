@@ -1,13 +1,20 @@
 import { EventEmitter } from 'node:events'
-import { describe, expect, test } from 'vitest'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { createAdminStore } from '../../src/admin/store.js'
 import { dispatchOptionsFor, runTui, type TuiCommandOptions } from '../../src/cli/tui-cmd.js'
 import { TUI_USAGE } from '../../src/cli/operator-usage.js'
 import { TUI_NOT_A_TTY, TUI_NOT_WIRED, TUI_NO_ARGUMENTS } from '../../src/cli/tui-constants.js'
 import type { UiCliIo } from '../../src/cli/ui-constants.js'
 import { plainStyle } from '../../src/tui/ansi.js'
+import { SECTIONS, visibleActions, visibleSections } from '../../src/tui/catalogue/index.js'
 import { defaultInstallConfig } from '../../src/setup/defaults.js'
 import type { InstallConfigLoad } from '../../src/setup/load.js'
-import { WIZARD_TITLE_EDIT, WIZARD_TITLE_FIRST_RUN } from '../../src/tui/constants.js'
+import { SIGNIN_TITLE, WIZARD_TITLE_EDIT, WIZARD_TITLE_FIRST_RUN } from '../../src/tui/constants.js'
+import type { InstallFacts } from '../../src/tui/model.js'
+import { activeActionIndexIn, actionTitlesIn } from '../tui/support/console-harness-navigate.js'
 import { createFakeTerminal, waitForScreen, type FakeTerminal } from '../tui/support/fake-terminal.js'
 
 /**
@@ -296,6 +303,173 @@ describe('runTui: wiring', () => {
       }),
     ).rejects.toThrow(TUI_NOT_WIRED)
     expect(fake.frames()).toEqual([])
+  })
+})
+
+/**
+ * The fourth way out of the console (mcpcut phase 5, Task 8).
+ *
+ * Services ▸ `setup` is the one action of the catalogue that is not
+ * dispatched: it ends the console and hands the terminal to `mcpcut setup`.
+ * These cases assert what only this module can answer — that the argv reaches
+ * the seam the wizard's own restart uses, that it is asked for exactly once
+ * and only after the console has resolved, and that an install somebody else
+ * supervises never offers the two verbs it cannot honour.
+ */
+
+const OWNER_NAME = 'root'
+
+/** A fragment of the Services intro; it says which section is on screen. */
+const SERVICES_INTRO = 'ui and serve as the manager sees them'
+
+/** The tail of the question `setup` asks before it gives the terminal away. */
+const SETUP_QUESTION = 'Leave the console for the setup screen?'
+
+/** The highest section a digit can name (`1`–`9` in `update-main.ts`). */
+const LAST_DIGIT_INDEX = 8
+
+const TAB = '\t'
+const ENTER = '\r'
+const DOWN_KEY = 'j'
+const QUIT_KEY = 'q'
+
+/** A dispatcher that answers the header's `status --json` and nothing else. */
+const statusDispatch = async (
+  argv: readonly string[],
+  dispatchIo: UiCliIo,
+): Promise<number> => {
+  if (argv[0] === 'status') dispatchIo.stdout.write('[]\n')
+  return 0
+}
+
+/** A console an owner has signed into, and the argv its reopen seam was asked for. */
+interface SignedInConsole {
+  readonly fake: FakeTerminal
+  readonly running: Promise<number>
+  readonly reopened: string[][]
+}
+
+/** Opens a console over `journalDir` and signs a fresh owner in. */
+async function ownerConsole(
+  journalDir: string,
+  install: InstallConfigLoad,
+): Promise<SignedInConsole> {
+  const { token } = await createAdminStore({ journalDir }).createAdmin(OWNER_NAME, 'owner')
+  const fake = createFakeTerminal()
+  const reopened: string[][] = []
+
+  const running = runTui([], fakeIo(), {
+    ...consoleOptions(fake, install),
+    dispatch: statusDispatch,
+    entry: 'explicit',
+    journalDir,
+    reopen: async (argv) => {
+      reopened.push([...argv])
+      return 0
+    },
+  })
+
+  await waitForScreen(fake, (screen) => screen.includes(SIGNIN_TITLE), 'the sign-in screen')
+  fake.type(`${token}${ENTER}`)
+  await waitForScreen(
+    fake,
+    (screen) => screen.includes(`${OWNER_NAME} (owner)`),
+    'the header naming the owner',
+  )
+
+  return { fake, running, reopened }
+}
+
+/** The Services section as this install offers it to an owner. */
+function servicesActionTitles(facts: InstallFacts): readonly string[] {
+  const sections = visibleSections('owner', SECTIONS, facts)
+  const section = sections.find((each) => each.id === 'services')
+  if (section === undefined) throw new Error('an owner has no Services section')
+
+  return visibleActions(section, 'owner').map((action) => action.title)
+}
+
+/** Opens Services the way an operator does: a digit for the ninth tab, then Tab. */
+async function goToServices(fake: FakeTerminal, facts: InstallFacts): Promise<void> {
+  const index = visibleSections('owner', SECTIONS, facts).findIndex(
+    (section) => section.id === 'services',
+  )
+  fake.type(String(LAST_DIGIT_INDEX + 1))
+  for (let step = LAST_DIGIT_INDEX; step < index; step += 1) fake.type(TAB)
+
+  await waitForScreen(fake, (screen) => screen.includes(SERVICES_INTRO), 'the Services section')
+}
+
+/** Moves onto `setup` and opens it, which is the confirmation and not a run. */
+async function openSetup(fake: FakeTerminal, facts: InstallFacts): Promise<void> {
+  const target = servicesActionTitles(facts).indexOf('setup')
+  for (let step = 0; step < target; step += 1) fake.type(DOWN_KEY)
+  await waitForScreen(
+    fake,
+    (screen) => activeActionIndexIn(screen) === target,
+    'the setup action to be selected',
+  )
+  fake.type(ENTER)
+}
+
+describe('runTui: Services leaves the console', () => {
+  let journalDir: string
+
+  beforeEach(async () => {
+    journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-tui-cmd-'))
+  })
+
+  afterEach(async () => {
+    await rm(journalDir, { recursive: true, force: true })
+  })
+
+  test('Services ▸ setup leaves the console and asks the reopen seam for setup', async () => {
+    const install: InstallConfigLoad = {
+      kind: 'ok',
+      path: CONFIG_PATH,
+      config: defaultInstallConfig(journalDir),
+    }
+    const { fake, running, reopened } = await ownerConsole(journalDir, install)
+
+    await goToServices(fake, { supervisor: 'mcpcut' })
+    await openSetup(fake, { supervisor: 'mcpcut' })
+    await waitForScreen(fake, (screen) => screen.includes(SETUP_QUESTION), 'the setup question')
+    fake.type('y')
+
+    expect(await running).toBe(0)
+    expect(reopened).toEqual([['setup']])
+    expect(fake.restored()).toBe(true)
+  })
+
+  test('a console whose install is supervised externally never offers start or stop', async () => {
+    const install: InstallConfigLoad = {
+      kind: 'ok',
+      path: CONFIG_PATH,
+      config: { ...defaultInstallConfig(journalDir), supervisor: 'external' },
+    }
+    const { fake, running, reopened } = await ownerConsole(journalDir, install)
+
+    await goToServices(fake, { supervisor: 'external' })
+    const titles = actionTitlesIn(fake.screen())
+    fake.type('\x03')
+
+    expect(titles).toEqual(['status', 'logs', 'setup'])
+    expect(await running).toBe(0)
+    expect(reopened).toEqual([])
+  })
+
+  test('q without a reopen request calls nobody', async () => {
+    const install: InstallConfigLoad = {
+      kind: 'ok',
+      path: CONFIG_PATH,
+      config: defaultInstallConfig(journalDir),
+    }
+    const { fake, running, reopened } = await ownerConsole(journalDir, install)
+
+    fake.type(QUIT_KEY)
+
+    expect(await running).toBe(0)
+    expect(reopened).toEqual([])
   })
 })
 

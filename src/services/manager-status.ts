@@ -1,4 +1,4 @@
-import { type ServiceName } from './constants.js'
+import { EXTERNAL_SUPERVISOR, type ServiceName } from './constants.js'
 import { bindOf, type ManagerContext, type ServiceStatus } from './manager-types.js'
 import { logFilePathFor, pidFilePathFor } from './paths.js'
 import { isProcessAlive, readPidFile, type PidRecord } from './pid-file.js'
@@ -51,13 +51,20 @@ export async function statusOfService(ctx: ManagerContext, service: ServiceName)
     // operator's own shell. Reporting that as `stopped` would invite a start
     // that could only fail on EADDRINUSE.
     const answering = await ctx.probe(service, bind.host, bind.port)
+    // Under `supervisor: external` there is no pid file to find and nothing
+    // mcpcut may spawn, so BOTH answers need naming (phase 5, Q16): a bare
+    // `stopped` there reads as "press start", and a start is exactly what this
+    // install must not do — the detail sends the operator to the supervisor
+    // that owns the daemons instead.
+    const managedOutside = ctx.config.supervisor === EXTERNAL_SUPERVISOR
+    const detail = detailForAbsent(managedOutside, answering, bind.host, bind.port)
     return {
       service,
       state: answering ? 'external' : 'stopped',
       host: bind.host,
       port: bind.port,
       logPath,
-      ...(answering ? { detail: externalDetail(bind.host, bind.port) } : {}),
+      ...(detail === undefined ? {} : { detail }),
     }
   }
   return await recordedStatus(ctx, read.record, logPath)
@@ -121,6 +128,40 @@ function pidReuseDetail(record: PidRecord): string {
   )
 }
 
+/**
+ * What `status` says about a service with no pid file — `undefined` for the one
+ * case that needs no words: our own supervisor, nothing answering, so `stopped`
+ * already says everything (and the caller must then omit the key entirely,
+ * `exactOptionalPropertyTypes`).
+ */
+function detailForAbsent(
+  managedOutside: boolean,
+  answering: boolean,
+  host: string,
+  port: number,
+): string | undefined {
+  if (managedOutside) {
+    return answering
+      ? externalSupervisorDetail(host, port)
+      : externalSupervisorDownDetail(host, port)
+  }
+  return answering ? externalDetail(host, port) : undefined
+}
+
 function externalDetail(host: string, port: number): string {
   return `something answers on ${host}:${port} but mcpcut has no pid file for it`
+}
+
+function externalSupervisorDetail(host: string, port: number): string {
+  return (
+    `answering on ${host}:${port}; managed by an external supervisor ` +
+    '(supervisor: external), mcpcut only reports'
+  )
+}
+
+function externalSupervisorDownDetail(host: string, port: number): string {
+  return (
+    `not answering on ${host}:${port}; managed by an external supervisor ` +
+    '(supervisor: external) — check compose or systemd'
+  )
 }

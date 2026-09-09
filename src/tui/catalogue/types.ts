@@ -64,7 +64,36 @@ interface ActionSpecCommon extends CommandPair {
   readonly stdoutToField?: string
   /** One line under the action's title, when the title alone is not enough. */
   readonly hint?: string
+  /**
+   * Hidden unless the install meets it: 'own-supervisor' = mcpcut runs the
+   * daemons itself (`config.supervisor !== 'external'`).
+   */
+  readonly requires?: ActionRequirement
+  /**
+   * The command prints a credential ONCE (`TOKEN_ONCE_NOTICE`): `admin add`,
+   * `admin rotate`, `agent create`. Only such an action may hold the
+   * `token-hold` pane, and that is why this is a property of the ACTION rather
+   * than of the bytes it printed. The marker is a plain English sentence, and
+   * most tabs print text somebody else chose — `approvals list` prints the
+   * arguments an agent sent, `journal show` and `logs` print upstream output —
+   * so a substring match on stdout let anybody who could write that sentence
+   * lock the console's pane behind a banner that was not true.
+   *
+   * It is a necessary condition, never a sufficient one: the panel holds only
+   * when the action minted AND the marker really is in stdout, so a refused
+   * `admin add` (which prints no token) returns to the action list.
+   */
+  readonly mintsToken?: true
+  /**
+   * Not dispatched from here: the console ends and argv runs as a child on the
+   * same terminal (`setup` opens the wizard). Implies `fields: []` — the
+   * confirm is the only question.
+   */
+  readonly leavesConsole?: true
 }
+
+/** What an install must be for an action to be offered at all. */
+export type ActionRequirement = 'own-supervisor'
 
 /**
  * One runnable command: the common members above, plus EITHER a question
@@ -122,4 +151,9 @@ export interface SectionSpec {
   readonly actions: readonly ActionSpec[]
   /** Action re-run by the `r` key, when the section has one that reads its own state. */
   readonly refreshActionId?: string
+  /**
+   * Re-run `refreshActionId` on its own every this many ms while the tab is
+   * open on its action list (C3: Approvals only).
+   */
+  readonly autoRefreshMs?: number
 }

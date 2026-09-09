@@ -61,8 +61,9 @@ const SESSION: Session = { adminName: 'root', role: 'owner' }
 /**
  * Index of the sections an owner sees, in the order the tab bar shows them:
  * home, admins, servers, vault, agents, groups, policy, quarantine,
- * approvals, journal, audit. Only the first nine have a digit key — `10` and
- * `11` cannot be typed as one keystroke, so Audit is reached by Tab alone.
+ * approvals, journal, audit, services. Only the first nine have a digit key —
+ * `10`, `11` and `12` cannot be typed as one keystroke, so Audit and Services
+ * are reached by Tab alone.
  */
 const HOME_TAB = 0
 const ADMINS_TAB = 1
@@ -71,6 +72,7 @@ const VAULT_TAB = 3
 const APPROVALS_TAB = 8
 const JOURNAL_TAB = 9
 const AUDIT_TAB = 10
+const SERVICES_TAB = 11
 
 /** What the catalogue sections are called, in that same order. */
 const OWNER_SECTION_IDS: readonly string[] = [
@@ -85,6 +87,7 @@ const OWNER_SECTION_IDS: readonly string[] = [
   'approvals',
   'journal',
   'audit',
+  'services',
 ]
 
 /** The sections a viewer sees: the owner's list without Admins and Vault. */
@@ -383,8 +386,10 @@ describe('update: the sign-in screen', () => {
         result: { argv: ['admin', 'list'], display: ['admin', 'list'], exitCode: 0, stdout: 'x', stderr: '' },
       } satisfies Msg,
     ],
-    ['services', { kind: 'services', statuses: [] } satisfies Msg],
     ['session-lost', { kind: 'session-lost' } satisfies Msg],
+    // `services` is NOT here any more (phase 5): what the daemons are doing is
+    // a fact about the host, not a dead session's output, and the sign-in
+    // screen draws it — `update-live.test.ts` holds that half.
   ])('%s is ignored on the sign-in screen', (_name, msg) => {
     const model = initialModel(SIZE)
 
@@ -413,11 +418,11 @@ describe('update: moving between sections', () => {
   ])('%s moves to the previous section, wrapping past the first', (_name, msg) => {
     const step = update(mainModel(), msg)
 
-    expect(mainOf(step.model).sectionIndex).toBe(AUDIT_TAB)
+    expect(mainOf(step.model).sectionIndex).toBe(SERVICES_TAB)
   })
 
   test('the next section wraps past the last', () => {
-    const step = update(mainModel({ sectionIndex: AUDIT_TAB }), key('tab'))
+    const step = update(mainModel({ sectionIndex: SERVICES_TAB }), key('tab'))
 
     expect(mainOf(step.model).sectionIndex).toBe(HOME_TAB)
   })
@@ -604,7 +609,9 @@ describe('update: running an action', () => {
     expect(screen.busy).toBe(false)
     expect(screen.form.fields[0]?.value).toBe('')
     expect(step.model.size).toEqual(SIZE)
-    expect(step.effects).toEqual([])
+    // The one thing it asks for: the services line that screen draws, which
+    // the session that has just gone had answered (F14).
+    expect(step.effects).toEqual([{ kind: 'refresh-services' }])
   })
 })
 
@@ -807,10 +814,20 @@ describe('update: help, quit and the panes that ask first', () => {
   })
 
   test('q asks first while a one-time token is on screen', () => {
-    const output = panelOf(1, { stdout: ONE_TIME_STDOUT })
-    expect(output.holdsOneTimeToken).toBe(true)
+    // The run that minted it already opened the hold pane (phase 5, plan P2),
+    // so `q` is answered from there rather than from the action list.
+    const result: RunResult = {
+      argv: ['admin', 'add', 'alice'],
+      display: ['admin', 'add', 'alice'],
+      exitCode: 0,
+      stdout: ONE_TIME_STDOUT,
+      stderr: '',
+      mintsToken: true,
+    }
+    const held = update(mainModel(), { kind: 'run-result', result }).model
+    expect(mainOf(held).pane).toEqual({ kind: 'token-hold' })
 
-    const step = update(mainModel({ output }), char('q'))
+    const step = update(held, char('q'))
 
     expect(mainOf(step.model).pane).toEqual({ kind: 'quit-confirm' })
     expect(step.effects).toEqual([])
@@ -826,6 +843,19 @@ describe('update: help, quit and the panes that ask first', () => {
     const step = update(mainModel({ pane: { kind: 'quit-confirm' } }), char('n'))
 
     expect(mainOf(step.model).pane).toEqual({ kind: 'actions' })
+    expect(step.effects).toEqual([])
+  })
+
+  test('any other answer returns to the token hold when one is still unsaved', () => {
+    const step = update(
+      mainModel({
+        pane: { kind: 'quit-confirm' },
+        output: panelOf(1, { stdout: ONE_TIME_STDOUT, mintsToken: true }),
+      }),
+      char('n'),
+    )
+
+    expect(mainOf(step.model).pane).toEqual({ kind: 'token-hold' })
     expect(step.effects).toEqual([])
   })
 })
@@ -903,6 +933,8 @@ describe('update: a form pane', () => {
       actionId: 'add',
       argv: ['admin', 'add', 'bob', '--role', 'owner'],
       display: ['admin', 'add', 'bob', '--role', 'owner'],
+      // `admin add` prints a token once, and that travels with the request.
+      mintsToken: true,
     }
     expect(step.effects).toEqual([{ kind: 'run', request }])
     expect(mainOf(step.model).busy).toEqual(request)
@@ -922,6 +954,7 @@ describe('update: a form pane', () => {
           actionId: 'add',
           argv: ['admin', 'add', 'bob', '--role', 'operator'],
           display: ['admin', 'add', 'bob', '--role', 'operator'],
+          mintsToken: true,
         },
       },
     ])
@@ -1023,6 +1056,18 @@ describe('update: what a run carries besides its argv', () => {
     // Assert
     expect(request.argv).toEqual(['demo', 'bob', '--token', 'mcpa_secret'])
     expect(request.display).toEqual(['demo', 'bob', '--token', SECRET_DISPLAY_MASK])
+  })
+
+  test('an action that mints a credential says so on the request it builds', () => {
+    // The pane may hold a one-time token only because the ACTION mints one;
+    // the marker in the output alone is text a command was handed (F1).
+    const minting: ActionSpec = { ...signAction, mintsToken: true }
+
+    expect(requestOf(minting, { name: 'bob', token: '' }).mintsToken).toBe(true)
+  })
+
+  test('an ordinary action leaves the key out entirely, rather than setting it undefined', () => {
+    expect('mintsToken' in requestOf(signAction, { name: 'bob', token: '' })).toBe(false)
   })
 
   test('an empty secret masks nothing, so an empty argument stays an empty argument', () => {

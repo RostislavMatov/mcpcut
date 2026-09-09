@@ -5,24 +5,22 @@ import type { ActionSpec } from './catalogue/types.js'
 import {
   ACTIVE_MARKER,
   CARET,
-  CONSOLE_TITLE,
   FIELD_LABEL_MAX_WIDTH,
-  FOOTER_ROWS,
   HELP_LINES,
   INACTIVE_MARKER,
   QUIT_WITH_TOKEN_QUESTION,
   SECRET_MASK_CHAR,
-  SIGNIN_TITLE,
-  SIGNIN_TOKEN_LABEL,
 } from './constants.js'
+import { TOKEN_HOLD_BANNER } from './constants-live.js'
 import type { FieldState, Form } from './form.js'
-import { blankRows, fillTo } from './layout.js'
-import type { MainScreen, RunRequest, Screen, SigninScreen, TerminalSize } from './model.js'
+import { fillTo } from './layout.js'
+import type { MainScreen, RunRequest } from './model.js'
 import { outputLines } from './render-output.js'
 
 /**
- * The right-hand pane of the main screen, and the whole of the sign-in screen
- * (mcpcut phase 2, Task 10).
+ * The right-hand pane of the main screen (mcpcut phase 2, Task 10). The
+ * sign-in screen it used to draw as well lives in `render-signin.ts` since
+ * phase 5 gave that screen a services banner of its own.
  *
  * Two rules run through every function here. The first is width: a pane is
  * handed the number of columns it owns and returns lines EXACTLY that wide,
@@ -32,19 +30,11 @@ import { outputLines } from './render-output.js'
  * invisible bytes that would otherwise be counted as width — which is also
  * what lets a test compare a styled frame with a plain one after stripping.
  *
- * The security invariant of the screen lives here too: a `secret` field is
+ * The security invariant of the screen holds here too: a `secret` field is
  * drawn as a run of mask characters as long as its value, and its value is
- * never read into a line. The sign-in token therefore cannot reach a frame
- * even by mistake (ADR-0004 — never in a frame).
+ * never read into a line — a typed secret cannot reach a frame even by
+ * mistake (ADR-0004 — never in a frame).
  */
-
-/** The two arms of `Screen`, named so the renderers can take one each. */
-
-/** What the sign-in screen offers instead of a key footer. */
-export const SIGNIN_FOOTER = 'Enter sign in · Esc quit'
-
-/** What the token field says while the store is being asked about it. */
-export const SIGNIN_BUSY_TEXT = 'signing in…'
 
 /** Width the label column of a form is padded to, so the values line up. */
 const FIELD_LABEL_WIDTH = 8
@@ -100,7 +90,28 @@ function paneBody(
       return plainPane(HELP_LINES, width, rows)
     case 'quit-confirm':
       return quitConfirmPane(screen, width, rows)
+    case 'token-hold':
+      return tokenHoldPane(screen, width, rows, style)
   }
+}
+
+/**
+ * The banner sits above the output it warns about, inversed AFTER padding, so
+ * the token stays on screen while the operator copies it.
+ */
+function tokenHoldPane(
+  screen: MainScreen,
+  width: number,
+  rows: number,
+  style: Style,
+): readonly string[] {
+  const banner = wrapWords(TOKEN_HOLD_BANNER, width).map((line) =>
+    style.inverse(padRight(line, width)),
+  )
+  const head = [...banner, padRight('', width)]
+  const below =
+    screen.output === undefined ? [] : outputLines(screen.output, width, rows - head.length)
+  return fillTo([...head, ...below], rows, width)
 }
 
 /**
@@ -294,55 +305,4 @@ function widgetOf(field: FieldState): string {
     case 'flag':
       return field.value === 'true' ? '[x]' : '[ ]'
   }
-}
-
-/**
- * The sign-in screen, whole: the console's name on top, its block of prompts
- * a third of the way down, and the two keys it answers to at the bottom.
- */
-export function renderSignIn(
-  screen: SigninScreen,
-  size: TerminalSize,
-  style: Style,
-): readonly string[] {
-  const { columns, rows } = size
-  if (rows <= 0) return []
-
-  const block = centredBlock(signInBlockOf(screen), columns)
-  const top = Math.max(SIGNIN_BLOCK_MIN_ROW, Math.floor(rows / SIGNIN_BLOCK_DIVISOR))
-  const above = [
-    style.bold(padRight(CONSOLE_TITLE, columns)),
-    ...blankRows(top - 1, columns),
-    ...block,
-  ]
-  const footerRow = rows - FOOTER_ROWS
-
-  return [...fillTo(above, footerRow, columns), padRight(SIGNIN_FOOTER, columns)]
-}
-
-/** Where the prompt block sits: a third down, but never over the title row. */
-const SIGNIN_BLOCK_DIVISOR = 3
-const SIGNIN_BLOCK_MIN_ROW = 2
-
-function signInBlockOf(screen: SigninScreen): readonly string[] {
-  const notice = screen.notice
-  return [
-    SIGNIN_TITLE,
-    `${SIGNIN_TOKEN_LABEL}: ${screen.busy ? SIGNIN_BUSY_TEXT : maskedTokenOf(screen.form)}`,
-    '',
-    ...(notice === undefined ? [] : [notice]),
-  ]
-}
-
-/** The typed token, as long as it is and nothing more: the value never leaves the form. */
-function maskedTokenOf(form: Form): string {
-  return `${SECRET_MASK_CHAR.repeat(form.fields[0]?.value.length ?? 0)}${CARET}`
-}
-
-/** Indents every line of a block by the same amount, so the block stays a block. */
-function centredBlock(lines: readonly string[], columns: number): readonly string[] {
-  const blockWidth = Math.max(...lines.map((line) => line.length), 0)
-  const indent = ' '.repeat(Math.max(0, Math.floor((columns - blockWidth) / 2)))
-
-  return lines.map((line) => padRight(`${indent}${line}`, columns))
 }

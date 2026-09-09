@@ -16,6 +16,7 @@ import type {
 } from '../../../src/services/manager.js'
 import { defaultInstallConfig } from '../../../src/setup/defaults.js'
 import type { InstallConfigLoad } from '../../../src/setup/load.js'
+import type { InstallConfig } from '../../../src/setup/schema.js'
 import { plainStyle } from '../../../src/tui/ansi.js'
 import { readJournalRecords } from '../../support/journal-rows.js'
 import {
@@ -60,7 +61,7 @@ const ESCAPE_TIMEOUT_MS = 10
 const CLOSE_TIMEOUT_MS = 2_000
 
 /** Where the install config would live; nothing reads the file itself here. */
-const CONFIG_PATH = '/home/op/.mcpcut/config.json'
+export const CONFIG_PATH = '/home/op/.mcpcut/config.json'
 
 /** A probe that says the server answered, as `tests/cli/server-cmd.test.ts` does. */
 export const ALIVE_PROBE: ProbeResult = {
@@ -146,11 +147,33 @@ export async function closeConsoles(): Promise<void> {
 }
 
 /**
+ * What a suite may put in place of the stand's own defaults.
+ *
+ * Two overrides rather than one, because they answer to different owners.
+ * `install` is what the CONSOLE is told about this installation — the ports
+ * and the supervisor it renders and gates on — while `dispatchOptions`
+ * replaces seams of the DISPATCHER underneath it. A suite that runs real
+ * daemons needs both to agree, and passing the same config twice is how they
+ * do (`console-services-e2e.test.ts`).
+ *
+ * The spread is one level deep: an override REPLACES a seam whole rather than
+ * merging into it. Anything else would let a half-overridden `services` keep
+ * the fake manager's `stop` beside a real `start`.
+ */
+export interface ConsoleOverrides {
+  readonly install?: InstallConfig
+  readonly dispatchOptions?: Partial<DispatchOptions>
+}
+
+/**
  * Opens a console over `journalDir`, wired to the real dispatcher through a
  * wrapper that records what it was asked to run — the only way to assert that
  * a secret never travelled in argv is to keep every argv there was.
  */
-export function openConsole(journalDir: string): RunningConsole {
+export function openConsole(
+  journalDir: string,
+  overrides: ConsoleOverrides = {},
+): RunningConsole {
   const fake = createFakeTerminal({ columns: CONSOLE_COLUMNS, rows: CONSOLE_ROWS })
   const processEvents = new EventEmitter()
   const io = fakeIo()
@@ -159,7 +182,7 @@ export function openConsole(journalDir: string): RunningConsole {
   const install: InstallConfigLoad = {
     kind: 'ok',
     path: CONFIG_PATH,
-    config: defaultInstallConfig(journalDir),
+    config: overrides.install ?? defaultInstallConfig(journalDir),
   }
 
   const recordingDispatch = async (
@@ -169,6 +192,11 @@ export function openConsole(journalDir: string): RunningConsole {
   ): Promise<number> => {
     calls.push([...argv])
     return dispatch(argv, commandIo, options)
+  }
+
+  const dispatchOptions: DispatchOptions = {
+    ...consoleDispatchOptions(journalDir, install),
+    ...overrides.dispatchOptions,
   }
 
   const exit = runTui([], io, {
@@ -182,7 +210,7 @@ export function openConsole(journalDir: string): RunningConsole {
     journalDir,
     env: {},
     dispatch: recordingDispatch,
-    dispatchOptions: consoleDispatchOptions(journalDir, install),
+    dispatchOptions,
   })
 
   const running: RunningConsole = {

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import {
   ANY_OPTION,
+  choiceField,
   choiceFlag,
   flagField,
   isOn,
@@ -53,6 +54,27 @@ describe('fields', () => {
 
     expect(field.kind).toBe('choice')
     expect(field.options).toEqual([ANY_OPTION, 'stateless', 'session'])
+  })
+
+  test('choiceField offers exactly the options it is given, first one first', () => {
+    // Arrange + Act
+    const field = choiceField('service', 'Service', ['both', 'ui', 'serve'], 'both = ui, then serve')
+
+    // Assert: no ANY_OPTION — every option here is a real answer
+    expect(field.kind).toBe('choice')
+    expect(field.options).toEqual(['both', 'ui', 'serve'])
+    expect(field.options).not.toContain(ANY_OPTION)
+    expect(field.hint).toBe('both = ui, then serve')
+  })
+
+  test('choiceField copies the options, so no section shares an array with another', () => {
+    const options = ['ui', 'serve']
+
+    expect(choiceField('service', 'Service', options).options).not.toBe(options)
+  })
+
+  test('choiceField without a hint carries no hint key at all', () => {
+    expect('hint' in choiceField('service', 'Service', ['ui'])).toBe(false)
   })
 
   test('patternField refuses with the same sentence the Admins section uses', () => {

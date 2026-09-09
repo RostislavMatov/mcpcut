@@ -64,6 +64,9 @@ export function runResultOf(
     exitCode: outcome.code,
     stdout: sink.out(),
     stderr,
+    // Carried from the request: the output pane may hold a one-time token only
+    // for an action that mints one, never because the text says so.
+    ...(request.mintsToken === true ? { mintsToken: true as const } : {}),
   }
 }
 

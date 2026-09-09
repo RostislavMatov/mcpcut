@@ -14,6 +14,7 @@ import {
   TAB_OVERFLOW_RIGHT,
   TAB_SEPARATOR,
 } from './constants.js'
+import { TOKEN_HOLD_FOOTER } from './constants-live.js'
 import { bodyWidthsOf } from './layout.js'
 import type { MainScreen, TerminalSize } from './model.js'
 import { isOutputClipped } from './render-output.js'
@@ -157,6 +158,10 @@ function actionColumn(screen: MainScreen, width: number, rows: number): readonly
  */
 function footerText(screen: MainScreen, columns: number, bodyRows: number): string {
   if (screen.busy !== undefined) return RUNNING_HELP_FOOTER
+  // A held token is the one pane where the ordinary hints would be a lie:
+  // Tab, ↑↓, Enter and r are all ignored until the operator says they copied
+  // it (plan P2), so the footer names only the keys that still do anything.
+  if (screen.pane.kind === 'token-hold') return TOKEN_HOLD_FOOTER
   if (screen.pane.kind === 'form') return FORM_HELP_FOOTER
 
   return isPaneClipped(screen, columns, bodyRows) ? CLIPPED_HELP_FOOTER : KEY_HELP_FOOTER

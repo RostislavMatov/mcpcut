@@ -14,6 +14,7 @@ import {
 } from '../../src/tui/constants.js'
 import {
   accessRecords,
+  acknowledgeToken,
   closeConsoles,
   DOWN_KEY,
   ENTER,
@@ -207,6 +208,11 @@ describe('console end to end: sign in, add an admin, list, quit', () => {
         screen.includes(`token: ${ADMIN_TOKEN_PREFIX}`),
       'the output panel again',
     )
+
+    // Saying no to the quit question puts the token BACK behind its hold
+    // (phase 5, plan P2): until the operator says they copied it, `r` is one
+    // of the keys the pane ignores, so the refresh below would draw nothing.
+    await acknowledgeToken(app)
 
     fake.type(REFRESH_KEY)
     // The run in flight puts `running: $ mcpcut admin list` on the pane before

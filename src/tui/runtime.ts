@@ -10,6 +10,7 @@ import { keyEventOf, type ReadlineKey } from './keys.js'
 import { initialModel, type Effect, type Model, type Msg, type TerminalSize } from './model.js'
 import { render } from './render.js'
 import { executeEffect, finishWizard, type EffectDeps } from './runtime-effects.js'
+import { createSubscriptionTimer } from './runtime-timer.js'
 import {
   attempt,
   enterTerminal,
@@ -19,6 +20,7 @@ import {
   type TuiOutput,
   type TuiTerminal,
 } from './runtime-terminal.js'
+import { subscriptionOf } from './subscriptions.js'
 import { update } from './update.js'
 
 /**
@@ -106,7 +108,7 @@ export async function runConsole(deps: ConsoleDeps): Promise<number> {
   try {
     enterTerminal(deps.terminal, deps.escapeCodeTimeoutMs)
     removeListeners = installListeners(deps, loop)
-    loop.draw()
+    loop.open()
     await loop.finished
     await loop.drain()
   } catch (error: unknown) {
@@ -141,6 +143,8 @@ export interface ConsoleLoop {
   /** Resolves once the console has been asked to leave; never rejects. */
   readonly finished: Promise<void>
   draw(): void
+  /** Draws the first frame and tells the model it is on screen (`opened`). */
+  open(): void
   step(msg: Msg): void
   /** Ends the console with `code`; the first call wins, the rest are no-ops. */
   finish(code: number): void
@@ -169,9 +173,21 @@ export function createLoop(deps: ConsoleDeps): ConsoleLoop {
   const finish = (code: number): void => {
     if (settled) return
     settled = true
+    // Before `settle()`: a `step` on a settled console is a no-op anyway, but
+    // a live `setTimeout` outliving the screen is a leak whichever way it
+    // would have been ignored (and the timer is unref'd, so nothing else
+    // would ever surface it).
+    timer.clear()
     exitCode = code
     settle()
   }
+
+  /**
+   * The console's single timer, reconciled after every step against what the
+   * model subscribes to (`subscriptionOf`). A tick is an ordinary message: the
+   * reducer asks the same question again and drops what is no longer due.
+   */
+  const timer = createSubscriptionTimer(() => step({ kind: 'tick' }))
 
   const draw = (): void => {
     // `render` is outside the `try` on purpose: a throw from the pure core is
@@ -189,6 +205,11 @@ export function createLoop(deps: ConsoleDeps): ConsoleLoop {
     // as Node is concerned, so saying what happened is now our job — and the
     // stack is the only diagnostic a runtime bug leaves behind.
     fault ??= describeFault(error)
+    // The argv an action left behind is withdrawn: `finish` is first-call-wins,
+    // so a fault AFTER a reopen would leave the exit code at 0 with the stack
+    // only on stderr, and the caller would hand the terminal to a child on
+    // behalf of a console that had crashed.
+    attempt(() => deps.effects.reopen?.set(undefined))
     finish(EXIT_INTERRUPTED)
   }
 
@@ -203,6 +224,10 @@ export function createLoop(deps: ConsoleDeps): ConsoleLoop {
       model = next.model
       draw()
       for (const effect of next.effects) enqueue(effect)
+      // AFTER the effects: a `poll` among them puts `polling` on the model,
+      // and the subscription is gone while a poll is out — which is what makes
+      // the interval count from the answer rather than from the tick.
+      timer.reconcile(subscriptionOf(model))
     } catch (error: unknown) {
       fail(error)
     }
@@ -230,6 +255,11 @@ export function createLoop(deps: ConsoleDeps): ConsoleLoop {
    * in the SAME step as the quit, so a place in the queue would mean the
    * answer waits behind whatever is in flight and is lost the moment that
    * outlives the drain.
+   *
+   * `reopen` is the third, and it ends the console itself: the action has
+   * already been confirmed, the terminal is about to belong to a child
+   * process, and there is nothing to be gained by waiting for a command the
+   * operator has walked away from — the same argument the quit makes.
    */
   const enqueue = (effect: Effect): void => {
     if (effect.kind === 'quit') {
@@ -240,12 +270,30 @@ export function createLoop(deps: ConsoleDeps): ConsoleLoop {
       finishWizard(deps.effects)
       return
     }
+    if (effect.kind === 'reopen') {
+      // Copied: the argv outlives the effect, and the runtime hands it to a
+      // caller that will spawn from it.
+      deps.effects.reopen?.set([...effect.argv])
+      finish(EXIT_OK)
+      return
+    }
     chain = chain.then(() => perform(effect)).catch(fail)
+  }
+
+  /**
+   * The first frame, and then the message that says it is up. `opened` is what
+   * the sign-in screen answers with a token-free `status`, so that an operator
+   * who cannot sign in is at least told the services are down (plan P3).
+   */
+  const open = (): void => {
+    draw()
+    step({ kind: 'opened' })
   }
 
   return {
     finished,
     draw,
+    open,
     step,
     finish,
     fail,

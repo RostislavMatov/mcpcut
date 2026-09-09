@@ -35,20 +35,15 @@ const EXCLUDED_FROM_CATALOGUE: readonly CommandPair[] = [
 ]
 
 /**
- * Commands the console cannot run YET: Services (phase 5).
+ * Empty since phase 5: every pair the table describes is now in the catalogue
+ * or excluded above. The Services section closed the last four — `start`,
+ * `stop`, `logs` and the `setup` that leaves the console for the wizard.
  *
- * Phase 4 closed the rest — the nine remaining sections landed, so what is
- * left is the four commands that manage this install's own daemons and the
- * setup the first-run wizard owns. Written out in full on purpose: this list
- * is the phase's admission of what is missing.
+ * Kept as a list rather than deleted, so that the next command added to
+ * `USAGE` lands here with its name in the diff instead of turning test (2)
+ * into a comparison of two empty sets nobody reads.
  */
-const NOT_YET_COVERED: readonly CommandPair[] = [
-  // --- Phase 5: Services (and the setup the first-run wizard will own) ---
-  { command: 'setup' },
-  { command: 'start' },
-  { command: 'stop' },
-  { command: 'logs' },
-]
+const NOT_YET_COVERED: readonly CommandPair[] = []
 
 /** A row of the table: two spaces, a binary name, the command, then the rest. */
 const ROW_PATTERN = new RegExp(`^${ROW_INDENT}(?:mcp-journal|mcpcut) (\\S+)(?: (.*))?$`)
@@ -194,6 +189,8 @@ describe('usagePairs reads the table the way a human does', () => {
     'quarantine:show',
     'start',
     'stop',
+    'logs',
+    'setup',
     'sessions',
     'tui',
   ])('finds %s', (key) => {

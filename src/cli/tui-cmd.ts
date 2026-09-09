@@ -1,7 +1,8 @@
 import { homedir } from 'node:os'
 import { ansiStyle, type Style } from '../tui/ansi.js'
-import { DEFAULT_TUI_SIGNALS, ESCAPE_CODE_TIMEOUT_MS } from '../tui/constants.js'
-import { createTokenCell } from '../tui/runtime-effects.js'
+import { DEFAULT_TUI_SIGNALS, ESCAPE_CODE_TIMEOUT_MS, EXIT_OK } from '../tui/constants.js'
+import { initialModel, installFactsOf } from '../tui/model.js'
+import { createReopenCell, createTokenCell, type ReopenCell } from '../tui/runtime-effects.js'
 import { runConsole, type ConsoleDeps, type TuiTerminal } from '../tui/runtime.js'
 import { describeDataDirProblem, resolveDataDir } from '../setup/data-dir.js'
 import { loadInstallConfigSync, type InstallConfigLoad } from '../setup/load.js'
@@ -42,6 +43,15 @@ import type { UiCliIo } from './ui-constants.js'
  * module, so nothing here imports the dispatcher that routes it. The
  * dispatcher arrives as a value instead (`opts.dispatch`), which is what the
  * console runs every action through.
+ *
+ * Phase 5 added the FOURTH way out of a console. Three were already here —
+ * the operator quits, a signal arrives, the wizard asks for the sign-in
+ * screen — and the new one is an action that leaves: Services ▸ `setup`
+ * ends the console and leaves an argv in a cell (ADR-0012 §16). It reuses the
+ * wizard's `ReopenFn` rather than inventing a second way to hand over a
+ * terminal, so the child `mcpcut setup` opens the wizard in edit mode and, on
+ * `y`, opens `tui` itself: a chain of processes on one terminal, the parent
+ * waiting for the child and the child for the grandchild.
  */
 
 export type TuiEntry = 'bare' | 'explicit' | 'setup'
@@ -125,25 +135,61 @@ export async function runTui(
   // there is no exit code that would make an un-wired console meaningful.
   if (dispatch === undefined) throw new Error(TUI_NOT_WIRED)
 
-  const consoleDeps = consoleDepsOf(opts, io, env, dispatch)
+  const reopenCell = createReopenCell()
+  const consoleDeps = consoleDepsOf(opts, io, env, dispatch, reopenCell)
+  // The default reopen says what went wrong on the command's own stderr, which
+  // is the stream the operator is looking at once the console is gone. Both
+  // ways out share it: one terminal, one way of handing it over.
+  const reopen = opts.reopen ?? ((argv: readonly string[]) => defaultReopen(argv, io.stderr))
+
   if (opts.entry === 'setup' || (opts.entry === 'bare' && install.kind === 'absent')) {
-    const prefill = wizardPrefillOf({
-      install,
-      env,
-      home: opts.home ?? homedir(),
-      cwd: opts.cwd ?? process.cwd(),
-      ...(opts.setupArgs !== undefined ? { args: opts.setupArgs } : {}),
-    })
-    return await runWizard({
-      console: consoleDeps,
-      prefill,
-      // The default reopen says what went wrong on the command's own stderr,
-      // which is the stream the operator is looking at once the console is gone.
-      reopen: opts.reopen ?? ((argv) => defaultReopen(argv, io.stderr)),
-    })
+    return await openWizard(opts, env, install, consoleDeps, reopen)
   }
 
-  return await runConsole(consoleDeps)
+  return await openConsole(consoleDeps, install, reopenCell, reopen)
+}
+
+/** The wizard over this install's config, and the sign-in screen after it. */
+async function openWizard(
+  opts: TuiCommandOptions,
+  env: NodeJS.ProcessEnv,
+  install: InstallConfigLoad,
+  consoleDeps: Omit<ConsoleDeps, 'initial'>,
+  reopen: ReopenFn,
+): Promise<number> {
+  const prefill = wizardPrefillOf({
+    install,
+    env,
+    home: opts.home ?? homedir(),
+    cwd: opts.cwd ?? process.cwd(),
+    ...(opts.setupArgs !== undefined ? { args: opts.setupArgs } : {}),
+  })
+
+  return await runWizard({ console: consoleDeps, prefill, reopen })
+}
+
+/**
+ * The console, and the command it may leave behind: Services ▸ `setup` ends
+ * the console with an argv in the cell instead of dispatching anything.
+ *
+ * The reopen runs strictly AFTER `runConsole` has resolved — that is the only
+ * moment the terminal is ours to give away, because the runtime leaves the
+ * alternate screen, turns raw mode off and pauses stdin in its `finally`.
+ */
+async function openConsole(
+  consoleDeps: Omit<ConsoleDeps, 'initial'>,
+  install: InstallConfigLoad,
+  reopenCell: ReopenCell,
+  reopen: ReopenFn,
+): Promise<number> {
+  const code = await runConsole({
+    ...consoleDeps,
+    initial: (size) => initialModel(size, installFactsOf(install)),
+  })
+  const argv = reopenCell.get()
+  if (code !== EXIT_OK || argv === undefined) return code
+
+  return await reopen(argv)
 }
 
 /**
@@ -156,6 +202,7 @@ function consoleDepsOf(
   io: UiCliIo,
   env: NodeJS.ProcessEnv,
   dispatch: DispatchFn,
+  reopen: ReopenCell,
 ): Omit<ConsoleDeps, 'initial'> {
   return {
     terminal: opts.terminal ?? defaultTerminal(),
@@ -167,6 +214,7 @@ function consoleDepsOf(
       env,
       ...(opts.journalDir !== undefined ? { journalDir: opts.journalDir } : {}),
       token: createTokenCell(),
+      reopen,
     },
     processEvents: opts.processEvents ?? process,
     signals: opts.signals ?? DEFAULT_TUI_SIGNALS,

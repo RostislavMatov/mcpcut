@@ -16,13 +16,14 @@ import {
   type SinkWritable,
 } from '../../src/tui/run-sink.js'
 import {
+  createReopenCell,
   createTokenCell,
   createWizardOutcomeCell,
   executeEffect,
   type EffectDeps,
   type TokenCell,
 } from '../../src/tui/runtime-effects.js'
-import { SESSION_ENV_SEAMS } from '../../src/tui/session-env.js'
+import { SESSION_ENV_SEAMS, withoutAdminToken } from '../../src/tui/session-env.js'
 
 /**
  * The effect executor (mcpcut phase 2, task 12): the only module that holds
@@ -473,8 +474,60 @@ describe('executeEffect — refresh-services', () => {
     expect(message).toEqual({ kind: 'services', statuses: undefined })
   })
 
-  test('without a session there is nothing to ask, and nothing is dispatched', async () => {
-    const dispatch = recordingDispatch()
+  test("without a session the status is still asked, with the console's own environment on the seams", async () => {
+    // `status` needs no token — it reads pid files and probes ports — and the
+    // sign-in screen asks for it precisely so it can say "services are down"
+    // to somebody who has not signed in yet (plan P3).
+    const dispatch = recordingDispatch((io) => {
+      io.stdout.write(statusJson(STATUSES))
+      return 1
+    })
+
+    const message = await executeEffect(
+      { kind: 'refresh-services' },
+      depsOf(dispatch.fn, createTokenCell()),
+    )
+
+    const call = dispatch.calls[0]
+    expect(call?.argv).toEqual(['status', '--json'])
+    expect(call?.opts?.services?.env).toEqual(OTHER_ENV)
+    expect(call?.opts?.services?.env?.[ADMIN_TOKEN_ENV_VAR]).toBeUndefined()
+    expect(message).toEqual({
+      kind: 'services',
+      statuses: [
+        { service: 'ui', state: 'running', host: '127.0.0.1', port: 8091 },
+        { service: 'serve', state: 'stopped', host: '127.0.0.1', port: 8090 },
+      ],
+    })
+  })
+
+  test('an MCP_ADMIN_TOKEN inherited from the shell is not handed to the pre-sign-in status', async () => {
+    // The console is a place an operator signs in AT; a token exported in the
+    // shell it was started from is not the session, and a probe that carried
+    // it would act as whoever that token names before anybody signed in.
+    const dispatch = recordingDispatch((io) => {
+      io.stdout.write(statusJson(STATUSES))
+      return 1
+    })
+    const env: NodeJS.ProcessEnv = { ...OTHER_ENV, [ADMIN_TOKEN_ENV_VAR]: 'mcpa_from_the_shell' }
+
+    await executeEffect(
+      { kind: 'refresh-services' },
+      { ...depsOf(dispatch.fn, createTokenCell()), env },
+    )
+
+    const call = dispatch.calls[0]
+    for (const seam of SESSION_ENV_SEAMS) {
+      expect(call?.opts?.[seam]?.env?.[ADMIN_TOKEN_ENV_VAR], seam).toBeUndefined()
+    }
+    // …and everything else the operator exported still reaches the command.
+    expect(call?.opts?.services?.env?.['PATH']).toBe(OTHER_ENV['PATH'])
+  })
+
+  test('a status call without a session that throws still leaves the header unknown', async () => {
+    const dispatch = recordingDispatch(() => {
+      throw new Error('no install config')
+    })
 
     const message = await executeEffect(
       { kind: 'refresh-services' },
@@ -482,7 +535,152 @@ describe('executeEffect — refresh-services', () => {
     )
 
     expect(message).toEqual({ kind: 'services', statuses: undefined })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// poll — the quiet re-read behind the Approvals timer (mcpcut phase 5)
+// ---------------------------------------------------------------------------
+
+/** The `Msg` a poll answered with, or a failure naming what came back instead. */
+function pollResultOf(message: Msg | undefined): Extract<Msg, { kind: 'poll-result' }> {
+  if (message?.kind !== 'poll-result') {
+    throw new Error(`expected a poll-result, got ${message?.kind}`)
+  }
+  return message
+}
+
+const POLL_REQUEST: RunRequest = {
+  actionId: 'list',
+  argv: ['approvals', 'list'],
+  display: ['approvals', 'list'],
+}
+
+describe('executeEffect — poll', () => {
+  test('answers with a poll-result carrying the output, the token on the seams and none in argv', async () => {
+    const { cell, token } = await signedInCell()
+    const dispatch = recordingDispatch((io) => {
+      io.stdout.write('no pending requests\n')
+      return 0
+    })
+
+    const message = await executeEffect(
+      { kind: 'poll', request: POLL_REQUEST },
+      depsOf(dispatch.fn, cell),
+    )
+
+    const call = dispatch.calls[0]
+    expect(call?.argv).toEqual(['approvals', 'list'])
+    expect(call?.opts?.approvals?.env?.[ADMIN_TOKEN_ENV_VAR]).toBe(token)
+    expect(call?.argv.includes(token)).toBe(false)
+    expect(pollResultOf(message).result).toEqual({
+      argv: POLL_REQUEST.argv,
+      display: POLL_REQUEST.display,
+      exitCode: 0,
+      stdout: 'no pending requests\n',
+      stderr: '',
+    })
+  })
+
+  test('the exit code of a refusal is folded in as it came back', async () => {
+    const { cell } = await signedInCell()
+    const dispatch = recordingDispatch((io) => {
+      io.stderr.write('forbidden\n')
+      return 3
+    })
+
+    const message = await executeEffect(
+      { kind: 'poll', request: POLL_REQUEST },
+      depsOf(dispatch.fn, cell),
+    )
+
+    expect(pollResultOf(message).result).toMatchObject({ exitCode: 3, stderr: 'forbidden\n' })
+  })
+
+  test('an empty session cell is a lost session, and nothing is dispatched', async () => {
+    const dispatch = recordingDispatch()
+
+    const message = await executeEffect(
+      { kind: 'poll', request: POLL_REQUEST },
+      depsOf(dispatch.fn, createTokenCell()),
+    )
+
+    expect(message).toEqual({ kind: 'session-lost' })
     expect(dispatch.calls).toHaveLength(0)
+  })
+
+  test('a session rotated from a shell ends the console, quiet poll or not', async () => {
+    const { cell } = await signedInCell()
+    await createAdminStore({ journalDir }).rotateAdmin(ADMIN_NAME)
+    const dispatch = recordingDispatch()
+
+    const message = await executeEffect(
+      { kind: 'poll', request: POLL_REQUEST },
+      depsOf(dispatch.fn, cell),
+    )
+
+    expect(message).toEqual({ kind: 'session-lost' })
+    expect(cell.get()).toBeUndefined()
+    expect(dispatch.calls).toHaveLength(0)
+  })
+
+  test('a dispatch that throws is a failed poll result, not a crashed console', async () => {
+    const { cell } = await signedInCell()
+    const dispatch = recordingDispatch(() => {
+      throw new Error('the store is locked')
+    })
+
+    const message = await executeEffect(
+      { kind: 'poll', request: POLL_REQUEST },
+      depsOf(dispatch.fn, cell),
+    )
+
+    const { result } = pollResultOf(message)
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain('the store is locked')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// reopen — the console stepping aside for a child on the same terminal
+// ---------------------------------------------------------------------------
+
+describe('executeEffect — reopen', () => {
+  test('writes the argv into the cell and answers with nothing to fold', async () => {
+    const reopen = createReopenCell()
+    const dispatch = recordingDispatch()
+    const deps: EffectDeps = { ...depsOf(dispatch.fn, createTokenCell()), reopen }
+
+    const message = await executeEffect({ kind: 'reopen', argv: ['setup'] }, deps)
+
+    expect(message).toBeUndefined()
+    expect(reopen.get()).toEqual(['setup'])
+    // Nothing is run from here: the runtime ends the console and the CLI
+    // spawns this argv once the terminal has been given back.
+    expect(dispatch.calls).toHaveLength(0)
+  })
+
+  test('the cell holds a copy: the argv outlives the effect it came on', async () => {
+    // Both writers of this cell copy (`runtime.ts` honours a reopen in
+    // `enqueue`, this module when an effect is executed directly), so the
+    // array the caller spawns from cannot be the one a later step rewrote.
+    const reopen = createReopenCell()
+    const argv = ['setup']
+    const deps: EffectDeps = { ...depsOf(recordingDispatch().fn, createTokenCell()), reopen }
+
+    await executeEffect({ kind: 'reopen', argv }, deps)
+
+    expect(reopen.get()).toEqual(argv)
+    expect(reopen.get()).not.toBe(argv)
+  })
+
+  test('a runtime with no reopen seam is not a crash', async () => {
+    const message = await executeEffect(
+      { kind: 'reopen', argv: ['setup'] },
+      depsOf(recordingDispatch().fn, createTokenCell()),
+    )
+
+    expect(message).toBeUndefined()
   })
 })
 
@@ -521,8 +719,11 @@ describe('executeEffect — wizard-run', () => {
 
     const call = dispatch.calls[0]
     expect(call?.argv).toEqual(['setup', '--yes', '--data-dir', '/var/lib/x'])
-    expect(call?.opts?.setup?.env).toBe(deps.env)
-    expect(call?.opts?.services?.env).toBe(deps.env)
+    // Everything the operator exported reaches the rung — but not by identity:
+    // the console strips `MCP_ADMIN_TOKEN` from every no-session dispatch, so
+    // the object handed down is a copy without it.
+    expect(call?.opts?.setup?.env).toEqual(withoutAdminToken(deps.env))
+    expect(call?.opts?.services?.env).toEqual(withoutAdminToken(deps.env))
     expect(message).toEqual({
       kind: 'wizard-run-result',
       step: 'setup',
@@ -549,6 +750,26 @@ describe('executeEffect — wizard-run', () => {
     expect(dispatch.calls[0]?.opts?.setup?.env?.[ADMIN_TOKEN_ENV_VAR]).toBeUndefined()
     expect(cell.get()).toBeUndefined()
     expect(wizardResultOf(message).step).toBe('start-ui')
+  })
+
+  test('an MCP_ADMIN_TOKEN inherited from the shell reaches no rung of the ladder', async () => {
+    // The wizard builds the install that will have admins; it has none yet, so
+    // nothing it runs may act as whoever a token left in the shell names. The
+    // pre-sign-in `status` is held to the same rule two describes above.
+    const dispatch = recordingDispatch()
+    const env: NodeJS.ProcessEnv = { ...OTHER_ENV, [ADMIN_TOKEN_ENV_VAR]: 'mcpa_from_the_shell' }
+
+    await executeEffect(
+      { kind: 'wizard-run', step: 'setup', request: WIZARD_REQUEST },
+      { ...depsOf(dispatch.fn, createTokenCell()), env },
+    )
+
+    const call = dispatch.calls[0]
+    for (const seam of SESSION_ENV_SEAMS) {
+      expect(call?.opts?.[seam]?.env?.[ADMIN_TOKEN_ENV_VAR], seam).toBeUndefined()
+    }
+    // …and everything else the operator exported still reaches the rung.
+    expect(call?.opts?.setup?.env?.['PATH']).toBe(OTHER_ENV['PATH'])
   })
 
   test('a command that throws becomes a failed rung, not a crashed wizard', async () => {

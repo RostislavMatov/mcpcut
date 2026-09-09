@@ -8,7 +8,9 @@ import { runAgentCommand } from '../../src/cli/agent-cmd.js'
 import { TOKEN_ONCE_NOTICE } from '../../src/cli/ui-constants.js'
 import { createAgentsStore } from '../../src/agents/store.js'
 import { createRegistryStore } from '../../src/registry/store.js'
+import { SECTIONS } from '../../src/tui/catalogue/index.js'
 import { outputPanelOf } from '../../src/tui/output.js'
+import { requestOf } from '../../src/tui/update-form.js'
 
 let journalDir: string
 let ownerToken: string
@@ -70,21 +72,30 @@ describe('agent create', () => {
   })
 
   test('the printed notice is the marker the console recognises as a one-time token', async () => {
-    // The console does not know which commands mint tokens: it searches stdout
-    // for `ONE_TIME_TOKEN_MARKER`, and a panel that carries it makes `q` ask
-    // before the alternate screen takes the token with it. Asserting through
-    // `outputPanelOf` rather than the string keeps the two ends tied together,
-    // so a reworded notice fails here instead of silently disarming the prompt.
+    // Two ends have to agree for the console to hold its screen: the catalogue
+    // must declare this action as one that mints (`mintsToken` — the flag alone
+    // decides, since the sentence itself can be printed by any command that
+    // quotes an agent), and the command must really print the marker. Building
+    // the request from the catalogue action ties both to this test, so a
+    // reworded notice or a dropped flag fails here rather than silently
+    // disarming the prompt.
     const io = fakeIo()
 
     await run(['create', 'research-bot'], io)
 
+    const create = SECTIONS.flatMap((section) => section.actions).find(
+      (action) => action.command === 'agent' && action.subcommand === 'create',
+    )
+    expect(create).toBeDefined()
+    if (create === undefined) return
+    const request = requestOf(create, { name: 'research-bot' })
     const panel = outputPanelOf({
-      argv: ['agent', 'create', 'research-bot'],
-      display: ['agent', 'create', 'research-bot'],
+      argv: request.argv,
+      display: request.display,
       exitCode: 0,
       stdout: io.out(),
       stderr: io.err(),
+      ...(request.mintsToken === true ? { mintsToken: true as const } : {}),
     })
     expect(panel.holdsOneTimeToken).toBe(true)
   })

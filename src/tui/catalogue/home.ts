@@ -31,6 +31,7 @@ export const HOME_SECTION: SectionSpec = {
     `  ${CLI_NAME} connect <server> --agent <name>`,
     `  ${CLI_NAME} wrap --server <name> -- <command…>`,
     'MCP_AGENT_TOKEN goes in the agent’s own environment.',
+    'A service marked ○ in the header: Services ▸ start.',
   ],
   actions: [statusAction],
   refreshActionId: 'status',
