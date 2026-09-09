@@ -137,14 +137,14 @@ describe('tabWindowOf: when the labels overflow', () => {
     expect(window.last).toBeGreaterThanOrEqual(middle)
   })
 
-  test('the eleventh owner section is visible at 80 columns', () => {
-    const audit = labels.length - 1
+  test('the twelfth owner section is visible at 80 columns', () => {
+    const last = labels.length - 1
 
-    const window = tabWindowOf(labels, audit, DEFAULT_COLUMNS)
+    const window = tabWindowOf(labels, last, DEFAULT_COLUMNS)
 
-    expect(labels[audit]).toBe('11 Audit')
-    expect(window.first).toBeLessThanOrEqual(audit)
-    expect(window.last).toBe(audit)
+    expect(labels[last]).toBe('12 Services')
+    expect(window.first).toBeLessThanOrEqual(last)
+    expect(window.last).toBe(last)
     expect(window.hiddenBefore).toBe(true)
     expect(widthOf(labels, window)).toBeLessThanOrEqual(DEFAULT_COLUMNS)
   })

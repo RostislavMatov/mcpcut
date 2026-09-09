@@ -151,8 +151,8 @@ export const HELP_LINES: readonly string[] = [
   'PgUp / PgDn             scroll the output panel',
   '[ / ]                   scroll the output pane sideways when a line is cut',
   "r                       rerun the section's refresh action",
-  'y / n                   answer a confirmation',
-  'Esc                     cancel a form or a confirmation; quit on the sign-in screen',
+  'y / n                   answer a confirmation; y also says a token is saved',
+  'Esc                     cancel a form or a confirmation; quit the sign-in screen',
   '?                       show this help',
   'q / Ctrl-C              quit (the services keep running)',
 ]

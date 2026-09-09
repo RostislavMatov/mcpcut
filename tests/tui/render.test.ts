@@ -40,7 +40,7 @@ import {
 } from '../../src/tui/output.js'
 import { render } from '../../src/tui/render.js'
 import { CLIPPED_HELP_FOOTER, RUNNING_HELP_FOOTER } from '../../src/tui/render-main.js'
-import { SIGNIN_BUSY_TEXT, SIGNIN_FOOTER } from '../../src/tui/render-panes.js'
+import { SIGNIN_BUSY_TEXT, SIGNIN_FOOTER } from '../../src/tui/render-signin.js'
 import { servicesHeaderPart, type ServiceSummary } from '../../src/tui/services-summary.js'
 import { wizardScreenOf } from '../../src/tui/wizard-fields.js'
 import { CLI_NAME } from '../../src/setup/constants.js'
@@ -247,11 +247,11 @@ describe('render: the header of the main screen', () => {
   })
 
   test('scrolls the tab bar to the last section and marks what it scrolled past', () => {
-    const audit = visibleSections(OWNER.role).length - 1
+    const services = visibleSections(OWNER.role).length - 1
 
-    const lines = render(mainModel({ sectionIndex: audit }), plainStyle)
+    const lines = render(mainModel({ sectionIndex: services }), plainStyle)
 
-    expect(lines[1]).toContain('11 Audit')
+    expect(lines[1]).toContain('12 Services')
     expect(lines[1]).toContain(TAB_OVERFLOW_LEFT)
     expect(lines[1]).not.toContain(TAB_OVERFLOW_RIGHT)
   })

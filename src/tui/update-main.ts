@@ -1,4 +1,4 @@
-import { actionAt, visibleActions } from './catalogue/index.js'
+import { actionAt, refreshActionOf, visibleActions } from './catalogue/index.js'
 import type { ActionSpec } from './catalogue/types.js'
 import { EXIT_OK, SESSION_LOST_NOTICE } from './constants.js'
 import { formOf } from './form.js'
@@ -6,6 +6,8 @@ import type { KeyEvent } from './keys.js'
 import { paneWidthOf } from './layout.js'
 import type { Effect, Model, Msg, Pane, Step } from './model.js'
 import {
+  acknowledgeToken,
+  needsTokenHold,
   type OutputPanel,
   outputPanelOf,
   scrollOutput,
@@ -13,7 +15,15 @@ import {
   scrollToEnd,
   scrollToStart,
 } from './output.js'
-import { isYes, submit, updateConfirmPane, updateFormPane, requestOf } from './update-form.js'
+import {
+  effectOf,
+  isYes,
+  submit,
+  updateConfirmPane,
+  updateFormPane,
+  requestOf,
+} from './update-form.js'
+import { updateLive } from './update-live.js'
 import { signedOut } from './update-signin.js'
 import {
   ACTIONS_PANE,
@@ -53,6 +63,7 @@ const LAST_SECTION_DIGIT = 9
 
 const HELP_PANE: Pane = { kind: 'help' }
 const QUIT_CONFIRM_PANE: Pane = { kind: 'quit-confirm' }
+const TOKEN_HOLD_PANE: Pane = { kind: 'token-hold' }
 const REFRESH_SERVICES: Effect = { kind: 'refresh-services' }
 
 /** Folds one message into the main screen. */
@@ -60,16 +71,34 @@ export function updateMain(model: Model, screen: MainScreen, msg: Msg): Step {
   switch (msg.kind) {
     case 'key':
       return applyKey(model, screen, msg.key)
-    case 'run-result':
+    case 'run-result': {
+      // A run that minted a one-time token does not return to the action list:
+      // the next `r`, Enter or poll would take the only copy of it away, so the
+      // pane holds until somebody says they saved it (PRD C6, plan P2).
+      const panel = outputPanelOf(msg.result)
       return withMain(model, screen, {
-        pane: ACTIONS_PANE,
+        pane: panel.holdsOneTimeToken ? TOKEN_HOLD_PANE : ACTIONS_PANE,
         busy: undefined,
-        output: outputPanelOf(msg.result),
+        output: panel,
       })
+    }
     case 'services':
       return withMain(model, screen, { services: msg.statuses })
     case 'session-lost':
-      return noEffects(signedOut(model.size, SESSION_LOST_NOTICE))
+      // The install is a fact about the host, not about the session: it must
+      // survive back to the sign-in screen, which draws the services line.
+      // That line is asked for again here, exactly as `opened` asks for it:
+      // the answer the main screen had belonged to the session that has just
+      // gone, and the screen an operator is dropped onto should still say
+      // whether the daemons are up (plan P3).
+      return {
+        model: signedOut(model.size, SESSION_LOST_NOTICE, model.install),
+        effects: [REFRESH_SERVICES],
+      }
+    case 'opened':
+    case 'tick':
+    case 'poll-result':
+      return updateLive(model, screen, msg)
     default:
       // `signin-result` belongs to a sign-in this screen already replaced, and
       // `resize` never reaches here (`update.ts` takes it).
@@ -82,7 +111,16 @@ function applyKey(model: Model, screen: MainScreen, key: KeyEvent): Step {
     case 'help':
       return withMain(model, screen, { pane: ACTIONS_PANE })
     case 'quit-confirm':
-      return isYes(key) ? quit(model, EXIT_OK) : withMain(model, screen, { pane: ACTIONS_PANE })
+      // Not answering yes returns to where the question was asked FROM: a token
+      // still unsaved is still being held, and dropping to the action list
+      // would be the console quietly deciding it had been read.
+      return isYes(key)
+        ? quit(model, EXIT_OK)
+        : withMain(model, screen, {
+            pane: needsTokenHold(screen.output) ? TOKEN_HOLD_PANE : ACTIONS_PANE,
+          })
+    case 'token-hold':
+      return applyTokenHoldKey(model, screen, key)
     case 'form':
       return updateFormPane(model, screen, screen.pane, key)
     case 'confirm':
@@ -90,6 +128,23 @@ function applyKey(model: Model, screen: MainScreen, key: KeyEvent): Step {
     case 'actions':
       return applyActionKey(model, screen, key)
   }
+}
+
+/**
+ * Nothing leaves the token behind unread: `y` says it is saved, `q` asks,
+ * scrolling works, and every other key is dropped (`scrolled` answers a
+ * no-effect step for anything that does not move the pane).
+ */
+function applyTokenHoldKey(model: Model, screen: MainScreen, key: KeyEvent): Step {
+  if (isYes(key)) {
+    return withMain(model, screen, {
+      pane: ACTIONS_PANE,
+      output: screen.output === undefined ? undefined : acknowledgeToken(screen.output),
+    })
+  }
+  if (isChar(key, QUIT_KEY)) return withMain(model, screen, { pane: QUIT_CONFIRM_PANE })
+
+  return scrolled(model, screen, key)
 }
 
 function applyActionKey(model: Model, screen: MainScreen, key: KeyEvent): Step {
@@ -194,29 +249,22 @@ function openAction(model: Model, screen: MainScreen): Step {
  * refresh (`admin list`, `status`) AND asks for a fresh service line, because
  * the header is on every screen. A section with no such action still refreshes
  * the header — that is the half of the key that always applies.
+ *
+ * The effect comes from `effectOf`, the one place the `reopen` arm is honoured,
+ * rather than from a `{ kind: 'run' }` literal: a request that would leave the
+ * console must never be dispatched in-process. `refreshActionOf` already
+ * refuses such an action, so this is the second half of the same rule — one
+ * builder means the two cannot disagree.
  */
 function refreshSection(model: Model, screen: MainScreen): Step {
-  const action = refreshActionOf(screen)
+  const action = refreshActionOf(screen.sections, screen.session.role, screen.sectionIndex)
   if (action === undefined) return { model, effects: [REFRESH_SERVICES] }
 
   const request = requestOf(action, {})
   return withMain(model, screen, { pane: ACTIONS_PANE, busy: request }, [
-    { kind: 'run', request },
+    effectOf(request),
     REFRESH_SERVICES,
   ])
-}
-
-/**
- * The section's refresh action, when it names one this role may run and that
- * needs no arguments. An action with fields cannot be rerun by one keystroke:
- * there would be nothing to fill them with.
- */
-function refreshActionOf(screen: MainScreen): ActionSpec | undefined {
-  const refreshActionId = screen.sections[screen.sectionIndex]?.refreshActionId
-  if (refreshActionId === undefined) return undefined
-
-  const action = visibleActionsOf(screen).find((each) => each.id === refreshActionId)
-  return action !== undefined && action.fields.length === 0 ? action : undefined
 }
 
 /**
@@ -225,7 +273,7 @@ function refreshActionOf(screen: MainScreen): ActionSpec | undefined {
  * is gone for good (PRD C6).
  */
 function requestQuit(model: Model, screen: MainScreen): Step {
-  return screen.output?.holdsOneTimeToken === true
+  return needsTokenHold(screen.output)
     ? withMain(model, screen, { pane: QUIT_CONFIRM_PANE })
     : quit(model, EXIT_OK)
 }

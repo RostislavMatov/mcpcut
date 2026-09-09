@@ -269,6 +269,40 @@ describe('start and status', () => {
     expect(started.kind).toBe('external')
   })
 
+  test('under an external supervisor a silent port says so in the detail', async () => {
+    // Q16: with compose or systemd in charge there is no pid file to find and
+    // nothing mcpcut could start, so `stopped` alone reads as "run start" —
+    // the detail has to send the operator to the supervisor that owns it.
+    const manager = makeManager({
+      config: { ...config, supervisor: 'external' },
+      spawn: refusingSpawn,
+    })
+
+    const status = await manager.status('ui')
+
+    expect(status.state).toBe('stopped')
+    expect(status.detail).toBe(
+      `not answering on 127.0.0.1:${config.ui.port}; managed by an external supervisor ` +
+        '(supervisor: external) — check compose or systemd',
+    )
+  })
+
+  test('under an external supervisor an answering port says mcpcut only reports', async () => {
+    await startForeignUi(config.ui.port)
+    const manager = makeManager({
+      config: { ...config, supervisor: 'external' },
+      spawn: refusingSpawn,
+    })
+
+    const status = await manager.status('ui')
+
+    expect(status.state).toBe('external')
+    expect(status.detail).toBe(
+      `answering on 127.0.0.1:${config.ui.port}; managed by an external supervisor ` +
+        '(supervisor: external), mcpcut only reports',
+    )
+  })
+
   test('refuses to start on Windows, where a detached daemon is not implemented', async () => {
     const manager = makeManager({ platform: 'win32', spawn: refusingSpawn })
 

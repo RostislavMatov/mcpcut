@@ -28,6 +28,12 @@ export interface RunResult {
   readonly exitCode: number
   readonly stdout: string
   readonly stderr: string
+  /**
+   * The action that ran prints a credential once (`RunRequest.mintsToken`);
+   * absent for every other command. It is what makes `holdsOneTimeToken` a
+   * fact about the run rather than about its text.
+   */
+  readonly mintsToken?: true
 }
 
 /** That run, ready to draw: the command line, its lines, and where we are in them. */
@@ -42,8 +48,17 @@ export interface OutputPanel {
    * `server list`; `]` and `[` move this window over the rest.
    */
   readonly hScroll: number
-  /** Whether stdout holds a token that vanishes with the alternate screen. */
+  /**
+   * Whether a MINTING action's stdout holds a token that vanishes with the
+   * alternate screen. Both halves matter — see `holdsTokenOf`.
+   */
   readonly holdsOneTimeToken: boolean
+  /**
+   * Whether the operator has said they saved that token. A panel starts
+   * unacknowledged, and only `y` on the token-hold pane sets it — which is
+   * what lets `q`, a quiet poll and the panes stop asking afterwards.
+   */
+  readonly tokenAcknowledged: boolean
   readonly truncated: boolean
 }
 
@@ -78,6 +93,22 @@ function drawable(line: string): string {
   return sanitizeLine(line.slice(0, OUTPUT_MAX_LINE_CHARS))
 }
 
+/**
+ * Whether this run really put a one-time credential on the screen.
+ *
+ * BOTH halves are required, and the first one is the security property. The
+ * marker is an English sentence, and most commands print text somebody else
+ * wrote — `approvals list` prints the arguments an agent sent, `journal show`
+ * and `logs` print upstream bytes — so a match on stdout alone let anyone who
+ * could get that sentence printed put the console into the modal token pane
+ * under a banner that was a lie. Only an action declared as minting one may.
+ * The second half keeps the pane honest the other way: a refused `admin add`
+ * prints no token, and must not hold the screen for one.
+ */
+function holdsTokenOf(result: RunResult): boolean {
+  return result.mintsToken === true && result.stdout.includes(ONE_TIME_TOKEN_MARKER)
+}
+
 /** Builds the panel a finished run is shown as. */
 export function outputPanelOf(result: RunResult): OutputPanel {
   const stdoutLines = rawLinesOf(result.stdout)
@@ -94,9 +125,23 @@ export function outputPanelOf(result: RunResult): OutputPanel {
     exitCode: result.exitCode,
     scroll: 0,
     hScroll: 0,
-    holdsOneTimeToken: result.stdout.includes(ONE_TIME_TOKEN_MARKER),
+    holdsOneTimeToken: holdsTokenOf(result),
+    tokenAcknowledged: false,
     truncated: dropped > 0,
   }
+}
+
+/** The same panel, with the operator's "I saved it" recorded on it. */
+export function acknowledgeToken(panel: OutputPanel): OutputPanel {
+  return { ...panel, tokenAcknowledged: true }
+}
+
+/**
+ * Whether the screen may not be replaced or taken away yet: a token is on it
+ * and nobody has said they copied it (PRD C6). Absent output holds nothing.
+ */
+export function needsTokenHold(panel: OutputPanel | undefined): boolean {
+  return panel?.holdsOneTimeToken === true && !panel.tokenAcknowledged
 }
 
 /** The furthest the panel scrolls: the last page, never a blank screen. */
@@ -142,4 +187,28 @@ export function scrollOutputSideways(
   const hScroll = Math.min(Math.max(0, panel.hScroll + steps * OUTPUT_HSCROLL_STEP), furthest)
 
   return hScroll === panel.hScroll ? panel : { ...panel, hScroll }
+}
+
+/**
+ * What the pane shows after a quiet poll answered (plan P9).
+ *
+ * Two things the poll must not do. It must not wipe a FAILED run of another
+ * command: nobody asked for the poll, and the error is what the operator was
+ * about to read. And it must not throw away where they had scrolled to in the
+ * output of the same command, which would make a live tab unreadable — so both
+ * offsets are carried over and re-clamped against the new text.
+ */
+export function replacedOutput(
+  previous: OutputPanel | undefined,
+  next: OutputPanel,
+  pageRows: number,
+  paneWidth: number,
+): OutputPanel {
+  if (previous === undefined) return next
+  if (previous.exitCode !== 0 && previous.command !== next.command) return previous
+  if (previous.command !== next.command) return next
+
+  const scrolled = scrollOutput(next, previous.scroll, pageRows)
+  // `hScroll` is in columns and `scrollOutputSideways` takes presses of `]`.
+  return scrollOutputSideways(scrolled, previous.hScroll / OUTPUT_HSCROLL_STEP, paneWidth)
 }

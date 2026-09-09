@@ -105,6 +105,22 @@ export function sessionEnvOf(base: NodeJS.ProcessEnv, token: string): NodeJS.Pro
 }
 
 /**
+ * The same environment with the admin token taken OUT — what a command run
+ * with no session gets.
+ *
+ * The console is a place an operator signs in AT, and the shell it was started
+ * from may well have `MCP_ADMIN_TOKEN` exported. Handing that on is not
+ * "passing the operator's environment through": it would let a command the
+ * console asks for on its own (the sign-in screen's `status --json`, plan P3)
+ * act as whoever that token names before anybody has signed in — and the
+ * console would have chosen an identity nobody typed.
+ */
+export function withoutAdminToken(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const { [ADMIN_TOKEN_ENV_VAR]: _removed, ...rest } = base
+  return rest
+}
+
+/**
  * The caller's options with `vault set` reading its value from `secret`
  * instead of the process stdin (mcpcut phase 4, task 8).
  *

@@ -68,6 +68,7 @@ const addAction: ActionSpec = {
   command: 'admin',
   subcommand: 'add',
   fields: [nameField, roleField],
+  mintsToken: true,
   argv: (values) => ['admin', 'add', valueOf(values, 'name'), '--role', valueOf(values, 'role')],
   hint: 'prints the admin’s token once — copy it before leaving',
 }
@@ -79,6 +80,7 @@ const rotateAction: ActionSpec = {
   command: 'admin',
   subcommand: 'rotate',
   fields: [nameField],
+  mintsToken: true,
   argv: (values) => ['admin', 'rotate', valueOf(values, 'name')],
   confirm: (values) =>
     `Rotate the token of "${valueOf(values, 'name')}"? The old token stops working and its browser sessions end.`,

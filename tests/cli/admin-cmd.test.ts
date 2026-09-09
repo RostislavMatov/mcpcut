@@ -6,6 +6,10 @@ import { ADMIN_TOKEN_ENV_VAR, ADMINS_FILE_NAME } from '../../src/admin/constants
 import { createAdminStore } from '../../src/admin/store.js'
 import { runAdminCommand, type AdminCliIo } from '../../src/cli/admin-cmd.js'
 import { ACCESS_EDIT_SESSION_ID } from '../../src/journal/access-edit-record.js'
+import { SECTIONS } from '../../src/tui/catalogue/index.js'
+import type { FormValues } from '../../src/tui/form.js'
+import { outputPanelOf } from '../../src/tui/output.js'
+import { requestOf } from '../../src/tui/update-form.js'
 import { readJournalRecords } from '../support/journal-rows.js'
 
 /**
@@ -106,6 +110,36 @@ function tokensIn(text: string): string[] {
   return text.match(TOKEN_PATTERN) ?? []
 }
 
+/**
+ * Whether the console would hold its screen after this run, asked the way the
+ * runtime asks it: the catalogue action found by command/subcommand builds the
+ * request, and the captured streams stand in for the ones a real run collects.
+ *
+ * Two ends have to agree, and neither can be seen from the other's file: the
+ * catalogue must declare the action as one that mints (`mintsToken` — the flag
+ * alone decides, since any command quoting an agent can print the sentence),
+ * and the command must really print the notice on STDOUT. Tying both to one
+ * assertion is what makes moving the notice to stderr, or dropping the flag, a
+ * failing test rather than a console that quietly lets a one-time token scroll
+ * away. `tests/cli/agent-cmd.test.ts` pins `agent create` the same way.
+ */
+function holdsOneTimeToken(subcommand: string, values: FormValues, io: CapturedIo): boolean {
+  const action = SECTIONS.flatMap((section) => section.actions).find(
+    (each) => each.command === 'admin' && each.subcommand === subcommand,
+  )
+  if (action === undefined) throw new Error(`no catalogue action for "admin ${subcommand}"`)
+
+  const request = requestOf(action, values)
+  return outputPanelOf({
+    argv: request.argv,
+    display: request.display,
+    exitCode: 0,
+    stdout: io.outText(),
+    stderr: io.errText(),
+    ...(request.mintsToken === true ? { mintsToken: true as const } : {}),
+  }).holdsOneTimeToken
+}
+
 // ---------------------------------------------------------------------------
 // admin add
 // ---------------------------------------------------------------------------
@@ -195,6 +229,12 @@ describe('admin add', () => {
     expect(io.errText()).toContain('Usage')
     expect(io.outText()).toBe('')
     expect(await adminsFileText()).toBe('')
+  })
+
+  test('the notice it prints is the marker the console holds its screen for', async () => {
+    const { io } = await runAdmin(['add', 'alice', '--role', 'owner'])
+
+    expect(holdsOneTimeToken('add', { name: 'alice', role: 'owner' }, io)).toBe(true)
   })
 })
 
@@ -346,6 +386,14 @@ describe('admin rotate', () => {
 
     expect(code).toBe(1)
     expect(io.errText()).toContain('Usage')
+  })
+
+  test('the notice it prints is the marker the console holds its screen for', async () => {
+    await seedOwner('alice')
+
+    const { io } = await runAdmin(['rotate', 'alice'])
+
+    expect(holdsOneTimeToken('rotate', { name: 'alice' }, io)).toBe(true)
   })
 })
 

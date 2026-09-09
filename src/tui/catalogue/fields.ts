@@ -105,6 +105,20 @@ export function optionalChoice(
   }
 }
 
+/**
+ * A closed choice with no "not asked" option: every option is an answer, and
+ * the FIRST is what the form starts on. `optionalChoice` above is the other
+ * half of the pair — use that one when leaving the flag out is a real answer.
+ */
+export function choiceField(
+  name: string,
+  label: string,
+  options: readonly string[],
+  hint?: string,
+): FieldSpec {
+  return { name, label, kind: 'choice', options: [...options], ...hintOf(hint) }
+}
+
 /** A line of text; optional unless the caller says otherwise. */
 export function textField(name: string, label: string, hint?: string, required = false): FieldSpec {
   return { name, label, kind: 'text', required, ...hintOf(hint) }

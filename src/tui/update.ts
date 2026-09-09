@@ -34,7 +34,11 @@ export function update(model: Model, msg: Msg): Step {
 
   // A command is running: the keyboard is deaf until it answers, so a second
   // Enter cannot queue a second run behind the first. Ctrl-C above still gets
-  // the operator out.
+  // the operator out. Only a KEY is dropped — `tick`, `poll-result` and
+  // `opened` reach the main reducer, which drops what it must itself: a tick
+  // during a run is nothing to do, while a poll answering during one still has
+  // a `polling` flag to clear, and swallowing it here would leave the timer
+  // down for good.
   if (msg.kind === 'key' && screen.busy !== undefined) return noEffects(model)
 
   return updateMain(model, screen, msg)

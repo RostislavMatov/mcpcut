@@ -1,7 +1,10 @@
 import { describe, expect, test } from 'vitest'
 import { statusJson } from '../../src/services/format.js'
 import type { ServiceStatus } from '../../src/services/manager-types.js'
+import { EXTERNAL_GLYPH } from '../../src/tui/constants-live.js'
 import {
+  hasDownService,
+  isServiceDown,
   NO_SERVICES_TEXT,
   parseServicesJson,
   servicesHeaderPart,
@@ -87,17 +90,43 @@ describe('servicesHeaderPart', () => {
     const parsed = parseServicesJson(
       statusJson([
         { ...RUNNING_UI, state: 'starting' },
-        { ...STOPPED_SERVE, state: 'external' },
+        { ...STOPPED_SERVE, state: 'stale' },
       ]),
     )
 
     expect(servicesHeaderPart(parsed)).toBe('ui ◐ 127.0.0.1:8091 · serve ○ 127.0.0.1:8090')
   })
 
+  test('external gets its own glyph: answering, but not ours to start or stop', () => {
+    // Phase 5 (Q16): under compose or systemd every service is `external`, and
+    // drawing it as `○` told an operator to start something already serving.
+    const parsed = parseServicesJson(statusJson([{ ...STOPPED_SERVE, state: 'external' }]))
+
+    expect(servicesHeaderPart(parsed)).toBe(`serve ${EXTERNAL_GLYPH} 127.0.0.1:8090`)
+    expect(EXTERNAL_GLYPH).toBe('◉')
+  })
+
   test('brackets a bare IPv6 bind exactly once', () => {
     const parsed = parseServicesJson(statusJson([{ ...RUNNING_UI, host: '::1' }]))
 
     expect(servicesHeaderPart(parsed)).toBe('ui ● [::1]:8091')
+  })
+
+  test('escape sequences and invisible characters never leave this function', () => {
+    // The document is bytes from a command, and `z.string()` says nothing
+    // about a charset. The header centres and pads this text (`render-signin`
+    // measures it before `padRight` sanitises), so a host carrying an erase
+    // sequence would both mis-measure the block and be one layer away from the
+    // terminal (F9).
+    const parsed = parseServicesJson(
+      statusJson([{ ...RUNNING_UI, host: '127.0.0.1\x1b[2K\u200b' }]),
+    )
+
+    const part = servicesHeaderPart(parsed)
+
+    expect(part).not.toContain('\x1b')
+    expect(part).not.toContain('\u200b')
+    expect(part).toBe('ui ● 127.0.0.1:8091')
   })
 
   test('says the services are unknown when the status could not be read', () => {
@@ -108,5 +137,49 @@ describe('servicesHeaderPart', () => {
   test('says the same for an install that reported no services at all', () => {
     // An empty join would leave the header with a dangling separator.
     expect(servicesHeaderPart([])).toBe(NO_SERVICES_TEXT)
+  })
+})
+
+describe('isServiceDown', () => {
+  test('counts the two states an operator can fix with `start`', () => {
+    expect(isServiceDown('stopped')).toBe(true)
+    expect(isServiceDown('stale')).toBe(true)
+  })
+
+  test('leaves the states nothing needs doing about alone', () => {
+    // `external` is answering — it is down for nobody, and mcpcut could not
+    // start it anyway (its supervisor owns it).
+    expect(isServiceDown('running')).toBe(false)
+    expect(isServiceDown('starting')).toBe(false)
+    expect(isServiceDown('external')).toBe(false)
+  })
+
+  test('says nothing is down about a state it does not know', () => {
+    // The state arrives as bytes from a command: an unknown word must not turn
+    // the sign-in banner into a hint about a service nobody can name.
+    expect(isServiceDown('who-knows')).toBe(false)
+  })
+})
+
+describe('hasDownService', () => {
+  test('is true when any service in the list is down', () => {
+    const parsed = parseServicesJson(statusJson([RUNNING_UI, STOPPED_SERVE]))
+
+    expect(hasDownService(parsed)).toBe(true)
+  })
+
+  test('is false when every service is up or answers elsewhere', () => {
+    const parsed = parseServicesJson(
+      statusJson([RUNNING_UI, { ...STOPPED_SERVE, state: 'external' }]),
+    )
+
+    expect(hasDownService(parsed)).toBe(false)
+  })
+
+  test('is false for a status that could not be read, and for one naming nothing', () => {
+    // An unreadable status is not evidence a service is down; the banner stays
+    // silent rather than guessing.
+    expect(hasDownService(undefined)).toBe(false)
+    expect(hasDownService([])).toBe(false)
   })
 })

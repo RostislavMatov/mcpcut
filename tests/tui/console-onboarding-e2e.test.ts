@@ -9,6 +9,7 @@ import { POLICY_FILE_NAME } from '../../src/policy/constants.js'
 import { EXIT_OK } from '../../src/tui/constants.js'
 import {
   accessRecords,
+  acknowledgeToken,
   closeConsoles,
   goToSection,
   NO_KEY,
@@ -147,6 +148,10 @@ describe('console end to end: onboarding an installation', () => {
     fake.type(NO_KEY)
     await waitForText(app, `token: ${AGENT_TOKEN_PREFIX}`, 'the output panel again')
 
+    // Saying no leaves the token held (phase 5, plan P2): the pane ignores
+    // navigation and Enter until the operator says they copied it.
+    await acknowledgeToken(app)
+
     await runAction(app, {
       title: 'grant',
       values: [AGENT_NAME, SERVER_NAME, 'get_*'],
@@ -220,6 +225,8 @@ describe('console end to end: exporting the journal to a file', () => {
       values: [AGENT_NAME],
       command: `agent create ${AGENT_NAME}`,
     })
+    // The agent's one-time token holds the pane until it is acknowledged.
+    await acknowledgeToken(app)
 
     await goToSection(app, 'journal', 'owner')
     await runAction(app, { title: 'export', values: [exportPath], command: 'export' })

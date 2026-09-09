@@ -10,6 +10,7 @@ import {
   HEADER_ROWS,
   SIGNIN_TITLE,
 } from '../../../src/tui/constants.js'
+import { TOKEN_HOLD_BANNER } from '../../../src/tui/constants-live.js'
 import { waitForScreen, type FakeTerminal } from './fake-terminal.js'
 
 /**
@@ -278,6 +279,51 @@ export async function waitForFinishedRun(
     (screen) => !screen.includes(RUNNING_MARK) && screen.includes(line) && screen.includes(exit),
     `"${command}" to finish with ${exit}`,
     timeoutMs,
+  )
+}
+
+/**
+ * How many words of `TOKEN_HOLD_BANNER` a test looks for.
+ *
+ * The banner is wrapped to the pane, which is 54 columns wide in an 80-column
+ * console, so the whole sentence is never on one line of a frame. Four words
+ * are 25 characters — narrow enough to survive any pane these suites draw,
+ * and specific enough that nothing else on screen says them.
+ */
+const BANNER_HEAD_WORDS = 4
+
+/** The start of the token-hold banner, as it survives the pane's wrapping. */
+export const TOKEN_HOLD_BANNER_HEAD = TOKEN_HOLD_BANNER.split(' ')
+  .slice(0, BANNER_HEAD_WORDS)
+  .join(' ')
+
+/**
+ * Says the one-time token on screen has been copied, and waits until the
+ * console answers to its ordinary keys again.
+ *
+ * Any command that mints a token (`admin add`, `agent create`) leaves the
+ * console in the `token-hold` pane, where navigation, Enter, `r` and the
+ * Approvals tick are all ignored (plan P2). A suite that pressed on without
+ * this would not fail on the key it pressed — it would time out waiting for
+ * a frame that key was never going to draw.
+ *
+ * The wait afterwards is for the banner to be GONE rather than for a
+ * particular footer: whether the ordinary footer is `KEY_HELP_FOOTER` or the
+ * clipped one depends on whether the token line ran off the pane's edge,
+ * which is a property of the token's length, not of the acknowledgement.
+ */
+export async function acknowledgeToken(app: RunningConsole): Promise<void> {
+  await waitForScreen(
+    app.fake,
+    (screen) => screen.includes(TOKEN_HOLD_BANNER_HEAD),
+    'the one-time token banner',
+  )
+
+  app.fake.type(YES_KEY)
+  await waitForScreen(
+    app.fake,
+    (screen) => !screen.includes(TOKEN_HOLD_BANNER_HEAD),
+    'the console back on its ordinary keys',
   )
 }
 

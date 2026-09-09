@@ -1,4 +1,5 @@
 import { APPROVAL_RESOLVE_MIN_ROLE } from '../../admin/authz.js'
+import { APPROVALS_POLL_INTERVAL_MS, autoRefreshIntroLine } from '../constants-live.js'
 import type { FieldSpec } from '../form.js'
 import { optionFlag, textField, valueOf } from './fields.js'
 import type { ActionSpec, SectionSpec } from './types.js'
@@ -19,6 +20,12 @@ import type { ActionSpec, SectionSpec } from './types.js'
  * passes it in (`src/tui/session-env.ts`), and what that token buys is
  * ATTRIBUTION rather than authority (ADR-0004) — the decision is journaled
  * under the admin's name either way.
+ *
+ * The one tab that reads itself (plan P1, phase 5). `autoRefreshMs` makes the
+ * runtime re-run `list` quietly every few seconds while this tab is on its
+ * action list: no `busy`, no `running:` line, no stolen keyboard — waiting for
+ * an agent's request is the ONE place the console waits, and it must not cost
+ * the operator a keystroke. Every other tab still redraws only on `r`.
  *
  * A resolution never expires from this screen: the request the operator is
  * answering may already have timed out at the proxy, in which case the
@@ -84,9 +91,10 @@ export const APPROVALS_SECTION: SectionSpec = {
   minRole: 'viewer',
   intro: [
     'Pending approval requests from running proxies.',
-    'Press r to read the queue again.',
-    'Live refresh comes in phase 5.',
+    autoRefreshIntroLine(APPROVALS_POLL_INTERVAL_MS),
+    'r reads it now; approve and deny answer one request.',
   ],
   actions: [listAction, approveAction, denyAction],
   refreshActionId: 'list',
+  autoRefreshMs: APPROVALS_POLL_INTERVAL_MS,
 }

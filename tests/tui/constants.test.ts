@@ -40,6 +40,17 @@ import {
   wizardFailedNotice,
   wizardIntroLines,
 } from '../../src/tui/constants.js'
+import {
+  APPROVALS_POLL_INTERVAL_MS,
+  autoRefreshIntroLine,
+  EXTERNAL_GLYPH,
+  MS_PER_SECOND,
+  SIGNIN_SERVICES_DOWN_HINT,
+  SIGNIN_SERVICES_EXTERNAL_HINT,
+  SIGNIN_SERVICES_PREFIX,
+  TOKEN_HOLD_BANNER,
+  TOKEN_HOLD_FOOTER,
+} from '../../src/tui/constants-live.js'
 import { START_READY_TIMEOUT_MS } from '../../src/services/constants.js'
 
 /** Where the description of every `?` line starts, counted from the phase-2 lines. */
@@ -235,5 +246,57 @@ describe('the words of the full catalogue', () => {
 
     expect(line).toBe('wrote 42 bytes to /tmp/report.jsonl before failing')
     expect(line).not.toBe(savedToLine('/tmp/report.jsonl', 42))
+  })
+})
+
+/**
+ * Phase 5's words live in `constants-live.ts` (the file budget of
+ * `constants.ts`), and the same 80-column rule applies to every one of them:
+ * `padRight` cuts silently, so a banner an operator cannot finish reading is
+ * a banner that fails here instead.
+ */
+describe('the live-queue and token-hold words fit the smallest supported line', () => {
+  const LIVE_STRINGS: readonly string[] = [
+    TOKEN_HOLD_BANNER,
+    TOKEN_HOLD_FOOTER,
+    SIGNIN_SERVICES_PREFIX,
+    SIGNIN_SERVICES_DOWN_HINT,
+    SIGNIN_SERVICES_EXTERNAL_HINT,
+    EXTERNAL_GLYPH,
+    autoRefreshIntroLine(APPROVALS_POLL_INTERVAL_MS),
+  ]
+
+  test.each(LIVE_STRINGS)('"%s" is at most 80 columns wide', (line) => {
+    expect(line.length).toBeLessThanOrEqual(DEFAULT_COLUMNS)
+  })
+
+  test('no string is empty, so nothing above passes by being missing', () => {
+    for (const line of LIVE_STRINGS) expect(line).not.toBe('')
+  })
+
+  test('the external glyph is one column, like the three the header already draws', () => {
+    expect(EXTERNAL_GLYPH).toHaveLength(1)
+  })
+
+  test('the poll interval is whole seconds, which is what the intro line says', () => {
+    expect(MS_PER_SECOND).toBe(1000)
+    expect(APPROVALS_POLL_INTERVAL_MS % MS_PER_SECOND).toBe(0)
+    expect(autoRefreshIntroLine(APPROVALS_POLL_INTERVAL_MS)).toContain(
+      `${APPROVALS_POLL_INTERVAL_MS / MS_PER_SECOND} s`,
+    )
+  })
+})
+
+describe('the help panel after phase 5', () => {
+  test('every line still fits 80 columns', () => {
+    for (const line of HELP_LINES) expect(line.length).toBeLessThanOrEqual(DEFAULT_COLUMNS)
+  })
+
+  test('the confirmation line also says that y saves a token, in the same key column', () => {
+    const line = HELP_LINES.find((each) => each.startsWith('y / n'))
+
+    expect(line).toBeDefined()
+    expect(line).toContain('token')
+    expect(line?.indexOf('answer')).toBe(HELP_KEY_COLUMN_WIDTH)
   })
 })

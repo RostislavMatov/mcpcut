@@ -24,11 +24,13 @@ import { ROUTE_TABLE, type UiMethod } from '../../src/ui/authz.js'
  * — the console is an operator surface beside the admin UI, not a part of it),
  * so the comparison lives HERE: a test may read both, and only a test may.
  *
- * What deliberately has NO row below: the Audit section. `verify --sign`,
- * `keygen`, `backup`, `prune` and `migrate` are CLI commands that take no
- * admin token and are covered by no route at all, so their roles are
- * console-local ergonomics rather than a mirror of anything — see the header
- * of `src/tui/catalogue/audit.ts`.
+ * What deliberately has NO row below: the Audit and Services sections.
+ * `verify --sign`, `keygen`, `backup`, `prune` and `migrate` are CLI commands
+ * that take no admin token and are covered by no route at all, and so are
+ * `status`, `start`, `stop`, `logs` and `setup` — a browser cannot start a
+ * daemon or rewrite the install config. The roles of both sections are
+ * therefore console-local ergonomics rather than a mirror of anything: see the
+ * headers of `src/tui/catalogue/audit.ts` and `src/tui/catalogue/services.ts`.
  */
 
 /** The minimum role of one route of the table, by method and exact pattern. */

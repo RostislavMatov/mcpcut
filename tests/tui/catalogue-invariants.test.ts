@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { SECTIONS } from '../../src/tui/catalogue/index.js'
+import { refreshActionOf, SECTIONS } from '../../src/tui/catalogue/index.js'
 import type { ActionSpec, SectionSpec } from '../../src/tui/catalogue/types.js'
 import {
   ACTION_COLUMN_WIDTH,
@@ -54,6 +54,9 @@ const LINE_MAX_CHARS = DEFAULT_COLUMNS - ACTION_COLUMN_WIDTH - COLUMN_GAP
 /** A field's hint shares a line with its label and value, so it is shorter still. */
 const FIELD_HINT_MAX_CHARS = 40
 
+/** The shortest interval a self-refreshing tab may declare: one whole second. */
+const MIN_AUTO_REFRESH_MS = 1000
+
 /** The shape an action id is written in: the key a frame and a test name it by. */
 const ACTION_ID_PATTERN = /^[a-z][a-z0-9-]*$/
 
@@ -83,7 +86,17 @@ const CONFIRMING_ACTIONS: readonly string[] = [
   'quarantine/approve-all',
   'quarantine/reject',
   'audit/prune',
+  'services/stop',
+  'services/setup',
 ]
+
+/**
+ * The exact set of actions whose command prints a credential once, as
+ * `section/id`. Pinned rather than derived: this is the list of actions the
+ * console lets hold the screen, and an action added to it silently would be a
+ * new way for output to lock the pane (F1).
+ */
+const MINTING_ACTIONS: readonly string[] = ['admins/add', 'admins/rotate', 'agents/create']
 
 /** A value for one field: a sentinel for a secret, something valid for the rest. */
 function fillOf(field: FieldSpec): string {
@@ -202,6 +215,34 @@ describe('the actions that destroy something ask first', () => {
   })
 })
 
+describe('only a minting action may hold the screen', () => {
+  test('exactly the commands that print a one-time credential carry mintsToken', () => {
+    // Act
+    const minting = keysOf((action) => action.mintsToken === true)
+
+    // Assert
+    expect(minting).toEqual(MINTING_ACTIONS)
+  })
+
+  test('a section re-read on a timer never mints: a poll must not raise the hold', () => {
+    for (const section of SECTIONS) {
+      if (section.autoRefreshMs === undefined) continue
+
+      const action = section.actions.find((each) => each.id === section.refreshActionId)
+
+      expect(action?.mintsToken, `timer of ${section.id}`).toBeUndefined()
+    }
+  })
+
+  test('the r key re-runs no minting action either, on any section', () => {
+    for (const section of SECTIONS) {
+      const action = section.actions.find((each) => each.id === section.refreshActionId)
+
+      expect(action?.mintsToken, `refresh of ${section.id}`).toBeUndefined()
+    }
+  })
+})
+
 describe('a secret never reaches a command line', () => {
   test('stdinField names a secret field of the action itself', () => {
     for (const [section, action] of eachAction()) {
@@ -279,6 +320,56 @@ describe('the seams a section declares point at its own fields', () => {
       // Assert
       expect(action, `refresh of ${section.id}`).toBeDefined()
       expect(action?.fields, `refresh of ${section.id}`).toEqual([])
+    }
+  })
+
+  test('a refresh action never leaves the console', () => {
+    // `r` and the poll timer dispatch in-process while the console owns the
+    // alternate screen; an action marked `leavesConsole` must be reopened as a
+    // child instead (ADR-0012 §16). A one-word catalogue edit — pointing
+    // `refreshActionId` at `setup` — is all it would take, so the rule is
+    // asserted over every section rather than over the sections that have one.
+    for (const [index, section] of SECTIONS.entries()) {
+      const action = refreshActionOf(SECTIONS, 'owner', index)
+
+      expect(action?.leavesConsole, `refresh of ${section.id}`).not.toBe(true)
+    }
+  })
+
+  test('a section that re-reads itself on a timer names a reader to re-read with', () => {
+    for (const section of SECTIONS) {
+      if (section.autoRefreshMs === undefined) continue
+
+      // Act
+      const action = section.actions.find((each) => each.id === section.refreshActionId)
+
+      // Assert: a tick with nothing to run is a timer that redraws nothing
+      expect(section.refreshActionId, `timer of ${section.id}`).toBeDefined()
+      expect(action, `timer of ${section.id}`).toBeDefined()
+      expect(action?.fields, `timer of ${section.id}`).toEqual([])
+    }
+  })
+
+  test('a poll interval is whole seconds apart, never milliseconds', () => {
+    for (const section of SECTIONS) {
+      if (section.autoRefreshMs === undefined) continue
+
+      // A typo that dropped the thousands would poll the queue a thousand
+      // times a second, and the console would look like it had hung.
+      expect(section.autoRefreshMs, `timer of ${section.id}`).toBeGreaterThanOrEqual(
+        MIN_AUTO_REFRESH_MS,
+      )
+    }
+  })
+
+  test('an action that leaves the console carries no form and no stdin', () => {
+    for (const [section, action] of eachAction()) {
+      if (action.leavesConsole !== true) continue
+
+      // Assert: the console is gone before the argv runs, so there is nothing
+      // left to collect a field's value or feed a child's stdin with.
+      expect(action.fields, `form of ${section.id}/${action.id}`).toEqual([])
+      expect(action.stdinField, `stdin of ${section.id}/${action.id}`).toBeUndefined()
     }
   })
 })

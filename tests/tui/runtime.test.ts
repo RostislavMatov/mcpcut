@@ -4,10 +4,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { ADMIN_TOKEN_ENV_VAR } from '../../src/admin/constants.js'
 import { createAdminStore } from '../../src/admin/store.js'
 import type { CliWritable, DispatchFn } from '../../src/cli/dispatch-types.js'
 import { defaultInstallConfig } from '../../src/setup/defaults.js'
 import { ENTER_SCREEN, LEAVE_SCREEN, plainStyle, type Style } from '../../src/tui/ansi.js'
+import type { SectionSpec } from '../../src/tui/catalogue/types.js'
 import {
   ACTIVE_MARKER,
   DEFAULT_TUI_SIGNALS,
@@ -18,10 +20,12 @@ import {
   WINDOWS_UNSUPPORTED_REASON,
   WIZARD_TITLE_FIRST_RUN,
 } from '../../src/tui/constants.js'
-import type { Model, Msg, TerminalSize } from '../../src/tui/model.js'
+import type { Model, Msg, Session, TerminalSize } from '../../src/tui/model.js'
 import {
+  createReopenCell,
   createTokenCell,
   createWizardOutcomeCell,
+  type ReopenCell,
   type TokenCell,
 } from '../../src/tui/runtime-effects.js'
 import {
@@ -121,7 +125,14 @@ interface StartOptions {
   readonly rows?: number
   /** The screen the console opens on; the sign-in screen when absent. */
   readonly initial?: (size: TerminalSize) => Model
+  /** A session already in hand, for a console that opens past the sign-in screen. */
+  readonly token?: TokenCell
+  /** Where an action that leaves the console puts the argv to reopen with. */
+  readonly reopen?: ReopenCell
 }
+
+/** The console's own environment: distinctive, so a seam carrying it is recognisable. */
+const CONSOLE_ENV: NodeJS.ProcessEnv = { MCPCUT_CONFIG: '/home/alice/.mcpcut/config.json' }
 
 function depsOf(
   terminal: TuiTerminal,
@@ -130,6 +141,7 @@ function depsOf(
   dispatch: DispatchFn,
   style: Style = plainStyle,
   token: TokenCell = createTokenCell(),
+  reopen?: ReopenCell,
 ): ConsoleDeps {
   return {
     terminal,
@@ -138,9 +150,10 @@ function depsOf(
     effects: {
       dispatch,
       dispatchOptions: { admin: { journalDir } },
-      env: {},
+      env: CONSOLE_ENV,
       journalDir,
       token,
+      ...(reopen === undefined ? {} : { reopen }),
     },
     processEvents,
     signals: DEFAULT_TUI_SIGNALS,
@@ -165,6 +178,8 @@ function startConsole(options: StartOptions = {}): Harness {
       stderr,
       options.dispatch ?? quietDispatch,
       options.style ?? plainStyle,
+      options.token ?? createTokenCell(),
+      options.reopen,
     ),
     ...(options.initial !== undefined ? { initial: options.initial } : {}),
   })
@@ -533,7 +548,11 @@ describe('runConsole: the ways out', () => {
   })
 
   test('Ctrl-C leaves within the drain bound even while a command never answers', async () => {
-    const hung: DispatchFn = () => new Promise(() => undefined)
+    // Everything but the header refresh: since phase 5 the sign-in screen asks
+    // for `status` as it opens, and a dispatcher that hangs on THAT would
+    // never let the console be signed in at all.
+    const hung: DispatchFn = (argv) =>
+      argv[0] === 'status' ? Promise.resolve(EXIT_OK) : new Promise<number>(() => undefined)
     const { harness } = await signedInConsole({ dispatch: hung })
     harness.fake.type('\r')
     await waitForScreen(harness.fake, (screen) => screen.includes('running:'), 'the busy line')
@@ -713,6 +732,308 @@ describe('runConsole: effects', () => {
 
     await expect(harness.exit).resolves.toBe(EXIT_INTERRUPTED)
     expect(harness.fake.restored()).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The subscription timer, `opened` and the effects nobody typed (phase 5)
+// ---------------------------------------------------------------------------
+
+/** How often the synthetic polled section re-reads itself. */
+const POLL_INTERVAL_MS = 20
+
+/** Longer than a keystroke takes to reach a frame, so "before the answer" is observable. */
+const SLOW_POLL_MS = 300
+
+/** What a quiet poll prints, so a frame can be asked whether its answer landed. */
+const POLL_OUTPUT_MARK = 'queue-answered-here'
+
+/**
+ * How long an absence is watched for. Every OTHER wait in this file is a
+ * predicate over the frame; these are the two assertions about something that
+ * must NOT happen, and a window is the only shape they have.
+ */
+const ABSENCE_WINDOW_MS = 60
+
+/** A tab that re-reads itself, standing in for Approvals without pinning its interval. */
+const POLLED_SECTION: SectionSpec = {
+  id: 'polled',
+  title: 'Polled',
+  minRole: 'viewer',
+  intro: ['a tab that re-reads itself'],
+  refreshActionId: 'list',
+  autoRefreshMs: POLL_INTERVAL_MS,
+  actions: [
+    {
+      id: 'list',
+      title: 'list',
+      minRole: 'viewer',
+      command: 'approvals',
+      subcommand: 'list',
+      fields: [],
+      argv: () => ['approvals', 'list'],
+    },
+  ],
+}
+
+/**
+ * The action title the plain tab is recognised by. Its intro will not do: a
+ * poll that has already answered leaves an output panel where the intro was,
+ * and the panel outlives the tab switch.
+ */
+const PLAIN_ACTION_TITLE = 'noop'
+
+/** The other half of the rule: a tab with nothing to poll takes the timer down. */
+const PLAIN_SECTION: SectionSpec = {
+  id: 'plain',
+  title: 'Plain',
+  minRole: 'viewer',
+  intro: ['nothing to refresh here'],
+  actions: [
+    {
+      id: 'noop',
+      title: PLAIN_ACTION_TITLE,
+      minRole: 'viewer',
+      command: 'status',
+      fields: [],
+      argv: () => ['status'],
+    },
+  ],
+}
+
+/** An action that hands the terminal to a child instead of dispatching (`setup`). */
+const REOPEN_SECTION: SectionSpec = {
+  id: 'reopening',
+  title: 'Reopening',
+  minRole: 'viewer',
+  intro: ['an action that leaves the console'],
+  actions: [
+    {
+      id: 'setup',
+      title: 'setup',
+      minRole: 'viewer',
+      command: 'setup',
+      fields: [],
+      argv: () => ['setup'],
+      leavesConsole: true,
+    },
+  ],
+}
+
+const TEST_SESSION: Session = { adminName: ADMIN_NAME, role: ADMIN_ROLE }
+
+/** A main screen over synthetic sections: these tests are about the runtime, not the catalogue. */
+function mainModelOf(sections: readonly SectionSpec[], size: TerminalSize): Model {
+  return {
+    screen: {
+      kind: 'main',
+      session: TEST_SESSION,
+      sections,
+      sectionIndex: 0,
+      actionIndex: 0,
+      pane: { kind: 'actions' },
+    },
+    size,
+  }
+}
+
+/** A cell holding a session the store really resolves, for a console that opens signed in. */
+async function sessionCell(): Promise<TokenCell> {
+  const cell = createTokenCell()
+  cell.set(await createTestAdmin())
+  return cell
+}
+
+interface CountingDispatch {
+  readonly fn: DispatchFn
+  /** Live, so a test can watch it. */
+  readonly calls: readonly (readonly string[])[]
+  countOf(command: string): number
+}
+
+/** A `dispatch` that counts what it was asked to run, and answers as told. */
+function countingDispatch(answer: () => Promise<number> = async () => EXIT_OK): CountingDispatch {
+  const calls: string[][] = []
+  return {
+    calls,
+    countOf: (command: string) => calls.filter((argv) => argv[0] === command).length,
+    fn: async (argv) => {
+      calls.push([...argv])
+      return answer()
+    },
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+describe('runConsole: what opening the console asks for', () => {
+  test('the sign-in screen asks for the service line before anybody has typed', async () => {
+    const dispatch = countingDispatch()
+    const harness = startConsole({ dispatch: dispatch.fn })
+
+    await waitForUntilTrue(() => dispatch.calls.length > 0)
+
+    expect(dispatch.calls[0]).toEqual(['status', '--json'])
+    harness.fake.type('\x03')
+    await expect(harness.exit).resolves.toBe(EXIT_OK)
+  })
+
+  test("the status it asks for carries the console's own environment, and no session", async () => {
+    const seen: (NodeJS.ProcessEnv | undefined)[] = []
+    const harness = startConsole({
+      dispatch: async (_argv, _io, opts) => {
+        seen.push(opts?.services?.env)
+        return EXIT_OK
+      },
+    })
+
+    await waitForUntilTrue(() => seen.length > 0)
+
+    expect(seen[0]).toEqual(CONSOLE_ENV)
+    expect(seen[0]?.[ADMIN_TOKEN_ENV_VAR]).toBeUndefined()
+    harness.fake.type('\x03')
+    await expect(harness.exit).resolves.toBe(EXIT_OK)
+  })
+})
+
+describe('runConsole: the subscription timer', () => {
+  test('a subscribed tab polls on its own, and stops when the tab is left', async () => {
+    const dispatch = countingDispatch()
+    const harness = startConsole({
+      dispatch: dispatch.fn,
+      token: await sessionCell(),
+      initial: (size) => mainModelOf([POLLED_SECTION, PLAIN_SECTION], size),
+    })
+
+    await waitForUntilTrue(() => dispatch.countOf('approvals') >= 2)
+    harness.fake.type('\t')
+    await waitForScreen(
+      harness.fake,
+      (screen) => screen.includes(PLAIN_ACTION_TITLE),
+      'the plain tab, which subscribes to nothing',
+    )
+
+    // ABSENCE assertion: a window is the only way to watch for polls that must
+    // never be asked for. Three times the interval the tab used to poll at.
+    const settled = dispatch.countOf('approvals')
+    await sleep(ABSENCE_WINDOW_MS)
+    expect(dispatch.countOf('approvals')).toBe(settled)
+    harness.fake.type('q')
+    await expect(harness.exit).resolves.toBe(EXIT_OK)
+  })
+
+  test('q takes the timer with it: nothing is dispatched once the console has left', async () => {
+    const dispatch = countingDispatch()
+    const harness = startConsole({
+      dispatch: dispatch.fn,
+      token: await sessionCell(),
+      initial: (size) => mainModelOf([POLLED_SECTION, PLAIN_SECTION], size),
+    })
+    await waitForUntilTrue(() => dispatch.countOf('approvals') >= 1)
+
+    harness.fake.type('q')
+    await expect(harness.exit).resolves.toBe(EXIT_OK)
+
+    // ABSENCE assertion: the timer is unref'd, so a leak would not hang the
+    // worker — it would poll a settled console instead.
+    const atExit = dispatch.countOf('approvals')
+    await sleep(ABSENCE_WINDOW_MS)
+    expect(dispatch.countOf('approvals')).toBe(atExit)
+    expect(harness.fake.restored()).toBe(true)
+  })
+
+  test('a poll in flight never makes the keyboard deaf, and its answer stays on its own tab', async () => {
+    let answered = 0
+    const calls: string[][] = []
+    const dispatch: DispatchFn = async (argv, io) => {
+      calls.push([...argv])
+      await sleep(SLOW_POLL_MS)
+      io.stdout.write(`${POLL_OUTPUT_MARK}\n`)
+      answered += 1
+      return EXIT_OK
+    }
+    const harness = startConsole({
+      dispatch,
+      token: await sessionCell(),
+      initial: (size) => mainModelOf([POLLED_SECTION, PLAIN_SECTION], size),
+    })
+    await waitForUntilTrue(() => calls.some((argv) => argv[0] === 'approvals'))
+
+    harness.fake.type('\t')
+
+    await waitForScreen(
+      harness.fake,
+      (screen) => screen.includes(PLAIN_ACTION_TITLE),
+      'the next tab, reached while the poll is still out',
+    )
+    expect(answered).toBe(0)
+
+    // The answer now arrives on a tab that never asked for it. Nobody may see
+    // another tab's command line and text appear under this one (F2).
+    await waitForUntilTrue(() => answered >= 1)
+    await sleep(ABSENCE_WINDOW_MS)
+    expect(harness.fake.screen()).not.toContain(POLL_OUTPUT_MARK)
+    expect(harness.fake.screen()).not.toContain('approvals list')
+    expect(harness.fake.screen()).toContain(PLAIN_ACTION_TITLE)
+
+    harness.fake.type('q')
+    await expect(harness.exit).resolves.toBe(EXIT_OK)
+  })
+})
+
+describe('runConsole: an action that leaves the console', () => {
+  test('a reopen ends the console with 0, leaves the argv in the cell and restores the terminal', async () => {
+    const reopen = createReopenCell()
+    const dispatch = countingDispatch()
+    const harness = startConsole({
+      dispatch: dispatch.fn,
+      reopen,
+      token: await sessionCell(),
+      initial: (size) => mainModelOf([REOPEN_SECTION], size),
+    })
+    await waitForScreen(harness.fake, (screen) => screen.includes('setup'), 'the reopening tab')
+
+    harness.fake.type('\r')
+
+    await expect(harness.exit).resolves.toBe(EXIT_OK)
+    expect(reopen.get()).toEqual(['setup'])
+    expect(harness.fake.restored()).toBe(true)
+    // Nothing was run from inside the console: the child gets the terminal.
+    expect(dispatch.countOf('setup')).toBe(0)
+  })
+})
+
+describe('createLoop: a fault after the console was already leaving', () => {
+  test('a reopen is taken back when the runtime faults: nothing is spawned on a crashed console', async () => {
+    // `finish` is first-call-wins, so a fault arriving after the reopen leaves
+    // the exit code at 0 with the stack only on stderr — and `tui-cmd.ts` would
+    // then hand the terminal to `mcpcut setup` from a console that crashed.
+    const reopen = createReopenCell()
+    const fake = createFakeTerminal()
+    const stderr = captureStderr()
+    const base = depsOf(
+      fake.terminal,
+      new EventEmitter(),
+      stderr,
+      quietDispatch,
+      plainStyle,
+      await sessionCell(),
+      reopen,
+    )
+    const loop = createLoop({
+      ...base,
+      initial: (size) => mainModelOf([REOPEN_SECTION], size),
+    })
+    loop.step({ kind: 'key', key: { kind: 'enter' } })
+    expect(reopen.get()).toEqual(['setup'])
+
+    loop.fail(new Error('the pure core threw'))
+
+    expect(reopen.get()).toBeUndefined()
+    loop.reportFault()
+    expect(stderr.text()).toContain('the pure core threw')
   })
 })
 

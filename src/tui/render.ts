@@ -2,7 +2,7 @@ import { padRight, type Style } from './ansi.js'
 import { blankRows } from './layout.js'
 import type { Model } from './model.js'
 import { renderMain } from './render-main.js'
-import { renderSignIn } from './render-panes.js'
+import { renderSignIn } from './render-signin.js'
 import { renderWizard } from './render-wizard.js'
 
 /**
@@ -35,7 +35,7 @@ function screenLines(model: Model, style: Style): readonly string[] {
   const { screen } = model
   switch (screen.kind) {
     case 'signin':
-      return renderSignIn(screen, model.size, style)
+      return renderSignIn(screen, model.size, style, model.install)
     case 'wizard':
       return renderWizard(screen, model.size, style)
     case 'main':

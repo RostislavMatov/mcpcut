@@ -71,6 +71,8 @@ export interface MainFields {
   readonly output: OutputPanel | undefined
   readonly services: readonly ServiceSummary[] | undefined
   readonly busy: RunRequest | undefined
+  /** Id of the section a quiet poll is out for; `undefined` = none in flight. */
+  readonly polling: string | undefined
 }
 
 /** Reads a main screen into the record `mainOf` builds one from. */
@@ -84,6 +86,7 @@ export function fieldsOf(screen: MainScreen): MainFields {
     output: screen.output,
     services: screen.services,
     busy: screen.busy,
+    polling: screen.polling,
   }
 }
 
@@ -99,6 +102,7 @@ export function mainOf(fields: MainFields): MainScreen {
     ...(fields.output !== undefined ? { output: fields.output } : {}),
     ...(fields.services !== undefined ? { services: fields.services } : {}),
     ...(fields.busy !== undefined ? { busy: fields.busy } : {}),
+    ...(fields.polling !== undefined ? { polling: fields.polling } : {}),
   }
 }
 

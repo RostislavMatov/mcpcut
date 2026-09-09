@@ -12,8 +12,8 @@ import type { ActionSpec } from '../../src/tui/catalogue/types.js'
 
 /**
  * The catalogue as the console reads it: the four pure lookups every screen is
- * drawn from (phase 2, Task 6) and the eleven sections they now answer over
- * (phase 4, Task 10).
+ * drawn from (phase 2, Task 6) and the twelve sections they now answer over
+ * (phase 4, Task 10; Services in phase 5, Task 3).
  *
  * What is load-bearing here is the SHAPE of the catalogue: which sections a
  * role may open, in which order, and the full list of commands the console can
@@ -42,7 +42,7 @@ function sectionIdsFor(role: Role): readonly string[] {
   return visibleSections(role).map((section) => section.id)
 }
 
-/** The nine sections a role below owner may open, in catalogue order. */
+/** The ten sections a role below owner may open, in catalogue order. */
 const READABLE_SECTIONS: readonly string[] = [
   'home',
   'servers',
@@ -53,9 +53,10 @@ const READABLE_SECTIONS: readonly string[] = [
   'approvals',
   'journal',
   'audit',
+  'services',
 ]
 
-/** All eleven, in the order the tab bar shows them. */
+/** All twelve, in the order the tab bar shows them. */
 const ALL_SECTIONS: readonly string[] = [
   'home',
   'admins',
@@ -68,6 +69,7 @@ const ALL_SECTIONS: readonly string[] = [
   'approvals',
   'journal',
   'audit',
+  'services',
 ]
 
 describe('role thresholds mirror the UI route table', () => {
@@ -75,11 +77,11 @@ describe('role thresholds mirror the UI route table', () => {
     expect(sectionIdsFor('viewer')).toEqual(READABLE_SECTIONS)
   })
 
-  test('an operator sees the same nine: Admins and Vault are owner work', () => {
+  test('an operator sees the same ten: Admins and Vault are owner work', () => {
     expect(sectionIdsFor('operator')).toEqual(READABLE_SECTIONS)
   })
 
-  test('an owner sees all eleven, in the order the tab bar draws them', () => {
+  test('an owner sees all twelve, in the order the tab bar draws them', () => {
     expect(sectionIdsFor('owner')).toEqual(ALL_SECTIONS)
   })
 
@@ -186,11 +188,12 @@ describe('the Home section', () => {
 })
 
 /**
- * Every command the console can run, in catalogue order — the six of phase 2
- * and the forty-one of phase 4. Written out rather than derived, because this
- * is the list the parity test subtracts from `USAGE`: a command that silently
- * left the console must fail HERE, where it can be read, rather than turn the
- * parity test's own omission list green by shrinking both sides at once.
+ * Every command the console can run, in catalogue order — the six of phase 2,
+ * the forty-one of phase 4 and the four of phase 5. Written out rather than
+ * derived, because this is the list the parity test subtracts from `USAGE`: a
+ * command that silently left the console must fail HERE, where it can be read,
+ * rather than turn the parity test's own omission list green by shrinking both
+ * sides at once.
  */
 const CATALOGUE_PAIR_KEYS: readonly string[] = [
   'status',
@@ -240,6 +243,10 @@ const CATALOGUE_PAIR_KEYS: readonly string[] = [
   'backup',
   'prune',
   'migrate',
+  'start',
+  'stop',
+  'logs',
+  'setup',
 ]
 
 describe('cataloguePairs', () => {
@@ -290,7 +297,10 @@ describe('actionAt', () => {
   })
 
   test('the last section is reachable: the cursor is not bounded by the phase-2 two', () => {
-    expect(actionAt(sections, 'owner', ALL_SECTIONS.length - 1, 0)?.id).toBe('export-report')
+    const last = ALL_SECTIONS.length - 1
+
+    expect(sections[last]?.id).toBe('services')
+    expect(actionAt(sections, 'owner', last, 0)?.id).toBe('status')
   })
 
   test('an index outside the catalogue is undefined, not a crash', () => {

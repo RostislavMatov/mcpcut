@@ -2,6 +2,7 @@ import { ADMIN_TOKEN_ENV_VAR } from '../admin/constants.js'
 import { adminFromEnv, type TokenAdmin } from '../cli/admin-token.js'
 import type { DispatchFn, DispatchOptions } from '../cli/dispatch-types.js'
 import { captureBothIo } from '../setup/capture-io.js'
+import type { ReopenCell, TokenCell, WizardOutcome, WizardOutcomeCell } from './cells.js'
 import { OUTPUT_MAX_CHARS } from './constants.js'
 import type { DeployStepId, Effect, Msg, RunRequest } from './model.js'
 import {
@@ -14,7 +15,13 @@ import {
 import { fileSink, memorySink, type RunSink, type SinkStreamFactory } from './run-sink.js'
 import { messageOf } from './runtime-terminal.js'
 import { parseServicesJson } from './services-summary.js'
-import { sessionEnvOf, withSeamEnv, withSecretInput, withSessionToken } from './session-env.js'
+import {
+  sessionEnvOf,
+  withoutAdminToken,
+  withSeamEnv,
+  withSecretInput,
+  withSessionToken,
+} from './session-env.js'
 
 /**
  * The effect executor (mcpcut phase 2, task 12): everything the console does
@@ -39,6 +46,14 @@ import { sessionEnvOf, withSeamEnv, withSecretInput, withSessionToken } from './
  * dispatches with no session at all, because the install it is building has
  * no admin to resolve until `setup` has minted one — see `runWizardCommand`.
  *
+ * Phase 5 added the two effects that answer nobody's keystroke. `poll` is the
+ * Approvals timer re-reading its own tab: the same session check as `run`, and
+ * an answer the reducer folds without a running line. `reopen` is the SECOND
+ * effect the runtime honours in `enqueue` rather than in the queue — the
+ * wizard's `wizard-finish` was the first — because both only write a cell that
+ * is read after the terminal has been given back, and a place in the queue
+ * would mean waiting behind a command the operator has already left.
+ *
  * The third discipline is survival: no command may take the console down. A
  * `dispatch` that throws, or answers with something that is not an exit code,
  * becomes an ordinary failed run in the output pane — the exception to the
@@ -46,50 +61,20 @@ import { sessionEnvOf, withSeamEnv, withSecretInput, withSessionToken } from './
  * an escaped rejection here would leave the terminal in raw mode.
  */
 
-/** The one intentionally mutable cell of the runtime: the signed-in token. */
-export interface TokenCell {
-  get(): string | undefined
-  set(token: string | undefined): void
-}
-
-/**
- * A fresh, empty cell. The value lives in the closure and is reachable only
- * through `get`, so nothing can enumerate, serialize or clone it by accident.
- */
-export function createTokenCell(): TokenCell {
-  let token: string | undefined
-  return {
-    get: () => token,
-    set: (next: string | undefined) => {
-      token = next
-    },
-  }
-}
-
-/**
- * What the wizard asked the runtime for once its last screen is done. One
- * value today — the operator wants the sign-in screen — and it is a named
- * type rather than a boolean so a second answer (phase 5's "just quit") is an
- * addition here rather than a re-reading of `true`.
- */
-export type WizardOutcome = 'sign-in'
-
-/** The wizard's own mutable cell: the single channel out of an effect. */
-export interface WizardOutcomeCell {
-  get(): WizardOutcome | undefined
-  set(outcome: WizardOutcome | undefined): void
-}
-
-/** A fresh, empty cell; the value lives in the closure, as `createTokenCell`'s does. */
-export function createWizardOutcomeCell(): WizardOutcomeCell {
-  let outcome: WizardOutcome | undefined
-  return {
-    get: () => outcome,
-    set: (next: WizardOutcome | undefined) => {
-      outcome = next
-    },
-  }
-}
+// The cells themselves moved to `cells.ts` when the third one arrived
+// (phase 5's `reopen`); they are re-exported here so every importer of this
+// module — `tui-cmd.ts`, `tui-wizard.ts`, the tests — kept its import.
+export {
+  type Cell,
+  createCell,
+  createReopenCell,
+  createTokenCell,
+  createWizardOutcomeCell,
+  type ReopenCell,
+  type TokenCell,
+  type WizardOutcome,
+  type WizardOutcomeCell,
+} from './cells.js'
 
 /** What the first-run wizard needs of the runtime: somewhere to leave its answer. */
 export interface WizardDeps {
@@ -107,6 +92,14 @@ export interface EffectDeps {
   readonly token: TokenCell
   /** Present only while the first-run wizard is on screen (phase 3). */
   readonly wizard?: WizardDeps
+  /**
+   * Where an action that leaves the console puts the argv to reopen with
+   * (phase 5). Production ALWAYS wires it — `tui-cmd.ts` creates the cell
+   * before the console opens — and the optional branch exists so the
+   * runtime-effects unit harness can execute effects without one, where a
+   * `reopen` is simply dropped.
+   */
+  readonly reopen?: ReopenCell
   /**
    * How an action's output file is opened; the default is the exclusive
    * create of `run-sink.ts`. The same seam `fileSink` takes, raised one level
@@ -151,10 +144,19 @@ export async function executeEffect(effect: Effect, deps: EffectDeps): Promise<M
       return refreshServices(deps)
     case 'wizard-run':
       return runWizardCommand(effect.step, effect.request, deps)
+    case 'poll':
+      return pollCommand(effect.request, deps)
     case 'wizard-finish':
       // The runtime answers this one in `enqueue`; the case is here so the
       // switch stays exhaustive and a direct call still does the right thing.
       finishWizard(deps)
+      return undefined
+    case 'reopen':
+      // Same shape as `wizard-finish`: the runtime ends the console in
+      // `enqueue` and runs this argv once the terminal is its own again. The
+      // copy is the one `enqueue` makes too: the argv outlives the effect, and
+      // whoever reads the cell spawns from it.
+      deps.reopen?.set([...effect.argv])
       return undefined
     case 'quit':
       return undefined
@@ -289,12 +291,14 @@ async function finishFailure(sink: RunSink): Promise<string | undefined> {
  * is nothing to attribute yet: the wizard's own commands are journaled by
  * `setup` itself, under the admin it creates.
  *
- * The seams still get an environment — the console's own, through
- * `withSeamEnv` — so an `MCPCUT_CONFIG` the operator exported reaches both
- * the `setup` that writes that file and the `start` that reads it. It carries
- * no `MCP_ADMIN_TOKEN` of ours; a stale one inherited from the shell is the
- * operator's own environment and is passed through unchanged, exactly as it
- * would be had they typed `mcpcut setup --yes` themselves.
+ * The seams still get an environment — the console's own MINUS the admin
+ * token, through `withoutAdminToken` — so an `MCPCUT_CONFIG` the operator
+ * exported reaches both the `setup` that writes that file and the `start` that
+ * reads it, while an `MCP_ADMIN_TOKEN` left in the shell reaches neither. The
+ * console strips it from every dispatch it makes without a session, the
+ * pre-sign-in `status` included: an install that has no admins yet has nobody
+ * for such a token to name, and passing it on would be the console picking an
+ * identity nobody typed.
  */
 async function runWizardCommand(
   step: DeployStepId,
@@ -305,10 +309,28 @@ async function runWizardCommand(
   const outcome = await dispatchCaptured(
     request.argv,
     sink,
-    withSeamEnv(deps.dispatchOptions, deps.env),
+    withSeamEnv(deps.dispatchOptions, withoutAdminToken(deps.env)),
     deps,
   )
   return { kind: 'wizard-run-result', step, result: runResultOf(request, sink, outcome) }
+}
+
+/**
+ * A quiet re-read of a section (the Approvals timer): the same session check
+ * as `run`, a memory sink, and an answer the reducer folds without touching
+ * `busy`. Nobody asked for it, so it never takes the screen — but a session
+ * that has gone is still a session that has gone.
+ */
+async function pollCommand(request: RunRequest, deps: EffectDeps): Promise<Msg> {
+  const token = deps.token.get()
+  if (token === undefined) return SESSION_LOST
+  if (!(await isSessionFresh(token, deps))) {
+    deps.token.set(undefined)
+    return SESSION_LOST
+  }
+  const sink = memorySink(OUTPUT_MAX_CHARS)
+  const outcome = await dispatchCaptured(request.argv, sink, optionsFor(token, deps), deps)
+  return { kind: 'poll-result', result: runResultOf(request, sink, outcome) }
 }
 
 /**
@@ -340,20 +362,33 @@ async function dispatchCaptured(
  * `run`: this is a header refresh nobody asked for, so a failure — a refusal,
  * a throw, an unparsable document — leaves the header saying it does not know,
  * and never ends the session or steals the screen.
+ *
+ * It is asked WITHOUT a session too (phase 5, plan P3). `status` needs no
+ * token — it reads pid files and probes ports, exactly as `mcpcut status`
+ * would from the shell — and the sign-in screen is the one place the answer
+ * matters most: an operator staring at a token prompt while `ui` and `serve`
+ * are down should be told so, not left to guess. The seams then carry the
+ * console's OWN environment MINUS the admin token (`withoutAdminToken`), so an
+ * `MCPCUT_CONFIG` the operator exported still points `status` at the install
+ * they mean, while an `MCP_ADMIN_TOKEN` left in the shell does not become an
+ * identity the console picked for a command nobody signed in for.
  */
 async function refreshServices(deps: EffectDeps): Promise<Msg> {
   const token = deps.token.get()
-  if (token === undefined) return NO_SERVICES
-  if (!(await isSessionFresh(token, deps))) {
+  if (token !== undefined && !(await isSessionFresh(token, deps))) {
     deps.token.set(undefined)
     return SESSION_LOST
   }
+  const options =
+    token === undefined
+      ? withSeamEnv(deps.dispatchOptions, withoutAdminToken(deps.env))
+      : optionsFor(token, deps)
   const captured = captureBothIo()
   try {
     // The exit code is not consulted: `status` exits 1 whenever a service is
     // not running, and still prints the document — which is exactly the
     // answer the header wants. An unparsable document reads as "unknown".
-    await deps.dispatch([...SERVICES_STATUS_ARGV], captured.io, optionsFor(token, deps))
+    await deps.dispatch([...SERVICES_STATUS_ARGV], captured.io, options)
     return { kind: 'services', statuses: parseServicesJson(captured.out()) }
   } catch {
     return NO_SERVICES
