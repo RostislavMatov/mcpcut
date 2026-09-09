@@ -4,6 +4,8 @@ import {
   SigningKeyExistsError,
   generateAndWriteSigningKeyPair,
 } from '../journal/signing.js'
+import type { AdminRefusalWording } from './admin-token.js'
+import { adminOf, recordHostOp, resolveHostOpActor } from './host-op-write.js'
 
 /**
  * `mcp-journal keygen` (M5 wave 4, task 4.2): generates this installation's
@@ -13,7 +15,20 @@ import {
  * anywhere, including in this command's own error paths (see
  * `journal/signing.ts`'s `SigningKeyExistsError`, which names a PATH, never
  * key material).
+ *
+ * NOT gated (owner decision Q17, 2026-09-08): the key is minted on an install
+ * that may have no admin at all — `setup` runs this before the first admin
+ * exists. But when a valid `MCP_ADMIN_TOKEN` IS present the mint is recorded
+ * as an `access-edit` naming the admin and the key's public fingerprint; an
+ * unusable token is refused before anything is written.
  */
+
+/** How the optional token gate names a refusal. */
+const KEYGEN_REFUSAL: AdminRefusalWording = {
+  action: 'generate the signing key',
+  noun: 'key',
+  verb: 'may not generate the signing key',
+}
 
 export interface KeygenCliWritable {
   write(chunk: string): unknown
@@ -27,6 +42,8 @@ export interface KeygenCliIo {
 /** Test seam: journal directory override, same convention as `verify-cmd.ts`. */
 export interface KeygenCommandOptions {
   readonly journalDir?: string
+  /** Environment holding an OPTIONAL `MCP_ADMIN_TOKEN`. Defaults to `process.env`. */
+  readonly env?: NodeJS.ProcessEnv
 }
 
 const USAGE =
@@ -52,6 +69,11 @@ export async function runKeygenCommand(
     return 1
   }
 
+  // Before the key is minted: an unusable token must not be discovered after
+  // an installation has an identity it did not mean to create.
+  const resolved = await resolveHostOpActor(io, opts, KEYGEN_REFUSAL)
+  if (resolved.kind === 'refused') return 1
+
   const journalDir = opts.journalDir ?? JOURNAL_DIR
   try {
     const generated = await generateAndWriteSigningKeyPair(journalDir)
@@ -64,6 +86,12 @@ export async function runKeygenCommand(
     // directories) needs a way to tell keys apart by content BEFORE any
     // anchor has been signed with this one.
     io.stdout.write(`Fingerprint (sha256 of SPKI DER, hex): ${generated.publicKeyFingerprint}\n`)
+    await recordHostOp(io, opts, adminOf(resolved), {
+      op: 'keygen',
+      action: 'keygen',
+      target: generated.publicKeyFingerprint,
+      keyFingerprint: generated.publicKeyFingerprint,
+    })
     return 0
   } catch (error: unknown) {
     if (error instanceof SigningKeyExistsError) {

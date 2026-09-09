@@ -225,11 +225,27 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
         }),
     },
   })
+  // One writer for every `access-edit` record this process produces (G6): the
+  // servers cascade, the six group actions, the personal grants and — since
+  // owner decision Q17 — the quarantine release share it, so attribution and
+  // the drop diagnostic are defined once. The writer's REAL outcome is handed
+  // through, never widened to `unknown`: `written: false` is what the
+  // handler's success page hangs its warning on (audit F1) — the stderr
+  // diagnostic alone never reached the admin in the browser.
+  const writeAccessEdit = (info: AccessEditInfo): Promise<JournalAccessEditOutcome> =>
+    journalAccessEdit({
+      info,
+      dir: deps.journalDir,
+      diagnostics: (line) => deps.stderr.write(line),
+      ...(deps.clock !== undefined ? { clock: deps.clock } : {}),
+    })
   const quarantine = createQuarantineHandlers({
     readStore: () => inventory.read(),
     approve: (serverName, toolName) => approveTool(serverName, toolName, deps.inventoryStorePath),
     reject: (serverName, toolName) => rejectTool(serverName, toolName, deps.inventoryStorePath),
     audit: quarantineAudit,
+    // Q17: the release leaves the same journal record the CLI's does.
+    journalAccessEdit: writeAccessEdit,
   })
   // Adapter literals, not the stores themselves: `ServersHandlersDeps` narrows
   // each port to a `Pick<>` at compile time only, but a store object handed
@@ -244,19 +260,6 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
   // The one group store of this process: the servers handlers cascade through
   // it on removal (G6) and the groups surfaces read and write it.
   const groups = createGroupsStore({ journalDir: deps.journalDir })
-  // One writer for every `access-edit` record this process produces (G6): the
-  // servers cascade, the six group actions and the personal grants share it,
-  // so attribution and the drop diagnostic are defined once. The writer's REAL
-  // outcome is handed through, never widened to `unknown`: `written: false`
-  // is what the handler's success page hangs its warning on (audit F1) — the
-  // stderr diagnostic alone never reached the admin in the browser.
-  const writeAccessEdit = (info: AccessEditInfo): Promise<JournalAccessEditOutcome> =>
-    journalAccessEdit({
-      info,
-      dir: deps.journalDir,
-      diagnostics: (line) => deps.stderr.write(line),
-      ...(deps.clock !== undefined ? { clock: deps.clock } : {}),
-    })
   const servers = createServersHandlers({
     registry: {
       listServers: () => deps.registry.listServers(),

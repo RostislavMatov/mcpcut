@@ -118,6 +118,45 @@ function insufficientRoleMessage(
 }
 
 /**
+ * The three ways an OPTIONAL token resolves: nobody was named, somebody was,
+ * or a token was supplied that this installation cannot place.
+ */
+export type OptionalAdmin =
+  | { readonly kind: 'anonymous' }
+  | { readonly kind: 'refused' }
+  | { readonly kind: 'admin'; readonly admin: RequiredAdmin }
+
+/**
+ * The named admin behind `MCP_ADMIN_TOKEN` when there IS one, for the host
+ * operations that must keep working with none (owner decision Q17,
+ * 2026-09-08: `keygen`, `backup`, `migrate`, `verify --sign` run before any
+ * admin exists and from cron).
+ *
+ * No role is checked — these commands are not gated; the token buys a name on
+ * the record and nothing else. But a token that resolves to nobody is
+ * REFUSED, with the refusal already printed: silently running anonymously
+ * would hide a rotated or mistyped token behind a successful command, which is
+ * exactly the mistake an operator wants to hear about.
+ */
+export async function optionalAdminFromEnv(
+  opts: AdminTokenOptions,
+  io: AdminTokenErrorIo,
+  wording: AdminRefusalWording,
+): Promise<OptionalAdmin> {
+  const resolved = await adminFromEnv(opts)
+  if (resolved.kind === 'missing') return { kind: 'anonymous' }
+  if (resolved.kind === 'unknown') {
+    io.stderr.write(unknownTokenMessage(wording))
+    return { kind: 'refused' }
+  }
+  if (resolved.kind === 'unreadable') {
+    io.stderr.write(unreadableStoreMessage(resolved.detail, wording))
+    return { kind: 'refused' }
+  }
+  return { kind: 'admin', admin: { adminName: resolved.name, role: resolved.role } }
+}
+
+/**
  * The named admin behind `MCP_ADMIN_TOKEN` when it satisfies `minRole`, or
  * `undefined` with the refusal ALREADY printed to `io.stderr` — the caller
  * just returns exit 1. Every write-side CLI that must be attributable shares

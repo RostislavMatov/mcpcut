@@ -149,6 +149,7 @@ export const HELP_LINES: readonly string[] = [
   '← →                     change a choice field; space toggles a flag',
   'Tab / Shift-Tab         next / previous field, while a form is open',
   'PgUp / PgDn             scroll the output panel',
+  '[ / ]                   scroll the output pane sideways when a line is cut',
   "r                       rerun the section's refresh action",
   'y / n                   answer a confirmation',
   'Esc                     cancel a form or a confirmation; quit on the sign-in screen',
@@ -324,3 +325,68 @@ export function mintedAdminLine(name: string): string {
 export const WIZARD_TOKEN_QUESTION = 'Saved it? [y/N] — y opens the sign-in screen'
 export const WIZARD_TOKEN_FOOTER = 'y sign in · q quit'
 export const WIZARD_DONE_FOOTER = 'Enter sign in · q quit'
+
+// ---------------------------------------------------------------------------
+// The full catalogue (mcpcut phase 4, Task 1)
+//
+// Nine more sections than the two of phase 2, which brings three words the
+// console did not need before: what a secret looks like in the command line
+// the panel prints, how a tab bar that no longer fits reports its edges, and
+// what a run whose output went to a file says instead of that output.
+// ---------------------------------------------------------------------------
+
+/**
+ * What the "equivalent command" line shows in place of a secret argument.
+ *
+ * Not `SECRET_MASK_CHAR` repeated: the masked argv is read as a command line,
+ * and a run of bullets the width of the secret would leak its length to
+ * anyone looking over the shoulder. Three asterisks say "a secret was here"
+ * and nothing else.
+ */
+export const SECRET_DISPLAY_MASK = '***'
+
+/** Separator between two tabs of the section bar. */
+export const TAB_SEPARATOR = '  '
+
+/**
+ * What the tab bar puts at an edge it scrolled past. Eleven sections do not
+ * fit in 80 columns, so the bar is a window over the labels, and these two
+ * markers are how it admits there is more on either side.
+ */
+export const TAB_OVERFLOW_LEFT = '‹ '
+export const TAB_OVERFLOW_RIGHT = ' ›'
+
+/**
+ * Ceiling of the label column of a catalogue form. Phase 2 padded every label
+ * to a fixed 8, which the longer labels of the new sections (`Entry point`)
+ * overflow; the column is now measured from the labels on screen and clamped
+ * here, so one long label cannot push every value off a narrow terminal.
+ */
+export const FIELD_LABEL_MAX_WIDTH = 12
+
+/**
+ * What the output panel says instead of the text a run wrote to a file. An
+ * export is unbounded and the panel keeps 2 000 lines, so a run with an
+ * output path shows one line of receipt: how much went where.
+ */
+export function savedToLine(path: string, bytes: number): string {
+  return `wrote ${bytes} bytes to ${path}`
+}
+
+/**
+ * The same receipt for a run whose file could NOT be finished — a write that
+ * failed after the file opened, or a close that did. The bytes are the ones
+ * that reached the stream, so the sentence must not read like `savedToLine`:
+ * an operator handed "wrote 40960 bytes to …" would take an export truncated
+ * by ENOSPC for a complete one, and the failure on stderr for a warning.
+ */
+export function savedPartiallyLine(path: string, bytes: number): string {
+  return `wrote ${bytes} bytes to ${path} before failing`
+}
+
+/** The hint under the output-path field of `export`; `wx` is why "refused". */
+export const EXPORT_OUT_HINT = 'file to write; refused if it exists'
+
+/** The hint under a secret field whose value travels to the command's stdin. */
+export const STDIN_SECRET_HINT = 'goes to the command’s stdin, never argv'
+

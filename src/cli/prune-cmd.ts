@@ -1,4 +1,5 @@
 import { parseArgs } from 'node:util'
+import type { Role } from '../admin/authz.js'
 import { JOURNAL_DIR } from '../config.js'
 import { openJournalDbIfPresent } from '../journal/db.js'
 import {
@@ -9,6 +10,9 @@ import {
   type PrunePlan,
 } from '../journal/prune.js'
 import { loadSigningPrivateKey } from '../journal/signing.js'
+import { formatReadableField } from '../journal/format.js'
+import { recordAccessChange, type AccessWriteOptions } from './access-cmd-write.js'
+import { requireAdminFromEnv, type AdminRefusalWording, type RequiredAdmin } from './admin-token.js'
 import { USAGE } from './usage.js'
 
 /**
@@ -26,12 +30,37 @@ import { USAGE } from './usage.js'
  * has no default value because guessing one would be this project deciding how
  * long someone else's evidence is worth keeping.
  *
+ * WHO DELETED. Since owner decision Q17 (2026-09-08) the deleting half needs
+ * a personal admin token of role `owner` in `MCP_ADMIN_TOKEN`, and writes an
+ * `access-edit` record (`action: 'prune'`) naming the admin, the window and
+ * the count, right before the marker. The record rather than a field on the
+ * marker: the marker is a row of a fixed table whose columns the marker
+ * SIGNATURE covers and which both `verify` and the offline `verify --report`
+ * read, so an extra field there would change the signed payload on every
+ * existing installation — for a fact the journal's attributed-change category
+ * already has a place for. The DRY RUN stays token-free and unrecorded: it
+ * deletes nothing.
+ *
  * WHAT THE OUTPUT MUST SAY. A prune leaves a marker, and a marker is the
  * operator's own claim about what was deleted -- written by the same host that
  * could equally have deleted rows and recorded nothing. The output says so,
  * every time, and says whether the marker was signed: an unsigned marker is
  * evidence of nothing beyond "this host says so".
  */
+
+/**
+ * Minimum role allowed to DELETE journal records (owner decision Q17,
+ * 2026-09-08). No UI route covers `prune` — there is no way to delete
+ * evidence from a browser — so unlike `QUARANTINE_RESOLVE_MIN_ROLE` this
+ * constant is not shared with `ROUTE_TABLE`; it is shared with the console's
+ * catalogue (`src/tui/catalogue/audit.ts`), which used to state `'owner'` as
+ * console-local ergonomics and now names the threshold the command enforces.
+ *
+ * `owner` rather than `operator`: this is the only command in the product
+ * that destroys evidence, and an operator who can resolve an approval should
+ * not thereby be able to delete the record of having done so.
+ */
+export const PRUNE_MIN_ROLE: Role = 'owner'
 
 /** Minimal writable-stream shape this command needs. */
 export interface PruneCliWritable {
@@ -47,6 +76,16 @@ export interface PruneCommandOptions {
   readonly journalDir?: string
   /** Injectable clock, so a test's cutoff is arithmetic rather than a race with the wall clock. */
   readonly clock?: () => number
+  /** Environment holding `MCP_ADMIN_TOKEN`. Defaults to `process.env`. */
+  readonly env?: NodeJS.ProcessEnv
+}
+
+/** How the shared token gate names this command's refusals. */
+const PRUNE_REFUSAL: AdminRefusalWording = {
+  action: 'delete journal records',
+  noun: 'deletion',
+  verb: 'may not delete journal records',
+  roleDetail: 'this is the only command that destroys evidence',
 }
 
 const EXIT_OK = 0
@@ -141,13 +180,63 @@ export async function runPruneCommand(
     return EXIT_OK
   }
 
+  // The gate comes BEFORE anything is deleted (Q17): a refused prune must
+  // leave the journal exactly as it found it.
+  const actor = await requireAdminFromEnv(accessWriteOptionsOf(opts), PRUNE_MIN_ROLE, io, PRUNE_REFUSAL)
+  if (actor === undefined) return EXIT_USAGE_ERROR
+
   const outcome = pruneRecordsOlderThan(handle, {
     cutoffIso,
     nowIso: new Date(nowMs).toISOString(),
     signingKey,
   })
   io.stdout.write(appliedReport(outcome.deletedCount, outcome.marker, outcome.firstRemainingSeq))
-  return EXIT_OK
+  return recordPrune(io, opts, actor, rawDuration, outcome.deletedCount, outcome.marker)
+}
+
+/** This command's options in the shared write path's terms. */
+function accessWriteOptionsOf(opts: PruneCommandOptions): AccessWriteOptions {
+  const clock = opts.clock
+  return {
+    ...(opts.journalDir !== undefined ? { journalDir: opts.journalDir } : {}),
+    ...(opts.env !== undefined ? { env: opts.env } : {}),
+    ...(clock !== undefined ? { clock: () => new Date(clock()) } : {}),
+  }
+}
+
+/**
+ * The audit line plus the `access-edit` record of one applied prune. Written
+ * AFTER the delete, like every other record on this path — the change has
+ * already happened, so a journal that cannot be reached is said out loud and
+ * the command still succeeds.
+ *
+ * A prune that found the prefix gone between planning and deleting wrote no
+ * marker and deleted nothing; there is no change to attribute, so there is no
+ * record either.
+ */
+async function recordPrune(
+  io: PruneCliIo,
+  opts: PruneCommandOptions,
+  actor: RequiredAdmin,
+  olderThan: string,
+  deletedCount: number,
+  marker: PruneMarker | null,
+): Promise<number> {
+  if (marker === null) return EXIT_OK
+  return recordAccessChange({
+    io,
+    opts: accessWriteOptionsOf(opts),
+    actor,
+    subject: 'journal',
+    op: 'prune',
+    target: `older-than ${formatReadableField(olderThan)}`,
+    info: {
+      action: 'prune',
+      olderThan,
+      deletedCount,
+      prunedThroughSeq: marker.prunedThroughSeq,
+    },
+  })
 }
 
 function dryRunReport(plan: PrunePlan, cutoffIso: string, rawDuration: string, signed: boolean): string {

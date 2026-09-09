@@ -18,11 +18,17 @@ All notable changes to this project are documented here. The format follows
   after you confirm you saved it, hands over to the sign-in screen. Over a data directory that already has admins the final screen says so and points at `admin rotate <name> --recover` instead of showing a token. `setup`
   without `--yes` outside a terminal refuses with a hint.
 - **Interactive console** (`mcpcut tui`, or a bare `mcpcut` on a terminal that
-  has an install config): sign in with an admin token, browse Home and Admins,
-  run every action through the same CLI command it shows you — the session
-  token travels in the environment seam, never in argv. A bare `mcpcut` in a
-  pipe still prints the usage; without a config on a terminal it points at
-  `setup --yes`. The remaining sections follow in later waves.
+  has an install config): sign in with an admin token and work the whole
+  catalogue from eleven sections — Home, Admins, Servers, Vault, Agents,
+  Groups, Policy, Quarantine, Approvals, Journal, Audit — each action a form
+  that runs the same CLI command it shows you; the session token travels in
+  the environment seam, never in argv; a vault secret goes from the form to
+  the command's stdin and appears in no argv, frame or model; `export` writes
+  its JSONL to a file you name (created exclusively, mode 0600) and the pane
+  shows a one-line receipt; wide output scrolls sideways with `[`/`]`. A bare
+  `mcpcut` in a pipe still prints the usage; without a config on a terminal it
+  points at `setup --yes`. Services and a live approvals queue follow in a
+  later wave.
 - **`mcpcut` binary**: a second `bin` entry pointing at the same file as
   `mcp-journal` — the two names are one dispatcher with identical behaviour.
 - **Install config** `~/.mcpcut/config.json` (path overridable with
@@ -52,6 +58,26 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- **`quarantine approve|reject` now need a personal admin token** of role
+  `operator` or `owner` in `MCP_ADMIN_TOKEN` — the same bar the admin UI's own
+  `POST /quarantine/approve|reject` applies — and every release writes an
+  `access-edit` journal record (`quarantine.approve` / `quarantine.reject`)
+  naming the admin, the server and the tool. `approve --all` writes one record
+  per tool it releases. `quarantine list|show` are unchanged and need no token.
+  The web UI now writes the same record for its own releases, so a decision
+  made in a browser and one made in a terminal are indistinguishable in form.
+- **`prune --older-than <dur> --yes` now needs a personal admin token** of role
+  `owner`, and the delete is recorded as an `access-edit` (`action: 'prune'`)
+  naming the admin, the retention window and the count. The retention marker
+  itself is unchanged, so existing signed markers and `verify --report` are
+  unaffected. The dry run (without `--yes`) still needs no token and records
+  nothing.
+- **`keygen`, `backup`, `migrate` and `verify --sign` record who ran them** when
+  a valid `MCP_ADMIN_TOKEN` is present (`access-edit` with the destination or
+  the key fingerprint). They stay **ungated** — each is needed before an install
+  has an admin, and from cron — and with no token behave exactly as before. A
+  token that matches no active admin is now refused rather than silently
+  ignored.
 - **Docker**: the image's entrypoint runs `setup --yes --supervisor external`
   on the first start of `ui`/`serve` (binds from `MCPCUT_UI_HOST`/`_PORT`,
   `MCPCUT_SERVE_HOST`/`_PORT`; owner token in `docker compose logs ui`), the

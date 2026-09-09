@@ -63,6 +63,17 @@ const FLAG_OFF = 'false'
 /** Error of an empty field that must not be empty. */
 const REQUIRED_ERROR = 'required'
 
+/**
+ * Whether a value counts as filled in. Whitespace does NOT: a lone space is
+ * what a paste or a stray key leaves behind, and a form that accepted it
+ * would hand the command a path, a name or a positional made of nothing —
+ * `requestOf` trims every non-secret value, so the argument would be empty
+ * anyway, only after the operator had been told the form was good.
+ */
+function isFilledIn(value: string): boolean {
+  return value.trim() !== ''
+}
+
 /** Builds the starting form of a declaration: values by kind, focus first. */
 export function formOf(specs: readonly FieldSpec[]): Form {
   return { fields: specs.map((spec) => ({ spec, value: initialValueOf(spec) })), focus: 0 }
@@ -193,7 +204,7 @@ function validatedField(field: FieldState): FieldState {
 
 function errorOf(field: FieldState): string | undefined {
   const { spec, value } = field
-  if (spec.required === true && value === '') return REQUIRED_ERROR
+  if (spec.required === true && !isFilledIn(value)) return REQUIRED_ERROR
 
   return spec.validate?.(value)
 }

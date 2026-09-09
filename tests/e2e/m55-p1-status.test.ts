@@ -215,15 +215,21 @@ describe('scenario 3 — refresh re-shoots tools/list into the standard quaranti
       await writeControl(controlPath, { mode: 'alive', variant: 'v1' })
       await addStdioServer('drift-srv', controlPath)
 
+      // One operator answers for both acts of this scenario: releasing a
+      // quarantined tool needs a token of that role since owner decision Q17,
+      // and forcing a probe always did.
+      const token = await mintAdminToken('refresher', 'operator')
+
       // First observation quarantines both tools as `new`; approve them so a
       // baseline exists to diff against (the operator's normal review step).
-      const approveAll = await plane.run(['quarantine', 'approve', '--all', '--server', 'drift-srv'])
+      const approveAll = await plane.run(['quarantine', 'approve', '--all', '--server', 'drift-srv'], {
+        quarantine: { env: { [ADMIN_TOKEN_ENV_VAR]: token } },
+      })
       expect(approveAll.code).toBe(0)
 
       // The server changes ONE tool's schema (v2 adds the optional `force`).
       await writeControl(controlPath, { mode: 'alive', variant: 'v2' })
 
-      const token = await mintAdminToken('refresher', 'operator')
       const refresh = await plane.run(['server', 'refresh', 'drift-srv'], {
         server: { env: { [ADMIN_TOKEN_ENV_VAR]: token } },
       })

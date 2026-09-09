@@ -55,7 +55,7 @@ export const POLICY_SET_MIN_ROLE: Role = 'owner'
 const CLEAR_WORD = 'clear'
 
 /** Accepted fourth positionals, in the order the usage line lists them. */
-const RULE_WORDS: readonly string[] = ['allow', 'require-approval', 'deny', CLEAR_WORD]
+export const RULE_WORDS: readonly string[] = ['allow', 'require-approval', 'deny', CLEAR_WORD]
 
 /** Leading hex digits of a policy hash shown in the human line; the journal carries the full digest. */
 

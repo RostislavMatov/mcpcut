@@ -35,54 +35,14 @@ const EXCLUDED_FROM_CATALOGUE: readonly CommandPair[] = [
 ]
 
 /**
- * Commands the console cannot run YET: the nine remaining sections (phase 4)
- * and Services (phase 5). Written out in full on purpose — this list is the
- * phase's admission of what is missing, and phase 4 is done when it is `[]`.
+ * Commands the console cannot run YET: Services (phase 5).
+ *
+ * Phase 4 closed the rest — the nine remaining sections landed, so what is
+ * left is the four commands that manage this install's own daemons and the
+ * setup the first-run wizard owns. Written out in full on purpose: this list
+ * is the phase's admission of what is missing.
  */
 const NOT_YET_COVERED: readonly CommandPair[] = [
-  // --- Phase 4: the nine remaining sections ---
-  { command: 'server', subcommand: 'add' },
-  { command: 'server', subcommand: 'list' },
-  { command: 'server', subcommand: 'show' },
-  { command: 'server', subcommand: 'remove' },
-  { command: 'server', subcommand: 'refresh' },
-  { command: 'vault', subcommand: 'init' },
-  { command: 'vault', subcommand: 'set' },
-  { command: 'vault', subcommand: 'list' },
-  { command: 'vault', subcommand: 'remove' },
-  { command: 'vault', subcommand: 'rekey' },
-  { command: 'agent', subcommand: 'create' },
-  { command: 'agent', subcommand: 'grant' },
-  { command: 'agent', subcommand: 'ungrant' },
-  { command: 'agent', subcommand: 'revoke' },
-  { command: 'agent', subcommand: 'list' },
-  // `group ungrant` is deliberately absent: the table names it in the prose of
-  // the `group grant` row, not in a synopsis, so it is not a pair of `USAGE`
-  // and cannot be one here. Phase 4 should give it a synopsis of its own.
-  { command: 'group', subcommand: 'create' },
-  { command: 'group', subcommand: 'remove' },
-  { command: 'group', subcommand: 'list' },
-  { command: 'group', subcommand: 'show' },
-  { command: 'group', subcommand: 'grant' },
-  { command: 'group', subcommand: 'join' },
-  { command: 'group', subcommand: 'leave' },
-  { command: 'policy', subcommand: 'validate' },
-  { command: 'policy', subcommand: 'show' },
-  { command: 'policy', subcommand: 'set' },
-  { command: 'quarantine', subcommand: 'list' },
-  { command: 'quarantine', subcommand: 'approve' },
-  { command: 'quarantine', subcommand: 'reject' },
-  { command: 'approvals', subcommand: 'list' },
-  { command: 'approvals', subcommand: 'approve' },
-  { command: 'approvals', subcommand: 'deny' },
-  { command: 'sessions' },
-  { command: 'show' },
-  { command: 'export' },
-  { command: 'verify' },
-  { command: 'prune' },
-  { command: 'backup' },
-  { command: 'migrate' },
-  { command: 'keygen' },
   // --- Phase 5: Services (and the setup the first-run wizard will own) ---
   { command: 'setup' },
   { command: 'start' },
@@ -230,6 +190,8 @@ describe('usagePairs reads the table the way a human does', () => {
     'agent:list',
     'group:join',
     'group:leave',
+    'group:ungrant',
+    'quarantine:show',
     'start',
     'stop',
     'sessions',

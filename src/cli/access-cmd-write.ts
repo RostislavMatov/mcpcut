@@ -15,9 +15,13 @@ import { requireAdminFromEnv, type AdminRefusalWording, type RequiredAdmin } fro
  * `group *` phrased this first; owner decision T4 (2026-09-01) put personal
  * grants (`agent create|grant|ungrant|revoke`) behind the SAME gate, and S2
  * (2026-09-03) added `vault set|remove|rekey` — what a server is fed with is
- * access too. The three commands share one implementation rather than three
- * that drift; the subject (`group` / `agent` / `vault`) is the only thing
- * that differs in the output.
+ * access too. Q17 (2026-09-08) widened it once more: `quarantine
+ * approve|reject` (`quarantine-cmd-write.ts`, `operator` rather than `owner`
+ * — the threshold its own UI route carries), `prune`, and the four host
+ * operations that record an actor only when a token happens to be present
+ * (`host-op-write.ts`). The commands share one implementation rather than
+ * several that drift; the subject (`group` / `agent` / `vault` / `quarantine`
+ * / `journal` / `host`) is the only thing that differs in the output.
  *
  * The token buys ATTRIBUTION and parity with the admin UI's role table, not an
  * access barrier: a process under the same uid edits the store document
@@ -28,7 +32,7 @@ import { requireAdminFromEnv, type AdminRefusalWording, type RequiredAdmin } fro
 export const ACCESS_MIN_ROLE: Role = 'owner'
 
 /** Which store the change landed in — the first word of the audit line. */
-export type AccessSubject = 'group' | 'agent' | 'vault' | 'admin'
+export type AccessSubject = 'group' | 'agent' | 'vault' | 'admin' | 'quarantine' | 'journal' | 'host'
 
 /** The mutating subcommands, as they appear in the audit line. */
 export type AccessOp =
@@ -44,6 +48,16 @@ export type AccessOp =
   | 'add'
   | 'rotate'
   | 'role'
+  // Owner decision Q17 (2026-09-08): releasing a quarantined tool, deleting
+  // journal records, and the four host operations that now name their actor
+  // when one is present.
+  | 'approve'
+  | 'reject'
+  | 'prune'
+  | 'keygen'
+  | 'backup'
+  | 'migrate'
+  | 'sign'
 
 /**
  * Nobody named. Two `admin` paths run with no token by construction (owner

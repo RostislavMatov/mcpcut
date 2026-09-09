@@ -3,8 +3,16 @@ import type { ActionSpec } from './catalogue/types.js'
 import { EXIT_OK, SESSION_LOST_NOTICE } from './constants.js'
 import { formOf } from './form.js'
 import type { KeyEvent } from './keys.js'
+import { paneWidthOf } from './layout.js'
 import type { Effect, Model, Msg, Pane, Step } from './model.js'
-import { type OutputPanel, outputPanelOf, scrollOutput, scrollToEnd, scrollToStart } from './output.js'
+import {
+  type OutputPanel,
+  outputPanelOf,
+  scrollOutput,
+  scrollOutputSideways,
+  scrollToEnd,
+  scrollToStart,
+} from './output.js'
 import { isYes, submit, updateConfirmPane, updateFormPane, requestOf } from './update-form.js'
 import { signedOut } from './update-signin.js'
 import {
@@ -30,6 +38,14 @@ import {
 const REFRESH_KEY = 'r'
 const HELP_KEY = '?'
 const QUIT_KEY = 'q'
+
+/**
+ * The two keys that move the output pane sideways (owner tail Q24). `←`/`→`
+ * were already spoken for by the section bar, so the pane borrows the pair a
+ * pager would use.
+ */
+const SCROLL_LEFT_KEY = '['
+const SCROLL_RIGHT_KEY = ']'
 
 /** The digits that name a section, and what `1` maps to. */
 const FIRST_SECTION_DIGIT = 1
@@ -218,15 +234,14 @@ function scrolled(model: Model, screen: MainScreen, key: KeyEvent): Step {
   const { output } = screen
   if (output === undefined) return noEffects(model)
 
-  const scrolledPanel = scrolledOutput(output, key, pageRowsOf(model.size))
-  return scrolledPanel === undefined ? noEffects(model) : withMain(model, screen, { output: scrolledPanel })
+  const scrolledPanel = scrolledOutput(output, key, model)
+  if (scrolledPanel === undefined || scrolledPanel === output) return noEffects(model)
+
+  return withMain(model, screen, { output: scrolledPanel })
 }
 
-function scrolledOutput(
-  panel: OutputPanel,
-  key: KeyEvent,
-  pageRows: number,
-): OutputPanel | undefined {
+function scrolledOutput(panel: OutputPanel, key: KeyEvent, model: Model): OutputPanel | undefined {
+  const pageRows = pageRowsOf(model.size)
   switch (key.kind) {
     case 'pagedown':
       return scrollOutput(panel, pageRows, pageRows)
@@ -237,6 +252,18 @@ function scrolledOutput(
     case 'end':
       return scrollToEnd(panel, pageRows)
     default:
-      return undefined
+      return sideScrolledOutput(panel, key, paneWidthOf(model.size.columns))
   }
+}
+
+/** `[` and `]`, clamped by the panel to the columns its own text occupies. */
+function sideScrolledOutput(
+  panel: OutputPanel,
+  key: KeyEvent,
+  paneWidth: number,
+): OutputPanel | undefined {
+  if (isChar(key, SCROLL_RIGHT_KEY)) return scrollOutputSideways(panel, 1, paneWidth)
+  if (isChar(key, SCROLL_LEFT_KEY)) return scrollOutputSideways(panel, -1, paneWidth)
+
+  return undefined
 }

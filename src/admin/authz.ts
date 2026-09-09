@@ -38,3 +38,15 @@ export function roleSatisfies(role: Role, minRole: Role): boolean {
  * `approvals approve|deny`. Reading the queue is not gated by a role at all.
  */
 export const APPROVAL_RESOLVE_MIN_ROLE: Role = 'operator'
+
+/**
+ * Minimum role allowed to RESOLVE a quarantined tool (approve, approve --all
+ * or reject), on every surface: the UI routes
+ * `POST /quarantine/{approve,reject}` and the CLI's `quarantine
+ * approve|reject` (owner decision Q17, 2026-09-08). Letting a tool out of
+ * quarantine widens what every agent granted that server can reach, which is
+ * the same weight of decision as resolving an approval — and until Q17 the
+ * CLI had no threshold at all, so the UI row was a barrier a shell walked
+ * around. Reading the queue (`quarantine list|show`) is not gated by a role.
+ */
+export const QUARANTINE_RESOLVE_MIN_ROLE: Role = 'operator'

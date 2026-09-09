@@ -81,14 +81,16 @@ const NAMED_KEYS: Readonly<Record<string, NamedKey>> = {
 /** Shift-Tab as a raw sequence: some terminals send it without a key name. */
 const BACKTAB_SEQUENCE = '\x1b[Z'
 
-/** First printable code point; everything below it is a C0 control byte. */
-const FIRST_PRINTABLE_CODE = 0x20
-/** The 8-bit C1 controls: a paste can carry them, a keyboard never does. */
-const FIRST_C1_CODE = 0x80
-const LAST_C1_CODE = 0x9f
-
-/** DEL: printable-range arithmetic misses it, so it is excluded by name. */
-const DELETE_CODE = 0x7f
+/**
+ * C0, DEL and the 8-bit C1 controls, ANYWHERE in the keystroke.
+ *
+ * The whole `str` becomes a field's value, so the position of a control
+ * character is irrelevant: `Esc [ 3 1 m` pasted behind a printable letter
+ * would otherwise ride into the model on the strength of that letter (owner
+ * tail Q20). Deliberately unanchored and without `/g` — a stateless `test`
+ * over the whole string is the question being asked.
+ */
+const CONTROL_CHAR_PATTERN = /[\x00-\x1f\x7f-\x9f]/
 
 /**
  * Normalizes a readline `keypress(str, key)` pair, or answers `undefined`
@@ -120,14 +122,12 @@ function namedEventOf(key: ReadlineKey | undefined): KeyEvent | undefined {
   return named === undefined ? undefined : { kind: named }
 }
 
-/** The text branch: a printable `str` with no modifier that changes its meaning. */
+/** The text branch: a wholly printable `str` with no modifier that changes its meaning. */
 function printableEventOf(str: string | undefined, key: ReadlineKey | undefined): KeyEvent | undefined {
   if (str === undefined || str.length === 0) return undefined
   if (key?.ctrl === true || key?.meta === true) return undefined
 
-  const code = str.charCodeAt(0)
-  if (code < FIRST_PRINTABLE_CODE || code === DELETE_CODE) return undefined
-  if (code >= FIRST_C1_CODE && code <= LAST_C1_CODE) return undefined
+  if (CONTROL_CHAR_PATTERN.test(str)) return undefined
 
   return { kind: 'char', char: str }
 }

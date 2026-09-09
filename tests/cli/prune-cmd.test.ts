@@ -2,6 +2,8 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { ADMIN_TOKEN_ENV_VAR } from '../../src/admin/constants.js'
+import { createAdminStore } from '../../src/admin/store.js'
 import { runPruneCommand } from '../../src/cli/prune-cmd.js'
 import { journalDbPathFor, openJournalDbShared } from '../../src/journal/db.js'
 import { latestPruneMarker } from '../../src/journal/prune.js'
@@ -18,9 +20,17 @@ import { createJournalSink } from '../../src/journal/sink.js'
  */
 
 let journalDir: string
+/**
+ * Since owner decision Q17 the deleting half needs an owner token; the gate
+ * itself is pinned by `prune-cmd-token.test.ts`, so every case here runs with
+ * one and keeps testing what it was written for.
+ */
+let ownerEnv: NodeJS.ProcessEnv
 
 beforeEach(async () => {
   journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-prune-cmd-'))
+  const { token } = await createAdminStore({ journalDir }).createAdmin('alice', 'owner')
+  ownerEnv = { [ADMIN_TOKEN_ENV_VAR]: token }
 })
 
 afterEach(async () => {
@@ -46,7 +56,7 @@ function fakeIo(): {
 const NOW_MS = Date.parse('2026-06-01T00:00:00.000Z')
 
 function run(args: string[], io = fakeIo()): Promise<number> {
-  return runPruneCommand(args, io, { journalDir, clock: () => NOW_MS })
+  return runPruneCommand(args, io, { journalDir, clock: () => NOW_MS, env: ownerEnv })
 }
 
 function recordAt(sessionId: string, id: string, tsIso: string): JournalRecord {
@@ -97,7 +107,10 @@ describe('prune: nothing is deleted without --yes', () => {
     const code = await run(['--older-than', '30d', '--yes'], io)
 
     expect(code).toBe(0)
-    expect(await rowCount()).toBe(2)
+    // Two survivors plus the `access-edit` record the prune itself now writes
+    // (owner decision Q17): the delete is attributed, and its attribution is
+    // an ordinary journal record appended after the marker.
+    expect(await rowCount()).toBe(3)
     const handle = await openJournalDbShared(journalDbPathFor(journalDir))
     const marker = latestPruneMarker(handle)
     expect(marker?.prunedThroughSeq).toBe(2)
@@ -214,7 +227,8 @@ describe('prune: hours are accepted, and the cutoff itself is retained', () => {
     const code = await run(['--older-than', '24h', '--yes'], io)
 
     expect(code).toBe(0)
-    expect(await rowCount()).toBe(1)
+    // One survivor plus the prune's own attribution record (Q17).
+    expect(await rowCount()).toBe(2)
     expect(io.out()).toContain('Deleted 3 record(s)')
   })
 })

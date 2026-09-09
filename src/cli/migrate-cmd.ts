@@ -14,6 +14,8 @@ import { StoreCorruptError, StoreLockError } from '../policy/store.js'
 import { INVENTORY_FILE_NAME, openInventoryStore } from '../policy/inventory-store.js'
 import { REGISTRY_FILE_NAME } from '../registry/constants.js'
 import { createRegistryStore } from '../registry/store.js'
+import type { AdminRefusalWording } from './admin-token.js'
+import { adminOf, recordHostOp, resolveHostOpActor } from './host-op-write.js'
 
 /**
  * `mcp-journal migrate` — imports legacy `*.json` state (agents, admins,
@@ -24,7 +26,20 @@ import { createRegistryStore } from '../registry/store.js'
  * required, but an operator upgrading a fleet wants a single command that
  * reports on every store at once, and a way to migrate state without
  * invoking a command that has other side effects (like `agent list`).
+ *
+ * NOT gated (owner decision Q17, 2026-09-08): an upgrade runs before the
+ * upgraded install has been signed into, and from a deploy script. But when a
+ * valid `MCP_ADMIN_TOKEN` IS present the run is recorded as an `access-edit`
+ * naming the admin — every store this touches is one another record is
+ * attributed against.
  */
+
+/** How the optional token gate names a refusal. */
+const MIGRATE_REFUSAL: AdminRefusalWording = {
+  action: 'migrate legacy state',
+  noun: 'migration',
+  verb: 'may not migrate legacy state',
+}
 
 /** Minimal writable-stream shape this command needs, so tests can inject capture objects. */
 export interface MigrateCliWritable {
@@ -39,6 +54,8 @@ export interface MigrateCliIo {
 /** Test seam: journal directory override, threaded into every store path. */
 export interface MigrateCommandOptions {
   readonly journalDir?: string
+  /** Environment holding an OPTIONAL `MCP_ADMIN_TOKEN`. Defaults to `process.env`. */
+  readonly env?: NodeJS.ProcessEnv
 }
 
 /**
@@ -197,6 +214,11 @@ export async function runMigrateCommand(
     return 1
   }
 
+  // Before the first store is touched: an unusable token must not be
+  // discovered after documents have already moved.
+  const resolved = await resolveHostOpActor(io, opts, MIGRATE_REFUSAL)
+  if (resolved.kind === 'refused') return 1
+
   const journalDir = opts.journalDir ?? JOURNAL_DIR
   let importedCount = 0
   let anyJournalSessionRefused = false
@@ -242,6 +264,11 @@ export async function runMigrateCommand(
   }
 
   io.stdout.write(`Migrated ${importedCount} store(s).\n`)
+  await recordHostOp(io, opts, adminOf(resolved), {
+    op: 'migrate',
+    action: 'migrate',
+    target: `${importedCount} store(s)`,
+  })
   // A refused journal session is not a halted run — every other file still
   // imported and the summary above is accurate — but it must not report a
   // clean exit either: `migrate`'s scripts/CI callers rely on the exit code

@@ -1,4 +1,5 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import type { WriteStream } from 'node:fs'
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
@@ -7,8 +8,13 @@ import { createAdminStore } from '../../src/admin/store.js'
 import type { CliIo, DispatchFn, DispatchOptions } from '../../src/cli/dispatch-types.js'
 import { statusJson } from '../../src/services/format.js'
 import type { ServiceStatus } from '../../src/services/manager-types.js'
-import { OUTPUT_CUT_NOTE, OUTPUT_MAX_CHARS } from '../../src/tui/constants.js'
+import { OUTPUT_CUT_NOTE, OUTPUT_MAX_CHARS, savedToLine } from '../../src/tui/constants.js'
 import type { Effect, Msg, RunRequest } from '../../src/tui/model.js'
+import {
+  exclusiveStream,
+  type SinkStreamFactory,
+  type SinkWritable,
+} from '../../src/tui/run-sink.js'
 import {
   createTokenCell,
   createWizardOutcomeCell,
@@ -118,6 +124,20 @@ const RUN_REQUEST: RunRequest = {
   actionId: 'admin.list',
   argv: ['admin', 'list'],
   display: ['admin', 'list'],
+}
+
+/**
+ * The request `JOURNAL_SECTION`'s `export` really builds: the path is NOT in
+ * argv (the command has no `--out` of its own — that flag belongs to `export
+ * --report`), it is the `stdoutToField` the runtime opens the file from.
+ */
+function exportRequest(stdoutPath: string): RunRequest {
+  return {
+    actionId: 'journal.export',
+    argv: ['export'],
+    display: ['export'],
+    stdoutPath,
+  }
 }
 
 /** The `Msg` a run answered with, or a failure naming what came back instead. */
@@ -672,5 +692,223 @@ describe('executeEffect — what the reviews asked for', () => {
 
     expect(result.result.stdout).toBe('')
     expect(result.result.stderr).toContain(OUTPUT_CUT_NOTE)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// run — the secret seam and the file sink (mcpcut phase 4, task 8)
+// ---------------------------------------------------------------------------
+
+/**
+ * The two runtime seams the catalogue needed. A vault secret travels in
+ * `Effect.stdin` and reaches `vault.readSecretInput` — never argv, which the
+ * output pane prints back, and never a `Msg`, which is what a frame is drawn
+ * from. A `stdoutPath` sends the command's stdout to a file created `wx` at
+ * 0600, and the pane shows a one-line receipt instead of an unbounded export.
+ *
+ * Every way the file can refuse — a path that is taken, a directory that is
+ * not there — is an ordinary failed run: the console survives it, and the
+ * command is not dispatched at all, because there is nowhere to put what it
+ * would print.
+ */
+describe('executeEffect — run with a secret on stdin', () => {
+  const VAULT_REQUEST: RunRequest = {
+    actionId: 'vault.set',
+    argv: ['vault', 'set', 'github-token'],
+    display: ['vault', 'set', 'github-token'],
+  }
+  const SECRET = 'ghp_the-actual-secret-value'
+
+  test('the secret reaches the vault seam, and no argv, frame or message holds it', async () => {
+    const { cell, token } = await signedInCell()
+    const dispatch = recordingDispatch((io) => {
+      io.stdout.write('secret "github-token" set\n')
+      return 0
+    })
+
+    const message = await executeEffect(
+      { kind: 'run', request: VAULT_REQUEST, stdin: SECRET },
+      depsOf(dispatch.fn, cell),
+    )
+
+    const call = dispatch.calls[0]
+    await expect(call?.opts?.vault?.readSecretInput?.()).resolves.toBe(SECRET)
+    expect(call?.opts?.vault?.env?.[ADMIN_TOKEN_ENV_VAR]).toBe(token)
+    expect(call?.argv).toEqual(['vault', 'set', 'github-token'])
+    expect(JSON.stringify(call?.argv)).not.toContain(SECRET)
+    expect(JSON.stringify(message)).not.toContain(SECRET)
+    expect(runResultOf(message).result.exitCode).toBe(0)
+  })
+
+  test('a run without a secret leaves the vault reader as the caller had it', async () => {
+    const { cell } = await signedInCell()
+    const dispatch = recordingDispatch()
+
+    await executeEffect({ kind: 'run', request: VAULT_REQUEST }, depsOf(dispatch.fn, cell))
+
+    expect(dispatch.calls[0]?.opts?.vault?.readSecretInput).toBeUndefined()
+  })
+
+  test('the base options are not mutated by the secret seam', async () => {
+    const { cell } = await signedInCell()
+    const deps = depsOf(recordingDispatch().fn, cell)
+    const before = structuredClone(deps.dispatchOptions)
+
+    await executeEffect({ kind: 'run', request: VAULT_REQUEST, stdin: SECRET }, deps)
+
+    expect(structuredClone(deps.dispatchOptions)).toEqual(before)
+    expect(deps.dispatchOptions.vault?.readSecretInput).toBeUndefined()
+  })
+})
+
+describe('executeEffect — run writing stdout to a file', () => {
+  const LINES = '{"a":1}\n{"b":2}\n{"c":3}\n'
+
+  test('the file holds what the command printed, at 0600, and the pane holds the receipt', async () => {
+    const { cell } = await signedInCell()
+    const path = join(journalDir, 'export.jsonl')
+    const dispatch = recordingDispatch((io) => {
+      io.stdout.write('{"a":1}\n')
+      io.stdout.write('{"b":2}\n')
+      io.stdout.write('{"c":3}\n')
+      io.stderr.write('legacy records not imported\n')
+      return 0
+    })
+
+    const message = await executeEffect(
+      { kind: 'run', request: exportRequest(path) },
+      depsOf(dispatch.fn, cell),
+    )
+
+    expect(await readFile(path, 'utf8')).toBe(LINES)
+    expect((await stat(path)).mode & 0o777).toBe(0o600)
+    const { result } = runResultOf(message)
+    expect(result.stdout).toBe(savedToLine(path, Buffer.byteLength(LINES)))
+    expect(result.stderr).toBe('legacy records not imported\n')
+    expect(result.exitCode).toBe(0)
+  })
+
+  test('a path that is already taken is a failed run, and nothing is dispatched', async () => {
+    const { cell } = await signedInCell()
+    const path = join(journalDir, 'taken.jsonl')
+    await writeFile(path, 'do not truncate me', 'utf8')
+    const dispatch = recordingDispatch()
+
+    const message = await executeEffect(
+      { kind: 'run', request: exportRequest(path) },
+      depsOf(dispatch.fn, cell),
+    )
+
+    const { result } = runResultOf(message)
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain('EEXIST')
+    expect(result.stdout).toBe('')
+    expect(dispatch.calls).toHaveLength(0)
+    expect(await readFile(path, 'utf8')).toBe('do not truncate me')
+  })
+
+  test('a directory that does not exist is a failed run, and nothing is dispatched', async () => {
+    const { cell } = await signedInCell()
+    const dispatch = recordingDispatch()
+
+    const message = await executeEffect(
+      { kind: 'run', request: exportRequest(join(journalDir, 'nowhere', 'export.jsonl')) },
+      depsOf(dispatch.fn, cell),
+    )
+
+    const { result } = runResultOf(message)
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain('ENOENT')
+    expect(dispatch.calls).toHaveLength(0)
+  })
+
+  test('a command that throws still leaves the file closed with what it had written', async () => {
+    const { cell } = await signedInCell()
+    const path = join(journalDir, 'partial.jsonl')
+    const dispatch = recordingDispatch((io) => {
+      io.stdout.write('{"a":1}\n')
+      throw new Error('the journal is on fire')
+    })
+
+    const message = await executeEffect(
+      { kind: 'run', request: exportRequest(path) },
+      depsOf(dispatch.fn, cell),
+    )
+
+    const { result } = runResultOf(message)
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain('the journal is on fire')
+    expect(await readFile(path, 'utf8')).toBe('{"a":1}\n')
+    expect(result.stdout).toBe(savedToLine(path, 8))
+  })
+})
+
+/**
+ * The deadlock a file sink used to be able to reach (phase 4 review, H1). A
+ * command parks on `once('drain')` the moment a write is refused; a stream
+ * that has errored emits no `'drain'` ever again, so the run never answered,
+ * `executeEffect` never resolved, and the console stayed `busy` and deaf.
+ * What matters here is that the effect ANSWERS — with the failure, as a run
+ * that went wrong, rather than not at all.
+ */
+describe('executeEffect — a write failure under a parked command', () => {
+  /** A chunk past the 64 KiB high-water mark of a file stream, so `write` refuses it. */
+  const PAST_HIGH_WATER_MARK = `${'x'.repeat(256 * 1024)}\n`
+
+  /** Long enough for a real drain, short enough that a deadlock is not a five-second wait. */
+  const SETTLE_TIMEOUT_MS = 2_000
+
+  const WRITE_FAILURE = 'ENOSPC-like: no space left on device'
+
+  function settled<T>(promise: Promise<T>, what: string): Promise<T> {
+    return Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error(`${what} never settled`)), SETTLE_TIMEOUT_MS).unref()
+      }),
+    ])
+  }
+
+  /** Opens the production way, and hands the test the stream it opened. */
+  function capturingStream(captured: { stream?: WriteStream }): SinkStreamFactory {
+    return (path: string) => {
+      const stream = exclusiveStream(path)
+      captured.stream = stream
+      return stream
+    }
+  }
+
+  test('the run answers with the failure instead of parking the console for ever', async () => {
+    // Arrange
+    const { cell } = await signedInCell()
+    const path = join(journalDir, 'export.jsonl')
+    const captured: { stream?: WriteStream } = {}
+    const dispatch = recordingDispatch(async (io) => {
+      const stdout = io.stdout as SinkWritable
+      if (stdout.write(PAST_HIGH_WATER_MARK) === false) {
+        const parked = new Promise<void>((resolve) => {
+          stdout.once?.('drain', resolve)
+        })
+        captured.stream?.destroy(new Error(WRITE_FAILURE))
+        await parked
+      }
+      return 0
+    })
+
+    // Act
+    const message = await settled(
+      executeEffect(
+        { kind: 'run', request: exportRequest(path) },
+        { ...depsOf(dispatch.fn, cell), openStream: capturingStream(captured) },
+      ),
+      'the run',
+    )
+
+    // Assert
+    const { result } = runResultOf(message)
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain(WRITE_FAILURE)
+    // And the pane must not tell the operator the export is on disk.
+    expect(result.stdout).toContain('before failing')
   })
 })

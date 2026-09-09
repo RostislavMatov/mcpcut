@@ -351,6 +351,16 @@ signature attributes the claim to this installation's key; it does not make the 
 Only an anchor taken out of band BEFORE the prune corroborates it. This is the same honest limit as
 everywhere else in M5, applied to the one operation that removes evidence rather than adding it.
 
+> **Amendment 2026-09-08 (owner decision Q17, ADR-0010).** The marker's own SHAPE is unchanged --
+> deliberately. `prune --yes` now requires an admin token of role `owner` and attributes the delete,
+> but WHO ran it is recorded as a separate `access-edit` record (`action: 'prune'`, with
+> `olderThan`, `deletedCount`, `prunedThroughSeq`) written right after the marker, not as a field on
+> the marker itself. A field there would sit inside the payload the marker signature covers and that
+> both `verify` and the offline `verify --report` read, so adding one would change the signed
+> statement on every existing installation -- for a fact the journal's attributed-change category
+> already has a place for. The limit above is untouched: the record, like the marker, is this host's
+> own claim.
+
 ### 15. Surface-change escalation lives in the decision precedence, not in the classifier (wave 6, task 6.3, decision O4)
 
 The plan's candidate rule was "a `widened` surface raises an approved tool's CLASS". Two things

@@ -17,6 +17,8 @@ import {
   SIGNIN_TITLE,
   SIGNIN_TOKEN_LABEL,
   SIGNIN_UNKNOWN_TOKEN_NOTICE,
+  TAB_OVERFLOW_LEFT,
+  TAB_OVERFLOW_RIGHT,
 } from '../../src/tui/constants.js'
 import { editFocused, formOf, validateForm, type Form } from '../../src/tui/form.js'
 import {
@@ -29,8 +31,15 @@ import {
   type Session,
   type TerminalSize,
 } from '../../src/tui/model.js'
-import { outputPanelOf, type OutputPanel } from '../../src/tui/output.js'
+import {
+  OUTPUT_CLIP_LEFT_MARKER,
+  OUTPUT_CLIP_MARKER,
+  OUTPUT_HSCROLL_STEP,
+  outputPanelOf,
+  type OutputPanel,
+} from '../../src/tui/output.js'
 import { render } from '../../src/tui/render.js'
+import { CLIPPED_HELP_FOOTER, RUNNING_HELP_FOOTER } from '../../src/tui/render-main.js'
 import { SIGNIN_BUSY_TEXT, SIGNIN_FOOTER } from '../../src/tui/render-panes.js'
 import { servicesHeaderPart, type ServiceSummary } from '../../src/tui/services-summary.js'
 import { wizardScreenOf } from '../../src/tui/wizard-fields.js'
@@ -236,6 +245,52 @@ describe('render: the header of the main screen', () => {
     expect(lines[1]).toContain(`\x1b[7m2 Admins\x1b[27m`)
     expect(lines[1]).not.toContain(`\x1b[7m1 Home\x1b[27m`)
   })
+
+  test('scrolls the tab bar to the last section and marks what it scrolled past', () => {
+    const audit = visibleSections(OWNER.role).length - 1
+
+    const lines = render(mainModel({ sectionIndex: audit }), plainStyle)
+
+    expect(lines[1]).toContain('11 Audit')
+    expect(lines[1]).toContain(TAB_OVERFLOW_LEFT)
+    expect(lines[1]).not.toContain(TAB_OVERFLOW_RIGHT)
+  })
+
+  test('keeps the left edge on the first section and marks what follows it', () => {
+    const lines = render(mainModel({ sectionIndex: 0 }), plainStyle)
+
+    expect(lines[1]).toContain('1 Home')
+    expect(lines[1]).toContain(TAB_OVERFLOW_RIGHT)
+    expect(lines[1]).not.toContain(TAB_OVERFLOW_LEFT)
+  })
+
+  test('the tab bar is exactly as wide as the terminal, and never truncated', () => {
+    for (const sectionIndex of [0, 5, visibleSections(OWNER.role).length - 1]) {
+      const lines = render(mainModel({ sectionIndex }), plainStyle)
+
+      expect(lines[1]?.length).toBe(DEFAULT_SIZE.columns)
+      expect(lines[1]).not.toContain('…')
+    }
+  })
+
+  test('a terminal narrower than one label shows that label and nothing else', () => {
+    const narrow: TerminalSize = { columns: 20, rows: 24 }
+
+    const lines = render(mainModel({ sectionIndex: 7 }, narrow), plainStyle)
+
+    expect(lines[1]?.length).toBe(narrow.columns)
+    expect(lines[1]).toContain(TAB_OVERFLOW_LEFT)
+    expect(lines[1]).not.toContain('7 Policy')
+  })
+
+  test('a 40-column terminal draws a tab bar without throwing', () => {
+    const size: TerminalSize = { columns: 40, rows: 12 }
+
+    const lines = render(mainModel({ sectionIndex: 7 }, size), plainStyle)
+
+    expect(lines[1]?.length).toBe(size.columns)
+    expect(lines[1]).toContain('8 Quarantine')
+  })
 })
 
 describe('render: the action column', () => {
@@ -332,6 +387,23 @@ describe('render: the form pane', () => {
     expect(joined(lines)).toContain(SECRET_MASK_CHAR.repeat(3))
   })
 
+  test('sizes the label column to the longest label, so the widgets line up', () => {
+    const form = formOf([
+      { name: 'entry-point', label: 'Entry point', kind: 'text' },
+      { name: 'server', label: 'Server', kind: 'text' },
+    ])
+
+    const lines = render(
+      mainModel({ pane: { kind: 'form', actionId: 'status', form } }),
+      plainStyle,
+    )
+    const widgetRows = lines.filter((line) => line.includes('['))
+
+    expect(widgetRows).toHaveLength(2)
+    expect(widgetRows[0]?.indexOf('[')).toBe(widgetRows[1]?.indexOf('['))
+    expect(widgetRows[0]?.indexOf('[')).toBeGreaterThan('Entry point'.length)
+  })
+
   test('draws a flag field as a box, ticked or not', () => {
     const off = formOf([{ name: 'json', label: 'Json', kind: 'flag' }])
     const on = formOf([{ name: 'json', label: 'Json', kind: 'flag', initial: 'true' }])
@@ -391,6 +463,174 @@ describe('render: the confirming and helping panes', () => {
     expect(lines.some((line) => line.includes('browser sessions end.'))).toBe(true)
     expect(lines.some((line) => line.includes('…'))).toBe(false)
     expect(joined(lines)).toContain('y/N')
+  })
+})
+
+/** Where the right-hand pane starts, and how wide it is on the default terminal. */
+const PANE_START = ACTION_COLUMN_WIDTH + COLUMN_GAP
+const PANE_WIDTH = DEFAULT_SIZE.columns - PANE_START
+
+/** The pane half of one rendered row, with its trailing padding removed. */
+function paneOf(line: string | undefined): string {
+  return (line ?? '').slice(PANE_START).trimEnd()
+}
+
+/**
+ * Owner tail Q19: `ActionSpec.hint` was data no renderer drew. It now appears
+ * in the two places an operator meets an action — the form it opens, and the
+ * pane beside the cursor resting on it.
+ */
+describe('render: the hint of an action', () => {
+  const ADD_HINT = 'prints the admin’s token once — copy it before leaving'
+
+  function addFormModel(size: TerminalSize = DEFAULT_SIZE): Model {
+    const form = formOf(adminAction('add').fields)
+    return mainModel(
+      { sectionIndex: 1, actionIndex: 1, pane: { kind: 'form', actionId: 'add', form } },
+      size,
+    )
+  }
+
+  test('the form draws the hint under its title, and the first field one row lower', () => {
+    const lines = render(addFormModel(), plainStyle)
+
+    expect(paneOf(lines[HEADER_ROWS])).toBe('add')
+    expect(paneOf(lines[HEADER_ROWS + 1])).toBe(ADD_HINT)
+    expect(lines[HEADER_ROWS + 2]).toContain('Name')
+  })
+
+  test('the hint is dimmed, and the padding around it is not counted as width', () => {
+    const styled = render(addFormModel(), ansiStyle)
+
+    expect(styled[HEADER_ROWS + 1]).toContain('\x1b[2m')
+    expect(styled.map(stripSgr)).toEqual(render(addFormModel(), plainStyle))
+  })
+
+  test('an action with no hint puts its first field straight under the title', () => {
+    const form = formOf(adminAction('rotate').fields)
+    const model = mainModel({
+      sectionIndex: 1,
+      actionIndex: 2,
+      pane: { kind: 'form', actionId: 'rotate', form },
+    })
+
+    const lines = render(model, plainStyle)
+
+    expect(paneOf(lines[HEADER_ROWS])).toBe('rotate')
+    expect(lines[HEADER_ROWS + 1]).toContain('Name')
+  })
+
+  test('the actions pane ends the section intro with a blank row and the hint', () => {
+    const lines = render(mainModel({ sectionIndex: 1, actionIndex: 1 }), plainStyle)
+
+    expect(paneOf(lines[HEADER_ROWS + 2])).toContain('recorded under their name.')
+    expect(paneOf(lines[HEADER_ROWS + 3])).toBe('')
+    expect(paneOf(lines[HEADER_ROWS + 4])).toBe(ADD_HINT)
+  })
+
+  test('the hint follows the cursor, and an action without one shows none', () => {
+    const onList = render(mainModel({ sectionIndex: 1, actionIndex: 0 }), plainStyle)
+    const onAdd = render(mainModel({ sectionIndex: 1, actionIndex: 1 }), plainStyle)
+
+    expect(joined(onList)).not.toContain(ADD_HINT)
+    expect(joined(onAdd)).toContain(ADD_HINT)
+  })
+
+  test('an intro that fills the pane is cut so the hint still lands on the last row', () => {
+    const short: TerminalSize = { columns: 80, rows: 8 }
+
+    const lines = render(mainModel({ sectionIndex: 1, actionIndex: 1 }, short), plainStyle)
+
+    expect(paneOf(lines[short.rows - FOOTER_ROWS - 1])).toBe(ADD_HINT)
+    expect(paneOf(lines[short.rows - FOOTER_ROWS - 2])).toBe('')
+    expect(lines.every((line) => line.length === short.columns)).toBe(true)
+  })
+})
+
+/**
+ * Owner tail Q22: while a run is in flight the keyboard answers nothing but
+ * Ctrl-C, which on a slow command reads as a wedged console unless the footer
+ * says so.
+ */
+describe('render: the footer of a run in flight', () => {
+  test('names the one key that still works', () => {
+    const busy: RunRequest = { actionId: 'list', argv: ['admin', 'list'], display: ['admin', 'list'] }
+
+    const lines = render(mainModel({ busy, sectionIndex: 1 }), plainStyle)
+
+    expect(lines.at(-1)).toBe(padRight(RUNNING_HELP_FOOTER, DEFAULT_SIZE.columns))
+    expect(RUNNING_HELP_FOOTER).toContain('Ctrl-C')
+  })
+})
+
+/**
+ * Owner tail Q24: a pane 54 columns wide cut `server list` at the right edge
+ * and said nothing about it. The markers admit the cut; `[` and `]` move past
+ * it.
+ */
+describe('render: an output wider than its pane', () => {
+  const WIDE_LINE = 'w'.repeat(90)
+
+  function widePanel(): OutputPanel {
+    return panelOf(`${WIDE_LINE}\n`)
+  }
+
+  test('marks a clipped line in the last column of the pane', () => {
+    const lines = render(mainModel({ output: widePanel() }), plainStyle)
+
+    expect(lines[HEADER_ROWS + 1]?.at(-1)).toBe(OUTPUT_CLIP_MARKER)
+    expect(lines[HEADER_ROWS + 1]?.length).toBe(DEFAULT_SIZE.columns)
+  })
+
+  test('a line that fits carries no marker', () => {
+    const lines = render(mainModel({ output: panelOf('alice owner\n') }), plainStyle)
+    // Only the body: the tab bar's own overflow marker is the same character.
+    const pane = lines.slice(HEADER_ROWS, -FOOTER_ROWS).map(paneOf)
+
+    expect(lines[HEADER_ROWS + 1]?.at(-1)).toBe(' ')
+    expect(pane.some((line) => line.includes(OUTPUT_CLIP_MARKER))).toBe(false)
+    expect(pane.some((line) => line.includes(OUTPUT_CLIP_LEFT_MARKER))).toBe(false)
+  })
+
+  test('a line cut on the left says so in the first column of the pane', () => {
+    const output: OutputPanel = { ...widePanel(), hScroll: OUTPUT_HSCROLL_STEP }
+
+    const lines = render(mainModel({ output }), plainStyle)
+    const row = lines[HEADER_ROWS + 1] ?? ''
+
+    expect(row[PANE_START]).toBe(OUTPUT_CLIP_LEFT_MARKER)
+    expect(row.at(-1)).toBe(OUTPUT_CLIP_MARKER)
+    expect(row).toHaveLength(DEFAULT_SIZE.columns)
+  })
+
+  test('scrolled far enough, the end of the line is on screen and nothing is cut on the right', () => {
+    const output: OutputPanel = { ...widePanel(), hScroll: WIDE_LINE.length - PANE_WIDTH }
+
+    const row = render(mainModel({ output }), plainStyle)[HEADER_ROWS + 1] ?? ''
+
+    expect(row[PANE_START]).toBe(OUTPUT_CLIP_LEFT_MARKER)
+    expect(row.at(-1)).toBe('w')
+  })
+
+  test('the footer offers the two keys only while something is cut', () => {
+    const cut = render(mainModel({ output: widePanel() }), plainStyle)
+    const whole = render(mainModel({ output: panelOf('alice owner\n') }), plainStyle)
+
+    expect(cut.at(-1)).toBe(padRight(CLIPPED_HELP_FOOTER, DEFAULT_SIZE.columns))
+    expect(whole.at(-1)).toBe(padRight(KEY_HELP_FOOTER, DEFAULT_SIZE.columns))
+  })
+
+  test('a pane scrolled sideways offers the keys even when every line now fits', () => {
+    const output: OutputPanel = { ...panelOf('alice owner\n'), hScroll: OUTPUT_HSCROLL_STEP }
+
+    const lines = render(mainModel({ output }), plainStyle)
+
+    expect(lines.at(-1)).toBe(padRight(CLIPPED_HELP_FOOTER, DEFAULT_SIZE.columns))
+  })
+
+  test('both footers fit the terminal every emulator starts at', () => {
+    expect(CLIPPED_HELP_FOOTER.length).toBeLessThanOrEqual(DEFAULT_SIZE.columns)
+    expect(RUNNING_HELP_FOOTER.length).toBeLessThanOrEqual(DEFAULT_SIZE.columns)
   })
 })
 

@@ -270,4 +270,27 @@ describe('keyEventOf: what a paste can smuggle in', () => {
       kind: 'escape',
     })
   })
+
+  /**
+   * Owner tail Q20. The whole `str` becomes the field's value, so checking
+   * only its FIRST code unit lets a paste whose first character is printable
+   * carry an escape sequence or a newline into the model behind it.
+   */
+  test('a printable first character does not excuse a control character behind it', () => {
+    expect(keyEventOf('a\x1b[31m', {})).toBeUndefined()
+  })
+
+  test('a newline hidden after a printable character is not a printable keystroke', () => {
+    expect(keyEventOf('x\r', {})).toBeUndefined()
+    expect(keyEventOf('x\n', {})).toBeUndefined()
+  })
+
+  test('a DEL or an 8-bit control behind a printable character is refused too', () => {
+    expect(keyEventOf('x\x7f', {})).toBeUndefined()
+    expect(keyEventOf('x\u009b2J', {})).toBeUndefined()
+  })
+
+  test('a character that needs two code units is still one printable keystroke', () => {
+    expect(keyEventOf('\u{1f642}', {})).toEqual({ kind: 'char', char: '\u{1f642}' })
+  })
 })

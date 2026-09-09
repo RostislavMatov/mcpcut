@@ -447,9 +447,18 @@ describe('runWrap: a quarantined tool is blocked, then unblocked in a later sess
       sequential: true,
     })
 
+    // Releasing from quarantine needs an operator token since owner decision
+    // Q17; the inventory lives beside the journal, so one directory serves
+    // both the store and the admin the token resolves to.
+    const { token } = await createAdminStore({ journalDir: firstJournalDir() }).createAdmin(
+      'releaser',
+      'operator',
+    )
     const approveIo = createCliCapture()
     const approveExit = await runQuarantine(['approve', SERVER_NAME, 'echo'], approveIo, {
       storePath: inventoryStorePath,
+      journalDir: firstJournalDir(),
+      env: { [ADMIN_TOKEN_ENV_VAR]: token },
     })
     expect(approveExit).toBe(0)
 

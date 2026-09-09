@@ -4,6 +4,8 @@ import { JOURNAL_DIR, JOURNAL_DIR_MODE } from '../config.js'
 import { JOURNAL_DB_FILE_NAME, journalDbPathFor, openJournalDbShared } from '../journal/db.js'
 import { STATE_DB_FILE_NAME, openStateDbShared } from '../policy/store-backend.js'
 import { backupSqlite, SqliteBackupError, type SqliteHandle } from '../store/sqlite.js'
+import type { AdminRefusalWording } from './admin-token.js'
+import { adminOf, recordHostOp, resolveHostOpActor } from './host-op-write.js'
 
 /**
  * `mcp-journal backup <destDir>` — an online SQLite backup of every database
@@ -18,7 +20,19 @@ import { backupSqlite, SqliteBackupError, type SqliteHandle } from '../store/sql
  * `-wal`/`-shm` are never copied directly — SQLite's own online backup folds
  * them into the destination file, which is the whole point of this command
  * over "copy the directory and hope" (README "Backup & restore").
+ *
+ * NOT gated (owner decision Q17, 2026-09-08): a backup runs from cron, where
+ * nobody is at a keyboard. But when a valid `MCP_ADMIN_TOKEN` IS present the
+ * copy is recorded as an `access-edit` naming the admin and the destination —
+ * a copy of both databases leaving this host is worth knowing the author of.
  */
+
+/** How the optional token gate names a refusal. */
+const BACKUP_REFUSAL: AdminRefusalWording = {
+  action: 'back up the databases',
+  noun: 'backup',
+  verb: 'may not back up the databases',
+}
 
 /** Minimal writable-stream shape this command needs, so tests can inject capture objects. */
 export interface BackupCliWritable {
@@ -33,6 +47,8 @@ export interface BackupCliIo {
 /** Test seam: journal directory override. */
 export interface BackupCommandOptions {
   readonly journalDir?: string
+  /** Environment holding an OPTIONAL `MCP_ADMIN_TOKEN`. Defaults to `process.env`. */
+  readonly env?: NodeJS.ProcessEnv
 }
 
 const USAGE = 'Usage: mcp-journal backup <destDir>\n'
@@ -71,6 +87,11 @@ export async function runBackupCommand(
   }
   const destDir = args[0]!
   const journalDir = opts.journalDir ?? JOURNAL_DIR
+
+  // Before a single byte is copied: an unusable token must not be discovered
+  // after both databases already sit somewhere else.
+  const resolved = await resolveHostOpActor(io, opts, BACKUP_REFUSAL)
+  if (resolved.kind === 'refused') return 1
 
   // Both `mkdir` and the `chmod` below follow symlinks, so a link pre-staged
   // at destDir would have this command tighten SOMEBODY ELSE'S directory to
@@ -111,6 +132,12 @@ export async function runBackupCommand(
     io.stderr.write('No databases to back up.\n')
     return 1
   }
+  await recordHostOp(io, opts, adminOf(resolved), {
+    op: 'backup',
+    action: 'backup',
+    target: destDir,
+    dest: destDir,
+  })
   return 0
 }
 

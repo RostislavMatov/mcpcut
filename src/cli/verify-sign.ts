@@ -7,6 +7,8 @@ import {
   type UnsignedChainHeadAnchor,
 } from '../journal/signing.js'
 import type { SqliteHandle } from '../store/sqlite.js'
+import type { AdminRefusalWording, RequiredAdmin } from './admin-token.js'
+import { recordHostOp, type HostOpIo, type HostOpOptions } from './host-op-write.js'
 
 /**
  * `verify --sign`'s own half of the M5 wave 4 signing feature (task 4.3):
@@ -20,11 +22,44 @@ import type { SqliteHandle } from '../store/sqlite.js'
  * signing the head attests the whole prefix a `verify` walk just checked).
  */
 
+/**
+ * How the optional token gate names a `verify --sign` refusal (owner decision
+ * Q17, 2026-09-08). `verify --sign` is NOT gated — an anchor is signed from
+ * cron, and the signing key is this installation's, not an admin's — but a
+ * token that resolves to nobody is refused rather than ignored.
+ */
+export const VERIFY_SIGN_REFUSAL: AdminRefusalWording = {
+  action: 'sign the chain head',
+  noun: 'anchor',
+  verb: 'may not sign the chain head',
+}
+
 /** One outcome of a `--sign` attempt: what to print, where, and whether it counts as a hard failure. */
 export interface SignAttemptOutcome {
   /** `false` means "could not sign as asked" -- the caller should treat this as an exit-1 failure, independent of the chain's own break status. */
   readonly ok: boolean
   readonly message: string
+  /** The key the anchor was signed with; absent on every refusal. */
+  readonly keyFingerprint?: string
+}
+
+/**
+ * The `access-edit` record of one SUCCESSFUL signature, when an admin was
+ * named (Q17). A refused or impossible `--sign` records nothing: there is no
+ * anchor to attribute.
+ */
+export async function recordVerifySign(
+  io: HostOpIo,
+  opts: HostOpOptions,
+  actor: RequiredAdmin | null,
+  keyFingerprint: string,
+): Promise<void> {
+  await recordHostOp(io, opts, actor, {
+    op: 'sign',
+    action: 'verify.sign',
+    target: keyFingerprint,
+    keyFingerprint,
+  })
 }
 
 /**
@@ -74,7 +109,11 @@ export async function attemptSignChainHead(
     signedAt: new Date().toISOString(),
   }
   const signed = signChainHeadAnchor(keyLookup.privateKeyPem, anchor)
-  return { ok: true, message: anchorLines(signed, result) }
+  return {
+    ok: true,
+    message: anchorLines(signed, result),
+    keyFingerprint: signed.anchor.keyFingerprint,
+  }
 }
 
 /**

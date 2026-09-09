@@ -2,12 +2,15 @@ import { describe, expect, test } from 'vitest'
 import type { Role } from '../../src/admin/authz.js'
 import type { TokenAdmin } from '../../src/cli/admin-token.js'
 import { visibleSections } from '../../src/tui/catalogue/index.js'
-import type { SectionSpec } from '../../src/tui/catalogue/types.js'
+import type { ActionSpec, SectionSpec } from '../../src/tui/catalogue/types.js'
 import {
+  ACTION_COLUMN_WIDTH,
+  COLUMN_GAP,
   EXIT_OK,
   FOOTER_ROWS,
   HEADER_ROWS,
   ONE_TIME_TOKEN_MARKER,
+  SECRET_DISPLAY_MASK,
   SESSION_LOST_NOTICE,
   SIGNIN_UNKNOWN_TOKEN_NOTICE,
 } from '../../src/tui/constants.js'
@@ -15,17 +18,25 @@ import type { KeyEvent, NamedKey } from '../../src/tui/keys.js'
 import {
   initialModel,
   mainScreenOf,
+  type Effect,
   type Model,
   type Msg,
   type RunRequest,
   type Screen,
   type Session,
+  type Step,
   type TerminalSize,
 } from '../../src/tui/model.js'
-import { outputPanelOf, type OutputPanel, type RunResult } from '../../src/tui/output.js'
+import {
+  OUTPUT_HSCROLL_STEP,
+  outputPanelOf,
+  type OutputPanel,
+  type RunResult,
+} from '../../src/tui/output.js'
 import type { ServiceSummary } from '../../src/tui/services-summary.js'
 import { defaultInstallConfig } from '../../src/setup/defaults.js'
 import { update } from '../../src/tui/update.js'
+import { requestOf, stdinOf } from '../../src/tui/update-form.js'
 import { EMPTY_TOKEN_NOTICE } from '../../src/tui/update-signin.js'
 import { wizardScreenOf } from '../../src/tui/wizard-fields.js'
 
@@ -47,9 +58,50 @@ const SIZE: TerminalSize = { columns: 80, rows: 24 }
 const ONE_TIME_STDOUT = `token: mcpa_x\n${ONE_TIME_TOKEN_MARKER}\n`
 const SESSION: Session = { adminName: 'root', role: 'owner' }
 
-/** Index of the sections an owner sees, in the order the tab bar shows them. */
+/**
+ * Index of the sections an owner sees, in the order the tab bar shows them:
+ * home, admins, servers, vault, agents, groups, policy, quarantine,
+ * approvals, journal, audit. Only the first nine have a digit key — `10` and
+ * `11` cannot be typed as one keystroke, so Audit is reached by Tab alone.
+ */
 const HOME_TAB = 0
 const ADMINS_TAB = 1
+const SERVERS_TAB = 2
+const VAULT_TAB = 3
+const APPROVALS_TAB = 8
+const JOURNAL_TAB = 9
+const AUDIT_TAB = 10
+
+/** What the catalogue sections are called, in that same order. */
+const OWNER_SECTION_IDS: readonly string[] = [
+  'home',
+  'admins',
+  'servers',
+  'vault',
+  'agents',
+  'groups',
+  'policy',
+  'quarantine',
+  'approvals',
+  'journal',
+  'audit',
+]
+
+/** The sections a viewer sees: the owner's list without Admins and Vault. */
+const VIEWER_SECTION_IDS: readonly string[] = OWNER_SECTION_IDS.filter(
+  (id) => id !== 'admins' && id !== 'vault',
+)
+
+/** An index past the last section: what a cursor left over from another role looks like. */
+const NO_SUCH_TAB = OWNER_SECTION_IDS.length
+
+/** Index of the actions the cases below open by their position in a section. */
+const VAULT_SET_ACTION = 2
+const JOURNAL_EXPORT_ACTION = 2
+const AUDIT_PRUNE_ACTION = 6
+
+/** A vault value: long enough that finding it in a frame could not be a coincidence. */
+const VAULT_SECRET = 'sk-live-do-not-print-me'
 
 type MainScreen = Extract<Screen, { kind: 'main' }>
 type SigninScreen = Extract<Screen, { kind: 'signin' }>
@@ -292,7 +344,15 @@ describe('update: the sign-in screen', () => {
 
     const step = update(initialModel(SIZE), { kind: 'signin-result', result })
 
-    expect(mainOf(step.model).sections.map((section) => section.id)).toEqual(['home'])
+    expect(mainOf(step.model).sections.map((section) => section.id)).toEqual(VIEWER_SECTION_IDS)
+  })
+
+  test('an owner sees the whole catalogue, in catalogue order', () => {
+    const result: TokenAdmin = { kind: 'ok', name: 'root', role: 'owner' }
+
+    const step = update(initialModel(SIZE), { kind: 'signin-result', result })
+
+    expect(mainOf(step.model).sections.map((section) => section.id)).toEqual(OWNER_SECTION_IDS)
   })
 
   test.each([
@@ -353,11 +413,11 @@ describe('update: moving between sections', () => {
   ])('%s moves to the previous section, wrapping past the first', (_name, msg) => {
     const step = update(mainModel(), msg)
 
-    expect(mainOf(step.model).sectionIndex).toBe(ADMINS_TAB)
+    expect(mainOf(step.model).sectionIndex).toBe(AUDIT_TAB)
   })
 
   test('the next section wraps past the last', () => {
-    const step = update(mainModel({ sectionIndex: ADMINS_TAB }), key('tab'))
+    const step = update(mainModel({ sectionIndex: AUDIT_TAB }), key('tab'))
 
     expect(mainOf(step.model).sectionIndex).toBe(HOME_TAB)
   })
@@ -375,10 +435,34 @@ describe('update: moving between sections', () => {
     expect(mainOf(step.model).actionIndex).toBe(0)
   })
 
-  test.each([['9'], ['3'], ['0']])('the digit %s names no section and changes nothing', (digit) => {
+  test.each([
+    ['3', 'servers'],
+    ['9', 'approvals'],
+  ])('the digit %s jumps to the %s section', (digit, id) => {
+    const step = update(mainModel({ sectionIndex: HOME_TAB }), char(digit))
+
+    const screen = mainOf(step.model)
+    expect(screen.sections[screen.sectionIndex]?.id).toBe(id)
+  })
+
+  test('the tenth and eleventh sections have no digit and are reached by Tab alone', () => {
+    const step = update(mainModel({ sectionIndex: JOURNAL_TAB }), key('tab'))
+
+    expect(mainOf(step.model).sectionIndex).toBe(AUDIT_TAB)
+  })
+
+  test('the digit 0 names no section and changes nothing', () => {
     const model = mainModel({ sectionIndex: ADMINS_TAB, actionIndex: 2 })
 
-    const step = update(model, char(digit))
+    const step = update(model, char('0'))
+
+    expect(step.model).toBe(model)
+  })
+
+  test('a digit past the sections on screen changes nothing', () => {
+    const model = mainModel({ sections: [PLAIN_SECTION] })
+
+    const step = update(model, char('9'))
 
     expect(step.model).toBe(model)
   })
@@ -424,7 +508,7 @@ describe('update: moving between actions', () => {
   })
 
   test('a section index outside the list clamps to the first action rather than dividing by zero', () => {
-    const model = mainModel({ sectionIndex: 9, actionIndex: 3 })
+    const model = mainModel({ sectionIndex: NO_SUCH_TAB, actionIndex: 3 })
 
     expect(mainOf(update(model, key('down')).model).actionIndex).toBe(0)
     expect(mainOf(update(model, key('up')).model).actionIndex).toBe(0)
@@ -457,7 +541,7 @@ describe('update: running an action', () => {
   })
 
   test('Enter with the cursor outside the catalogue does nothing', () => {
-    const model = mainModel({ sectionIndex: ADMINS_TAB, actionIndex: 9 })
+    const model = mainModel({ sectionIndex: ADMINS_TAB, actionIndex: NO_SUCH_TAB })
 
     const step = update(model, key('enter'))
 
@@ -538,6 +622,17 @@ describe('update: the r key', () => {
     expect(mainOf(step.model).actionIndex).toBe(3)
   })
 
+  test.each([
+    ['Servers', SERVERS_TAB, ['server', 'list']],
+    ['Approvals', APPROVALS_TAB, ['approvals', 'list']],
+  ])('%s reruns its own list and the service line', (_name, sectionIndex, argv) => {
+    const step = update(mainModel({ sectionIndex }), char('r'))
+
+    const request: RunRequest = { actionId: 'list', argv, display: argv }
+    expect(step.effects).toEqual([{ kind: 'run', request }, { kind: 'refresh-services' }])
+    expect(mainOf(step.model).busy).toEqual(request)
+  })
+
   test('Home reruns status and the service line', () => {
     const step = update(mainModel(), char('r'))
 
@@ -555,7 +650,7 @@ describe('update: the r key', () => {
   })
 
   test('a section outside the list refreshes only the service line', () => {
-    const step = update(mainModel({ sectionIndex: 7 }), char('r'))
+    const step = update(mainModel({ sectionIndex: NO_SUCH_TAB }), char('r'))
 
     expect(step.effects).toEqual([{ kind: 'refresh-services' }])
   })
@@ -609,6 +704,81 @@ describe('update: scrolling the output', () => {
     const step = update(model, key('pagedown'))
 
     expect(mainOf(step.model).output?.scroll).toBe(1)
+  })
+})
+
+/**
+ * Owner tail Q24: the output pane is 54 columns on the 80-column terminal
+ * every emulator starts at, and `server list` is wider than that. `[` and `]`
+ * are the two keys that move the pane over the part it could not show.
+ */
+describe('update: scrolling the output sideways', () => {
+  const PANE_WIDTH = SIZE.columns - ACTION_COLUMN_WIDTH - COLUMN_GAP
+  const LINE_WIDTH = 200
+
+  function widePanel(): OutputPanel {
+    return outputPanelOf({
+      argv: ['server', 'list'],
+      display: ['server', 'list'],
+      exitCode: 0,
+      stdout: `${'x'.repeat(LINE_WIDTH)}\n`,
+      stderr: '',
+    })
+  }
+
+  test('a fresh panel starts at the left edge', () => {
+    expect(widePanel().hScroll).toBe(0)
+  })
+
+  test('] moves the view right by one step', () => {
+    const step = update(mainModel({ output: widePanel() }), char(']'))
+
+    expect(mainOf(step.model).output?.hScroll).toBe(OUTPUT_HSCROLL_STEP)
+  })
+
+  test('[ moves it back, and never past the left edge', () => {
+    const right = update(mainModel({ output: widePanel() }), char(']')).model
+
+    const back = update(right, char('['))
+
+    expect(mainOf(back.model).output?.hScroll).toBe(0)
+    expect(mainOf(update(back.model, char('[')).model).output?.hScroll).toBe(0)
+  })
+
+  test('] stops where the longest line ends, so the pane never scrolls past the text', () => {
+    const far = Array.from({ length: 100 }).reduce<Model>(
+      (model) => update(model, char(']')).model,
+      mainModel({ output: widePanel() }),
+    )
+
+    expect(mainOf(far).output?.hScroll).toBe(LINE_WIDTH - PANE_WIDTH)
+  })
+
+  test('an output narrower than the pane does not scroll sideways at all', () => {
+    const step = update(mainModel({ output: panelOf(3) }), char(']'))
+
+    expect(mainOf(step.model).output?.hScroll).toBe(0)
+  })
+
+  test('a sideways key with no output on screen does nothing', () => {
+    const model = mainModel()
+
+    expect(update(model, char(']')).model).toBe(model)
+  })
+
+  test('a new run starts back at the left edge', () => {
+    const scrolled = update(mainModel({ output: widePanel() }), char(']')).model
+    const result: RunResult = {
+      argv: ['admin', 'list'],
+      display: ['admin', 'list'],
+      exitCode: 0,
+      stdout: 'alice owner\n',
+      stderr: '',
+    }
+
+    const step = update(scrolled, { kind: 'run-result', result })
+
+    expect(mainOf(step.model).output?.hScroll).toBe(0)
   })
 })
 
@@ -694,7 +864,7 @@ describe('update: a form pane', () => {
 
   test('a form whose action is no longer reachable closes instead of running', () => {
     const opened = formModel(1)
-    const orphaned = mainModel({ pane: mainOf(opened).pane, sectionIndex: 9 })
+    const orphaned = mainModel({ pane: mainOf(opened).pane, sectionIndex: NO_SUCH_TAB })
 
     const step = update(typed(orphaned, 'bob'), key('enter'))
 
@@ -807,6 +977,163 @@ describe('update: a confirmation pane', () => {
     const step = update(confirmModel(), key('escape'))
 
     expect(mainOf(step.model).pane).toEqual({ kind: 'actions' })
+    expect(step.effects).toEqual([])
+  })
+})
+
+describe('update: what a run carries besides its argv', () => {
+  /** A synthetic action, so the shape being asserted is visible in the test. */
+  const signAction: ActionSpec = {
+    id: 'sign',
+    title: 'sign',
+    minRole: 'owner',
+    command: 'demo',
+    fields: [
+      { name: 'name', label: 'Name', kind: 'text' },
+      { name: 'token', label: 'Token', kind: 'secret' },
+    ],
+    argv: (values) => ['demo', values.name ?? '', '--token', values.token ?? ''],
+  }
+
+  /** Opens one action's form and returns the model showing it. */
+  function formModel(sectionIndex: number, actionIndex: number): Model {
+    return update(mainModel({ sectionIndex, actionIndex }), key('enter')).model
+  }
+
+  /** Types a value into the focused field and moves on to the next one. */
+  function filled(model: Model, value: string): Model {
+    return update(typed(model, value), key('tab')).model
+  }
+
+  /** The one run effect a submit is expected to have asked for. */
+  function runEffectOf(step: Step): Extract<Effect, { kind: 'run' }> {
+    const effect = step.effects[0]
+    if (effect?.kind !== 'run') throw new Error(`expected a run effect, got ${effect?.kind ?? 'none'}`)
+
+    return effect
+  }
+
+  test('a secret that reaches argv is masked in the displayed command line only', () => {
+    // Arrange
+    const values = { name: 'bob', token: 'mcpa_secret' }
+
+    // Act
+    const request = requestOf(signAction, values)
+
+    // Assert
+    expect(request.argv).toEqual(['demo', 'bob', '--token', 'mcpa_secret'])
+    expect(request.display).toEqual(['demo', 'bob', '--token', SECRET_DISPLAY_MASK])
+  })
+
+  test('an empty secret masks nothing, so an empty argument stays an empty argument', () => {
+    const request = requestOf(signAction, { name: '', token: '' })
+
+    expect(request.display).toEqual(['demo', '', '--token', ''])
+  })
+
+  test('a padded value reaches the command line trimmed, so no file is named " out"', () => {
+    // Arrange: a stray space is what a paste and an arrow key leave behind.
+    const values = { name: '  bob  ', token: 'mcpa_secret' }
+
+    // Act
+    const request = requestOf(signAction, values)
+
+    // Assert
+    expect(request.argv).toEqual(['demo', 'bob', '--token', 'mcpa_secret'])
+  })
+
+  test('a secret is handed over exactly as typed: its own padding may be part of it', () => {
+    const request = requestOf(signAction, { name: 'bob', token: '  mcpa_secret  ' })
+
+    expect(request.argv).toEqual(['demo', 'bob', '--token', '  mcpa_secret  '])
+    expect(request.display).toEqual(['demo', 'bob', '--token', SECRET_DISPLAY_MASK])
+  })
+
+  test('a padded output path is trimmed before the runtime opens the file', () => {
+    // Arrange
+    const writeAction: ActionSpec = {
+      id: 'dump',
+      title: 'dump',
+      minRole: 'viewer',
+      command: 'demo',
+      fields: [{ name: 'out', label: 'Out', kind: 'text', required: true }],
+      argv: () => ['demo'],
+      stdoutToField: 'out',
+    }
+
+    // Act
+    const request = requestOf(writeAction, { out: '  /tmp/journal.jsonl  ' })
+
+    // Assert
+    expect(request.stdoutPath).toBe('/tmp/journal.jsonl')
+  })
+
+  test('an output field holding only whitespace names no file at all', () => {
+    const writeAction: ActionSpec = {
+      id: 'dump',
+      title: 'dump',
+      minRole: 'viewer',
+      command: 'demo',
+      fields: [{ name: 'out', label: 'Out', kind: 'text' }],
+      argv: () => ['demo'],
+      stdoutToField: 'out',
+    }
+
+    expect('stdoutPath' in requestOf(writeAction, { out: '   ' })).toBe(false)
+  })
+
+  test('an action that names no output path leaves the key out of the request', () => {
+    const request = requestOf(signAction, { name: 'bob', token: 'x' })
+
+    expect('stdoutPath' in request).toBe(false)
+  })
+
+  test('an action that names no stdin field hands the runtime nothing to write', () => {
+    expect(stdinOf(signAction, { name: 'bob', token: 'x' })).toBeUndefined()
+  })
+
+  test('the vault secret travels in the run effect and never enters the model', () => {
+    // Arrange
+    const named = filled(formModel(VAULT_TAB, VAULT_SET_ACTION), 'openai')
+    const ready = typed(named, VAULT_SECRET)
+
+    // Act
+    const step = update(ready, key('enter'))
+
+    // Assert
+    const effect = runEffectOf(step)
+    expect(effect.stdin).toBe(VAULT_SECRET)
+    expect(effect.request.argv).toEqual(['vault', 'set', 'openai'])
+    expect(mainOf(step.model).busy?.display).not.toContain(VAULT_SECRET)
+    expect(JSON.stringify(step.model)).not.toContain(VAULT_SECRET)
+  })
+
+  test('journal export puts the path it was given on the request', () => {
+    const ready = filled(formModel(JOURNAL_TAB, JOURNAL_EXPORT_ACTION), '/tmp/journal.jsonl')
+
+    const step = update(ready, key('enter'))
+
+    expect(runEffectOf(step).request.stdoutPath).toBe('/tmp/journal.jsonl')
+  })
+
+  test('a dry-run prune runs at once, because the flag it is off answers nothing', () => {
+    const ready = filled(formModel(AUDIT_TAB, AUDIT_PRUNE_ACTION), '90d')
+
+    const step = update(ready, key('enter'))
+
+    expect(runEffectOf(step).request.argv).toEqual(['prune', '--older-than', '90d'])
+    expect(mainOf(step.model).pane).toEqual({ kind: 'actions' })
+  })
+
+  test('a prune that would delete asks before anything happens', () => {
+    const ready = update(filled(formModel(AUDIT_TAB, AUDIT_PRUNE_ACTION), '90d'), char(' ')).model
+
+    const step = update(ready, key('enter'))
+
+    const pane = mainOf(step.model).pane
+    if (pane.kind !== 'confirm') throw new Error('expected a confirm pane')
+    expect(pane.question).toContain('Delete journal records older than 90d?')
+    expect(pane.request.argv).toEqual(['prune', '--older-than', '90d', '--yes'])
     expect(step.effects).toEqual([])
   })
 })

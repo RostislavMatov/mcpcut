@@ -28,8 +28,14 @@ export interface CommandPair {
   readonly subcommand?: string
 }
 
-/** One runnable command: the form that collects its arguments, and the argv it builds. */
-export interface ActionSpec extends CommandPair {
+/**
+ * Everything a runnable command carries whichever of the two shapes below it
+ * is: the form that collects its arguments, and the argv it builds.
+ *
+ * Not exported: `ActionSpec` is the type a section declares, and the split
+ * between the two is the point.
+ */
+interface ActionSpecCommon extends CommandPair {
   /** Stable key of the action inside its section (also what `refreshActionId` names). */
   readonly id: string
   /** Label in the action column. */
@@ -51,11 +57,57 @@ export interface ActionSpec extends CommandPair {
    * let the next run rewrite the last one's printed command.
    */
   readonly argv: (values: FormValues) => readonly string[]
-  /** Question to answer before the action runs; absent means it runs unasked. */
-  readonly confirm?: (values: FormValues) => string
+  /**
+   * Name of a field holding the path the command's stdout is written to
+   * (`export`): the pane then shows a one-line summary instead of the text.
+   */
+  readonly stdoutToField?: string
   /** One line under the action's title, when the title alone is not enough. */
   readonly hint?: string
 }
+
+/**
+ * One runnable command: the common members above, plus EITHER a question
+ * asked before the run OR a secret handed to the run's stdin — never both.
+ *
+ * The exclusion is a security property, not a tidiness rule, which is why it
+ * is a type and not only an assertion in
+ * `tests/tui/catalogue-invariants.test.ts` (owner tail Q23). `confirm` parks
+ * the filled form in the model until the operator answers; `stdinField` names
+ * a `secret` field whose value the runtime hands straight to the command's
+ * stdin reader (`vault set` → `VaultCmdDeps.readSecretInput`) so that it
+ * reaches neither argv (i.e. `ps`), nor the "equivalent command" line, nor a
+ * drawn frame. An action carrying both would make the confirm pane — the
+ * model — the second place that secret lives. The runtime test still stands
+ * beside this one: it also checks that `stdinField` names a field that really
+ * is `secret`, which no type can say.
+ *
+ * `?: never` rather than `?: undefined`: under `exactOptionalPropertyTypes`
+ * the absent property is the only way to write "this arm has none", and an
+ * explicit `confirm: undefined` — a shape nothing in the catalogue writes —
+ * is refused along with a real function.
+ */
+export type ActionSpec = ActionSpecCommon &
+  (
+    | {
+        /**
+         * Name of a `secret` field whose value is handed to the command's
+         * stdin reader and NEVER put in argv.
+         */
+        readonly stdinField: string
+        readonly confirm?: never
+      }
+    | {
+        readonly stdinField?: never
+        /**
+         * Question to answer before the action runs; `undefined` (or absent)
+         * means it runs unasked. The values are passed in because an action
+         * can be destructive only for some of them — `prune --yes` answered
+         * its own question on the form and must not be asked a second time.
+         */
+        readonly confirm?: (values: FormValues) => string | undefined
+      }
+  )
 
 /** One tab of the console: a title, an intro and the actions under it. */
 export interface SectionSpec {

@@ -1,4 +1,4 @@
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { parseArgs } from 'node:util'
 import { JOURNAL_DIR } from '../config.js'
 import { formatReadableField } from '../journal/format.js'
@@ -9,14 +9,13 @@ import {
   rejectTool,
   type QuarantinedEntry,
 } from '../policy/inventory.js'
-import {
-  openInventoryStore,
-  type InventoryStoreData,
-  type QuarantinedToolRecord,
-} from '../policy/inventory-store.js'
-import { diffToolSchemas, type SchemaChange } from '../policy/schema-diff.js'
+import { openInventoryStore, type InventoryStoreData } from '../policy/inventory-store.js'
 import { StoreCorruptError, StoreLockError } from '../policy/store.js'
-import type { ToolDescriptor } from '../protocol/mcp.js'
+import {
+  recordQuarantineResolution,
+  requireQuarantineAdmin,
+} from './quarantine-cmd-write.js'
+import { formatQuarantineShow } from './quarantine-show-format.js'
 
 /**
  * `quarantine list|approve|reject` -- CLI review queue for tools that are
@@ -26,6 +25,14 @@ import type { ToolDescriptor } from '../protocol/mcp.js'
  * controls tool names and descriptions) and is routed through
  * `formatReadableField` before it reaches the terminal, exactly like the
  * journal-readable view in `cli.ts`.
+ *
+ * Since owner decision Q17 (2026-09-08) the three MUTATING forms — `approve`,
+ * `approve --all`, `reject` — need a personal admin token of role `operator`
+ * in `MCP_ADMIN_TOKEN` (the threshold the admin UI's own route carries) and
+ * each release is recorded twice: an audit line on stderr and an `access-edit`
+ * journal record naming the server, the tool and the admin. The gate and the
+ * record live in `quarantine-cmd-write.ts`, shared with `agent *`, `group *`
+ * and `vault *`. `list` and `show` stay token-free.
  */
 
 const USAGE = `Usage:
@@ -49,6 +56,20 @@ export interface QuarantineCliIo {
 export interface RunQuarantineOptions {
   /** Overrides the inventory store path. Defaults to `JOURNAL_DIR/tool-inventory.json`, mirroring `policy/inventory.ts`. */
   readonly storePath?: string
+  /**
+   * Directory holding `state.db` (the admin store the token is resolved
+   * against) and `journal.db` (where the release is recorded).
+   *
+   * Defaults to the directory the inventory store itself lives in, which IS
+   * the journal directory in production (`resolveStorePath` joins
+   * `INVENTORY_FILE_NAME` onto `JOURNAL_DIR`) and in every caller that
+   * isolates this command on a temp directory. Naming it explicitly is still
+   * supported, and is what a caller with an inventory outside the journal
+   * directory must do.
+   */
+  readonly journalDir?: string
+  /** Environment holding `MCP_ADMIN_TOKEN`. Defaults to `process.env`. */
+  readonly env?: NodeJS.ProcessEnv
 }
 
 const DEFAULT_IO: QuarantineCliIo = { stdout: process.stdout, stderr: process.stderr }
@@ -67,9 +88,9 @@ export async function runQuarantine(
       case 'show':
         return await runShow(rest, io, opts.storePath)
       case 'approve':
-        return await runApprove(rest, io, opts.storePath)
+        return await runApprove(rest, io, resolveOptions(opts))
       case 'reject':
-        return await runReject(rest, io, opts.storePath)
+        return await runReject(rest, io, resolveOptions(opts))
       default:
         io.stderr.write(
           `${subcommand === undefined ? 'Missing subcommand.' : `Unknown subcommand: ${subcommand}`}\n\n${USAGE}`,
@@ -136,7 +157,11 @@ async function runShow(subArgs: string[], io: QuarantineCliIo, storePath: string
   return 0
 }
 
-async function runApprove(subArgs: string[], io: QuarantineCliIo, storePath: string | undefined): Promise<number> {
+async function runApprove(
+  subArgs: string[],
+  io: QuarantineCliIo,
+  opts: RunQuarantineOptions,
+): Promise<number> {
   const { values, positionals } = parseArgs({
     args: subArgs,
     options: { all: { type: 'boolean', default: false }, server: { type: 'string' } },
@@ -148,7 +173,7 @@ async function runApprove(subArgs: string[], io: QuarantineCliIo, storePath: str
       io.stderr.write(`"approve --all" requires "--server <name>".\n\n${USAGE}`)
       return 1
     }
-    return approveAllForServer(values.server, io, storePath)
+    return approveAllForServer(values.server, io, opts)
   }
 
   const [server, tool] = positionals
@@ -157,21 +182,29 @@ async function runApprove(subArgs: string[], io: QuarantineCliIo, storePath: str
     return 1
   }
 
-  const approved = await approveTool(server, tool, storePath)
+  // The gate comes BEFORE the store is touched (Q17): a refused release must
+  // leave the quarantine exactly as it found it.
+  const actor = await requireQuarantineAdmin(io, opts)
+  if (actor === undefined) return 1
+
+  const approved = await approveTool(server, tool, opts.storePath)
   if (!approved) {
     io.stderr.write(`"${tool}" is not quarantined for server "${server}".\n`)
     return 1
   }
   io.stdout.write(`Approved "${tool}" for server "${server}".\n`)
-  return 0
+  return recordQuarantineResolution(io, opts, actor, 'approve', server, tool)
 }
 
 async function approveAllForServer(
   server: string,
   io: QuarantineCliIo,
-  storePath: string | undefined,
+  opts: RunQuarantineOptions,
 ): Promise<number> {
-  const all = await listAllQuarantined(storePath)
+  const actor = await requireQuarantineAdmin(io, opts)
+  if (actor === undefined) return 1
+
+  const all = await listAllQuarantined(opts.storePath)
   const forServer = all.filter((entry) => entry.serverName === server)
 
   if (forServer.length === 0) {
@@ -179,14 +212,21 @@ async function approveAllForServer(
     return 0
   }
 
+  // One record per tool, not one per command: an auditor asking who released
+  // THIS tool must get an answer that names it.
   for (const entry of forServer) {
-    await approveTool(entry.serverName, entry.toolName, storePath)
+    await approveTool(entry.serverName, entry.toolName, opts.storePath)
     io.stdout.write(`Approved "${entry.toolName}" for server "${entry.serverName}".\n`)
+    await recordQuarantineResolution(io, opts, actor, 'approve', entry.serverName, entry.toolName)
   }
   return 0
 }
 
-async function runReject(subArgs: string[], io: QuarantineCliIo, storePath: string | undefined): Promise<number> {
+async function runReject(
+  subArgs: string[],
+  io: QuarantineCliIo,
+  opts: RunQuarantineOptions,
+): Promise<number> {
   const { positionals } = parseArgs({ args: subArgs, options: {}, allowPositionals: true })
 
   const [server, tool] = positionals
@@ -195,89 +235,28 @@ async function runReject(subArgs: string[], io: QuarantineCliIo, storePath: stri
     return 1
   }
 
-  const rejected = await rejectTool(server, tool, storePath)
+  const actor = await requireQuarantineAdmin(io, opts)
+  if (actor === undefined) return 1
+
+  const rejected = await rejectTool(server, tool, opts.storePath)
   if (!rejected) {
     io.stderr.write(`"${tool}" is not quarantined for server "${server}".\n`)
     return 1
   }
   io.stdout.write(`Rejected "${tool}" for server "${server}".\n`)
-  return 0
+  return recordQuarantineResolution(io, opts, actor, 'reject', server, tool)
 }
 
-// -- show formatting -------------------------------------------------------
-//
-// Mirrors `cardFor`/`renderCard` in `src/ui/pages/quarantine.ts`: same diff,
-// same fields, plain text instead of HTML. `quarantined.descriptor` and
-// `approvedDescriptor` are read back from the inventory store file --
-// untrusted, like every other field in this module -- so every string goes
-// through `formatReadableField` before it reaches the terminal.
-
-const SCHEMA_TRUNCATED_NOTE =
-  'note: the stored schema was capped at write time (top-level summary only); the diff may be incomplete.'
-
-function formatQuarantineShow(
-  serverName: string,
-  toolName: string,
-  quarantined: QuarantinedToolRecord,
-  approvedDescriptor: ToolDescriptor | undefined,
-): string {
-  const header = formatShowHeader(serverName, toolName, quarantined)
-  const body =
-    approvedDescriptor === undefined
-      ? formatNoBaseline(quarantined)
-      : formatSchemaDiffSection(approvedDescriptor, quarantined)
-  return `${[...header, '', ...body].join('\n')}\n`
+/**
+ * The caller's options with `journalDir` filled in from where the inventory
+ * store lives, so a caller that isolated this command on a temp directory by
+ * `storePath` alone does not resolve the token against the real installation.
+ */
+function resolveOptions(opts: RunQuarantineOptions): RunQuarantineOptions {
+  if (opts.journalDir !== undefined) return opts
+  return { ...opts, journalDir: dirname(resolveStorePath(opts.storePath)) }
 }
 
-function formatShowHeader(serverName: string, toolName: string, quarantined: QuarantinedToolRecord): string[] {
-  const lines = [
-    `server: ${formatReadableField(serverName)}`,
-    `tool: ${formatReadableField(toolName)}`,
-    `state: ${formatReadableField(quarantined.state)}`,
-    `firstSeenAt: ${formatReadableField(quarantined.firstSeenAt)}`,
-  ]
-  if (quarantined.descriptor.description !== undefined) {
-    lines.push(`description: "${formatReadableField(quarantined.descriptor.description)}"`)
-  }
-  return lines
-}
-
-/** No approved descriptor to diff against (new tool, or a pre-M4 approval with no stored descriptor). */
-function formatNoBaseline(quarantined: QuarantinedToolRecord): string[] {
-  const lines = [
-    'no approved baseline for this tool -- nothing to diff against. Showing the observed descriptor:',
-    `observed inputSchema: ${formatReadableField(safeStringify(quarantined.descriptor.inputSchema))}`,
-  ]
-  if (quarantined.schemaTruncated === true) lines.push(SCHEMA_TRUNCATED_NOTE)
-  return lines
-}
-
-function formatSchemaDiffSection(approvedDescriptor: ToolDescriptor, quarantined: QuarantinedToolRecord): string[] {
-  const diff = diffToolSchemas(approvedDescriptor.inputSchema, quarantined.descriptor.inputSchema)
-  const surfaceDelta = quarantined.surfaceDelta ?? diff.surfaceDelta
-  const lines = [`surfaceDelta: ${surfaceDelta}`, '', ...formatChangeList(diff.changes)]
-  if (diff.truncated) lines.push('diff truncated (schema too deep/large; change list is incomplete)')
-  if (quarantined.schemaTruncated === true) lines.push(SCHEMA_TRUNCATED_NOTE)
-  return lines
-}
-
-function formatChangeList(changes: readonly SchemaChange[]): string[] {
-  if (changes.length === 0) {
-    return [
-      'no structural change detected (description/annotation-only, or a hash mismatch without a schema difference)',
-    ]
-  }
-  return ['changes:', ...changes.map((change) => `  ${change.kind}  ${formatReadableField(change.path)}`)]
-}
-
-/** `inputSchema` is untrusted, unknown-shaped JSON from the server; never throws. */
-function safeStringify(value: unknown): string {
-  try {
-    return JSON.stringify(value) ?? 'undefined'
-  } catch {
-    return '<unserializable>'
-  }
-}
 
 // -- formatting ----------------------------------------------------------
 
