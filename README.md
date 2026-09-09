@@ -250,10 +250,19 @@ Quarantined tools are blocked (`require-approval`/`deny` per
 ```
 mcp-journal quarantine list [--server <name>]
 mcp-journal quarantine show <server> <tool>
-mcp-journal quarantine approve <server> <tool>
-mcp-journal quarantine approve --all --server <name>
-mcp-journal quarantine reject <server> <tool>
+mcp-journal quarantine approve <server> <tool>                 # needs MCP_ADMIN_TOKEN (operator)
+mcp-journal quarantine approve --all --server <name>           # needs MCP_ADMIN_TOKEN (operator)
+mcp-journal quarantine reject <server> <tool>                  # needs MCP_ADMIN_TOKEN (operator)
 ```
+
+Releasing a tool from quarantine widens what every agent granted that server
+can reach, so `approve` and `reject` require `MCP_ADMIN_TOKEN` — the personal
+token of an admin whose role is `operator` or `owner`, the same bar the admin
+UI applies to the equivalent buttons — and each release is written to the
+journal as an `access-edit` record naming the admin, the server and the tool.
+`list` and `show` need no token. As everywhere else, the token buys
+attribution and parity with the UI's role table, not protection from a process
+running as the same user.
 
 This is a defense against a server silently changing a tool's behavior after
 it was already trusted ("rug pull"): a description or schema change always
@@ -368,8 +377,8 @@ mcp-journal policy validate [path]
 mcp-journal policy show [--server <name>] [--json] [--policy <path>]
 mcp-journal quarantine list [--server <name>] [--json]
 mcp-journal quarantine show <server> <tool>
-mcp-journal quarantine approve <server> <tool> | --all --server <name>
-mcp-journal quarantine reject <server> <tool>
+mcp-journal quarantine approve <server> <tool> | --all --server <name>   # needs MCP_ADMIN_TOKEN (operator)
+mcp-journal quarantine reject <server> <tool>                            # needs MCP_ADMIN_TOKEN (operator)
 mcp-journal approvals list [--json]
 mcp-journal approvals approve <id> [--reason TEXT]   # needs MCP_ADMIN_TOKEN
 mcp-journal approvals deny <id> [--reason TEXT]      # needs MCP_ADMIN_TOKEN
@@ -384,7 +393,7 @@ mcp-journal backup <destDir>
 mcp-journal keygen
 mcp-journal verify [--session <id>] [--sign]
 mcp-journal verify --report <dir> [--pub <path>] [--require-signature]
-mcp-journal prune --older-than <duration> [--yes]
+mcp-journal prune --older-than <duration> [--yes]    # --yes needs MCP_ADMIN_TOKEN (owner)
 ```
 
 `serve`, `ui`, `connect` and `wrap` — the four long-lived entry points — run
@@ -515,6 +524,13 @@ Step by step:
    non-secret literals or `vault:<name>` **references**: a literal that looks
    like a secret is rejected by the schema with a pointer to the vault, so
    "credentials never live in config" is a property of the format, not a habit.
+
+   A spawned stdio server inherits only `SYSTEM_ENV_ALLOWLIST` (`src/config.ts`:
+   `PATH`, `HOME`, `TMPDIR`/`TMP`/`TEMP`, `LANG`/`LC_ALL`, `SHELL`, `USER`,
+   `LOGNAME`) — **proxy variables are not inherited**. Behind an outbound proxy,
+   pass them yourself: `--env HTTPS_PROXY=http://proxy:3128 --env NO_PROXY=localhost`.
+   Without them a `npx -y …` server never reaches the network and `server add`
+   fails its registration probe with `no answer to initialize within 10000ms`.
 3. **`vault set github-pat`** reads the secret from **stdin**, never from
    `argv` (which every process on the host can read out of `ps`), and stores
    it encrypted. There is deliberately no `vault get`.
@@ -1173,6 +1189,21 @@ removes a record is an operator running:
 mcp-journal prune --older-than <duration>          # says what it would delete
 mcp-journal prune --older-than <duration> --yes    # actually deletes it
 ```
+
+The deleting form requires `MCP_ADMIN_TOKEN` — the personal token of an admin
+whose role is `owner`. This is the only command in the product that destroys
+evidence, so an operator who can resolve approvals should not thereby be able
+to delete the record of having done so. The delete is written to the journal
+as an `access-edit` record (`action: 'prune'`) naming the admin, the window
+and the count, alongside the retention marker itself. The dry run needs no
+token and records nothing — it deletes nothing.
+
+`keygen`, `backup`, `migrate` and `verify --sign` are **not** gated: each is
+needed before an install has any admin at all, and each runs from cron. When
+a valid `MCP_ADMIN_TOKEN` happens to be set, they record who ran them (the
+destination for a backup, the key fingerprint for `keygen` and
+`verify --sign`); with no token they behave exactly as before. A token that
+matches no active admin is refused rather than ignored.
 
 `<duration>` is a whole number of hours or days (`36h`, `90d`). Without
 `--yes` the command prints the record count, the `seq` range and the chain

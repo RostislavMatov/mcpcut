@@ -40,11 +40,17 @@ export interface Session {
   readonly role: Role
 }
 
-/** What a run asks of the dispatcher; `display` is the argv the panel shows (phase 4 masks secrets there). */
+/** What a run asks of the dispatcher; `display` is the argv the panel shows, with secrets masked. */
 export interface RunRequest {
   readonly actionId: string
   readonly argv: readonly string[]
   readonly display: readonly string[]
+  /**
+   * Where the command's stdout goes, when the action names an output path
+   * (`export`). Absent — not `undefined` — when the output belongs on screen:
+   * `exactOptionalPropertyTypes` is on, so the key is spread in or left out.
+   */
+  readonly stdoutPath?: string
 }
 
 /** The right-hand pane of the main screen. */
@@ -168,7 +174,13 @@ export type Msg =
 
 export type Effect =
   | { readonly kind: 'signin'; readonly token: string }
-  | { readonly kind: 'run'; readonly request: RunRequest }
+  /**
+   * A command to run. `stdin` — the vault secret — lives ONLY here: an effect
+   * is consumed by the runtime and never stored, while `busy` and the confirm
+   * pane keep the `request`, which is part of the model and must not carry a
+   * secret (ADR-0004: never in a frame).
+   */
+  | { readonly kind: 'run'; readonly request: RunRequest; readonly stdin?: string }
   | { readonly kind: 'refresh-services' }
   | { readonly kind: 'quit'; readonly exitCode: number }
   /** One rung of the deploy ladder: dispatched with no session, since there is no admin yet. */

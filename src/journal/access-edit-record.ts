@@ -75,6 +75,21 @@ export type AccessEditAction =
   | 'admin.rotate'
   | 'admin.role'
   | 'admin.remove'
+  // Quarantine releases and the host operations (owner decision Q17,
+  // 2026-09-08). Letting a tool out of quarantine widens what every agent
+  // granted that server can reach — the same category of fact as a grant —
+  // and the four host operations below say who minted the key an auditor
+  // checks a report against, who copied the databases elsewhere, who imported
+  // legacy state and who signed the chain head. `prune` is the one that
+  // matters most: it is the only command in the product that DELETES
+  // evidence, and its own signed marker names no admin.
+  | 'quarantine.approve'
+  | 'quarantine.reject'
+  | 'prune'
+  | 'keygen'
+  | 'backup'
+  | 'migrate'
+  | 'verify.sign'
 
 /**
  * WHO made the change: the authenticated admin, their role at the time, and
@@ -116,6 +131,28 @@ export interface AccessEditInfo {
    * both the substring and the whole-token rules and says what it holds.
    */
   readonly vaultEntry?: string
+  /**
+   * `quarantine.approve` / `quarantine.reject` (Q17): the tool that was let
+   * out or discarded, beside the `server` it belongs to. The name comes from
+   * the upstream server and is untrusted like every other name here — it goes
+   * through the same redaction path, and every terminal that prints it back
+   * runs it through `formatReadableField` first.
+   */
+  readonly tool?: string
+  /** `prune` (Q17): the retention window as the operator typed it, e.g. `90d`. */
+  readonly olderThan?: string
+  /** `prune` (Q17): how many records the delete actually removed. */
+  readonly deletedCount?: number
+  /** `prune` (Q17): the last seq the delete covered — the marker's own number. */
+  readonly prunedThroughSeq?: number
+  /** `backup` (Q17): the directory the databases were copied into. */
+  readonly dest?: string
+  /**
+   * `keygen` / `verify.sign` (Q17): which key was minted or signed with, by
+   * its public fingerprint. Never key material — the record has no field for
+   * one and must not grow one.
+   */
+  readonly keyFingerprint?: string
   /** The grant written by `group.grant` — the same shape agents carry (G1). */
   readonly grant?: AgentGrant
   /**
@@ -223,6 +260,12 @@ function flatInfoOf(info: AccessEditInfo): Record<string, unknown> {
     ...(info.group !== undefined ? { group: info.group } : {}),
     ...(info.server !== undefined ? { server: info.server } : {}),
     ...(info.agent !== undefined ? { agent: info.agent } : {}),
+    ...(info.tool !== undefined ? { tool: info.tool } : {}),
+    ...(info.olderThan !== undefined ? { olderThan: info.olderThan } : {}),
+    ...(info.deletedCount !== undefined ? { deletedCount: info.deletedCount } : {}),
+    ...(info.prunedThroughSeq !== undefined ? { prunedThroughSeq: info.prunedThroughSeq } : {}),
+    ...(info.dest !== undefined ? { dest: info.dest } : {}),
+    ...(info.keyFingerprint !== undefined ? { keyFingerprint: info.keyFingerprint } : {}),
     ...(info.vaultEntry !== undefined ? { vaultEntry: info.vaultEntry } : {}),
     ...(info.admin !== undefined ? { admin: info.admin } : {}),
     ...(info.targetRole !== undefined ? { targetRole: info.targetRole } : {}),

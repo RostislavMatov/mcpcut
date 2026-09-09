@@ -5,8 +5,10 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { ADMIN_TOKEN_ENV_VAR } from '../../src/admin/constants.js'
 import { createAdminStore } from '../../src/admin/store.js'
 import { runAgentCommand } from '../../src/cli/agent-cmd.js'
+import { TOKEN_ONCE_NOTICE } from '../../src/cli/ui-constants.js'
 import { createAgentsStore } from '../../src/agents/store.js'
 import { createRegistryStore } from '../../src/registry/store.js'
+import { outputPanelOf } from '../../src/tui/output.js'
 
 let journalDir: string
 let ownerToken: string
@@ -64,7 +66,27 @@ describe('agent create', () => {
     const tokenMatches = io.out().match(/mcpj_[A-Za-z0-9_-]{43}/g) ?? []
     expect(tokenMatches).toHaveLength(1)
     const combined = io.out() + io.err()
-    expect(combined.toLowerCase()).toContain('cannot be recovered')
+    expect(combined).toContain(TOKEN_ONCE_NOTICE)
+  })
+
+  test('the printed notice is the marker the console recognises as a one-time token', async () => {
+    // The console does not know which commands mint tokens: it searches stdout
+    // for `ONE_TIME_TOKEN_MARKER`, and a panel that carries it makes `q` ask
+    // before the alternate screen takes the token with it. Asserting through
+    // `outputPanelOf` rather than the string keeps the two ends tied together,
+    // so a reworded notice fails here instead of silently disarming the prompt.
+    const io = fakeIo()
+
+    await run(['create', 'research-bot'], io)
+
+    const panel = outputPanelOf({
+      argv: ['agent', 'create', 'research-bot'],
+      display: ['agent', 'create', 'research-bot'],
+      exitCode: 0,
+      stdout: io.out(),
+      stderr: io.err(),
+    })
+    expect(panel.holdsOneTimeToken).toBe(true)
   })
 
   test('the printed token actually authenticates against the store', async () => {

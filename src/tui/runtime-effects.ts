@@ -1,13 +1,20 @@
 import { ADMIN_TOKEN_ENV_VAR } from '../admin/constants.js'
 import { adminFromEnv, type TokenAdmin } from '../cli/admin-token.js'
 import type { DispatchFn, DispatchOptions } from '../cli/dispatch-types.js'
-import { captureBothIo, type CapturedBothIo } from '../setup/capture-io.js'
-import { OUTPUT_CUT_NOTE, OUTPUT_MAX_CHARS } from './constants.js'
+import { captureBothIo } from '../setup/capture-io.js'
+import { OUTPUT_MAX_CHARS } from './constants.js'
 import type { DeployStepId, Effect, Msg, RunRequest } from './model.js'
-import type { RunResult } from './output.js'
+import {
+  FAILED_RUN_EXIT_CODE,
+  failedRun,
+  runResultOf,
+  withFailure,
+  type DispatchOutcome,
+} from './run-result.js'
+import { fileSink, memorySink, type RunSink, type SinkStreamFactory } from './run-sink.js'
 import { messageOf } from './runtime-terminal.js'
 import { parseServicesJson } from './services-summary.js'
-import { sessionEnvOf, withSeamEnv, withSessionToken } from './session-env.js'
+import { sessionEnvOf, withSeamEnv, withSecretInput, withSessionToken } from './session-env.js'
 
 /**
  * The effect executor (mcpcut phase 2, task 12): everything the console does
@@ -100,10 +107,14 @@ export interface EffectDeps {
   readonly token: TokenCell
   /** Present only while the first-run wizard is on screen (phase 3). */
   readonly wizard?: WizardDeps
+  /**
+   * How an action's output file is opened; the default is the exclusive
+   * create of `run-sink.ts`. The same seam `fileSink` takes, raised one level
+   * so a test can hold the stream it opened and fail it under a command that
+   * is parked on backpressure.
+   */
+  readonly openStream?: SinkStreamFactory
 }
-
-/** What a run reports when the command itself never got to answer. */
-const FAILED_RUN_EXIT_CODE = 1
 
 /** The command whose document fills the services part of the header. */
 const SERVICES_STATUS_ARGV: readonly string[] = ['status', '--json']
@@ -135,7 +146,7 @@ export async function executeEffect(effect: Effect, deps: EffectDeps): Promise<M
     case 'signin':
       return signIn(effect.token, deps)
     case 'run':
-      return runCommand(effect.request, deps)
+      return runCommand(effect.request, deps, effect.stdin)
     case 'refresh-services':
       return refreshServices(deps)
     case 'wizard-run':
@@ -196,16 +207,75 @@ function optionsFor(token: string, deps: EffectDeps): DispatchOptions {
   return withSessionToken(deps.dispatchOptions, sessionEnvOf(deps.env, token))
 }
 
-async function runCommand(request: RunRequest, deps: EffectDeps): Promise<Msg> {
+/**
+ * One command of the catalogue, run on behalf of the signed-in operator.
+ *
+ * `stdin` is the vault secret and reaches the dispatcher through the vault's
+ * own seam — it is a parameter rather than a field of `request` because the
+ * request is part of the model and a secret must never be in one (ADR-0004).
+ * `request.stdoutPath` is the other half of the same discipline in reverse:
+ * output too large for a pane goes to a file, and the pane gets a receipt.
+ *
+ * A sink that cannot be opened ends the run BEFORE `dispatch`: there is
+ * nowhere to put what the command would print, and running it anyway would
+ * mean an export that quietly went nowhere.
+ */
+async function runCommand(request: RunRequest, deps: EffectDeps, stdin?: string): Promise<Msg> {
   const token = deps.token.get()
   if (token === undefined) return SESSION_LOST
   if (!(await isSessionFresh(token, deps))) {
     deps.token.set(undefined)
     return SESSION_LOST
   }
-  const captured = captureBothIo(OUTPUT_MAX_CHARS)
-  const outcome = await dispatchCaptured(request.argv, captured, optionsFor(token, deps), deps)
-  return { kind: 'run-result', result: runResultOf(request, captured, outcome) }
+  const opened = await openSink(request, deps.openStream)
+  if ('failure' in opened) {
+    return { kind: 'run-result', result: failedRun(request, opened.failure) }
+  }
+  const options = runOptions(token, deps, stdin)
+  const outcome = await dispatchCaptured(request.argv, opened.sink, options, deps)
+  // Closed only now: the command may still have been writing, and `finished`
+  // waits for the file to be flushed and closed before `out()` is read back.
+  const closeFailure = await finishFailure(opened.sink)
+  return {
+    kind: 'run-result',
+    result: runResultOf(request, opened.sink, withFailure(outcome, closeFailure)),
+  }
+}
+
+/** The session's options, plus the vault's secret reader when the action carries one. */
+function runOptions(token: string, deps: EffectDeps, stdin: string | undefined): DispatchOptions {
+  const options = optionsFor(token, deps)
+  return stdin === undefined ? options : withSecretInput(options, stdin)
+}
+
+/** A sink to run into, or the reason there is none. */
+type OpenedSink = { readonly sink: RunSink } | { readonly failure: string }
+
+/** Opens where this run's output goes: a file when the action named a path, memory otherwise. */
+async function openSink(
+  request: RunRequest,
+  openStream: SinkStreamFactory | undefined,
+): Promise<OpenedSink> {
+  if (request.stdoutPath === undefined) return { sink: memorySink(OUTPUT_MAX_CHARS) }
+  try {
+    const sink =
+      openStream === undefined
+        ? await fileSink(request.stdoutPath, OUTPUT_MAX_CHARS)
+        : await fileSink(request.stdoutPath, OUTPUT_MAX_CHARS, openStream)
+    return { sink }
+  } catch (error: unknown) {
+    return { failure: messageOf(error) }
+  }
+}
+
+/** Closes the sink, answering with the write failure it kept rather than throwing it. */
+async function finishFailure(sink: RunSink): Promise<string | undefined> {
+  try {
+    await sink.finish()
+    return undefined
+  } catch (error: unknown) {
+    return messageOf(error)
+  }
 }
 
 /**
@@ -231,45 +301,14 @@ async function runWizardCommand(
   request: RunRequest,
   deps: EffectDeps,
 ): Promise<Msg> {
-  const captured = captureBothIo(OUTPUT_MAX_CHARS)
+  const sink = memorySink(OUTPUT_MAX_CHARS)
   const outcome = await dispatchCaptured(
     request.argv,
-    captured,
+    sink,
     withSeamEnv(deps.dispatchOptions, deps.env),
     deps,
   )
-  return { kind: 'wizard-run-result', step, result: runResultOf(request, captured, outcome) }
-}
-
-/**
- * A finished dispatch as the output pane takes it. The failure that stood in
- * for an exit code, and the note that the capture was cut, are appended to
- * stderr rather than invented as fields — the pane draws what a command
- * wrote, and both of these are things the operator must read.
- */
-function runResultOf(
-  request: RunRequest,
-  captured: CapturedBothIo,
-  outcome: DispatchOutcome,
-): RunResult {
-  const stderrWithFailure =
-    outcome.failure === undefined ? captured.err() : appended(captured.err(), outcome.failure)
-  const stderr = captured.truncated()
-    ? appended(stderrWithFailure, OUTPUT_CUT_NOTE)
-    : stderrWithFailure
-  return {
-    argv: request.argv,
-    display: request.display,
-    exitCode: outcome.code,
-    stdout: captured.out(),
-    stderr,
-  }
-}
-
-/** An exit code, plus the message of the throw that stood in for one. */
-interface DispatchOutcome {
-  readonly code: number
-  readonly failure?: string
+  return { kind: 'wizard-run-result', step, result: runResultOf(request, sink, outcome) }
 }
 
 /**
@@ -284,12 +323,12 @@ interface DispatchOutcome {
  */
 async function dispatchCaptured(
   argv: readonly string[],
-  captured: CapturedBothIo,
+  sink: RunSink,
   options: DispatchOptions,
   deps: EffectDeps,
 ): Promise<DispatchOutcome> {
   try {
-    const answer = await deps.dispatch([...argv], captured.io, options)
+    const answer = await deps.dispatch([...argv], sink.io, options)
     return { code: Number.isInteger(answer) ? answer : FAILED_RUN_EXIT_CODE }
   } catch (error: unknown) {
     return { code: FAILED_RUN_EXIT_CODE, failure: messageOf(error) }
@@ -319,11 +358,4 @@ async function refreshServices(deps: EffectDeps): Promise<Msg> {
   } catch {
     return NO_SERVICES
   }
-}
-
-
-/** The failure on its own line, whatever the command had already written. */
-function appended(stderr: string, failure: string): string {
-  const separator = stderr === '' || stderr.endsWith('\n') ? '' : '\n'
-  return `${stderr}${separator}${failure}\n`
 }

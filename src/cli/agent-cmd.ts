@@ -18,6 +18,7 @@ import { pairTarget, requireRegisteredServer } from './access-cmd-write.js'
 import { formatAgentLine, formatGrantLines, summaryOf } from './agent-cmd-format.js'
 import { recordChange, requireOwner, warnIfGroupsUncovered } from './agent-cmd-write.js'
 import { resolveGrantFlags } from './grant-flags.js'
+import { TOKEN_ONCE_NOTICE } from './ui-constants.js'
 import { StoreCorruptError, StoreLockError, StoreWriteRejectedError } from '../policy/store.js'
 
 /**
@@ -160,7 +161,7 @@ async function runCreate(
 
   io.stdout.write(`agent: ${formatReadableField(agent.name)}\n`)
   io.stdout.write(`token: ${token}\n`)
-  io.stdout.write('Save this token now: it cannot be recovered or shown again.\n')
+  io.stdout.write(TOKEN_ONCE_NOTICE)
   // The record names the agent and nothing else — the token stays in the one
   // place it was printed.
   return recordChange(io, opts, actor, 'create', formatReadableField(name), {

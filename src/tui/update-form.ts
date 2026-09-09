@@ -1,5 +1,6 @@
 import { visibleActions } from './catalogue/index.js'
 import type { ActionSpec } from './catalogue/types.js'
+import { SECRET_DISPLAY_MASK } from './constants.js'
 import { applyFormKey, type FormValues, isValid, validateForm, valuesOf } from './form.js'
 import type { KeyEvent } from './keys.js'
 import type { Model, Pane, RunRequest, Step } from './model.js'
@@ -29,13 +30,72 @@ export function isYes(key: KeyEvent): boolean {
 
 /**
  * Turns an action and the values it was given into the request the runtime
- * dispatches. `display` is a COPY of `argv` — the panel keeps it beside the
- * output, and a later phase masks a secret in the copy while the original is
- * what was actually run.
+ * dispatches.
+ *
+ * `display` is a COPY of `argv` with every secret argument replaced by
+ * `SECRET_DISPLAY_MASK`: the panel prints the copy beside the output, and the
+ * original is what actually ran. Both are needed — a masked argv would be a
+ * lie about the command, and an unmasked display would put a token on screen
+ * for as long as its output stays there.
+ *
+ * `stdoutPath` is spread in only when the action names an output field that
+ * was filled: `exactOptionalPropertyTypes` is on, so an absent path is an
+ * absent key rather than an `undefined` one.
+ *
+ * Every NON-secret value is trimmed before either is built. A field is typed
+ * into and pasted into, and the padding that survives is nobody's argument:
+ * a server named `" github"` is not the registered one, and a path of
+ * `" /tmp/out "` is a file with spaces in its name. A SECRET is handed over
+ * exactly as typed — leading or trailing whitespace can be part of the value,
+ * and this is not the place to decide it is not.
  */
 export function requestOf(action: ActionSpec, values: FormValues): RunRequest {
-  const argv = action.argv(values)
-  return { actionId: action.id, argv, display: [...argv] }
+  const trimmed = trimmedValuesOf(action, values)
+  const argv = action.argv(trimmed)
+  const secrets = secretValuesOf(action, trimmed)
+  const display = argv.map((arg) => (secrets.has(arg) ? SECRET_DISPLAY_MASK : arg))
+  const stdoutPath = action.stdoutToField === undefined ? '' : (trimmed[action.stdoutToField] ?? '')
+
+  return { actionId: action.id, argv, display, ...(stdoutPath === '' ? {} : { stdoutPath }) }
+}
+
+/** The values with every non-secret one trimmed; the secrets pass through untouched. */
+function trimmedValuesOf(action: ActionSpec, values: FormValues): FormValues {
+  const secretNames = new Set(
+    action.fields.filter((field) => field.kind === 'secret').map((field) => field.name),
+  )
+
+  return Object.fromEntries(
+    Object.entries(values).map(([name, value]) => [
+      name,
+      secretNames.has(name) ? value : value.trim(),
+    ]),
+  )
+}
+
+/**
+ * What the action's `secret` fields hold, empty values excluded. An empty
+ * secret must not join the set: `''` matches every empty argument an `argv`
+ * builder emits, and the whole command line would come out masked.
+ */
+function secretValuesOf(action: ActionSpec, values: FormValues): ReadonlySet<string> {
+  const secrets = action.fields
+    .filter((field) => field.kind === 'secret')
+    .map((field) => values[field.name] ?? '')
+
+  return new Set(secrets.filter((value) => value !== ''))
+}
+
+/**
+ * The value the command reads from stdin, when the action names such a field.
+ *
+ * An action that declares `stdinField` ALWAYS gets a string — the empty one if
+ * the form somehow left the field out — because the alternative is a command
+ * left reading the console's own stdin. `undefined` means "this action wants
+ * nothing written to it", and nothing else.
+ */
+export function stdinOf(action: ActionSpec, values: FormValues): string | undefined {
+  return action.stdinField === undefined ? undefined : (values[action.stdinField] ?? '')
 }
 
 /** Runs an action, or asks the question it insists on first. */
@@ -46,17 +106,20 @@ export function submit(
   values: FormValues,
 ): Step {
   const request = requestOf(action, values)
-  if (action.confirm !== undefined) {
-    const pane: Pane = {
-      kind: 'confirm',
-      actionId: action.id,
-      request,
-      question: action.confirm(values),
-    }
+  // An action may ask conditionally: `confirm` returning `undefined` for these
+  // values means the operator already answered on the form (`prune --yes`).
+  const question = action.confirm?.(values)
+  if (question !== undefined) {
+    const pane: Pane = { kind: 'confirm', actionId: action.id, request, question }
     return withMain(model, screen, { pane })
   }
 
-  return withMain(model, screen, { pane: ACTIONS_PANE, busy: request }, [{ kind: 'run', request }])
+  // The secret rides on the EFFECT, which the runtime consumes and drops;
+  // `busy` keeps the request, and a request is part of the model.
+  const stdin = stdinOf(action, values)
+  return withMain(model, screen, { pane: ACTIONS_PANE, busy: request }, [
+    { kind: 'run', request, ...(stdin === undefined ? {} : { stdin }) },
+  ])
 }
 
 /** Folds one keystroke into an open form. */

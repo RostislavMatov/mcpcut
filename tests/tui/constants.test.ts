@@ -11,6 +11,7 @@ import {
   DEPLOY_SETUP_DONE_WITH_OWNER_DETAIL,
   DEPLOY_STEP_TITLES,
   DEPLOY_TITLE_WIDTH,
+  HELP_LINES,
   deployExitDetail,
   deployWaitingDetail,
   exitLine,
@@ -18,6 +19,8 @@ import {
   mintedAdminLine,
   ONE_TIME_TOKEN_MARKER,
   RULE_CHAR,
+  savedPartiallyLine,
+  savedToLine,
   truncatedNote,
   WIZARD_DONE_EXTERNAL_LINES,
   WIZARD_NO_ADMIN_LINES,
@@ -38,6 +41,9 @@ import {
   wizardIntroLines,
 } from '../../src/tui/constants.js'
 import { START_READY_TIMEOUT_MS } from '../../src/services/constants.js'
+
+/** Where the description of every `?` line starts, counted from the phase-2 lines. */
+const HELP_KEY_COLUMN_WIDTH = 24
 
 /**
  * The console's words, pinned where they are shared (plan phase 2, task 2).
@@ -63,6 +69,26 @@ describe('the output-panel notes', () => {
 
   test('the exit line is the shell-like word and the code', () => {
     expect(exitLine(0)).toBe('exit 0')
+  })
+})
+
+describe('the help panel', () => {
+  /**
+   * Owner tail Q24 added the sideways-scroll line. The `?` panel is drawn in
+   * the 54-column pane, so its key column has to stay the width every other
+   * line uses, and the whole line has to fit the 80 columns a terminal starts
+   * at — the phase-2 lesson about `padRight` cutting silently.
+   */
+  const HSCROLL_HELP_LINE = HELP_LINES.find((line) => line.startsWith('['))
+
+  test('names the two keys that move the output pane sideways', () => {
+    expect(HSCROLL_HELP_LINE).toBeDefined()
+    expect(HSCROLL_HELP_LINE).toContain(']')
+  })
+
+  test('keeps the key column of every other line and fits 80 columns', () => {
+    expect(HSCROLL_HELP_LINE?.indexOf('scroll')).toBe(HELP_KEY_COLUMN_WIDTH)
+    expect(HSCROLL_HELP_LINE?.length).toBeLessThanOrEqual(DEFAULT_COLUMNS)
   })
 })
 
@@ -192,5 +218,22 @@ describe('the deploy details', () => {
 
     expect(line).toContain('owner')
     expect(line.endsWith(' ')).toBe(true)
+  })
+})
+
+describe('the words of the full catalogue', () => {
+  test('the saved-output line names the byte count and the path it wrote', () => {
+    expect(savedToLine('/tmp/report.jsonl', 42)).toBe('wrote 42 bytes to /tmp/report.jsonl')
+  })
+
+  test('an empty file is still reported, so a run that wrote nothing is not silent', () => {
+    expect(savedToLine('/tmp/empty.jsonl', 0)).toBe('wrote 0 bytes to /tmp/empty.jsonl')
+  })
+
+  test('a file that could not be finished says so, and does not read as a success', () => {
+    const line = savedPartiallyLine('/tmp/report.jsonl', 42)
+
+    expect(line).toBe('wrote 42 bytes to /tmp/report.jsonl before failing')
+    expect(line).not.toBe(savedToLine('/tmp/report.jsonl', 42))
   })
 })

@@ -40,7 +40,9 @@ import type {
   WizardStage,
 } from './model.js'
 import type { OutputPanel } from './output.js'
-import { fieldLines, fillTo, outputLines, plainPane, wrapWords } from './render-panes.js'
+import { fillTo } from './layout.js'
+import { outputLines } from './render-output.js'
+import { fieldLines, plainPane, wrapWords } from './render-panes.js'
 
 /**
  * The first-run wizard's frame (mcpcut phase 3, Task 5).

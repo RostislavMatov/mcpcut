@@ -2,16 +2,22 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { ADMIN_TOKEN_ENV_VAR } from '../../src/admin/constants.js'
+import { createAdminStore } from '../../src/admin/store.js'
 import { runQuarantine, type QuarantineCliIo } from '../../src/cli/quarantine-cmd.js'
 import { createInventory } from '../../src/policy/inventory.js'
 import type { ToolDescriptor } from '../../src/protocol/mcp.js'
 
 let tempDir: string
 let storePath: string
+/** Options carrying an operator token — the three mutating forms need one since Q17. */
+let operatorOptions: { storePath: string; journalDir: string; env: NodeJS.ProcessEnv }
 
 beforeEach(async () => {
   tempDir = await mkdtemp(join(tmpdir(), 'mcp-journal-quarantine-cmd-test-'))
   storePath = join(tempDir, 'tool-inventory.json')
+  const { token } = await createAdminStore({ journalDir: tempDir }).createAdmin('op', 'operator')
+  operatorOptions = { storePath, journalDir: tempDir, env: { [ADMIN_TOKEN_ENV_VAR]: token } }
 })
 
 afterEach(async () => {
@@ -158,7 +164,7 @@ describe('quarantine approve', () => {
     await inventory.observeToolsList([tool({ name: 'write_file' })])
     const io = captureIo()
 
-    const exitCode = await runQuarantine(['approve', 'srv-a', 'write_file'], io, { storePath })
+    const exitCode = await runQuarantine(['approve', 'srv-a', 'write_file'], io, operatorOptions)
 
     expect(exitCode).toBe(0)
     expect(io.out()).toContain('Approved')
@@ -172,7 +178,7 @@ describe('quarantine approve', () => {
   test('approving an unknown/not-quarantined tool prints a clear error and exits 1', async () => {
     const io = captureIo()
 
-    const exitCode = await runQuarantine(['approve', 'srv-a', 'nonexistent_tool'], io, { storePath })
+    const exitCode = await runQuarantine(['approve', 'srv-a', 'nonexistent_tool'], io, operatorOptions)
 
     expect(exitCode).toBe(1)
     expect(io.err()).toContain('nonexistent_tool')
@@ -184,7 +190,7 @@ describe('quarantine approve', () => {
     await inventory.observeToolsList([tool({ name: 'tool_a' }), tool({ name: 'tool_b' })])
     const io = captureIo()
 
-    const exitCode = await runQuarantine(['approve', '--all', '--server', 'srv-a'], io, { storePath })
+    const exitCode = await runQuarantine(['approve', '--all', '--server', 'srv-a'], io, operatorOptions)
 
     expect(exitCode).toBe(0)
     expect(io.out()).toContain('tool_a')
@@ -198,7 +204,7 @@ describe('quarantine approve', () => {
   test('--all without --server is rejected with exit 1', async () => {
     const io = captureIo()
 
-    const exitCode = await runQuarantine(['approve', '--all'], io, { storePath })
+    const exitCode = await runQuarantine(['approve', '--all'], io, operatorOptions)
 
     expect(exitCode).toBe(1)
     expect(io.err()).toContain('--server')
@@ -207,7 +213,7 @@ describe('quarantine approve', () => {
   test('missing arguments print usage and exit 1', async () => {
     const io = captureIo()
 
-    const exitCode = await runQuarantine(['approve', 'srv-a'], io, { storePath })
+    const exitCode = await runQuarantine(['approve', 'srv-a'], io, operatorOptions)
 
     expect(exitCode).toBe(1)
     expect(io.err()).toContain('Usage:')
@@ -220,7 +226,7 @@ describe('quarantine reject', () => {
     await inventory.observeToolsList([tool({ name: 'write_file' })])
     const io = captureIo()
 
-    const exitCode = await runQuarantine(['reject', 'srv-a', 'write_file'], io, { storePath })
+    const exitCode = await runQuarantine(['reject', 'srv-a', 'write_file'], io, operatorOptions)
 
     expect(exitCode).toBe(0)
     expect(io.out()).toContain('Rejected')
@@ -233,7 +239,7 @@ describe('quarantine reject', () => {
   test('rejecting an unknown/not-quarantined tool prints a clear error and exits 1', async () => {
     const io = captureIo()
 
-    const exitCode = await runQuarantine(['reject', 'srv-a', 'nonexistent_tool'], io, { storePath })
+    const exitCode = await runQuarantine(['reject', 'srv-a', 'nonexistent_tool'], io, operatorOptions)
 
     expect(exitCode).toBe(1)
     expect(io.err()).toContain('not quarantined')

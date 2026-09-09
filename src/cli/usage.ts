@@ -62,6 +62,8 @@ ${TUI_SYNOPSIS_LINES.join('\n')}
                                          Grant a server to a group; --tools is REQUIRED here
                                          (it lands on every member at once), resources/prompts
                                          stay denied unless named; ungrant removes it
+  mcp-journal group ungrant <group> <server>
+                                         Remove the group's grant for a server
   mcp-journal group join <group> <agent> | leave <group> <agent>
                                          Add or remove a member; a personal grant for the same
                                          server overrides the group's
@@ -80,10 +82,15 @@ ${TUI_SYNOPSIS_LINES.join('\n')}
                                          MCP_ADMIN_TOKEN); running proxies reload rules
   mcp-journal quarantine list [--server <name>] [--json]
                                          List quarantined tools
+  mcp-journal quarantine show <server> <tool>
+                                         Show the structural inputSchema diff of a quarantined tool
   mcp-journal quarantine approve <server> <tool> | --all --server <name>
-                                         Approve quarantined tool(s)
+                                         Approve quarantined tool(s) (personal admin token via
+                                         MCP_ADMIN_TOKEN, role operator or owner; the release
+                                         records which admin made it)
   mcp-journal quarantine reject <server> <tool>
-                                         Reject (discard) a quarantined tool
+                                         Reject (discard) a quarantined tool (same token, same
+                                         record)
   mcp-journal approvals list [--json]   List pending approval requests (no token needed)
   mcp-journal approvals approve <id> [--reason TEXT]
                                          Approve a pending request (personal admin token via
@@ -111,7 +118,9 @@ ${TUI_SYNOPSIS_LINES.join('\n')}
                                          Delete journal records older than <dur> (e.g. 90d, 36h) and
                                          record a retention marker the chain continues from; prints
                                          what it would delete unless --yes is given. No automatic
-                                         retention exists -- this is the only thing that deletes
+                                         retention exists -- this is the only thing that deletes.
+                                         --yes needs an admin token via MCP_ADMIN_TOKEN (role
+                                         owner); the dry run does not
   mcp-journal keygen                     Generate this installation's Ed25519 signing key
                                          (prints the public key once; needed for "verify --sign")
   mcp-journal --help                    Show this message

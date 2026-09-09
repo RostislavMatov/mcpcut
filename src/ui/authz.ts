@@ -1,4 +1,9 @@
-import { APPROVAL_RESOLVE_MIN_ROLE, roleSatisfies, type Role } from '../admin/authz.js'
+import {
+  APPROVAL_RESOLVE_MIN_ROLE,
+  QUARANTINE_RESOLVE_MIN_ROLE,
+  roleSatisfies,
+  type Role,
+} from '../admin/authz.js'
 
 /**
  * Deny-by-default authorization for the admin UI (ADR-0004, Decision 4).
@@ -69,8 +74,21 @@ export const ROUTE_TABLE: readonly RouteEntry[] = [
   // approvals queue. The lazy probe a `GET /servers` may start stays `viewer`
   // by owner decision O5 (named in ADR-0008, not a new row here).
   { method: 'POST', pattern: '/servers/refresh', minRole: 'operator', handler: 'serversRefresh' },
-  { method: 'POST', pattern: '/quarantine/approve', minRole: 'operator', handler: 'quarantineApprove' },
-  { method: 'POST', pattern: '/quarantine/reject', minRole: 'operator', handler: 'quarantineReject' },
+  // The threshold is shared with `mcp-journal quarantine approve|reject`
+  // (owner decision Q17, 2026-09-08): one constant, so the CLI can never
+  // become a way around these two rows the way it was until Q17.
+  {
+    method: 'POST',
+    pattern: '/quarantine/approve',
+    minRole: QUARANTINE_RESOLVE_MIN_ROLE,
+    handler: 'quarantineApprove',
+  },
+  {
+    method: 'POST',
+    pattern: '/quarantine/reject',
+    minRole: QUARANTINE_RESOLVE_MIN_ROLE,
+    handler: 'quarantineReject',
+  },
 
   // --- owner: the permission matrix, servers, vault (names only), admins ---
   // Personal grants are an OWNER edit (decision T4, 2026-09-01), the same

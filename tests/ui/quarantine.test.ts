@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest'
 import type { InventoryStoreData } from '../../src/policy/inventory-store.js'
 import type { UiRequestContext, UiResult } from '../../src/ui/routes.js'
 import type { UiSession } from '../../src/ui/auth.js'
+import type { AccessEditInfo } from '../../src/journal/access-edit-record.js'
 import {
   createQuarantineHandlers,
   type QuarantineAuditEvent,
@@ -348,5 +349,93 @@ describe('McpCut quarantine page structure', () => {
     expect(doc).toContain('name="server" value="github"')
     expect(doc).toContain('name="tool" value="create_issue"')
     expect(doc).toContain(`name="csrf_token" value="${CSRF}"`)
+  })
+})
+
+/**
+ * Owner decision Q17 (2026-09-08): the UI's release now leaves the SAME
+ * journal record the CLI's does, differing only in `via`. Until Q17 the web
+ * path attributed the release on the stderr audit sink alone — so the one
+ * durable, hash-chained account of who let a tool out did not have it.
+ */
+describe('the quarantine release is journalled the way every other access change is (Q17)', () => {
+  test('approve writes one access-edit record naming the admin, the server and the tool', async () => {
+    const written: AccessEditInfo[] = []
+    const handlers = createQuarantineHandlers(
+      deps({
+        approve: async () => true,
+        journalAccessEdit: async (info) => {
+          written.push(info)
+          return { written: true }
+        },
+      }),
+    )
+
+    await handlers.quarantineApprove(
+      makeCtx({ method: 'POST', body: formBody({ server: 'github', tool: 'create_issue' }) }),
+    )
+
+    expect(written).toEqual([
+      {
+        actor: { adminName: 'alice', role: 'operator', via: 'ui' },
+        action: 'quarantine.approve',
+        server: 'github',
+        tool: 'create_issue',
+      },
+    ])
+  })
+
+  test('reject writes the same record with the other action', async () => {
+    const written: AccessEditInfo[] = []
+    const handlers = createQuarantineHandlers(
+      deps({
+        reject: async () => true,
+        journalAccessEdit: async (info) => {
+          written.push(info)
+          return { written: true }
+        },
+      }),
+    )
+
+    await handlers.quarantineReject(
+      makeCtx({ method: 'POST', body: formBody({ server: 'github', tool: 'create_issue' }) }),
+    )
+
+    expect(written[0]?.action).toBe('quarantine.reject')
+  })
+
+  test('a mutation that changed nothing is not journalled', async () => {
+    const written: AccessEditInfo[] = []
+    const handlers = createQuarantineHandlers(
+      deps({
+        approve: async () => false,
+        journalAccessEdit: async (info) => {
+          written.push(info)
+          return { written: true }
+        },
+      }),
+    )
+
+    await handlers.quarantineApprove(
+      makeCtx({ method: 'POST', body: formBody({ server: 'github', tool: 'create_issue' }) }),
+    )
+
+    expect(written).toEqual([])
+  })
+
+  test('a journal that cannot be reached never turns a completed release into a failure', async () => {
+    const handlers = createQuarantineHandlers(
+      deps({
+        approve: async () => true,
+        journalAccessEdit: () => Promise.reject(new Error('journal sink is down')),
+      }),
+    )
+
+    const result = await handlers.quarantineApprove(
+      makeCtx({ method: 'POST', body: formBody({ server: 'github', tool: 'create_issue' }) }),
+    )
+
+    expect(result.kind).toBe('response')
+    expect(bodyText(result)).toContain('"status":"ok"')
   })
 })

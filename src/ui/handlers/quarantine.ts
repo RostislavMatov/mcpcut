@@ -9,6 +9,7 @@ import {
 import { headerValue, parseBodyFields, type UiHandler, type UiRequestContext, type UiResult } from '../routes.js'
 import { renderQuarantinePage, toQuarantineCards } from '../pages/quarantine.js'
 import type { UiSession } from '../auth.js'
+import type { AccessEditJournalPort } from './agents.js'
 
 /**
  * Quarantine action + page handlers (M4 Task 12). The page renders the
@@ -18,6 +19,14 @@ import type { UiSession } from '../auth.js'
  * journal by the coordinator) and — always — by requiring an authenticated
  * `adminName`: a handler with no session refuses rather than mutating
  * unattributed.
+ *
+ * Since owner decision Q17 (2026-09-08) a successful release also leaves an
+ * `access-edit` journal record (`quarantine.approve` / `quarantine.reject`,
+ * `via: 'ui'`) — the same record `mcp-journal quarantine approve` writes with
+ * `via: 'cli'`, so the two surfaces are indistinguishable in form. Until Q17
+ * the stderr audit line was the only attribution the web path left, which put
+ * the one hash-chained account of who let a tool out of quarantine outside
+ * the journal.
  */
 
 export type QuarantineAction = 'approve' | 'reject'
@@ -38,6 +47,13 @@ export interface QuarantineHandlerDeps {
   readonly reject: (serverName: string, toolName: string) => Promise<boolean>
   /** Optional attribution sink invoked on every successful mutation. */
   readonly audit?: (event: QuarantineAuditEvent) => void
+  /**
+   * Journal port for the release record (Q17), injected by
+   * `cli/ui-wiring.ts` — the same port the agents, groups and admins handlers
+   * use. Optional: without it a release still happens and is still attributed
+   * on the audit sink, it simply leaves no journal record.
+   */
+  readonly journalAccessEdit?: AccessEditJournalPort
 }
 
 export interface QuarantineHandlers {
@@ -110,11 +126,40 @@ async function mutateAction(
     })
   }
   deps.audit?.({ action, serverName, toolName, adminName: session.adminName })
+  await journalRelease(deps, session, action, serverName, toolName)
   const returnTo = returnToOf(fields)
   if (returnTo !== undefined) {
     return { kind: 'response', status: HTTP_STATUS_SEE_OTHER, headers: { location: returnTo } }
   }
   return jsonResult(HTTP_STATUS_OK, { status: 'ok', action, serverName, toolName })
+}
+
+/**
+ * The `access-edit` record of one applied release (Q17). The store change has
+ * already happened when this runs, so a journal that cannot be reached must
+ * never turn a completed release into a failed request: the fault is
+ * contained here, the writer's own diagnostics report it, and the audit sink
+ * above already carried the attribution.
+ */
+async function journalRelease(
+  deps: QuarantineHandlerDeps,
+  session: UiSession,
+  action: QuarantineAction,
+  serverName: string,
+  toolName: string,
+): Promise<void> {
+  const write = deps.journalAccessEdit
+  if (write === undefined) return
+  try {
+    await write({
+      actor: { adminName: session.adminName, role: session.role, via: 'ui' },
+      action: action === 'approve' ? 'quarantine.approve' : 'quarantine.reject',
+      server: serverName,
+      tool: toolName,
+    })
+  } catch {
+    // Contained, not swallowed — see the doc above.
+  }
 }
 
 /** Factory: binds the quarantine handlers to the inventory store operations. */

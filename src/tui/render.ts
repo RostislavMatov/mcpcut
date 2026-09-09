@@ -1,7 +1,8 @@
 import { padRight, type Style } from './ansi.js'
+import { blankRows } from './layout.js'
 import type { Model } from './model.js'
 import { renderMain } from './render-main.js'
-import { blankRows, renderSignIn } from './render-panes.js'
+import { renderSignIn } from './render-panes.js'
 import { renderWizard } from './render-wizard.js'
 
 /**

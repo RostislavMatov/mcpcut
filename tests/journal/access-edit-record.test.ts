@@ -615,3 +615,133 @@ describe('admin.* access-edit records', () => {
     expect(rendered).toContain('operator')
   })
 })
+
+/**
+ * Owner decision Q17 (2026-09-08). The commands that release a tool from
+ * quarantine, delete journal records, mint the signing key, copy the
+ * databases, import legacy state or sign the chain head used to leave no
+ * trace of WHO ran them. They now write the same `access-edit` record every
+ * other attributed change does — one vocabulary, so an auditor filtering by
+ * kind sees the whole attributed surface at once.
+ */
+describe('Q17 access-edit records: quarantine, prune and the host operations', () => {
+  test('a quarantine release names the server, the tool and the operator who let it out', () => {
+    const payload = buildAccessEditRecord({
+      info: {
+        actor: { adminName: 'op', role: 'operator', via: 'cli' },
+        action: 'quarantine.approve',
+        server: 'github',
+        tool: 'create_issue',
+      },
+      clock: () => FIXED_NOW_MS,
+    }).payload as Record<string, unknown>
+
+    expect(payload).toEqual({
+      actor: { adminName: 'op', role: 'operator', via: 'cli' },
+      action: 'quarantine.approve',
+      server: 'github',
+      tool: 'create_issue',
+    })
+  })
+
+  test('a rejection is the same record with the other action', () => {
+    const payload = buildAccessEditRecord({
+      info: {
+        actor: { adminName: 'alice', role: 'owner', via: 'ui' },
+        action: 'quarantine.reject',
+        server: 'github',
+        tool: 'create_issue',
+      },
+      clock: () => FIXED_NOW_MS,
+    }).payload as Record<string, unknown>
+
+    expect(payload['action']).toBe('quarantine.reject')
+    expect(payload['actor']).toEqual({ adminName: 'alice', role: 'owner', via: 'ui' })
+  })
+
+  test('a prune record carries the window it was asked for and what it deleted', () => {
+    const payload = buildAccessEditRecord({
+      info: {
+        actor: { adminName: 'alice', role: 'owner', via: 'cli' },
+        action: 'prune',
+        olderThan: '90d',
+        deletedCount: 12,
+        prunedThroughSeq: 41,
+      },
+      clock: () => FIXED_NOW_MS,
+    }).payload as Record<string, unknown>
+
+    expect(payload).toEqual({
+      actor: { adminName: 'alice', role: 'owner', via: 'cli' },
+      action: 'prune',
+      olderThan: '90d',
+      deletedCount: 12,
+      prunedThroughSeq: 41,
+    })
+  })
+
+  test('the ungated host operations name only what they touched', () => {
+    const keygen = buildAccessEditRecord({
+      info: {
+        actor: { adminName: 'alice', role: 'owner', via: 'cli' },
+        action: 'keygen',
+        keyFingerprint: 'ab12cd34',
+      },
+      clock: () => FIXED_NOW_MS,
+    }).payload as Record<string, unknown>
+    const backup = buildAccessEditRecord({
+      info: {
+        actor: { adminName: 'alice', role: 'viewer', via: 'cli' },
+        action: 'backup',
+        dest: '/var/backups/2026-09-08',
+      },
+      clock: () => FIXED_NOW_MS,
+    }).payload as Record<string, unknown>
+    const migrate = buildAccessEditRecord({
+      info: { actor: { adminName: 'alice', role: 'viewer', via: 'cli' }, action: 'migrate' },
+      clock: () => FIXED_NOW_MS,
+    }).payload as Record<string, unknown>
+    const sign = buildAccessEditRecord({
+      info: {
+        actor: { adminName: 'alice', role: 'owner', via: 'cli' },
+        action: 'verify.sign',
+        keyFingerprint: 'ab12cd34',
+      },
+      clock: () => FIXED_NOW_MS,
+    }).payload as Record<string, unknown>
+
+    expect(Object.keys(keygen).sort()).toEqual(['action', 'actor', 'keyFingerprint'])
+    expect(backup['dest']).toBe('/var/backups/2026-09-08')
+    expect(Object.keys(migrate).sort()).toEqual(['action', 'actor'])
+    expect(sign['keyFingerprint']).toBe('ab12cd34')
+  })
+
+  test('the new fields stay ABSENT on an action that does not use them', () => {
+    const payload = buildAccessEditRecord({
+      info: { actor: { adminName: 'alice', role: 'owner', via: 'cli' }, action: 'migrate' },
+      clock: () => FIXED_NOW_MS,
+    }).payload as Record<string, unknown>
+
+    for (const field of ['tool', 'olderThan', 'deletedCount', 'prunedThroughSeq', 'dest', 'keyFingerprint']) {
+      expect(Object.hasOwn(payload, field), `field ${field}`).toBe(false)
+    }
+  })
+
+  test('search filters match the new records by kind and text; decision filters never do', () => {
+    const record = buildAccessEditRecord({
+      info: {
+        actor: { adminName: 'op', role: 'operator', via: 'cli' },
+        action: 'quarantine.approve',
+        server: 'github',
+        tool: 'create_issue',
+      },
+      clock: () => FIXED_NOW_MS,
+    })
+
+    expect(matchesFilters(record, { kind: 'access-edit' })).toBe(true)
+    expect(matchesFilters(record, { text: 'create_issue' })).toBe(true)
+    // Releasing a tool is not a call an agent made against a server.
+    expect(matchesFilters(record, { outcome: 'allow' })).toBe(false)
+    expect(matchesFilters(record, { agentName: 'op' })).toBe(false)
+  })
+})

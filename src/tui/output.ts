@@ -23,7 +23,7 @@ import { ONE_TIME_TOKEN_MARKER, OUTPUT_MAX_LINES,
 /** What one dispatched command left behind. */
 export interface RunResult {
   readonly argv: readonly string[]
-  /** `argv` as it may be shown: identical today, masked where a secret appears. */
+  /** `argv` as it may be shown: the same command line, with every secret VALUE masked. */
   readonly display: readonly string[]
   readonly exitCode: number
   readonly stdout: string
@@ -36,10 +36,25 @@ export interface OutputPanel {
   readonly lines: readonly string[]
   readonly exitCode: number
   readonly scroll: number
+  /**
+   * First column of the lines the pane draws (owner tail Q24). The pane is 54
+   * columns on the terminal every emulator starts at, which is narrower than
+   * `server list`; `]` and `[` move this window over the rest.
+   */
+  readonly hScroll: number
   /** Whether stdout holds a token that vanishes with the alternate screen. */
   readonly holdsOneTimeToken: boolean
   readonly truncated: boolean
 }
+
+/** Columns one press of `]` or `[` moves the window sideways. */
+export const OUTPUT_HSCROLL_STEP = 8
+
+/** Drawn in the LAST column of a line the pane could not finish. */
+export const OUTPUT_CLIP_MARKER = '›'
+
+/** Drawn in the FIRST column of a line the pane starts part-way into. */
+export const OUTPUT_CLIP_LEFT_MARKER = '‹'
 
 /** Marks where the command's stdout ends and what it wrote to stderr begins. */
 export const STDERR_SEPARATOR = '— stderr —'
@@ -78,6 +93,7 @@ export function outputPanelOf(result: RunResult): OutputPanel {
     lines,
     exitCode: result.exitCode,
     scroll: 0,
+    hScroll: 0,
     holdsOneTimeToken: result.stdout.includes(ONE_TIME_TOKEN_MARKER),
     truncated: dropped > 0,
   }
@@ -102,4 +118,28 @@ export function scrollToEnd(panel: OutputPanel, pageRows: number): OutputPanel {
 /** Jumps back to the first line of the output. */
 export function scrollToStart(panel: OutputPanel): OutputPanel {
   return { ...panel, scroll: 0 }
+}
+
+/**
+ * The widest line the panel holds, command line included: the command is
+ * drawn in the same window as the output and scrolls with it.
+ */
+function maxLineWidthOf(panel: OutputPanel): number {
+  return panel.lines.reduce((widest, line) => Math.max(widest, line.length), panel.command.length)
+}
+
+/**
+ * Moves the window sideways by `steps` presses, clamped so it never starts
+ * before the first column nor past the end of the longest line — `]` at the
+ * right-hand end is a no-op rather than an endless drift into blank columns.
+ */
+export function scrollOutputSideways(
+  panel: OutputPanel,
+  steps: number,
+  paneWidth: number,
+): OutputPanel {
+  const furthest = Math.max(0, maxLineWidthOf(panel) - Math.max(0, paneWidth))
+  const hScroll = Math.min(Math.max(0, panel.hScroll + steps * OUTPUT_HSCROLL_STEP), furthest)
+
+  return hScroll === panel.hScroll ? panel : { ...panel, hScroll }
 }

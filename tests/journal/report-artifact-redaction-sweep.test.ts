@@ -2,6 +2,8 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { ADMIN_TOKEN_ENV_VAR } from '../../src/admin/constants.js'
+import { createAdminStore } from '../../src/admin/store.js'
 import { runExportCommand } from '../../src/cli/export-cmd.js'
 import { runKeygenCommand } from '../../src/cli/keygen-cmd.js'
 import { runPruneCommand } from '../../src/cli/prune-cmd.js'
@@ -188,7 +190,13 @@ describe('prune: no secret reaches the retention marker or the command output', 
     // really runs (and really signs a marker) rather than reporting nothing.
     const clock = () => Date.parse('2126-01-01T00:00:00.000Z')
     expect(await runPruneCommand(['--older-than', '30d'], io, { journalDir, clock })).toBe(0)
-    expect(await runPruneCommand(['--older-than', '30d', '--yes'], io, { journalDir, clock })).toBe(0)
+    // The deleting half needs an owner token since owner decision Q17; the
+    // sweep below covers the record it now writes as well as the marker.
+    const { token } = await createAdminStore({ journalDir }).createAdmin('alice', 'owner')
+    const env = { [ADMIN_TOKEN_ENV_VAR]: token }
+    expect(
+      await runPruneCommand(['--older-than', '30d', '--yes'], io, { journalDir, clock, env }),
+    ).toBe(0)
 
     const handle = await openJournalDbShared(journalDbPathFor(journalDir))
     const marker = latestPruneMarker(handle)

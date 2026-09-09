@@ -9,26 +9,28 @@ import {
   visibleSections,
 } from '../../src/tui/catalogue/index.js'
 import type { ActionSpec } from '../../src/tui/catalogue/types.js'
-import { formOf, valuesOf, type FormValues } from '../../src/tui/form.js'
 
 /**
- * The console's catalogue (phase 2, Task 6): the declarative sections the
- * console draws and the argv every action builds.
+ * The catalogue as the console reads it: the four pure lookups every screen is
+ * drawn from (phase 2, Task 6) and the eleven sections they now answer over
+ * (phase 4, Task 10).
  *
- * Two things are load-bearing here and both are asserted below. The role
- * thresholds mirror `ROUTE_TABLE` (`GET /admins` → owner), so a section that
- * a role may not use never reaches a frame; and every `argv` builder is a
- * pure function returning a FRESH array, because the runtime hands that array
- * to `dispatch` and a shared array would let one run rewrite the next one's
- * command line.
+ * What is load-bearing here is the SHAPE of the catalogue: which sections a
+ * role may open, in which order, and the full list of commands the console can
+ * run — the list `tests/tui/catalogue-parity.test.ts` subtracts from `USAGE`,
+ * so that a command still out of reach is a listed omission rather than one
+ * nobody noticed. The rules that must hold over every action of every section
+ * (fresh argv, no secret in a command line, widths) live one file over, in
+ * `catalogue-invariants.test.ts`; the meaning of each section lives in
+ * `catalogue-servers`, `catalogue-access` and `catalogue-journal`, and the
+ * shared field constructors in `catalogue-fields.test.ts`.
  */
 
-/** Every action of every section, regardless of role. */
-const ALL_ACTIONS: readonly ActionSpec[] = SECTIONS.flatMap((section) => section.actions)
-
-/** The values a freshly opened form of the action would carry. */
-function defaultValuesOf(action: ActionSpec): FormValues {
-  return valuesOf(formOf(action.fields))
+/** One action of the Admins section, the section this file speaks for. */
+function adminsActionOf(id: string): ActionSpec | undefined {
+  return SECTIONS.find((section) => section.id === 'admins')?.actions.find(
+    (action) => action.id === id,
+  )
 }
 
 /** `command` and `subcommand` as one comparable string. */
@@ -40,17 +42,45 @@ function sectionIdsFor(role: Role): readonly string[] {
   return visibleSections(role).map((section) => section.id)
 }
 
+/** The nine sections a role below owner may open, in catalogue order. */
+const READABLE_SECTIONS: readonly string[] = [
+  'home',
+  'servers',
+  'agents',
+  'groups',
+  'policy',
+  'quarantine',
+  'approvals',
+  'journal',
+  'audit',
+]
+
+/** All eleven, in the order the tab bar shows them. */
+const ALL_SECTIONS: readonly string[] = [
+  'home',
+  'admins',
+  'servers',
+  'vault',
+  'agents',
+  'groups',
+  'policy',
+  'quarantine',
+  'approvals',
+  'journal',
+  'audit',
+]
+
 describe('role thresholds mirror the UI route table', () => {
-  test('a viewer sees Home only', () => {
-    expect(sectionIdsFor('viewer')).toEqual(['home'])
+  test('a viewer sees every section except the two that only edit identities', () => {
+    expect(sectionIdsFor('viewer')).toEqual(READABLE_SECTIONS)
   })
 
-  test('an operator sees Home only: admin edits are owner work (GET /admins → owner)', () => {
-    expect(sectionIdsFor('operator')).toEqual(['home'])
+  test('an operator sees the same nine: Admins and Vault are owner work', () => {
+    expect(sectionIdsFor('operator')).toEqual(READABLE_SECTIONS)
   })
 
-  test('an owner sees Home and Admins, in that order', () => {
-    expect(sectionIdsFor('owner')).toEqual(['home', 'admins'])
+  test('an owner sees all eleven, in the order the tab bar draws them', () => {
+    expect(sectionIdsFor('owner')).toEqual(ALL_SECTIONS)
   })
 
   test('a section with no action the role may run is not shown at all', () => {
@@ -92,40 +122,11 @@ describe('role thresholds mirror the UI route table', () => {
   })
 })
 
-describe('every action names the command it runs', () => {
-  test('argv starts with the action’s own (command, subcommand)', () => {
-    for (const action of ALL_ACTIONS) {
-      const argv = action.argv(defaultValuesOf(action))
-      const head = action.subcommand === undefined ? [action.command] : [action.command, action.subcommand]
-
-      expect(argv.slice(0, head.length), `argv head of ${action.id}`).toEqual(head)
-    }
-  })
-
-  test('the id is the subcommand it runs (or the command, when there is none)', () => {
-    for (const action of ALL_ACTIONS) {
-      expect(action.id).toBe(action.subcommand ?? action.command)
-      expect(action.title).toBe(action.id)
-    }
-  })
-
-  test('argv returns a fresh array on every call: nothing shares a command line', () => {
-    for (const action of ALL_ACTIONS) {
-      const values = defaultValuesOf(action)
-      const first = action.argv(values)
-      const second = action.argv(values)
-
-      expect(second).not.toBe(first)
-      expect(second).toEqual(first)
-    }
-  })
-
+describe('the argv of the Admins section', () => {
   test('admin add builds the flags of `admin add <name> --role <role>`', () => {
-    const add = ALL_ACTIONS.find((action) => action.id === 'add')
-    expect(add).toBeDefined()
-    if (add === undefined) return
+    const add = adminsActionOf('add')
 
-    expect(add.argv({ name: 'bob', role: 'owner' })).toEqual([
+    expect(add?.argv({ name: 'bob', role: 'owner' })).toEqual([
       'admin',
       'add',
       'bob',
@@ -133,20 +134,10 @@ describe('every action names the command it runs', () => {
       'owner',
     ])
   })
-})
 
-describe('the actions that destroy something ask first', () => {
-  test('rotate and remove carry a confirm question, and only they do', () => {
-    const withConfirm = ALL_ACTIONS.filter((action) => action.confirm !== undefined).map(
-      (action) => action.id,
-    )
-
-    expect(withConfirm).toEqual(['rotate', 'remove'])
-  })
-
-  test('the question names the admin the operator typed', () => {
-    for (const action of ALL_ACTIONS.filter((each) => each.confirm !== undefined)) {
-      expect(action.confirm?.({ name: 'bob' })).toContain('bob')
+  test('the question of a destructive action names the admin the operator typed', () => {
+    for (const id of ['rotate', 'remove']) {
+      expect(adminsActionOf(id)?.confirm?.({ name: 'bob' }), id).toContain('bob')
     }
   })
 })
@@ -184,6 +175,7 @@ describe('the Home section', () => {
     expect(home?.intro[0]).toBe('Run an agent through the plane (outside this console):')
     expect(home?.intro.join('\n')).toContain('connect <server> --agent <name>')
     expect(home?.intro.join('\n')).toContain('wrap --server <name>')
+    expect(home?.intro.join('\n')).toContain('MCP_AGENT_TOKEN')
   })
 
   test('its only action is `status`, which is also its refresh', () => {
@@ -193,19 +185,84 @@ describe('the Home section', () => {
   })
 })
 
+/**
+ * Every command the console can run, in catalogue order — the six of phase 2
+ * and the forty-one of phase 4. Written out rather than derived, because this
+ * is the list the parity test subtracts from `USAGE`: a command that silently
+ * left the console must fail HERE, where it can be read, rather than turn the
+ * parity test's own omission list green by shrinking both sides at once.
+ */
+const CATALOGUE_PAIR_KEYS: readonly string[] = [
+  'status',
+  'admin list',
+  'admin add',
+  'admin rotate',
+  'admin role',
+  'admin remove',
+  'server list',
+  'server show',
+  'server add',
+  'server refresh',
+  'server remove',
+  'vault list',
+  'vault init',
+  'vault set',
+  'vault remove',
+  'vault rekey',
+  'agent list',
+  'agent create',
+  'agent grant',
+  'agent ungrant',
+  'agent revoke',
+  'group list',
+  'group show',
+  'group create',
+  'group remove',
+  'group grant',
+  'group ungrant',
+  'group join',
+  'group leave',
+  'policy show',
+  'policy validate',
+  'policy set',
+  'quarantine list',
+  'quarantine show',
+  'quarantine approve',
+  'quarantine reject',
+  'approvals list',
+  'approvals approve',
+  'approvals deny',
+  'sessions',
+  'show',
+  'export',
+  'verify',
+  'keygen',
+  'backup',
+  'prune',
+  'migrate',
+]
+
 describe('cataloguePairs', () => {
-  test('lists every (command, subcommand) the catalogue can run, without duplicates', () => {
+  test('lists every (command, subcommand) the catalogue can run, in catalogue order', () => {
     const keys = cataloguePairs().map(pairKeyOf)
 
-    expect(keys).toEqual([
-      'status',
-      'admin list',
-      'admin add',
-      'admin rotate',
-      'admin role',
-      'admin remove',
-    ])
+    expect(keys).toEqual(CATALOGUE_PAIR_KEYS)
+  })
+
+  test('no command is listed twice, however many actions wear it', () => {
+    const keys = cataloguePairs().map(pairKeyOf)
+
     expect(new Set(keys).size).toBe(keys.length)
+  })
+
+  test('the three forms of verify are one command, and the two exports another', () => {
+    const keys = cataloguePairs().map(pairKeyOf)
+    const ids = SECTIONS.flatMap((section) => section.actions.map((action) => action.id))
+
+    expect(ids).toEqual(expect.arrayContaining(['verify', 'verify-sign', 'verify-report']))
+    expect(keys.filter((key) => key === 'verify')).toHaveLength(1)
+    expect(ids).toEqual(expect.arrayContaining(['export', 'export-report']))
+    expect(keys.filter((key) => key === 'export')).toHaveLength(1)
   })
 
   test('deduplicates two actions that run the same command', () => {
@@ -232,8 +289,12 @@ describe('actionAt', () => {
     expect(actionAt(sections, 'owner', 0, 0)?.id).toBe('status')
   })
 
+  test('the last section is reachable: the cursor is not bounded by the phase-2 two', () => {
+    expect(actionAt(sections, 'owner', ALL_SECTIONS.length - 1, 0)?.id).toBe('export-report')
+  })
+
   test('an index outside the catalogue is undefined, not a crash', () => {
-    expect(actionAt(sections, 'owner', 9, 0)).toBeUndefined()
+    expect(actionAt(sections, 'owner', ALL_SECTIONS.length, 0)).toBeUndefined()
     expect(actionAt(sections, 'owner', 1, 9)).toBeUndefined()
     expect(actionAt(sections, 'owner', -1, 0)).toBeUndefined()
     expect(actionAt(sections, 'owner', 0, -1)).toBeUndefined()

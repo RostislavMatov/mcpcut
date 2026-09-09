@@ -5,6 +5,7 @@ import {
   SESSION_ENV_SEAMS,
   sessionEnvOf,
   withSeamEnv,
+  withSecretInput,
   withSessionToken,
 } from '../../src/tui/session-env.js'
 
@@ -43,7 +44,7 @@ function baseOptions(): DispatchOptions {
 }
 
 describe('SESSION_ENV_SEAMS', () => {
-  test('names the nine command seams that resolve an admin token', () => {
+  test('names the fifteen command seams that resolve an admin token', () => {
     expect(SESSION_ENV_SEAMS).toEqual([
       'approvals',
       'server',
@@ -54,6 +55,15 @@ describe('SESSION_ENV_SEAMS', () => {
       'services',
       'setup',
       'admin',
+      // Owner decision Q17 (2026-09-08): `quarantine approve|reject` and
+      // `prune --yes` are gated, and the four host operations record their
+      // actor when a token is present — all six read it from `env`.
+      'quarantine',
+      'prune',
+      'keygen',
+      'backup',
+      'migrate',
+      'verify',
     ])
   })
 
@@ -166,5 +176,76 @@ describe('sessionEnvOf', () => {
 
     expect(sessionEnvOf(base, 'mcpa_console')[ADMIN_TOKEN_ENV_VAR]).toBe('mcpa_console')
     expect(base[ADMIN_TOKEN_ENV_VAR]).toBe('mcpa_shell')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// withSecretInput (mcpcut phase 4, task 8)
+// ---------------------------------------------------------------------------
+
+/**
+ * The second seam of this module, and the second thing that must never reach
+ * a frame: the value of a secret. `vault set` reads it from stdin, so the
+ * console hands the vault seam a reader that answers with what the operator
+ * typed — the secret travels in a closure, never in argv (which the output
+ * pane prints back) and never in the model (which is what a frame is drawn
+ * from).
+ */
+describe('withSecretInput', () => {
+  test('the vault seam reads the secret instead of the process stdin', async () => {
+    const options = withSecretInput(baseOptions(), 'hunter2')
+
+    await expect(options.vault?.readSecretInput?.()).resolves.toBe('hunter2')
+  })
+
+  test('a secret with spaces and unicode arrives exactly as it was typed', async () => {
+    const secret = ' пароль with spaces — and a dash '
+
+    const options = withSecretInput(baseOptions(), secret)
+
+    await expect(options.vault?.readSecretInput?.()).resolves.toBe(secret)
+  })
+
+  test('keeps the other fields of the vault seam', () => {
+    const base: DispatchOptions = { vault: { journalDir: '/data/journal', env: { PATH: '/bin' } } }
+
+    const options = withSecretInput(base, 'hunter2')
+
+    expect(options.vault?.journalDir).toBe('/data/journal')
+    expect(options.vault?.env).toEqual({ PATH: '/bin' })
+  })
+
+  test('fills a vault seam the caller never set', async () => {
+    const options = withSecretInput({}, 'hunter2')
+
+    await expect(options.vault?.readSecretInput?.()).resolves.toBe('hunter2')
+  })
+
+  test('changes no other option', () => {
+    const options = withSecretInput(baseOptions(), 'hunter2')
+
+    expect(options.journalDir).toBe('/data/journal')
+    expect(options.admin).toEqual({ journalDir: '/data/journal' })
+    expect(options.services?.install).toEqual({
+      kind: 'absent',
+      path: '/home/alice/.mcpcut/config.json',
+    })
+  })
+
+  test('leaves the base untouched', () => {
+    const base = baseOptions()
+    const before = structuredClone(base)
+
+    withSecretInput(base, 'hunter2')
+
+    expect(structuredClone(base)).toEqual(before)
+    expect(base.vault?.readSecretInput).toBeUndefined()
+  })
+
+  test('the token seam and the secret seam compose without losing either', async () => {
+    const options = withSecretInput(withSessionToken(baseOptions(), SESSION_ENV), 'hunter2')
+
+    expect(options.vault?.env?.[ADMIN_TOKEN_ENV_VAR]).toBe('mcpa_session')
+    await expect(options.vault?.readSecretInput?.()).resolves.toBe('hunter2')
   })
 })

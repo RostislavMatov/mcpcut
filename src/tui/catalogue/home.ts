@@ -28,8 +28,9 @@ export const HOME_SECTION: SectionSpec = {
   minRole: 'viewer',
   intro: [
     'Run an agent through the plane (outside this console):',
-    `  ${CLI_NAME} connect <server> --agent <name>   # MCP_AGENT_TOKEN in the agent's environment`,
+    `  ${CLI_NAME} connect <server> --agent <name>`,
     `  ${CLI_NAME} wrap --server <name> -- <command…>`,
+    'MCP_AGENT_TOKEN goes in the agent’s own environment.',
   ],
   actions: [statusAction],
   refreshActionId: 'status',

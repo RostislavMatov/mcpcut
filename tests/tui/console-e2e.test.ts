@@ -1,36 +1,35 @@
-import { EventEmitter } from 'node:events'
-import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { ADMIN_TOKEN_PREFIX } from '../../src/admin/constants.js'
 import { createAdminStore, type AdminStore } from '../../src/admin/store.js'
-import { dispatch } from '../../src/cli.js'
-import { ACCESS_EDIT_SESSION_ID } from '../../src/journal/access-edit-record.js'
-import type { CliIo, DispatchOptions } from '../../src/cli/dispatch-types.js'
-import { runTui } from '../../src/cli/tui-cmd.js'
-import type { UiCliIo } from '../../src/cli/ui-constants.js'
-import type { ServiceName } from '../../src/services/constants.js'
-import type {
-  ServiceManager,
-  ServiceStatus,
-  StartResult,
-  StopResult,
-} from '../../src/services/manager.js'
 import { CLI_NAME } from '../../src/setup/constants.js'
-import { defaultInstallConfig } from '../../src/setup/defaults.js'
-import type { InstallConfigLoad } from '../../src/setup/load.js'
-import { plainStyle } from '../../src/tui/ansi.js'
 import {
   ACTIVE_MARKER,
   EXIT_OK,
-  QUIT_WITH_TOKEN_QUESTION,
   SESSION_LOST_NOTICE,
   SIGNIN_TITLE,
   SIGNIN_UNKNOWN_TOKEN_NOTICE,
 } from '../../src/tui/constants.js'
-import { readJournalRecords } from '../support/journal-rows.js'
-import { createFakeTerminal, waitForScreen, type FakeTerminal } from './support/fake-terminal.js'
+import {
+  accessRecords,
+  closeConsoles,
+  DOWN_KEY,
+  ENTER,
+  INTERRUPT,
+  NO_KEY,
+  openConsole,
+  QUIT_KEY,
+  REFRESH_KEY,
+  RIGHT_ARROW,
+  signIn,
+  storeBytes,
+  TAB,
+  tabsLineOf,
+  YES_KEY,
+} from './support/console-harness.js'
+import { waitForScreen } from './support/fake-terminal.js'
 
 /**
  * The console end to end (mcpcut phase 2, task 17): a real terminal's worth of
@@ -62,28 +61,23 @@ import { createFakeTerminal, waitForScreen, type FakeTerminal } from './support/
  * Every assertion is reached through `waitForScreen` rather than a sleep: a
  * keystroke becomes a frame only after a decode, a reducer step and, for
  * anything that runs a command, a whole CLI invocation.
+ *
+ * The stand is `./support/console-harness.js`, shared with the phase-4 suites
+ * (phase-4 test-hygiene tail). It was extracted FROM this file; the keys
+ * pressed below are the same keys, now named in one place. Unlike those
+ * suites, the steps here are spelled out key by key rather than driven through
+ * `goToSection`/`runAction`: what this file asserts IS the keystroke-to-frame
+ * path, so a helper that waited for the right frame on its own would be
+ * assuming the thing under test.
  */
 
 /**
  * The default size a terminal reports nothing for. The right-hand pane owns
- * `columns - ACTION_COLUMN_WIDTH - COLUMN_GAP` = 54 columns here, so the quit
- * question wraps onto two lines — which is why the waits below look for its
- * last words rather than the whole sentence.
+ * `columns - ACTION_COLUMN_WIDTH - COLUMN_GAP` = 54 columns at the harness's
+ * 80, so the quit question wraps onto two lines — which is why the waits below
+ * look for its last words rather than the whole sentence.
  */
-const CONSOLE_COLUMNS = 80
-const CONSOLE_ROWS = 24
-
-/** The tail of `QUIT_WITH_TOKEN_QUESTION`, which survives wrapping intact. */
 const QUIT_QUESTION_TAIL = 'Quit anyway? [y/N]'
-
-/** Short enough to keep a lone `Esc` quick; the console ships with 100. */
-const ESCAPE_TIMEOUT_MS = 10
-
-/** How long a test waits for a console it asked to close. */
-const CLOSE_TIMEOUT_MS = 2_000
-
-/** Where the install config would live; nothing reads the file itself here. */
-const CONFIG_PATH = '/home/op/.mcpcut/config.json'
 
 /** The owner every test signs in as, and the admin it creates through the UI. */
 const OWNER_NAME = 'root'
@@ -100,23 +94,15 @@ const BOGUS_TOKEN = `${ADMIN_TOKEN_PREFIX}Yki8n0tArEa1t0k3n_atAll-nope0000000000
  */
 const ROLE_CHOICE_WIDGET = '‹ owner ›'
 
-/** The keys the tests press, named so the steps read as steps. */
-const ENTER = '\r'
-const INTERRUPT = '\x03'
-const RIGHT_ARROW = '\x1b[C'
-const TAB = '\t'
-const ADMINS_SECTION_KEY = '2'
-const DOWN_KEY = 'j'
-const REFRESH_KEY = 'r'
-const QUIT_KEY = 'q'
-const YES_KEY = 'y'
-const NO_KEY = 'n'
+/**
+ * The second tab. Under an owner that is Admins; under a role that cannot see
+ * Admins the same digit lands on Servers, which is exactly what one of the
+ * tests below is about — so it is ONE constant, not two spellings of `'2'`.
+ */
+const SECOND_SECTION_KEY = '2'
 
 let journalDir: string
 let store: AdminStore
-
-/** Every console a test opened, so none of them outlives it. */
-const opened: RunningConsole[] = []
 
 beforeEach(async () => {
   journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-console-e2e-'))
@@ -124,188 +110,14 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
-  for (const app of opened.splice(0)) await app.close()
+  await closeConsoles()
   await rm(journalDir, { recursive: true, force: true })
 })
-
-// ---------------------------------------------------------------------------
-// Harness
-// ---------------------------------------------------------------------------
-
-interface FakeIo extends UiCliIo {
-  err(): string
-}
-
-function fakeIo(): FakeIo {
-  const errChunks: string[] = []
-  return {
-    stdout: { write: () => undefined },
-    stderr: { write: (chunk: string) => errChunks.push(chunk) },
-    err: () => errChunks.join(''),
-  }
-}
-
-/** A service manager that reports both services up, as `dispatch.test.ts` does. */
-function runningManager(): ServiceManager {
-  const statusOf = (service: ServiceName): ServiceStatus => ({
-    service,
-    state: 'running',
-    host: '127.0.0.1',
-    port: service === 'ui' ? 8091 : 8090,
-    pid: 42,
-    logPath: `${journalDir}/run/${service}.log`,
-  })
-
-  return {
-    start: async (service): Promise<StartResult> => ({
-      kind: 'already-running',
-      status: statusOf(service),
-    }),
-    stop: async (): Promise<StopResult> => ({ kind: 'not-running' }),
-    status: async (service) => statusOf(service),
-    logs: async () => ['a log line'],
-  }
-}
-
-interface RunningConsole {
-  readonly fake: FakeTerminal
-  /** Resolves with the console's exit code; never rejects. */
-  readonly exit: Promise<number>
-  /** Every argv the console handed the dispatcher, in order. */
-  argvCalls(): readonly (readonly string[])[]
-  errText(): string
-  /** Asks the console to leave and waits for it, however the test ended. */
-  close(): Promise<void>
-}
-
-/**
- * Opens a console over the temp journal directory, wired to the real
- * dispatcher through a wrapper that records what it was asked to run — the
- * only way to assert that a secret never travelled in argv is to keep every
- * argv there was.
- */
-function openConsole(): RunningConsole {
-  const fake = createFakeTerminal({ columns: CONSOLE_COLUMNS, rows: CONSOLE_ROWS })
-  const processEvents = new EventEmitter()
-  const io = fakeIo()
-  const calls: Array<readonly string[]> = []
-
-  const install: InstallConfigLoad = {
-    kind: 'ok',
-    path: CONFIG_PATH,
-    config: defaultInstallConfig(journalDir),
-  }
-
-  const recordingDispatch = async (
-    argv: readonly string[],
-    commandIo: CliIo,
-    options?: DispatchOptions,
-  ): Promise<number> => {
-    calls.push([...argv])
-    return dispatch(argv, commandIo, options)
-  }
-
-  const exit = runTui([], io, {
-    entry: 'explicit',
-    isTty: true,
-    terminal: fake.terminal,
-    style: plainStyle,
-    processEvents,
-    escapeCodeTimeoutMs: ESCAPE_TIMEOUT_MS,
-    install,
-    journalDir,
-    env: {},
-    dispatch: recordingDispatch,
-    dispatchOptions: {
-      admin: { journalDir },
-      services: { manager: runningManager(), install },
-    },
-  })
-
-  const running: RunningConsole = {
-    fake,
-    exit,
-    argvCalls: () => calls.map((argv) => [...argv]),
-    errText: () => io.err(),
-    close: async () => {
-      fake.type(INTERRUPT)
-      if (await settledWithin(exit, CLOSE_TIMEOUT_MS)) return
-      // A console wedged mid-effect still has to let go of the test runner.
-      processEvents.emit('SIGTERM')
-      await exit.catch(() => undefined)
-    },
-  }
-  opened.push(running)
-  return running
-}
-
-/** Whether a promise settled inside the deadline, without rejecting the wait. */
-async function settledWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
-  let timer: NodeJS.Timeout | undefined
-  const deadline = new Promise<boolean>((resolve) => {
-    timer = setTimeout(() => resolve(false), timeoutMs)
-    timer.unref()
-  })
-
-  try {
-    return await Promise.race([promise.then(() => true, () => true), deadline])
-  } finally {
-    if (timer !== undefined) clearTimeout(timer)
-  }
-}
-
-/** The current frame as lines, so a test can read the tab bar by its row. */
-function screenLines(fake: FakeTerminal): readonly string[] {
-  return fake.screen().split('\n')
-}
-
-/** The tab bar: the second row of the main screen, without its padding. */
-function tabsLineOf(fake: FakeTerminal): string {
-  return (screenLines(fake)[1] ?? '').trimEnd()
-}
-
-/** Signs in with `token` and waits for the header that says who is signed in. */
-async function signIn(
-  app: RunningConsole,
-  token: string,
-  name: string,
-  role: string,
-): Promise<void> {
-  const { fake } = app
-  await waitForScreen(fake, (screen) => screen.includes(SIGNIN_TITLE), 'the sign-in screen')
-  fake.type(`${token}${ENTER}`)
-  await waitForScreen(
-    fake,
-    (screen) => screen.includes(`${name} (${role})`),
-    `the header naming ${name}`,
-  )
-}
-
-/** The `access-edit` records the console's commands left, in commit order. */
-async function accessRecords(): Promise<Array<Record<string, unknown>>> {
-  const records = await readJournalRecords(journalDir, ACCESS_EDIT_SESSION_ID)
-  return records.map((record) => record.payload as Record<string, unknown>)
-}
-
-/** Everything on disk under the journal directory, as bytes a search can scan. */
-async function storeBytes(): Promise<string> {
-  const entries = await readdir(journalDir, { recursive: true, withFileTypes: true })
-  const files = entries.filter((entry) => entry.isFile())
-  const contents = await Promise.all(
-    files.map((entry) => readFile(join(entry.parentPath, entry.name), 'latin1')),
-  )
-
-  return contents.join('\n')
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 describe('console end to end: sign in, add an admin, list, quit', () => {
   test('runs the whole path through the real dispatcher', async () => {
     const { token } = await store.createAdmin(OWNER_NAME, 'owner')
-    const app = openConsole()
+    const app = openConsole(journalDir)
     const { fake } = app
 
     await signIn(app, token, OWNER_NAME, 'owner')
@@ -313,13 +125,18 @@ describe('console end to end: sign in, add an admin, list, quit', () => {
     // dispatcher: the console is a client of the service manager, not a copy.
     await waitForScreen(fake, (screen) => screen.includes('ui ●'), 'the services header')
 
-    fake.type(ADMINS_SECTION_KEY)
+    fake.type(SECOND_SECTION_KEY)
     await waitForScreen(
       fake,
       (screen) => screen.includes(`${ACTIVE_MARKER}list`),
       'the Admins section',
     )
-    expect(tabsLineOf(fake)).toBe('1 Home  2 Admins')
+    // Eleven owner sections do not fit 80 columns, so the bar is a window
+    // (`tabs.ts`): it holds the tab that was just opened and marks each side
+    // it scrolled past. Admins is the second of eleven, so `1 Home` is behind
+    // the left marker and the window runs rightwards from the active tab.
+    expect(tabsLineOf(fake)).toMatch(/^‹ 2 Admins {2}3 Servers/)
+    expect(tabsLineOf(fake)).toContain('8 Quarantine')
 
     fake.type(DOWN_KEY)
     await waitForScreen(fake, (screen) => screen.includes(`${ACTIVE_MARKER}add`), 'the add action')
@@ -358,14 +175,14 @@ describe('console end to end: sign in, add an admin, list, quit', () => {
     // a frame, never reached an argv, and no plaintext token reached disk.
     expect(fake.frames().every((frame) => !frame.includes(token))).toBe(true)
     expect(app.argvCalls().flat().every((argument) => !argument.includes(token))).toBe(true)
-    const onDisk = await storeBytes()
+    const onDisk = await storeBytes(journalDir)
     // Guard the guard: a scan that read nothing would pass the next line for
     // the wrong reason, so first prove it found the record it is scanning.
     expect(onDisk).toContain(NEW_ADMIN_NAME)
     expect(onDisk).not.toContain(ADMIN_TOKEN_PREFIX)
 
     // ...and what it DID buy: the journal names the operator who ran the add.
-    expect(await accessRecords()).toEqual([
+    expect(await accessRecords(journalDir)).toEqual([
       {
         actor: { adminName: OWNER_NAME, role: 'owner', via: 'cli' },
         action: 'admin.add',
@@ -416,11 +233,11 @@ describe('console end to end: sign in, add an admin, list, quit', () => {
 
   test('answering the quit question with y leaves and restores the terminal', async () => {
     const { token } = await store.createAdmin(OWNER_NAME, 'owner')
-    const app = openConsole()
+    const app = openConsole(journalDir)
     const { fake } = app
 
     await signIn(app, token, OWNER_NAME, 'owner')
-    fake.type(ADMINS_SECTION_KEY)
+    fake.type(SECOND_SECTION_KEY)
     await waitForScreen(
       fake,
       (screen) => screen.includes(`${ACTIVE_MARKER}list`),
@@ -453,7 +270,7 @@ describe('console end to end: sign in, add an admin, list, quit', () => {
 describe('console end to end: session freshness', () => {
   test('a token rotated from outside ends the session at the next action', async () => {
     const { token } = await store.createAdmin(OWNER_NAME, 'owner')
-    const app = openConsole()
+    const app = openConsole(journalDir)
     const { fake } = app
 
     await signIn(app, token, OWNER_NAME, 'owner')
@@ -479,9 +296,9 @@ describe('console end to end: session freshness', () => {
 })
 
 describe('console end to end: role', () => {
-  test('a viewer sees only Home, and the Admins key does nothing', async () => {
+  test('a viewer gets the reading sections, never Admins, and 2 opens Servers', async () => {
     const { token } = await store.createAdmin('watcher', 'viewer')
-    const app = openConsole()
+    const app = openConsole(journalDir)
     const { fake } = app
 
     await signIn(app, token, 'watcher', 'viewer')
@@ -490,17 +307,21 @@ describe('console end to end: role', () => {
       (screen) => screen.includes(`${ACTIVE_MARKER}status`),
       'the Home section',
     )
-    expect(tabsLineOf(fake)).toBe('1 Home')
+    // The owner-only sections are not merely refused to a viewer: the tab bar
+    // never numbers them, so this role's digit 2 is Servers, not Admins.
+    expect(tabsLineOf(fake)).toMatch(/^1 Home {2}2 Servers {2}3 Agents/)
+    expect(tabsLineOf(fake)).not.toContain('Admins')
+    expect(tabsLineOf(fake)).not.toContain('Vault')
 
-    const framesBefore = fake.frames().length
-    const screenBefore = fake.screen()
-    fake.type(ADMINS_SECTION_KEY)
-    // The keystroke is answered — a frame is drawn — but it names no section
-    // this role can see, so the frame is the same one.
-    await waitForScreen(fake, () => fake.frames().length > framesBefore, 'the next frame')
+    fake.type(SECOND_SECTION_KEY)
+    await waitForScreen(
+      fake,
+      (screen) => screen.includes(`${ACTIVE_MARKER}list`),
+      'the Servers section',
+    )
 
-    expect(fake.screen()).toBe(screenBefore)
-    expect(tabsLineOf(fake)).toBe('1 Home')
+    expect(tabsLineOf(fake)).not.toContain('Admins')
+    expect(app.argvCalls().every((argv) => argv[0] !== 'admin')).toBe(true)
 
     fake.type(INTERRUPT)
 
@@ -512,7 +333,7 @@ describe('console end to end: role', () => {
 describe('console end to end: sign-in failures', () => {
   test('a token belonging to nobody is refused and the console stays open', async () => {
     const { token } = await store.createAdmin(OWNER_NAME, 'owner')
-    const app = openConsole()
+    const app = openConsole(journalDir)
     const { fake } = app
 
     await waitForScreen(fake, (screen) => screen.includes(SIGNIN_TITLE), 'the sign-in screen')

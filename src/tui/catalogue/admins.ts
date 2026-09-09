@@ -69,7 +69,7 @@ const addAction: ActionSpec = {
   subcommand: 'add',
   fields: [nameField, roleField],
   argv: (values) => ['admin', 'add', valueOf(values, 'name'), '--role', valueOf(values, 'role')],
-  hint: 'prints the new admin’s token once — copy it before leaving the screen',
+  hint: 'prints the admin’s token once — copy it before leaving',
 }
 
 const rotateAction: ActionSpec = {
@@ -111,8 +111,9 @@ export const ADMINS_SECTION: SectionSpec = {
   title: 'Admins',
   minRole: 'owner',
   intro: [
-    'Named admins of this installation: each one carries a personal token,',
-    'and every decision they make is recorded under their name.',
+    'Named admins of this installation: each one carries',
+    'a personal token, and every decision they make is',
+    'recorded under their name.',
   ],
   actions: [listAction, addAction, rotateAction, roleAction, removeAction],
   refreshActionId: 'list',

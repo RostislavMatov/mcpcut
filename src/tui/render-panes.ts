@@ -1,11 +1,12 @@
 import { CLI_NAME } from '../setup/constants.js'
 import { fitWidth, padRight, sanitizeLine, type Style } from './ansi.js'
 import { visibleActions } from './catalogue/index.js'
+import type { ActionSpec } from './catalogue/types.js'
 import {
   ACTIVE_MARKER,
   CARET,
   CONSOLE_TITLE,
-  exitLine,
+  FIELD_LABEL_MAX_WIDTH,
   FOOTER_ROWS,
   HELP_LINES,
   INACTIVE_MARKER,
@@ -15,8 +16,9 @@ import {
   SIGNIN_TOKEN_LABEL,
 } from './constants.js'
 import type { FieldState, Form } from './form.js'
+import { blankRows, fillTo } from './layout.js'
 import type { MainScreen, RunRequest, Screen, SigninScreen, TerminalSize } from './model.js'
-import type { OutputPanel } from './output.js'
+import { outputLines } from './render-output.js'
 
 /**
  * The right-hand pane of the main screen, and the whole of the sign-in screen
@@ -56,23 +58,6 @@ const CONFIRM_ANSWER_LINE = 'y/N'
 /** Prefix of the line naming the command currently in flight. */
 const RUNNING_PREFIX = 'running: $ '
 
-/** Rows the output pane keeps for the command line and for the exit line. */
-const OUTPUT_COMMAND_ROWS = 1
-const OUTPUT_EXIT_ROWS = 1
-
-/** Blank lines, each exactly `width` wide. */
-export function blankRows(count: number, width: number): readonly string[] {
-  return Array.from({ length: Math.max(0, count) }, () => padRight('', width))
-}
-
-/** Cuts to `rows` lines, padding with blanks when there are too few. */
-export function fillTo(lines: readonly string[], rows: number, width: number): readonly string[] {
-  if (rows <= 0) return []
-  if (lines.length >= rows) return lines.slice(0, rows)
-
-  return [...lines, ...blankRows(rows - lines.length, width)]
-}
-
 /**
  * The right-hand pane: the run in flight on top, then whatever the pane kind
  * shows. The running line is prepended here rather than inside each pane so
@@ -106,7 +91,7 @@ function paneBody(
   const { pane } = screen
   switch (pane.kind) {
     case 'actions':
-      return actionsPane(screen, width, rows)
+      return actionsPane(screen, width, rows, style)
     case 'form':
       return formPane(screen, pane.actionId, pane.form, width, rows, style)
     case 'confirm':
@@ -158,34 +143,48 @@ export function plainPane(lines: readonly string[], width: number, rows: number)
   )
 }
 
+/** Rows the hint of an action takes under a section intro: a blank one, then itself. */
+const HINT_ROWS = 2
+
 /**
  * What the pane shows between runs: the finished output, or — before anything
- * has been run — the section's own introduction.
+ * has been run — the section's introduction, closed by the hint of whichever
+ * action the cursor is resting on (owner tail Q19).
+ *
+ * The two hint rows are reserved BEFORE the intro is cut, the way the wizard
+ * reserves its token band: a section whose intro fills the pane would
+ * otherwise push the hint off the bottom exactly when the pane is busiest.
  */
-function actionsPane(screen: MainScreen, width: number, rows: number): readonly string[] {
-  if (screen.output === undefined) {
-    return plainPane(screen.sections[screen.sectionIndex]?.intro ?? [], width, rows)
-  }
+function actionsPane(
+  screen: MainScreen,
+  width: number,
+  rows: number,
+  style: Style,
+): readonly string[] {
+  const { output } = screen
+  if (output !== undefined) return outputLines(output, width, rows)
 
-  return outputLines(screen.output, width, rows)
+  const intro = screen.sections[screen.sectionIndex]?.intro ?? []
+  const hint = actionUnderCursor(screen)?.hint
+  if (hint === undefined) return plainPane(intro, width, rows)
+
+  const head = intro.slice(0, Math.max(0, rows - HINT_ROWS)).map((line) => padRight(line, width))
+
+  return fillTo([...head, padRight('', width), style.dim(padRight(hint, width))], rows, width)
+}
+
+/** The action the action column is pointing at, if the cursor is on a real one. */
+function actionUnderCursor(screen: MainScreen): ActionSpec | undefined {
+  const section = screen.sections[screen.sectionIndex]
+  if (section === undefined) return undefined
+
+  return visibleActions(section, screen.session.role)[screen.actionIndex]
 }
 
 /**
- * The output of a finished run. The exit line owns the LAST row of the pane
- * rather than following the text, so scrolling through a long output never
- * scrolls the verdict off the screen.
+ * The form of an action: its title, the action's hint under it when it has
+ * one (owner tail Q19), then one row per field.
  */
-export function outputLines(output: OutputPanel, width: number, rows: number): readonly string[] {
-  if (rows <= 0) return []
-
-  const available = Math.max(0, rows - OUTPUT_COMMAND_ROWS - OUTPUT_EXIT_ROWS)
-  const shown = output.lines.slice(output.scroll, output.scroll + available)
-  const head = [output.command, ...shown].map((line) => padRight(line, width))
-
-  return [...fillTo(head, rows - OUTPUT_EXIT_ROWS, width), padRight(exitLine(output.exitCode), width)]
-}
-
-/** The form of an action: its title, then one row per field. */
 function formPane(
   screen: MainScreen,
   actionId: string,
@@ -194,13 +193,30 @@ function formPane(
   rows: number,
   style: Style,
 ): readonly string[] {
-  const title = actionTitleOf(screen, actionId)
+  const action = actionOf(screen, actionId)
+  const hint = action?.hint
+  const head = [
+    padRight(action?.title ?? '', width),
+    ...(hint === undefined ? [] : [style.dim(padRight(hint, width))]),
+  ]
 
   return fillTo(
-    [padRight(title, width), ...fieldLines(form, width, rows - 1, style)],
+    [...head, ...fieldLines(form, width, rows - head.length, style, labelWidthOf(form))],
     rows,
     width,
   )
+}
+
+/**
+ * How wide the label column of a form is: as wide as its longest label, never
+ * narrower than the phase-2 default (so short forms keep the look they had)
+ * and never wider than `FIELD_LABEL_MAX_WIDTH` — one long label must not push
+ * every value off a narrow terminal.
+ */
+function labelWidthOf(form: Form): number {
+  const longest = Math.max(FIELD_LABEL_WIDTH, ...form.fields.map((field) => field.spec.label.length))
+
+  return Math.min(FIELD_LABEL_MAX_WIDTH, longest)
 }
 
 /**
@@ -226,12 +242,12 @@ export function fieldLines(
     .map((field, index) => fieldLine(field, first + index === form.focus, width, style, labelWidth))
 }
 
-/** The title of the action the pane belongs to — by id, the same key the reducer runs it by. */
-function actionTitleOf(screen: MainScreen, actionId: string): string {
+/** The action the pane belongs to — by id, the same key the reducer runs it by. */
+function actionOf(screen: MainScreen, actionId: string): ActionSpec | undefined {
   const section = screen.sections[screen.sectionIndex]
-  if (section === undefined) return ''
+  if (section === undefined) return undefined
 
-  return visibleActions(section, screen.session.role).find((action) => action.id === actionId)?.title ?? ''
+  return visibleActions(section, screen.session.role).find((action) => action.id === actionId)
 }
 
 /**

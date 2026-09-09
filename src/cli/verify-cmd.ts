@@ -14,7 +14,8 @@ import { withConsistentReadView } from '../journal/report-stream.js'
 import { isValidSessionId } from '../journal/session-id.js'
 import { SIGNING_PUB_FILENAME } from '../journal/signing.js'
 import { runReportVerification } from './verify-report.js'
-import { attemptSignChainHead } from './verify-sign.js'
+import { adminOf, resolveHostOpActor } from './host-op-write.js'
+import { attemptSignChainHead, recordVerifySign, VERIFY_SIGN_REFUSAL } from './verify-sign.js'
 
 /**
  * `mcp-journal verify [--session <id>]` -- the operator/auditor-facing half
@@ -45,6 +46,11 @@ export interface VerifyCliIo {
 /** Test seam: journal directory override. */
 export interface VerifyCommandOptions {
   readonly journalDir?: string
+  /**
+   * Environment holding an OPTIONAL `MCP_ADMIN_TOKEN`. Only `--sign` reads it
+   * (owner decision Q17): a plain `verify` changes nothing and names nobody.
+   */
+  readonly env?: NodeJS.ProcessEnv
 }
 
 /**
@@ -193,6 +199,12 @@ export async function runVerifyCommand(
     return EXIT_USAGE_ERROR
   }
 
+  // Q17: `--sign` records its actor when a token is present. Resolved BEFORE
+  // the chain is walked, so an unusable token is reported instead of an
+  // anchor nobody can be tied to.
+  const signer = values.sign === true ? await resolveHostOpActor(io, opts, VERIFY_SIGN_REFUSAL) : null
+  if (signer?.kind === 'refused') return EXIT_USAGE_ERROR
+
   const sessionId = values.session
   if (sessionId !== undefined && !isValidSessionId(sessionId)) {
     io.stderr.write(
@@ -257,6 +269,9 @@ export async function runVerifyCommand(
       return EXIT_USAGE_ERROR
     }
     io.stdout.write(signOutcome.message)
+    if (signOutcome.keyFingerprint !== undefined && signer !== null) {
+      await recordVerifySign(io, opts, adminOf(signer), signOutcome.keyFingerprint)
+    }
   }
 
   return result.break === null ? EXIT_OK : EXIT_CHAIN_BROKEN

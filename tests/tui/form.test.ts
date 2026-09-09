@@ -301,6 +301,27 @@ describe('validateForm', () => {
     expect(isValid(validated)).toBe(false)
   })
 
+  /** A required field with no check of its own: only `required` decides. */
+  const plainRequired: FieldSpec = { name: 'dest', label: 'Dest', kind: 'text', required: true }
+
+  test('a required field holding only whitespace reads as required too', () => {
+    // Arrange: what a stray space, a tab or a pasted newline leaves behind.
+    const form: Form = { fields: [{ spec: plainRequired, value: ' \t ' }], focus: 0 }
+
+    // Act
+    const validated = validateForm(form)
+
+    // Assert
+    expect(validated.fields[0]?.error).toBe('required')
+    expect(isValid(validated)).toBe(false)
+  })
+
+  test('a required field whose value is merely padded is still filled in', () => {
+    const form: Form = { fields: [{ spec: plainRequired, value: ' /tmp/out ' }], focus: 0 }
+
+    expect(validateForm(form).fields[0]?.error).toBeUndefined()
+  })
+
   test('a value that fails its own check carries the check as the message', () => {
     // Arrange
     const form = type(formOf([nameField]), 'Bad Name')
