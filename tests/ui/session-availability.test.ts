@@ -380,6 +380,7 @@ function loginHarness(opts: {
   readonly maxFailures: number
   readonly globalMaxFailures: number
   readonly maxConcurrentPenalties: number
+  readonly afterSignIn?: LoginFlowDeps['afterSignIn']
 }) {
   const owner: AdminRecord = admin('flow-owner', 'owner')
   const warnings: string[] = []
@@ -397,6 +398,7 @@ function loginHarness(opts: {
     stderr: { write: (chunk: string) => warnings.push(chunk) },
     sleep: sleeps.sleep,
     penaltyGate: createPenaltyGate({ maxConcurrent: opts.maxConcurrentPenalties }),
+    ...(opts.afterSignIn !== undefined ? { afterSignIn: opts.afterSignIn } : {}),
   }
   return {
     deps,
@@ -492,5 +494,76 @@ describe('the penalty delay must not sit inside the per-key decision', () => {
     for (let i = 0; i < 10; i += 1) {
       expect(statusOf(await h.attempt('203.0.113.20', GOOD_TOKEN)), `login #${i + 1}`).toBe(303)
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The after-sign-in hook (phase 6, F6): the first successful login removes the
+// bootstrap token file. Whatever that hook does or fails to do, the HTTP answer
+// is the same bytes — a sign-in must never fail because a file could not be
+// unlinked — and the hook never runs for a login that was refused.
+// ---------------------------------------------------------------------------
+
+describe('afterSignIn runs after the session exists and never changes the answer', () => {
+  const KEY = '10.1.1.1'
+  const BASE = { maxFailures: 5, globalMaxFailures: 100, maxConcurrentPenalties: 4 }
+
+  test('a throwing hook leaves the response byte-identical and writes one stderr line', async () => {
+    const plain = loginHarness(BASE)
+    const throwing = loginHarness({
+      ...BASE,
+      afterSignIn: async () => {
+        // A control character in the message: the stderr line must be
+        // terminal-safe like every other diagnostic this plane prints.
+        throw new Error('unlink\tfailed')
+      },
+    })
+
+    const expected = await plain.attempt(KEY, GOOD_TOKEN)
+    const actual = await throwing.attempt(KEY, GOOD_TOKEN)
+
+    if (expected.kind !== 'response' || actual.kind !== 'response') throw new Error('expected responses')
+    expect(actual.status).toBe(expected.status)
+    // The cookie carries a fresh session id per harness; every other header
+    // and the absence of a body must match exactly.
+    expect(Object.keys(actual.headers ?? {})).toEqual(Object.keys(expected.headers ?? {}))
+    expect(actual.headers?.['location']).toBe(expected.headers?.['location'])
+    expect(actual.body).toBe(expected.body)
+    expect(plain.warnings()).toBe('')
+    expect(throwing.warnings()).toMatch(/^\[ui\] after sign-in: unlink\S+failed\n$/)
+    expect(throwing.warnings()).not.toContain('\t')
+  })
+
+  test('the hook receives the signed-in admin and is not called for a refused login', async () => {
+    const seen: string[] = []
+    const harness = loginHarness({
+      ...BASE,
+      afterSignIn: async (signedIn) => {
+        seen.push(signedIn.name)
+      },
+    })
+
+    expect(statusOf(await harness.attempt(KEY, BAD_TOKEN))).toBe(401)
+    expect(seen).toEqual([])
+
+    expect(statusOf(await harness.attempt(KEY, GOOD_TOKEN))).toBe(303)
+    expect(seen).toEqual(['flow-owner'])
+  })
+
+  test('a throwing hook does not count against the rate limit', async () => {
+    const harness = loginHarness({
+      ...BASE,
+      maxFailures: 2,
+      afterSignIn: async () => {
+        throw new Error('boom')
+      },
+    })
+
+    // Three successful sign-ins on a key allowed two failures: were the hook's
+    // throw counted as a failure, the third would be a 429.
+    for (let i = 0; i < 3; i += 1) {
+      expect(statusOf(await harness.attempt(KEY, GOOD_TOKEN))).toBe(303)
+    }
+    expect(harness.rateLimiter.allow(KEY)).toBe(true)
   })
 })

@@ -560,6 +560,7 @@ describe('render: the footer of a run in flight', () => {
 
     expect(lines.at(-1)).toBe(padRight(RUNNING_HELP_FOOTER, DEFAULT_SIZE.columns))
     expect(RUNNING_HELP_FOOTER).toContain('Ctrl-C')
+    expect(RUNNING_HELP_FOOTER).toContain('queued')
   })
 })
 

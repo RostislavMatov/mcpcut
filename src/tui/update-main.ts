@@ -23,6 +23,7 @@ import {
   updateFormPane,
   requestOf,
 } from './update-form.js'
+import { replayPending } from './update-keys.js'
 import { updateLive } from './update-live.js'
 import { signedOut } from './update-signin.js'
 import {
@@ -76,11 +77,17 @@ export function updateMain(model: Model, screen: MainScreen, msg: Msg): Step {
       // the next `r`, Enter or poll would take the only copy of it away, so the
       // pane holds until somebody says they saved it (PRD C6, plan P2).
       const panel = outputPanelOf(msg.result)
-      return withMain(model, screen, {
+      const answered = withMain(model, screen, {
         pane: panel.holdsOneTimeToken ? TOKEN_HOLD_PANE : ACTIONS_PANE,
         busy: undefined,
         output: panel,
+        pendingKeys: undefined,
       })
+
+      // The keys typed during the run are fed to the screen the answer built
+      // (phase 6, F5); `replayPending` feeds none into a token hold — the
+      // queue is already gone from the screen, and the fold leaves it gone.
+      return replayPending(answered, screen.pendingKeys ?? [], applyKey)
     }
     case 'services':
       return withMain(model, screen, { services: msg.statuses })

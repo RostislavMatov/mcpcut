@@ -21,6 +21,7 @@ import type {
   WizardStage,
 } from './model.js'
 import { outputPanelOf, type OutputPanel, type RunResult, scrollToEnd } from './output.js'
+import { isWaitingOnStart } from './subscriptions.js'
 import { noEffects, pageRowsOf, withScreen } from './update-step.js'
 import {
   isExternalSupervisor,
@@ -66,6 +67,31 @@ export function applyRunResult(
 
 function runningStepOf(steps: readonly DeployStep[]): DeployStepId | undefined {
   return steps.find((each) => each.state === 'running')?.id
+}
+
+/**
+ * The stopwatch ticked (phase 6, F8): one more second beside the `start-*`
+ * rung being waited on. `isWaitingOnStart` is the SAME question the runtime
+ * asked before arming the timer, so a tick that lands on any other stage —
+ * `setup` still running, the ladder done, a form — is dropped by the rule
+ * that would have stopped the timer. The count is of ticks, not of a clock:
+ * the reducer stays pure, and a second of drift is nothing against a wait of
+ * `START_READY_TIMEOUT_MS`. The transcript and the minted admin ride along
+ * untouched; a fresh rung starts from nothing, because `advance` builds its
+ * stage without a count.
+ */
+export function countWaitedTick(model: Model, screen: WizardScreen): Step {
+  const { stage } = screen
+  if (stage.kind !== 'deploying' || !isWaitingOnStart(stage)) return noEffects(model)
+
+  const running = runningStepOf(stage.steps)
+  if (running === undefined) return noEffects(model)
+
+  const waitedTicks = (stage.waitedTicks ?? 0) + 1
+  const detail = deployWaitingDetail(START_READY_TIMEOUT_MS, waitedTicks)
+  const steps = markStep(stage.steps, running, 'running', detail)
+
+  return withScreen(model, { ...screen, stage: { ...stage, steps, waitedTicks } })
 }
 
 /**

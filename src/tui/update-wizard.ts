@@ -13,7 +13,7 @@ import type {
 import { type OutputPanel, scrollOutput, scrollToEnd, scrollToStart } from './output.js'
 import { isYes } from './update-form.js'
 import { noEffects, pageRowsOf, quit, withScreen } from './update-step.js'
-import { applyRunResult } from './update-wizard-deploy.js'
+import { applyRunResult, countWaitedTick } from './update-wizard-deploy.js'
 import {
   exposureWarningsOf,
   initialDeploySteps,
@@ -54,6 +54,7 @@ const QUIT_CHAR = 'q'
 export function updateWizard(model: Model, screen: WizardScreen, msg: Msg): Step {
   if (msg.kind === 'key') return applyKey(model, screen, msg.key)
   if (msg.kind === 'wizard-run-result') return applyRunResult(model, screen, msg.step, msg.result)
+  if (msg.kind === 'tick') return countWaitedTick(model, screen)
 
   // `signin-result`, `run-result`, `services` and `session-lost` all belong to
   // a console session; the wizard runs before there is one.

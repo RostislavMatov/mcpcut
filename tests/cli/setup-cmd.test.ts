@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { bootstrapTokenPathFor } from '../../src/admin/bootstrap-file.js'
 import { ADMIN_TOKEN_PREFIX } from '../../src/admin/constants.js'
 import { createAdminStore } from '../../src/admin/store.js'
 import { runSetupCommand } from '../../src/cli/setup-cmd.js'
@@ -471,7 +472,7 @@ describe('setup --yes: an install config this build cannot read', () => {
 })
 
 describe('setup --yes --no-admin', () => {
-  test('creates no admin and warns that the first ui start will print a token into its log', async () => {
+  test('creates no admin and warns that the first ui start will write a token file', async () => {
     const io = fakeIo()
 
     const exitCode = await runSetupCommand(await fullRunArgs(['--no-admin']), io, { env, home })
@@ -479,7 +480,9 @@ describe('setup --yes --no-admin', () => {
     expect(exitCode).toBe(0)
     expect(await createAdminStore({ journalDir: dataDir }).listAdmins()).toEqual([])
     expect(io.out()).not.toContain(`token: ${ADMIN_TOKEN_PREFIX}`)
-    expect(io.err()).toContain(join(dataDir, 'run', 'ui.log'))
+    // Phase 6 (F6): the warning names the one-time token file, not the daemon log.
+    expect(io.err()).toContain(bootstrapTokenPathFor(dataDir))
+    expect(io.err()).not.toContain(join(dataDir, 'run', 'ui.log'))
     expect(io.err()).toContain('owner')
   })
 })

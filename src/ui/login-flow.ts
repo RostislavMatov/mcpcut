@@ -1,4 +1,6 @@
 import type { IncomingMessage } from 'node:http'
+import type { AdminRecord } from '../admin/store.js'
+import { formatReadableField } from '../journal/format.js'
 import type { AdminResolver, LoginRateLimiter, PenaltyGate, SessionManager } from './auth.js'
 import { loginRateLimitKey, serializeSessionCookie } from './auth.js'
 import {
@@ -65,6 +67,15 @@ export interface LoginFlowDeps {
    * attempt pays it — see `createPenaltyGate` for why that is not free.
    */
   readonly penaltyGate?: PenaltyGate
+  /**
+   * Runs once a session has been minted, with the admin who signed in (phase
+   * 6, F6: removing the bootstrap token file). It is called AFTER
+   * `sessions.create` and its failure is a stderr line, never a different
+   * answer: the sign-in already happened, and the cookie the browser is about
+   * to receive must not be withheld because a file on the host would not
+   * unlink. It never runs for a refused login.
+   */
+  readonly afterSignIn?: (admin: AdminRecord) => Promise<void>
 }
 
 /** Default penalty sleep. */
@@ -94,6 +105,21 @@ async function payGlobalPenalty(deps: LoginFlowDeps, penaltyMs: number): Promise
     await (deps.sleep ?? realSleep)(penaltyMs)
   } finally {
     deps.penaltyGate?.release()
+  }
+}
+
+/**
+ * The post-sign-in hook, contained: whatever it throws becomes one
+ * terminal-safe stderr line, and the caller goes on to answer exactly as it
+ * would have without the hook.
+ */
+async function runAfterSignIn(deps: LoginFlowDeps, admin: AdminRecord): Promise<void> {
+  if (deps.afterSignIn === undefined) return
+  try {
+    await deps.afterSignIn(admin)
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error)
+    deps.stderr.write(`[ui] after sign-in: ${formatReadableField(message)}\n`)
   }
 }
 
@@ -136,6 +162,7 @@ export async function handleLoginRequest(
     deps.stderr.write(`${SESSION_CAPACITY_WARNING} (${created.reason})\n`)
     return refusal(HTTP_STATUS_TOO_MANY_REQUESTS, BODY_TOO_MANY_REQUESTS)
   }
+  await runAfterSignIn(deps, admin)
   return {
     kind: 'response',
     status: HTTP_STATUS_SEE_OTHER,

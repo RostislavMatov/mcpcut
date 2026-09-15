@@ -1,8 +1,9 @@
 import { EventEmitter } from 'node:events'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { bootstrapTokenPathFor } from '../../src/admin/bootstrap-file.js'
 import { createAdminStore } from '../../src/admin/store.js'
 import { dispatchOptionsFor, runTui, type TuiCommandOptions } from '../../src/cli/tui-cmd.js'
 import { TUI_USAGE } from '../../src/cli/operator-usage.js'
@@ -13,6 +14,7 @@ import { SECTIONS, visibleActions, visibleSections } from '../../src/tui/catalog
 import { defaultInstallConfig } from '../../src/setup/defaults.js'
 import type { InstallConfigLoad } from '../../src/setup/load.js'
 import { SIGNIN_TITLE, WIZARD_TITLE_EDIT, WIZARD_TITLE_FIRST_RUN } from '../../src/tui/constants.js'
+import { SIGNIN_BOOTSTRAP_PREFIX } from '../../src/tui/constants-live.js'
 import type { InstallFacts } from '../../src/tui/model.js'
 import { activeActionIndexIn, actionTitlesIn } from '../tui/support/console-harness-navigate.js'
 import { createFakeTerminal, waitForScreen, type FakeTerminal } from '../tui/support/fake-terminal.js'
@@ -490,5 +492,120 @@ describe('dispatchOptionsFor: one store for the session check and the admin comm
     const dispatchOptions = { journalDir: '/z' }
 
     expect(dispatchOptionsFor({ dispatchOptions })).toBe(dispatchOptions)
+  })
+})
+
+/**
+ * Two host facts the console reads on its way in (mcpcut phase 6).
+ *
+ * The style (F2): with no `style` seam the console asks the ENVIRONMENT, and
+ * `NO_COLOR` or a dumb `TERM` means no attribute reaches the terminal at all
+ * — the assertion walks every frame drawn, since the sign-in screen is the
+ * one place a bold title would slip through. The seam still wins when a test
+ * passes one, which every other case in this file relies on.
+ *
+ * The bootstrap token file (F6b): while it exists the sign-in screen names it,
+ * read once from the SAME directory the console's stores use. The dispatcher
+ * here is the quiet one — nothing signs in, so the file is never consumed and
+ * the question is only whether the first frame knew about it.
+ */
+
+/** The attributes `ansiStyle` emits; a plain frame carries none of them. */
+const SGR_BOLD = '\x1b[1m'
+const SGR_INVERSE = '\x1b[7m'
+const SGR_DIM = '\x1b[2m'
+
+/** A wide terminal, so a temp-dir path fits on the sign-in line uncut. */
+const WIDE_COLUMNS = 200
+
+/** The seams of `consoleOptions` without the style, so the environment decides it. */
+function unstyledOptions(fake: FakeTerminal, journalDir: string): TuiCommandOptions {
+  const { style: _style, ...rest } = consoleOptions(fake, okInstall)
+  return { ...rest, entry: 'explicit', journalDir }
+}
+
+describe('runTui: the style comes from the environment', () => {
+  let journalDir: string
+
+  beforeEach(async () => {
+    journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-tui-cmd-style-'))
+  })
+
+  afterEach(async () => {
+    await rm(journalDir, { recursive: true, force: true })
+  })
+
+  /** Every frame the console drew up to Ctrl-C, under `env` and no style seam. */
+  async function framesUnder(env: NodeJS.ProcessEnv): Promise<readonly string[]> {
+    const fake = createFakeTerminal()
+    const running = runTui([], fakeIo(), { ...unstyledOptions(fake, journalDir), env })
+    await waitForScreen(fake, (screen) => screen.includes(SIGNIN_TITLE), 'the sign-in screen')
+    fake.type('\x03')
+    expect(await running).toBe(0)
+
+    return fake.frames()
+  }
+
+  test.each([{ NO_COLOR: '1' }, { TERM: 'dumb' }])(
+    'under %o no frame carries an attribute',
+    async (env) => {
+      const frames = await framesUnder(env)
+
+      expect(frames.length).toBeGreaterThan(0)
+      for (const frame of frames) {
+        expect(frame).not.toContain(SGR_BOLD)
+        expect(frame).not.toContain(SGR_INVERSE)
+        expect(frame).not.toContain(SGR_DIM)
+      }
+    },
+  )
+
+  test('under an empty environment the title of the first frame is bold', async () => {
+    const frames = await framesUnder({})
+
+    expect(frames.some((frame) => frame.includes(SGR_BOLD))).toBe(true)
+  })
+})
+
+describe('runTui: the sign-in screen names the bootstrap token file', () => {
+  let journalDir: string
+
+  beforeEach(async () => {
+    journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-tui-cmd-bootstrap-'))
+  })
+
+  afterEach(async () => {
+    await rm(journalDir, { recursive: true, force: true })
+  })
+
+  /** The first sign-in frame of a console over `journalDir`, then Ctrl-C. */
+  async function firstSigninFrame(): Promise<string> {
+    const fake = createFakeTerminal({ columns: WIDE_COLUMNS })
+    const running = runTui([], fakeIo(), {
+      ...consoleOptions(fake, okInstall),
+      entry: 'explicit',
+      journalDir,
+    })
+    await waitForScreen(fake, (screen) => screen.includes(SIGNIN_TITLE), 'the sign-in screen')
+    const frame = fake.screen()
+    fake.type('\x03')
+    expect(await running).toBe(0)
+
+    return frame
+  }
+
+  test('while the file exists, the first frame says where it is', async () => {
+    const path = bootstrapTokenPathFor(journalDir)
+    await writeFile(path, 'mcpa_not-read-by-this-test\n', 'utf8')
+
+    const frame = await firstSigninFrame()
+
+    expect(frame).toContain(`${SIGNIN_BOOTSTRAP_PREFIX}${path}`)
+  })
+
+  test('without the file, the line is not there', async () => {
+    const frame = await firstSigninFrame()
+
+    expect(frame).not.toContain(SIGNIN_BOOTSTRAP_PREFIX)
   })
 })

@@ -27,8 +27,45 @@ All notable changes to this project are documented here. The format follows
   its JSONL to a file you name (created exclusively, mode 0600) and the pane
   shows a one-line receipt; wide output scrolls sideways with `[`/`]`. A bare
   `mcpcut` in a pipe still prints the usage; without a config on a terminal it
-  points at `setup --yes`. Services and a live approvals queue follow in a
-  later wave.
+  points at `setup --yes`.
+- **Console: Services section** (`status · start · stop · logs · setup`) as
+  data over the same `start|stop|status|logs` commands; `setup` leaves the
+  console and reopens the wizard in a child process on the same terminal.
+  Under `supervisor: external` (Docker, systemd, launchd) `start`/`stop` are
+  not offered, `mcpcut status` names the external supervisor in its detail,
+  and the header draws such a service `◉` — answering, but not our pid.
+- **Console: live Approvals queue** — the section re-reads `approvals list`
+  every 3 s while you are on its action list, counted from the previous
+  answer, without blocking the keyboard; a poll never overwrites the output of
+  another command that failed, and an answer that arrives after you left the
+  section is dropped.
+- **Console: one-time token hold** — the output of `admin add`, `admin rotate`
+  and `agent create` stays on screen under a banner until you press `y` to say
+  you saved the token; `q` asks first; `Ctrl-C` still quits at once.
+- **Console: services banner on the sign-in screen** — the screen asks
+  `status --json` (without a session) and shows `services: ui ● … · serve ○ …`
+  with a hint to start them from Services; nothing starts on its own.
+- **Console: stacked layout below 60 columns** — the action list becomes a
+  strip on top and the output pane takes the full width beneath it; the list
+  keeps the active action in view in both layouts; `resize` switches on the
+  fly.
+- **Console: `NO_COLOR` and `TERM=dumb`** — a non-empty `NO_COLOR`, or
+  `TERM=dumb`, turns every colour/weight escape sequence off (the alternate
+  screen stays: a terminal without cursor movement cannot run the console).
+- **Console: full-width `?` help** — the help covers the whole body in both
+  layouts; a line too wide for the terminal wraps as "keys, then the
+  description indented"; any key closes it.
+- **Console: keys pressed during a command are queued** (up to 32) and
+  replayed in order once the command answers — unless the answer is a
+  one-time token, in which case the queue is dropped so nothing acknowledges
+  the token unread. The queue is also dropped when the session is lost and on
+  quit; `Ctrl-C` is never queued.
+- **Wizard step counter** — the «Starting ui»/«Starting serve» steps count
+  `waiting for the service to answer (N s of up to 15 s)` once a second.
+- **Unit-file examples** for systemd (user units) and launchd in
+  `docs/deploy/`, with install steps in `docs/deploy/README.md`; they are
+  examples to adapt, not something `mcpcut` installs. README gained «First
+  run», «Services» and «Docker» sections.
 - **`mcpcut` binary**: a second `bin` entry pointing at the same file as
   `mcp-journal` — the two names are one dispatcher with identical behaviour.
 - **Install config** `~/.mcpcut/config.json` (path overridable with
@@ -86,6 +123,13 @@ All notable changes to this project are documented here. The format follows
   `docker compose exec -it ui mcpcut` opens the console.
 - `start`/`stop`/`logs` without an install config now point at `mcpcut` (the
   interactive setup) as well as `setup --yes`.
+- **Console running footer** now says `running… · keys are queued until it
+  finishes · Ctrl-C aborts` (was «keys are ignored»); the short token-hold
+  banner (`One-time token on screen: copy it, then press y.`) is used whenever
+  the long one would wrap to more than two lines.
+- **`setup --yes --no-admin` warning** now names the file the first `ui`
+  start will write the owner token to (`<data dir>/bootstrap-token`, mode
+  0600, deleted after the first sign-in) instead of `run/ui.log`.
 - **`admin add|list|rotate|role|remove` now need a personal admin token** of role
   `owner` in `MCP_ADMIN_TOKEN`, and every mutation writes an `access-edit`
   journal record (`admin.add|rotate|role|remove`) naming the admin who made it —
@@ -96,6 +140,19 @@ All notable changes to this project are documented here. The format follows
   in for an owner who lost theirs; the record then carries `recovery: true` and
   no admin name, so an auditor can tell it apart. Scripts that ran `admin add`
   after the first admin must export the owner token first.
+
+### Security
+
+- **The bootstrap owner token no longer lands in `run/ui.log`.** When `ui`
+  starts over a store with no admins (the `setup --yes --no-admin` path), it
+  writes the one-time token to `<data dir>/bootstrap-token` — mode 0600,
+  created exclusively inside the 0700 data directory — and prints only that
+  path to stderr. The file is deleted by the first successful sign-in of any
+  admin, through the web UI or the console; a failure to delete it is
+  reported and does not change the sign-in's outcome. If the file cannot be
+  written, `ui` refuses to start and points at `admin rotate owner`. Docker
+  is unaffected: the entrypoint passes `--admin`, so `setup` mints the owner
+  and the token goes to the container's stdout as before.
 
 ## [0.1.0] — 2026-09-03
 

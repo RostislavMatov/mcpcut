@@ -5,9 +5,11 @@ import {
   FOOTER_ROWS,
   HEADER_ROWS,
 } from '../../../src/tui/constants.js'
+import { NARROW_COLUMNS } from '../../../src/tui/constants-live.js'
 import {
   actionTitlesIn,
   activeActionIndexIn,
+  CONSOLE_COLUMNS,
   CONSOLE_ROWS,
   settledWithin,
 } from './console-harness.js'
@@ -83,6 +85,61 @@ describe('reading the action column of a frame', () => {
 
   test('an empty column reads as no actions rather than as blank titles', () => {
     expect(actionTitlesIn(frameOf([], -1))).toEqual([])
+  })
+})
+
+/** A narrow console (phase 6, F1) reports fewer columns than `NARROW_COLUMNS`. */
+const NARROW = 40
+
+/**
+ * A frame shaped like the STACKED body: the action band right under the
+ * header, one blank row, then the pane across the whole width. The band is
+ * `bandRows` tall whatever it holds — the renderer fills it before the pane
+ * is appended — so a short list leaves blank rows inside it.
+ */
+function narrowFrameOf(titles: readonly string[], activeIndex: number, bandRows = 2): string {
+  const header = Array.from({ length: HEADER_ROWS }, (_unused, row) => `header ${row}`)
+  const band = Array.from({ length: bandRows }, (_unused, row) => {
+    const title = titles[row] ?? ''
+    const marker = row === activeIndex ? ACTIVE_MARKER : ' '.repeat(ACTIVE_MARKER.length)
+    return title === '' ? ' '.repeat(NARROW) : `${marker}${title}`.padEnd(NARROW)
+  })
+  const pane = ['$ mcpcut admin list', 'pane row 1', 'exit 0'].map((line) => line.padEnd(NARROW))
+
+  return [...header, ...band, ' '.repeat(NARROW), ...pane, 'footer'].join('\n')
+}
+
+describe('reading the action band of a narrow frame', () => {
+  test('the threshold the readers switch at is the layout\'s own', () => {
+    expect(NARROW).toBeLessThan(NARROW_COLUMNS)
+  })
+
+  test('returns the titles of the band and nothing of the pane under it', () => {
+    const frame = narrowFrameOf(['list', 'add'], 0)
+
+    expect(actionTitlesIn(frame, NARROW)).toEqual(['list', 'add'])
+  })
+
+  test('a band taller than its list stops at its first blank row', () => {
+    const frame = narrowFrameOf(['list'], 0, 3)
+
+    expect(actionTitlesIn(frame, NARROW)).toEqual(['list'])
+  })
+
+  test('names the row the cursor is on, by position among the titles', () => {
+    expect(activeActionIndexIn(narrowFrameOf(['list', 'add'], 1), NARROW)).toBe(1)
+  })
+
+  test('an empty band reads as no actions', () => {
+    expect(actionTitlesIn(narrowFrameOf([], -1), NARROW)).toEqual([])
+    expect(activeActionIndexIn(narrowFrameOf([], -1), NARROW)).toBe(-1)
+  })
+
+  test('the wide reading is unchanged when the columns are given explicitly', () => {
+    const frame = frameOf(['list', 'show', 'add'], 2)
+
+    expect(actionTitlesIn(frame, CONSOLE_COLUMNS)).toEqual(actionTitlesIn(frame))
+    expect(activeActionIndexIn(frame, CONSOLE_COLUMNS)).toBe(2)
   })
 })
 

@@ -35,7 +35,7 @@ export interface SetupArgs {
   readonly force: boolean
   /** Start both services once the install is prepared. */
   readonly start: boolean
-  /** Leave the install with no admin, accepting the bootstrap-token-in-the-log path. */
+  /** Leave the install with no admin: the first `ui` start writes the owner's token to the bootstrap file. */
   readonly noAdmin: boolean
   readonly behindTls?: boolean
   readonly dataDir?: string

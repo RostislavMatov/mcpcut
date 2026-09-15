@@ -22,9 +22,25 @@ export interface PersistedBytes {
   readonly renderings: readonly string[]
 }
 
-export async function collectPersistedBytes(dir: string): Promise<PersistedBytes> {
+export interface PersistedBytesOptions {
+  /**
+   * Absolute paths left out of the sweep. The one legitimate use is the
+   * bootstrap token file BEFORE the first sign-in, which holds the token by
+   * design (phase 6, F6); a caller excluding it must assert its removal
+   * afterwards and sweep again with nothing excluded.
+   */
+  readonly exclude?: readonly string[]
+}
+
+export async function collectPersistedBytes(
+  dir: string,
+  opts: PersistedBytesOptions = {},
+): Promise<PersistedBytes> {
+  const excluded = new Set(opts.exclude ?? [])
   const entries = await readdir(dir, { recursive: true, withFileTypes: true })
-  const files = entries.filter((entry) => entry.isFile())
+  const files = entries.filter(
+    (entry) => entry.isFile() && !excluded.has(join(entry.parentPath, entry.name)),
+  )
   const chunks = await Promise.all(
     files.map((entry) => readFile(join(entry.parentPath, entry.name))),
   )

@@ -155,6 +155,8 @@ export type WizardStage =
       readonly steps: readonly DeployStep[]
       readonly output?: OutputPanel
       readonly admin?: MintedAdmin
+      /** Seconds-ticks counted beside a running `start-*` step; absent before the first tick (F8). */
+      readonly waitedTicks?: number
     }
   | {
       readonly kind: 'setup-failed'
@@ -177,6 +179,13 @@ export type Screen =
       readonly busy: boolean
       /** What `status` answered before anyone signed in; absent until it has. */
       readonly services?: readonly ServiceSummary[]
+      /**
+       * Where the one-time bootstrap token file is, if it existed when the
+       * console opened (phase 6, F6b). A host fact read once, like `install`;
+       * a screen that follows a lost session never carries it, since the
+       * sign-in that just ended is the one that consumed the file.
+       */
+      readonly bootstrapTokenPath?: string
     }
   | {
       readonly kind: 'main'
@@ -199,6 +208,12 @@ export type Screen =
        * Journal tab.
        */
       readonly polling?: string
+      /**
+       * Keys pressed while a run was in flight, oldest first; replayed after
+       * `run-result` unless it holds a token (phase 6, F5). Absent, never an
+       * empty array, when nothing is queued.
+       */
+      readonly pendingKeys?: readonly KeyEvent[]
     }
   | {
       readonly kind: 'wizard'
@@ -269,12 +284,16 @@ export const SIGNIN_FIELDS: readonly FieldSpec[] = [
   { name: 'token', label: SIGNIN_TOKEN_LABEL, kind: 'secret', required: true },
 ]
 
+/** What the sign-in screen is told about the host on opening, besides the install. */
+export type SigninHostFacts = Pick<SigninScreen, 'bootstrapTokenPath'>
+
 export function initialModel(
   size: TerminalSize,
   install: InstallFacts = DEFAULT_INSTALL_FACTS,
+  signin: SigninHostFacts = {},
 ): Model {
   return {
-    screen: { kind: 'signin', form: formOf(SIGNIN_FIELDS), busy: false },
+    screen: { kind: 'signin', form: formOf(SIGNIN_FIELDS), busy: false, ...signin },
     size,
     install,
   }

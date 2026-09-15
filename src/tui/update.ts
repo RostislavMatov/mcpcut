@@ -1,9 +1,10 @@
 import { EXIT_OK } from './constants.js'
 import type { KeyEvent } from './keys.js'
 import type { Model, Msg, Step } from './model.js'
+import { appendPending } from './update-keys.js'
 import { updateMain } from './update-main.js'
 import { updateSignin } from './update-signin.js'
-import { noEffects, quit } from './update-step.js'
+import { noEffects, quit, withMain } from './update-step.js'
 import { updateWizard } from './update-wizard.js'
 
 /**
@@ -13,7 +14,7 @@ import { updateWizard } from './update-wizard.js'
  * and every exit path be asserted without one.
  *
  * This module holds only what is true on EVERY screen — a resize, the
- * interrupt key, and the rule that a run in flight owns the keyboard — and
+ * interrupt key, and the rule that a run in flight defers the keyboard — and
  * hands the rest to `update-signin.ts`, `update-wizard.ts` and
  * `update-main.ts`.
  */
@@ -32,14 +33,18 @@ export function update(model: Model, msg: Msg): Step {
 
   if (screen.kind === 'wizard') return updateWizard(model, screen, msg)
 
-  // A command is running: the keyboard is deaf until it answers, so a second
-  // Enter cannot queue a second run behind the first. Ctrl-C above still gets
-  // the operator out. Only a KEY is dropped — `tick`, `poll-result` and
-  // `opened` reach the main reducer, which drops what it must itself: a tick
-  // during a run is nothing to do, while a poll answering during one still has
-  // a `polling` flag to clear, and swallowing it here would leave the timer
-  // down for good.
-  if (msg.kind === 'key' && screen.busy !== undefined) return noEffects(model)
+  // A command is running: the keyboard is DEFERRED, not deaf (phase 6, F5).
+  // Each key is queued on the screen and replayed, in order, once the run
+  // answers — so a second Enter still cannot start a second run behind the
+  // first, but a `2 Tab` typed ahead is not lost either. Ctrl-C above still
+  // leaves at once, and the queue is not replayed on the way out. Only a KEY
+  // is queued — `tick`, `poll-result` and `opened` reach the main reducer,
+  // which drops what it must itself: a tick during a run is nothing to do,
+  // while a poll answering during one still has a `polling` flag to clear,
+  // and swallowing it here would leave the timer down for good.
+  if (msg.kind === 'key' && screen.busy !== undefined) {
+    return withMain(model, screen, { pendingKeys: appendPending(screen.pendingKeys, msg.key) })
+  }
 
   return updateMain(model, screen, msg)
 }

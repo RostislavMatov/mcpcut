@@ -3,7 +3,6 @@ import { parseArgs } from 'node:util'
 import { createAdminStore, type AdminStore } from '../admin/store.js'
 import { createAgentsStore, type AgentsStore } from '../agents/store.js'
 import { JOURNAL_DIR } from '../config.js'
-import { formatReadableField } from '../journal/format.js'
 import { isRejectedOriginFlagValue } from '../net/origin-host.js'
 import { INVENTORY_FILE_NAME } from '../policy/inventory.js'
 import { createRegistryStore, type RegistryStore } from '../registry/store.js'
@@ -22,14 +21,13 @@ import { createVaultStore, type VaultStore } from '../vault/store.js'
 import { describeBindFailure } from './bind-failure.js'
 import { MAX_TCP_PORT } from './serve-constants.js'
 import {
-  BOOTSTRAP_ADMIN_NAME,
-  bootstrapNotice,
   DEFAULT_UI_SIGNALS,
   EXIT_STARTUP_FAILURE,
   trustedProxyHeaderNotice,
   UI_USAGE,
   type UiCliIo,
 } from './ui-constants.js'
+import { bootstrapAdmin, type BoundAddress } from './ui-bootstrap.js'
 import { composeUi } from './ui-wiring.js'
 
 /**
@@ -41,15 +39,19 @@ import { composeUi } from './ui-wiring.js'
  * Three lifecycle decisions worth stating:
  *
  *  - **stdout is silent for the whole run.** `ui` is a daemon: the listening
- *    line, the bind warning and the one-time bootstrap credential all go to
- *    stderr. A supervisor redirecting stdout into a log must never end up with
- *    an admin token in it.
+ *    line, the bind warning and every other diagnostic go to stderr, and the
+ *    one-time bootstrap credential goes to NO stream. A supervisor redirecting
+ *    either stream into a log must never end up with an admin token in it.
  *  - **A first start with no admins bootstraps ONE owner.** Shipping a UI
- *    nobody can log into is a worse failure than printing a credential once,
+ *    nobody can log into is a worse failure than minting a credential once,
  *    and the alternative (a blank admin surface plus a second CLI step) is the
- *    kind of friction that ends in a shared token. The token is printed exactly
- *    once, to stderr only, and only its hash reaches disk. Bootstrap runs AFTER
- *    the socket is bound, so a failed bind never mints a credential.
+ *    kind of friction that ends in a shared token. The token is written to
+ *    `<journalDir>/bootstrap-token` (0600, phase 6 F6); stderr names that
+ *    path, the first successful sign-in — web or console — removes the file,
+ *    and only the token's hash reaches the store. Bootstrap runs AFTER the
+ *    socket is bound, so a failed bind never mints a credential; a token file
+ *    that could not be written refuses the run, because an owner whose token
+ *    nobody can read is the UI nobody can log into.
  *  - **Shutdown is a handler, not a signal.** SIGINT/SIGTERM merely call the
  *    same `shutdown()` the handle exposes: stop the watcher, end every SSE
  *    stream (the hub), then close the listener. Ordering matters — closing the
@@ -282,33 +284,10 @@ function buildRuntime(flags: UiFlags, io: UiCliIo, opts: UiCommandOptions): UiRu
       : {}),
     stderr: io.stderr,
     ...(opts.clock !== undefined ? { clock: opts.clock } : {}),
+    afterSignIn: composed.afterSignIn,
   })
 
   return { server, hub, watcher, adminStore, closeProbes: composed.closeProbes }
-}
-
-/**
- * Mints the first `owner` when the store holds no active admin, and prints its
- * one-time credential to stderr. Returns `false` when the store could not be
- * read at all — a plane whose admin file is corrupt must refuse to run, not
- * silently bootstrap a second owner beside records it failed to parse.
- */
-async function bootstrapAdmin(
-  store: AdminStore,
-  io: UiCliIo,
-  host: string,
-  port: number,
-): Promise<boolean> {
-  try {
-    if ((await store.listAdmins()).length > 0) return true
-    const { admin, token } = await store.createAdmin(BOOTSTRAP_ADMIN_NAME, 'owner')
-    io.stderr.write(bootstrapNotice(host, port, admin.name, token))
-    return true
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error)
-    io.stderr.write(`ui: cannot read the admin store: ${formatReadableField(message)}\n`)
-    return false
-  }
 }
 
 /**
@@ -352,7 +331,8 @@ export async function runUi(
     return EXIT_STARTUP_FAILURE
   }
 
-  if (!(await bootstrapAdmin(runtime.adminStore, io, flags.host, bound.port))) {
+  const address: BoundAddress = { port: bound.port, host: flags.host }
+  if (!(await bootstrapAdmin(runtime.adminStore, io, address, opts.journalDir ?? JOURNAL_DIR))) {
     await closeRuntime(runtime).catch(() => undefined)
     return EXIT_STARTUP_FAILURE
   }
@@ -362,7 +342,7 @@ export async function runUi(
     io.stderr.write(`${trustedProxyHeaderNotice(flags.trustedProxyHeader)}\n`)
   }
   io.stderr.write(`ui: listening on http://${flags.host}:${bound.port}\n`)
-  await waitForShutdown(runtime, io, opts, { port: bound.port, host: flags.host })
+  await waitForShutdown(runtime, io, opts, address)
   return 0
 }
 
@@ -377,11 +357,6 @@ async function closeRuntime(runtime: UiRuntime): Promise<void> {
   runtime.hub.close()
   await runtime.closeProbes()
   await runtime.server.close()
-}
-
-interface BoundAddress {
-  readonly port: number
-  readonly host: string
 }
 
 /**

@@ -25,6 +25,15 @@ describe('formatReadableField', () => {
     expect(result).toBe('?'.repeat(0x20))
   })
 
+  test('replaces every C1 control character (0x80-0x9f): the 8-bit CSI/OSC twins a terminal honours like ESC', () => {
+    const controls = Array.from({ length: 0x20 }, (_, code) => String.fromCharCode(0x80 + code)).join('')
+
+    const result = formatReadableField(`a${controls}b`)
+
+    expect(result).toBe(`a${'?'.repeat(0x20)}b`)
+    expect(formatReadableField('\x9b2Jhidden')).toBe('?2Jhidden')
+  })
+
   test('replaces DEL (0x7f)', () => {
     expect(formatReadableField('a\x7fb')).toBe('a?b')
   })

@@ -1,4 +1,5 @@
 import type { AgentsStore } from '../agents/store.js'
+import { bootstrapTokenPathFor, consumeBootstrapTokenFile } from '../admin/bootstrap-file.js'
 import type { AdminStore } from '../admin/store.js'
 import { createGroupsStore } from '../groups/store.js'
 import { journalAccessEdit, type JournalAccessEditOutcome } from '../groups/journal-access-edit.js'
@@ -95,6 +96,11 @@ export interface UiComposition {
   quarantineSignature(): Promise<string>
   /** Waits for every in-flight server probe to settle; starts nothing new. */
   closeProbes(): Promise<void>
+  /**
+   * Removes the bootstrap token file after a successful web sign-in (phase 6,
+   * F6); a file that will not unlink is a stderr line, never a failed login.
+   */
+  afterSignIn(): Promise<void>
 }
 
 /**
@@ -375,5 +381,11 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
     queue,
     quarantineSignature: () => quarantineSignatureOf(deps.inventoryStorePath),
     closeProbes: probes.close,
+    afterSignIn: async () => {
+      const outcome = await consumeBootstrapTokenFile(bootstrapTokenPathFor(deps.journalDir))
+      if (outcome.kind === 'failed') {
+        deps.stderr.write(`[ui] bootstrap token file: ${formatReadableField(outcome.message)}\n`)
+      }
+    },
   })
 }

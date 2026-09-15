@@ -17,6 +17,17 @@ export const ADMINS_FILE_NAME = 'admins.json'
 export const ADMINS_FILE_PATH = join(JOURNAL_DIR, ADMINS_FILE_NAME)
 
 /**
+ * File name of the one-time bootstrap token inside the journal directory
+ * (phase 6, F6 / Q27). The first `ui` start with no admins writes the owner's
+ * plaintext token here — 0600, beside `state.db` in a 0700 directory — instead
+ * of printing it, and the first successful sign-in removes it. Named here,
+ * next to the store it bootstraps, so the writer (`cli/ui-cmd.ts`), the two
+ * consumers (web login, console sign-in) and the console's opening frame all
+ * spell one path.
+ */
+export const BOOTSTRAP_TOKEN_FILE_NAME = 'bootstrap-token'
+
+/**
  * Prefix of every admin token. Deliberately DIFFERENT from the agent prefix
  * (`mcpj_`): a leaked admin token is a human's session credential, not an
  * agent's Bearer key, and a scanner (or our own redaction) should be able to

@@ -77,7 +77,29 @@ function withServices(
     busy: screen.busy,
     ...(screen.notice !== undefined ? { notice: screen.notice } : {}),
     ...(statuses !== undefined ? { services: statuses } : {}),
+    ...bootstrapFactOf(screen),
   }
+}
+
+/** The facts about the HOST a sign-in screen carries, which outlive one attempt to sign in. */
+type CarriedHostFacts = Pick<SigninScreen, 'services' | 'bootstrapTokenPath'>
+
+/**
+ * What the daemons are doing and where the bootstrap token file is (phase 6,
+ * F6b) are true of the host, not of the token that was just typed: a refused
+ * token changes neither, so both ride along through the attempt. Picked by
+ * name so an absent field stays absent (`exactOptionalPropertyTypes`).
+ */
+function hostFactsOf(screen: SigninScreen): CarriedHostFacts {
+  return {
+    ...(screen.services !== undefined ? { services: screen.services } : {}),
+    ...bootstrapFactOf(screen),
+  }
+}
+
+function bootstrapFactOf(screen: SigninScreen): Pick<SigninScreen, 'bootstrapTokenPath'> {
+  const path = screen.bootstrapTokenPath
+  return path !== undefined ? { bootstrapTokenPath: path } : {}
 }
 
 function applyKey(model: Model, screen: SigninScreen, key: KeyEvent): Step {
@@ -100,9 +122,11 @@ function submitToken(model: Model, screen: SigninScreen): Step {
   const token = tokenOf(screen.form)
   if (token === '') return withScreen(model, { ...screen, notice: EMPTY_TOKEN_NOTICE })
 
-  return withScreen(model, { kind: 'signin', form: clearSecrets(screen.form), busy: true }, [
-    { kind: 'signin', token },
-  ])
+  return withScreen(
+    model,
+    { kind: 'signin', form: clearSecrets(screen.form), busy: true, ...hostFactsOf(screen) },
+    [{ kind: 'signin', token }],
+  )
 }
 
 /** The sign-in form carries exactly one field (`SIGNIN_FIELDS`): the token. */
@@ -125,7 +149,13 @@ function applyResult(model: Model, screen: SigninScreen, result: TokenAdmin): St
   // the console is local and under the same uid as the store, but a screen
   // that told them apart would be an oracle for no gain to the operator.
   const notice = result.kind === 'unreadable' ? result.detail : SIGNIN_UNKNOWN_TOKEN_NOTICE
-  return withScreen(model, { kind: 'signin', form: screen.form, busy: false, notice })
+  return withScreen(model, {
+    kind: 'signin',
+    form: screen.form,
+    busy: false,
+    notice,
+    ...hostFactsOf(screen),
+  })
 }
 
 /**

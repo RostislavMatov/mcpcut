@@ -117,7 +117,7 @@ export async function runServiceCommand(
  * Reading `config.dataDir` alone was the TS-H3 / SEC-M5 fault: with the
  * variable exported, `setup` prepared one directory while these commands
  * started daemons in another — and the `ui` that came up in the unprepared one
- * would bootstrap a second owner and print its token into `run/ui.log`.
+ * would bootstrap a second owner and leave its token file in the wrong plane.
  *
  * The supervisor has no such override, and deliberately so (owner decision
  * 2026-09-05, ADR-0012 §9): who runs the services is answered once, by a
