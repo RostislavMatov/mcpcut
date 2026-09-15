@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { request as httpRequest, type IncomingMessage } from 'node:http'
 import { createServer as createNetServer, type AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import { collectPersistedBytes } from '../support/persisted-bytes.js'
 import { writeCorruptDatabase } from '../support/corrupt-db.js'
+import { bootstrapTokenPathFor } from '../../src/admin/bootstrap-file.js'
 import { ADMINS_FILE_NAME } from '../../src/admin/constants.js'
 import { createAdminStore } from '../../src/admin/store.js'
 import { runUi, type UiCommandOptions, type UiHandle } from '../../src/cli/ui-cmd.js'
@@ -539,15 +540,30 @@ describe('runUi: flag parsing and startup', () => {
 // Bootstrap admin
 // ---------------------------------------------------------------------------
 
+/** The one-time token the bootstrap wrote to its file — exactly one, or the test fails here. */
+async function readBootstrapToken(journalDir: string): Promise<string> {
+  const tokens = tokensIn(await readFile(bootstrapTokenPathFor(journalDir), 'utf8'))
+  expect(tokens).toHaveLength(1)
+  return tokens[0] as string
+}
+
 describe('runUi: first start with no admins.json', () => {
-  test('creates an owner admin and prints the bootstrap URL to stderr exactly once', async () => {
+  test('creates an owner admin, writes its token to a 0600 file and names the file on stderr', async () => {
     const fixture = await startUi()
 
     const err = fixture.io.errText()
     const loginUrl = `http://127.0.0.1:${fixture.handle.port}/login`
+    const tokenPath = bootstrapTokenPathFor(fixture.journalDir)
     expect(err.split(loginUrl).length - 1).toBe(1)
-    expect(tokensIn(err)).toHaveLength(1)
+    expect(err).toContain(tokenPath)
+    // Phase 6 (F6): the credential is in the file and nowhere on a stream.
+    expect(tokensIn(err)).toHaveLength(0)
     expect(fixture.io.outText()).toBe('')
+
+    const info = await stat(tokenPath)
+    expect(info.mode & 0o777).toBe(0o600)
+    const token = await readBootstrapToken(fixture.journalDir)
+    expect(await readFile(tokenPath, 'utf8')).toBe(`${token}\n`)
 
     const store = createAdminStore({ journalDir: fixture.journalDir })
     const admins = await store.listAdmins()
@@ -556,9 +572,20 @@ describe('runUi: first start with no admins.json', () => {
     expect(admins[0]?.role).toBe('owner')
   })
 
-  test('the bootstrap token works for a real login and is not on disk', async () => {
+  test('the bootstrap token works for a real login, and the first sign-in removes the file', async () => {
     const fixture = await startUi()
-    const token = tokensIn(fixture.io.errText())[0] as string
+    const tokenPath = bootstrapTokenPathFor(fixture.journalDir)
+    const token = await readBootstrapToken(fixture.journalDir)
+
+    // Before the sign-in the token file holds the token BY DESIGN, so it is
+    // the one path the sweep leaves out; every other persisted byte of the
+    // plane must be clean of it already.
+    const before = await collectPersistedBytes(fixture.journalDir, { exclude: [tokenPath] })
+    expect(before.fileNames).toContain('state.db')
+    for (const rendering of before.renderings) {
+      expect(rendering).not.toContain(token)
+      expect(tokensIn(rendering)).toEqual([])
+    }
 
     const cookie = await login(fixture.base, token)
     expect(cookie).toContain('=')
@@ -566,11 +593,15 @@ describe('runUi: first start with no admins.json', () => {
     const page = await httpCall(fixture.base, '/', { headers: { cookie } })
     expect(page.status).toBe(200)
 
+    // The first successful sign-in consumed the file.
+    await expect(stat(tokenPath)).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(fixture.io.errText()).not.toContain('bootstrap token file:')
+
     // Admin state now lives in state.db (and its -wal side file, while
     // uncheckpointed) rather than a directly-readable admins.json. Sweep
     // every persisted byte of the plane directory under two decodings so a
     // token hiding anywhere in a page -- including a partial/binary one --
-    // still trips the check.
+    // still trips the check. Nothing is excluded this time.
     const { fileNames, renderings } = await collectPersistedBytes(fixture.journalDir)
 
     // Sentinel-first: prove the sweep actually reached the state database,
@@ -578,6 +609,7 @@ describe('runUi: first start with no admins.json', () => {
     // -- otherwise the absence assertions below could pass vacuously against
     // bytes that never held the store at all.
     expect(fileNames).toContain('state.db')
+    expect(fileNames).not.toContain('bootstrap-token')
     const bootstrapAdmin = await createAdminStore({
       journalDir: fixture.journalDir,
     }).getActiveAdmin(BOOTSTRAP_ADMIN_NAME)
@@ -590,6 +622,37 @@ describe('runUi: first start with no admins.json', () => {
       expect(rendering).not.toContain(token)
       expect(tokensIn(rendering)).toEqual([])
     }
+
+    // A second sign-in finds no file and says nothing about it: `absent` is
+    // the normal state after the first one, not a fault.
+    const errBefore = fixture.io.errText()
+    const store = createAdminStore({ journalDir: fixture.journalDir })
+    const { token: second } = await store.createAdmin('bob', 'viewer')
+    expect(await login(fixture.base, second)).toContain('=')
+    expect(fixture.io.errText()).toBe(errBefore)
+  })
+
+  test('refuses the run when the token file cannot be written, and says the owner exists', async () => {
+    const journalDir = await makeJournalDir()
+    // A directory with a child where the file must go: the exclusive create
+    // fails, the leftover cannot be removed, and the retry fails the same way.
+    const tokenPath = bootstrapTokenPathFor(journalDir)
+    await mkdir(tokenPath)
+    await writeFile(join(tokenPath, 'child'), '', 'utf8')
+    const io = captureIo()
+    const onListening = vi.fn()
+
+    const code = await runUi(['--port', '0'], io, { journalDir, signals: [], onListening })
+
+    expect(code).toBe(1)
+    expect(onListening).not.toHaveBeenCalled()
+    expect(io.errText()).toContain('ui: cannot write the bootstrap token file:')
+    expect(io.errText()).toContain(`admin rotate ${BOOTSTRAP_ADMIN_NAME}`)
+    expect(tokensIn(io.errText())).toEqual([])
+    expect(io.outText()).toBe('')
+    // The owner was minted before the write failed; the line above is honest about it.
+    const admins = await createAdminStore({ journalDir }).listAdmins()
+    expect(admins.map((admin) => admin.name)).toEqual([BOOTSTRAP_ADMIN_NAME])
   })
 
   test('no bootstrap admin is created when one already exists', async () => {
@@ -639,7 +702,7 @@ describe('runUi: composed handlers', () => {
 
   test('every authenticated page an owner can reach renders', async () => {
     const fixture = await startUi()
-    const token = tokensIn(fixture.io.errText())[0] as string
+    const token = await readBootstrapToken(fixture.journalDir)
     const cookie = await login(fixture.base, token)
 
     for (const path of ['/', '/quarantine', '/servers', '/groups', '/agents', '/journal', '/vault', '/admins']) {
@@ -651,7 +714,7 @@ describe('runUi: composed handlers', () => {
 
   test('the journal browser is wired to the real search layer, over an empty journal too', async () => {
     const fixture = await startUi()
-    const token = tokensIn(fixture.io.errText())[0] as string
+    const token = await readBootstrapToken(fixture.journalDir)
     const cookie = await login(fixture.base, token)
 
     // Three distinct read paths behind one route: session list, cross-session
@@ -679,7 +742,7 @@ describe('runUi: composed stores and watcher', () => {
     await writeFile(inventoryPath, inventoryWithQuarantinedTool('srv', 'dangerous_tool'), 'utf8')
 
     const fixture = await startUi({ journalDir, queuePollIntervalMs: WATCH_POLL_MS })
-    const token = tokensIn(fixture.io.errText())[0] as string
+    const token = await readBootstrapToken(fixture.journalDir)
     const session = await loginSession(fixture.base, token)
 
     const stream = await openStream(fixture.base, '/events', { cookie: session.cookie })
@@ -715,7 +778,7 @@ describe('runUi: composed stores and watcher', () => {
 
   test('an admin created from the UI is attributed on stderr without its token', async () => {
     const fixture = await startUi()
-    const token = tokensIn(fixture.io.errText())[0] as string
+    const token = await readBootstrapToken(fixture.journalDir)
     const session = await loginSession(fixture.base, token)
 
     const response = await postAction(fixture.base, '/admins/add', session, {
@@ -726,8 +789,9 @@ describe('runUi: composed stores and watcher', () => {
     expect(response.status).toBe(200)
     const errAfter = fixture.io.errText()
     expect(errAfter).toContain(`${BOOTSTRAP_ADMIN_NAME} admins.add bob`)
-    // The new admin's one-time token belongs in the page, never in the log.
-    expect(tokensIn(errAfter)).toHaveLength(1)
+    // The new admin's one-time token belongs in the page, never in the log —
+    // and since phase 6 (F6) neither does the bootstrap one, so stderr holds none.
+    expect(tokensIn(errAfter)).toHaveLength(0)
     expect(fixture.io.outText()).toBe('')
 
     const store = createAdminStore({ journalDir: fixture.journalDir })
@@ -736,7 +800,7 @@ describe('runUi: composed stores and watcher', () => {
 
   test('--behind-tls marks the session cookie Secure', async () => {
     const fixture = await startUi({ argv: ['--behind-tls'] })
-    const token = tokensIn(fixture.io.errText())[0] as string
+    const token = await readBootstrapToken(fixture.journalDir)
 
     const session = await loginSession(fixture.base, token)
 
@@ -813,7 +877,7 @@ describe('runUi: graceful shutdown', () => {
     const fixture = await startUi({ signals: ['SIGINT'] })
     expect(fixture.installedSignalListeners).toHaveLength(1)
 
-    const token = tokensIn(fixture.io.errText())[0] as string
+    const token = await readBootstrapToken(fixture.journalDir)
     const cookie = await login(fixture.base, token)
     const stream = await openStream(fixture.base, '/events', { cookie })
     expect(stream.status).toBe(200)
@@ -853,7 +917,7 @@ describe('runUi: graceful shutdown', () => {
 
   test('stdout stays byte-empty across a whole run', async () => {
     const fixture = await startUi()
-    const token = tokensIn(fixture.io.errText())[0] as string
+    const token = await readBootstrapToken(fixture.journalDir)
     const cookie = await login(fixture.base, token)
     await httpCall(fixture.base, '/', { headers: { cookie } })
 

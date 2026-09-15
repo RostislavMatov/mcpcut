@@ -70,6 +70,24 @@ export const ansiStyle: Style = {
   dim: (text) => `\x1b[2m${text}\x1b[22m`,
 }
 
+/** The environment variables `styleFor` reads, and the one `TERM` value that means "no attributes". */
+export const NO_COLOR_ENV_VAR = 'NO_COLOR'
+export const TERM_ENV_VAR = 'TERM'
+export const DUMB_TERMINAL = 'dumb'
+
+/**
+ * Which style a terminal gets (phase 6, F2). no-color.org: `NO_COLOR` set to
+ * anything but the empty string turns attributes off — `0` included, since
+ * the convention is presence, not truthiness; so does a dumb `TERM`, which
+ * has no attributes to turn on. A pure function of the environment, so there
+ * is no flag to document and a test hands it a record instead of `process`.
+ */
+export function styleFor(env: Readonly<Record<string, string | undefined>>): Style {
+  const noColor = env[NO_COLOR_ENV_VAR]
+  if (noColor !== undefined && noColor !== '') return plainStyle
+  return env[TERM_ENV_VAR] === DUMB_TERMINAL ? plainStyle : ansiStyle
+}
+
 /** A CSI sequence: ESC [ parameter bytes, intermediate bytes, one final byte. */
 const CSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g
 

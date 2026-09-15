@@ -11,6 +11,12 @@ When enforcement is enabled, every observed `tools/call` is classified before
 forwarding. Without a policy file, the proxy is journaling-only and forwards
 everything unmodified.
 
+The same binary also answers to `mcpcut`: a first-run wizard that writes the
+install config and mints the first admin, `ui` and `serve` as detached services
+that survive the terminal, and a terminal console that works the whole plane
+without a browser — see [First run](#first-run-mcpcut), [Services](#services)
+and [Docker](#docker).
+
 ## Status
 
 What exists today, and what does not. This table is the source of truth — no
@@ -65,8 +71,231 @@ npm install
 npm run build
 ```
 
-This produces `dist/cli.js` (the `mcp-journal` binary, per `package.json`'s
-`bin` field).
+This produces `dist/cli.js` (the `mcp-journal` and `mcpcut` binaries, per
+`package.json`'s `bin` field — one file under two names, with identical
+behaviour). `npm link` puts both on your `PATH`; without it, `node dist/cli.js`
+in place of either name does the same thing.
+
+## First run (`mcpcut`)
+
+`mcpcut` is the operator's name for the CLI. Everything the sections below
+describe is also reachable as `mcp-journal …`; the examples say `mcpcut`
+because that is what the messages of the setup and service commands say.
+
+### The wizard, or `setup --yes`
+
+A bare `mcpcut` on a terminal that has no install config yet opens the
+first-run wizard: a form prefilled with the data directory, the `ui`/`serve`
+binds, the first admin's name and who starts the services, a confirmation if a
+bind is not loopback, then a deployment ladder («Checks and config», «Starting
+ui», «Starting serve» — the waiting step counts `N s of up to 15 s`), the
+first owner's one-time token shown once, and — after you confirm you saved it —
+the sign-in screen of the console. In a pipe a bare `mcpcut` prints the usage
+instead; `mcpcut setup` without `--yes` outside a terminal refuses with a hint.
+
+Scripts and provisioning use the same steps without the questions:
+
+```
+mcpcut setup --yes [--data-dir <dir>] [--ui-host H] [--ui-port N] [--serve-host H] [--serve-port N]
+                   [--behind-tls|--no-behind-tls] [--admin <name>|--no-admin] [--supervisor mcpcut|external]
+                   [--start] [--force]
+```
+
+It writes the config, prepares the data directory, prints a check report
+(directory, `run/` directory, free ports, databases, policy, network
+exposure), initialises the vault and the signing key, and mints the first
+`owner` admin, printing that token to the terminal once — before `ui` ever
+starts, so no daemon log ever sees it. Flags are overlaid on the config a
+previous run wrote: a rerun that passes only `--ui-port` keeps everything else
+(including `--behind-tls`, which is why `--no-behind-tls` exists to take it
+back). `--start` starts both services once the install is prepared;
+`--force` overwrites a config this build cannot read.
+
+### Where the config lives
+
+`~/.mcpcut/config.json` (mode `0600` in a `0700` directory); `MCPCUT_CONFIG`
+points at another file. It holds the data directory, the `ui` and `serve`
+binds with their TLS/allowlist/policy options, and `supervisor`. Every value
+resolves at process start with the priority **flag > environment variable >
+config > default**: `MCP_JOURNAL_DIR` (an absolute path) outranks the config's
+`dataDir`, `MCPCUT_UI_HOST`/`MCPCUT_UI_PORT` and
+`MCPCUT_SERVE_HOST`/`MCPCUT_SERVE_PORT` outrank the binds, and a flag on the
+command line outranks both. `supervisor` has no environment override — it is a
+question for a human at install time. With no config and no variables, the
+defaults are what they always were: `$HOME/.mcp-journal`, `127.0.0.1:8091` for
+`ui`, `127.0.0.1:8090` for `serve`.
+
+A config that cannot be read or does not validate **refuses** every command
+except `--help` and `setup`, naming the file and each problem. It never falls
+back to the defaults: a command that silently succeeded against a different
+data directory would be the worst possible outcome. Fix the file (or point
+`MCPCUT_CONFIG` elsewhere), or let `setup --force` rewrite it.
+
+### The first owner
+
+`setup` (and the wizard) create the first `owner` admin and show its token
+**once**, the way `admin add` does. If you pass `--no-admin` instead, the
+install is left with no admin and `setup` warns you, naming a file: the first
+`ui` start then creates `owner` itself and writes the token to
+`<data dir>/bootstrap-token` (mode `0600`, created exclusively, inside the
+`0700` data directory) — not into its log. The file is deleted by the first
+successful sign-in of any admin, through the browser or the console, and by
+nothing else; the console's sign-in screen shows `first owner token: <path>`
+for as long as it exists. If you missed it and the file is already gone,
+`mcpcut admin rotate owner --recover` mints a new token without needing the
+old one. Details in [Admin UI › Starting it](#starting-it).
+
+### The console
+
+```
+mcpcut tui          # or a bare `mcpcut` on a terminal that has an install config
+```
+
+Sign in with a personal admin token; the sign-in screen also shows whether
+the services are up (`services: ui ● … · serve ○ …`, with a hint to start
+them from the Services section — nothing starts on its own). Twelve sections
+— Home, Admins, Servers, Vault, Agents, Groups, Policy, Quarantine, Approvals,
+Journal, Audit, Services — each a list of actions; every action is a form that
+runs the very CLI command it shows you (`$ mcpcut …`), with the same gates and
+the same journal records as the shell. The Approvals queue re-reads itself
+every 3 s while you are on it. An action that prints a one-time token
+(`admin add`, `admin rotate`, `agent create`) holds the output on screen
+under a banner until you press `y` to say you copied it. Services shows
+`status · start · stop · logs · setup`; under `supervisor: external`
+(Docker, systemd) `start`/`stop` are not offered.
+
+Keys, as `?` shows them from the action list: `Tab`/`Shift-Tab`/`1-9`/`h`/`l`
+move between sections, `↑`/`↓`/`k`/`j` between actions, `Enter` opens or runs,
+`←`/`→` change a choice field and space toggles a flag, `PgUp`/`PgDn` scroll
+the output and `[`/`]` scroll it sideways, `r` reruns the section's refresh
+action, `y`/`n` answer a confirmation, `Esc` cancels, `q` or `Ctrl-C` quit
+(the services keep running). The `?` help covers the whole body and any key
+closes it.
+
+The console adapts to the terminal rather than asking you to resize it:
+below **60 columns** the layout stacks (the action list as a strip on top,
+the output pane full-width beneath it) and switches back on resize; a
+non-empty `NO_COLOR` or `TERM=dumb` turns every escape sequence for colour
+and weight off (the alternate screen and cursor movement stay — a terminal
+without those cannot run the console at all); keys pressed while a command is
+running are **queued** (up to 32) and replayed in order once it answers, except
+when the answer is a one-time token — then the queue is dropped so nothing
+can acknowledge the token unread. `Ctrl-C` is never queued: it quits at once.
+
+## Services
+
+```
+mcpcut start [ui|serve]           # both when no name is given
+mcpcut stop  [ui|serve]
+mcpcut status [--json]
+mcpcut logs <ui|serve> [--lines N]   # default 50 lines
+```
+
+`start` spawns `ui` and `serve` as detached daemons that survive the terminal
+that started them, and returns once each answers its readiness probe (up to
+15 s; the first start of an install opens and possibly migrates two SQLite
+databases before it listens). Their pid records and logs live in
+`<data dir>/run/` — `ui.pid`, `ui.log`, `serve.pid`, `serve.log`. That
+directory and every file in it must be owner-only (`0700`/`0600`, your uid):
+a start refuses otherwise, and `setup` reports the same condition as the
+`run dir` row of its check report. Whoever can write a pid file chooses which
+pid the next `stop` signals. The daemons get `MCP_JOURNAL_DIR` set to the
+manager's data directory and never inherit `MCP_ADMIN_TOKEN` or
+`MCP_AGENT_TOKEN` from your shell.
+
+`status` says `running` only when the pid is alive **and** the service answers
+on its port (`GET /login` for `ui`, a TCP connect for `serve` — the same probes
+the compose healthchecks use). The other words: `starting` (alive, not yet
+answering, younger than the readiness timeout), `stopped` (no pid file,
+nothing answering), `stale` (a pid file whose process is dead, or alive but
+silent for too long, or reused by something else — nothing is signalled, the
+file is leftovers) and `external` (something answers on the port with no pid
+file of ours). `stop` sends `SIGTERM` to a `running` or `starting` service,
+waits **5 s**, then escalates to `SIGKILL` and reports `forced`; a `stale` pid
+file is only cleared. On Windows `start`/`stop` refuse: run `mcpcut ui` and
+`mcpcut serve` in the foreground, or use a Windows service.
+
+`supervisor: external` in the config (what the Docker entrypoint writes, and
+what you should write before handing the processes to systemd or launchd)
+turns `start` and `stop` into a refusal with an explanation; `status` and
+`logs` keep working, and a service that answers shows as `external` — the
+console draws it `◉`, meaning "answering, but not our pid".
+
+Service logs are **not rotated** (an open question — Q10 in the roadmap). They
+hold the same redacted diagnostics the process used to print to the terminal,
+plus whatever an upstream MCP server made it print; `mcpcut logs` reads at
+most the last 64 KiB and passes every line through the same readable-field
+filter as the journal, so a log written by someone else cannot repaint your
+terminal. To rotate by hand, stop the service first — the daemon holds the
+file open and would keep writing into a moved inode:
+
+```
+mcpcut stop ui
+mv ~/.mcp-journal/run/ui.log ~/.mcp-journal/run/ui.log.1
+mcpcut start ui               # opens a fresh ui.log
+```
+
+### Running under systemd or launchd
+
+If the host already has a supervisor, hand the two processes to it instead of
+`mcpcut start`. `docs/deploy/` holds example user units for systemd
+(`mcpcut-ui.service`, `mcpcut-serve.service`) and launchd
+(`com.mcpcut.ui.plist`, `com.mcpcut.serve.plist`) with the install steps in
+[`docs/deploy/README.md`](docs/deploy/README.md). The one prerequisite:
+`mcpcut setup --yes --supervisor external`, so the console and the CLI report
+the services instead of fighting the supervisor for them. The files are
+examples to adapt (paths, node binary), not something `mcpcut` installs.
+
+## Docker
+
+`docker compose up -d` builds one image and runs two containers, `ui` and
+`serve`, one per long-running process. There is no database container: the
+store is `node:sqlite`, so `state.db` and `journal.db` are files, and both
+containers mount the **same** named volume `mcp-data` at
+`/home/node/.mcp-journal` — two writers of the same files, which is what the
+code assumes (WAL, the exclusive policy lock, the `statSync` hot reload). That
+holds because a named volume is one filesystem on one host; it would not hold
+across machines. The install config lives on a second volume, `mcp-config`
+(`/home/node/.mcpcut`), so it survives `docker compose down` and an image
+rebuild, and a second start skips setup instead of repeating it. `connect`,
+the stdio proxy, has no container: the agent's own client spawns it.
+
+The first start of `ui` runs `setup --yes --supervisor external` from the
+entrypoint, taking its answers from the environment — `MCPCUT_DATA_DIR`,
+`MCPCUT_UI_HOST`/`MCPCUT_UI_PORT` (default `0.0.0.0:8091`),
+`MCPCUT_SERVE_HOST`/`MCPCUT_SERVE_PORT` (default `0.0.0.0:8090`) and
+`MCPCUT_ADMIN` (default `owner`) — set them in an `environment:` block to
+change the install. `0.0.0.0` inside the container is the only way a
+published port reaches it; the ports are published to host loopback only
+(`127.0.0.1:8091`, `127.0.0.1:8090`), and `Host` screening still admits only
+localhost names, so reach the console at `http://localhost:8091`. **Do not set
+`MCP_JOURNAL_DIR`** in the container's environment: it outranks the config for
+every command, `setup` refuses the run as a data-directory conflict, and under
+`set -eu` with `restart: unless-stopped` the container crash-loops. Do not
+bind-mount a checkout over `/app` either: a `.mcp-journal/policy.json` in it
+would shadow the volume's policy (ADR-0005).
+
+The entrypoint always passes `--admin`, never `--no-admin`, so the
+bootstrap-token file described under [First run](#the-first-owner) does not
+apply in Docker: `setup` mints the owner and prints the one-time token to the
+container's stdout, where the json-file log keeps it (bounded to three 10 MB
+files):
+
+```
+docker compose logs ui                 # the one-time owner token, once
+docker compose exec -it ui mcpcut      # the console, inside the container
+docker compose run --rm ui admin rotate owner   # a missed or leaked token
+```
+
+Rotate the owner token after the first sign-in: a copy sits in the
+container's log, readable by anyone who can run `docker compose logs`.
+Inside the container the console's Services section shows `status` and
+`logs` only — compose owns the processes. The header draws the service of
+the container you are in as `◉` ("answering, but not our pid"); the other
+service shows as `○`, because each container has its own network namespace
+and the probe of `0.0.0.0:<port>` from inside `ui` never reaches `serve`.
+Trust `docker compose ps` for the second service; a per-service probe host
+is an open item.
 
 ## Usage
 
@@ -394,7 +623,18 @@ mcp-journal keygen
 mcp-journal verify [--session <id>] [--sign]
 mcp-journal verify --report <dir> [--pub <path>] [--require-signature]
 mcp-journal prune --older-than <duration> [--yes]    # --yes needs MCP_ADMIN_TOKEN (owner)
+mcp-journal setup                                     # interactive setup on a terminal: the same questions as the flags below
+mcp-journal setup --yes [--data-dir <dir>] [--ui-host H] [--ui-port N] [--serve-host H] [--serve-port N]
+                  [--behind-tls|--no-behind-tls] [--admin <name>|--no-admin] [--supervisor mcpcut|external]
+                  [--start] [--force]                 # write the install config, prepare the data directory, mint the first owner
+mcp-journal start|stop [ui|serve]                     # start/stop the services as detached daemons (pid + log in <data dir>/run)
+mcp-journal status [--json]                           # running = pid alive AND answering on its port
+mcp-journal logs <ui|serve> [--lines N]               # tail of a service log (default 50 lines)
+mcp-journal tui                                       # the interactive console (a bare `mcpcut` on a terminal does the same)
 ```
+
+`mcpcut` is a second `bin` name for the same file: every line above works as
+`mcpcut …` too.
 
 `serve`, `ui`, `connect` and `wrap` — the four long-lived entry points — run
 `PRAGMA integrity_check` on `state.db` and `journal.db` before binding a port
@@ -764,21 +1004,38 @@ The UI is its own process on its own port — it is not part of `serve`, and
 main M3 scenario (`connect`, stdio) never runs `serve` at all; if the queue
 only had a UI when `serve` was up, that scenario would have no UI ever.
 
-On the very first run, if the admin store in `~/.mcp-journal/state.db` holds no admins yet,
-`mcp-journal ui` creates one `owner` account (named `owner`) and prints the
-sign-in URL and its plaintext token **to stderr only, once** — never to stdout,
-never to a file. The token is printed beside the URL, not embedded in it, so
-nothing here belongs in browser history:
+You normally never meet the bootstrap: `mcpcut setup` and the first-run
+wizard mint the first `owner` before `ui` ever starts and show that token once
+in your terminal ([First run](#the-first-owner)). Only `setup --yes --no-admin`
+— or a `ui` started by hand over an empty store — leaves it to `ui`.
+
+In that case, if the admin store in `<data dir>/state.db` holds no admins yet,
+`mcp-journal ui` creates one `owner` account (named `owner`), writes its
+plaintext token to **`<data dir>/bootstrap-token`** (mode `0600`, created
+exclusively, inside the `0700` data directory) and prints the sign-in URL and
+that path — never the token — to stderr, once. Nothing goes to stdout, and
+nothing belongs in browser history:
 
 ```
 [ui] no admins found: created "owner" with role owner
-[ui] sign in at http://127.0.0.1:8091/login as "owner" with token: mcpa_…
+[ui] its one-time token is in /home/you/.mcp-journal/bootstrap-token (mode 0600); sign in at http://127.0.0.1:8091/login as "owner"
+[ui] the file is deleted after the first sign-in. Rotate the token later with: mcp-journal admin rotate owner
 ```
 
-Copy it before it scrolls away; there is no second printing. Rotate it with
-`mcp-journal admin rotate owner` (with your token in `MCP_ADMIN_TOKEN`), or — if
-that token is the one you lost — `mcp-journal admin rotate owner --recover`,
-which needs none and leaves a journal record marked `recovery: true`.
+The file exists because `ui` as a service has no terminal: its stderr is
+`<data dir>/run/ui.log`, and a token printed there would sit on disk for as
+long as the log does. The file is removed by the **first successful sign-in of
+any admin** — through the browser (`POST /login`) or the console — and by
+nothing else (no timer, no `admin add`); a failure to remove it is reported on
+stderr and does not change the sign-in's outcome. The console's sign-in screen
+shows `first owner token: <path>` while the file exists. If `ui` cannot write
+the file it refuses to start and says so — the account already exists, so
+`admin rotate owner --recover` is the way to a token you can use.
+
+Read the file before you sign in; there is no second copy. Rotate the token
+with `mcp-journal admin rotate owner` (with your token in `MCP_ADMIN_TOKEN`),
+or — if that token is the one you lost — `mcp-journal admin rotate owner
+--recover`, which needs none and leaves a journal record marked `recovery: true`.
 
 ### Admins and roles
 

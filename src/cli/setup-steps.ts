@@ -1,3 +1,4 @@
+import { bootstrapTokenPathFor } from '../admin/bootstrap-file.js'
 import { createAdminStore } from '../admin/store.js'
 import { formatReadableField } from '../journal/format.js'
 import {
@@ -7,7 +8,6 @@ import {
 import { EXTERNAL_SUPERVISOR, SERVICE_NAMES } from '../services/constants.js'
 import { formatStartResult } from '../services/format.js'
 import type { ServiceManager } from '../services/manager.js'
-import { logFilePathFor } from '../services/paths.js'
 import type { InstallConfig } from '../setup/schema.js'
 import { createVaultStore } from '../vault/store.js'
 import { isExpectedAdminError } from './admin-cmd.js'
@@ -33,9 +33,6 @@ import { BOOTSTRAP_ADMIN_NAME, TOKEN_ONCE_NOTICE, TOKEN_STDOUT_REDIRECT_WARNING,
  * check has passed, and every one of them is idempotent: a rerun of `setup`
  * over a finished install must add nothing and refuse nothing.
  */
-
-/** The service whose daemon log the `--no-admin` warning points at. */
-const UI_SERVICE = 'ui'
 
 /** The role the first admin of an install gets. There is no other useful one to bootstrap with. */
 const BOOTSTRAP_ADMIN_ROLE = 'owner'
@@ -89,8 +86,8 @@ export async function prepareSigningKey(io: UiCliIo, dataDir: string): Promise<v
 /**
  * Mints the install's first owner and prints its token once — the whole point
  * of owner decision C6. The admin is created HERE, before any daemon exists,
- * so the token reaches a human on stdout instead of landing in `run/ui.log`
- * the way the `ui` bootstrap would put it.
+ * so the token reaches a human on stdout instead of waiting in the bootstrap
+ * token file the way the `ui` bootstrap would leave it (phase 6, F6).
  *
  * The output is `admin add`'s, line for line (`admin-cmd.ts`'s `runAdd`): one
  * shape for a one-time token across the whole CLI, so the two notices that
@@ -103,7 +100,7 @@ export async function prepareAdmin(
   clock?: () => Date,
 ): Promise<boolean> {
   if (args.noAdmin) {
-    io.stderr.write(noAdminWarning(logFilePathFor(dataDir, UI_SERVICE)))
+    io.stderr.write(noAdminWarning(bootstrapTokenPathFor(dataDir)))
     return true
   }
 

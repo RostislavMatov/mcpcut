@@ -8,13 +8,17 @@ import {
   CURSOR_HIDE,
   CURSOR_HOME,
   CURSOR_SHOW,
+  DUMB_TERMINAL,
   ENTER_SCREEN,
   fitWidth,
   frameOf,
   LEAVE_SCREEN,
+  NO_COLOR_ENV_VAR,
   padRight,
   plainStyle,
   sanitizeLine,
+  styleFor,
+  TERM_ENV_VAR,
 } from '../../src/tui/ansi.js'
 
 /**
@@ -219,5 +223,40 @@ describe('padRight: every cell of a frame is sanitised', () => {
 
   test('strips a bidi override out of a cell', () => {
     expect(padRight('safe\u202egnp', 8)).toBe('safegnp ')
+  })
+})
+
+/**
+ * `styleFor` (phase 6, F2) is the seam's third value: which of the two
+ * styles a terminal gets is decided by its environment, never by a flag.
+ * no-color.org says `NO_COLOR` set to anything but the empty string turns
+ * attributes off — even `0` — and a dumb `TERM` has no attributes to turn on.
+ */
+describe('styleFor', () => {
+  test('an empty environment gets the real style, by reference', () => {
+    expect(styleFor({})).toBe(ansiStyle)
+  })
+
+  test('NO_COLOR set to the empty string does not count as set', () => {
+    expect(styleFor({ [NO_COLOR_ENV_VAR]: '' })).toBe(ansiStyle)
+  })
+
+  test('NO_COLOR set to anything else turns attributes off, even "0"', () => {
+    expect(styleFor({ [NO_COLOR_ENV_VAR]: '1' })).toBe(plainStyle)
+    expect(styleFor({ [NO_COLOR_ENV_VAR]: '0' })).toBe(plainStyle)
+  })
+
+  test('TERM=dumb turns attributes off', () => {
+    expect(styleFor({ [TERM_ENV_VAR]: DUMB_TERMINAL })).toBe(plainStyle)
+  })
+
+  test('any other TERM keeps the real style', () => {
+    expect(styleFor({ [TERM_ENV_VAR]: 'xterm-256color' })).toBe(ansiStyle)
+  })
+
+  test('the variable names are the ones the conventions spell', () => {
+    expect(NO_COLOR_ENV_VAR).toBe('NO_COLOR')
+    expect(TERM_ENV_VAR).toBe('TERM')
+    expect(DUMB_TERMINAL).toBe('dumb')
   })
 })

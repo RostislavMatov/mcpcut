@@ -42,7 +42,9 @@ export const DEFAULT_ROWS = 24
  * The smallest screen the layout is designed for. Below it the console still
  * draws — it clips rather than refusing, because an operator who shrank a pane
  * wants their session back, not an error — so these are the numbers the render
- * tests use as the hard case, not a gate.
+ * tests use as the hard case, not a gate. The one threshold above them is
+ * `NARROW_COLUMNS` (`constants-live.ts`): it changes the body's shape, never
+ * whether the console draws.
  */
 export const MIN_COLUMNS = 40
 export const MIN_ROWS = 10
@@ -258,10 +260,14 @@ export const DEPLOY_TOKEN_PLACEHOLDER = '(shown on the final screen)'
 /**
  * What a rung says while its service is being waited on. The manager polls the
  * service's probe for up to `START_READY_TIMEOUT_MS`, and one effect yields one
- * message, so this line has to carry the whole wait on its own.
+ * message, so this line has to carry the whole wait on its own — and since
+ * phase 6 (F8) the seconds already waited, when a stopwatch tick has counted
+ * any; with none the sentence is the phase-3 one, byte for byte.
  */
-export function deployWaitingDetail(timeoutMs: number): string {
-  return `waiting for the service to answer (up to ${Math.round(timeoutMs / 1000)} s)`
+export function deployWaitingDetail(timeoutMs: number, waitedSeconds = 0): string {
+  const limit = `up to ${Math.round(timeoutMs / 1000)} s`
+  const waited = waitedSeconds > 0 ? `${waitedSeconds} s of ${limit}` : limit
+  return `waiting for the service to answer (${waited})`
 }
 
 /** What the `setup` rung says once it is done — with and without a first admin. */

@@ -1,5 +1,6 @@
 import type { SectionSpec } from './catalogue/types.js'
-import { FOOTER_ROWS, HEADER_ROWS } from './constants.js'
+import type { KeyEvent } from './keys.js'
+import { bodyLayoutOf } from './layout.js'
 import type {
   Effect,
   Model,
@@ -56,9 +57,14 @@ export function quit(model: Model, exitCode: number): Step {
   return { model, effects: [{ kind: 'quit', exitCode }] }
 }
 
-/** How many lines of output one PgUp/PgDn moves on a terminal this tall. */
+/**
+ * How many lines of output one PgUp/PgDn moves on a terminal this size. Read
+ * off the layout rather than the height alone since phase 6: on a narrow
+ * terminal the action band takes rows from the pane, and a page that moved
+ * by the two-column count would skip lines the pane never showed.
+ */
 export function pageRowsOf(size: TerminalSize): number {
-  return Math.max(MIN_PAGE_ROWS, size.rows - HEADER_ROWS - FOOTER_ROWS - PANE_CHROME_ROWS)
+  return Math.max(MIN_PAGE_ROWS, bodyLayoutOf(size).paneRows - PANE_CHROME_ROWS)
 }
 
 /** Every field of a main screen, with `undefined` meaning "this one is absent". */
@@ -73,6 +79,8 @@ export interface MainFields {
   readonly busy: RunRequest | undefined
   /** Id of the section a quiet poll is out for; `undefined` = none in flight. */
   readonly polling: string | undefined
+  /** Keys queued while a run was in flight, oldest first; `undefined` = nothing queued. */
+  readonly pendingKeys: readonly KeyEvent[] | undefined
 }
 
 /** Reads a main screen into the record `mainOf` builds one from. */
@@ -87,6 +95,7 @@ export function fieldsOf(screen: MainScreen): MainFields {
     services: screen.services,
     busy: screen.busy,
     polling: screen.polling,
+    pendingKeys: screen.pendingKeys,
   }
 }
 
@@ -103,6 +112,7 @@ export function mainOf(fields: MainFields): MainScreen {
     ...(fields.services !== undefined ? { services: fields.services } : {}),
     ...(fields.busy !== undefined ? { busy: fields.busy } : {}),
     ...(fields.polling !== undefined ? { polling: fields.polling } : {}),
+    ...(fields.pendingKeys !== undefined ? { pendingKeys: fields.pendingKeys } : {}),
   }
 }
 

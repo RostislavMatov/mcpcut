@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events'
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { dispatch } from '../../../src/cli.js'
-import type { CliIo, DispatchOptions } from '../../../src/cli/dispatch-types.js'
+import type { CliIo, DispatchFn, DispatchOptions } from '../../../src/cli/dispatch-types.js'
 import { runTui } from '../../../src/cli/tui-cmd.js'
 import type { UiCliIo } from '../../../src/cli/ui-constants.js'
 import { ACCESS_EDIT_SESSION_ID } from '../../../src/journal/access-edit-record.js'
@@ -18,6 +18,7 @@ import { defaultInstallConfig } from '../../../src/setup/defaults.js'
 import type { InstallConfigLoad } from '../../../src/setup/load.js'
 import type { InstallConfig } from '../../../src/setup/schema.js'
 import { plainStyle } from '../../../src/tui/ansi.js'
+import type { TerminalSize } from '../../../src/tui/model.js'
 import { readJournalRecords } from '../../support/journal-rows.js'
 import {
   CONSOLE_COLUMNS,
@@ -159,10 +160,18 @@ export async function closeConsoles(): Promise<void> {
  * The spread is one level deep: an override REPLACES a seam whole rather than
  * merging into it. Anything else would let a half-overridden `services` keep
  * the fake manager's `stop` beside a real `start`.
+ *
+ * Phase 6 added two more. `size` is what the fake terminal reports, for the
+ * suites about the narrow layout (F1); the default is the 80×24 every older
+ * suite was written against. `dispatch` stands in for the real dispatcher
+ * BEHIND the recording wrapper — a suite about the key queue (F5) wraps the
+ * real one in a delay, and the argv it was asked to run is still recorded.
  */
 export interface ConsoleOverrides {
   readonly install?: InstallConfig
   readonly dispatchOptions?: Partial<DispatchOptions>
+  readonly size?: TerminalSize
+  readonly dispatch?: DispatchFn
 }
 
 /**
@@ -174,7 +183,7 @@ export function openConsole(
   journalDir: string,
   overrides: ConsoleOverrides = {},
 ): RunningConsole {
-  const fake = createFakeTerminal({ columns: CONSOLE_COLUMNS, rows: CONSOLE_ROWS })
+  const fake = createFakeTerminal(overrides.size ?? { columns: CONSOLE_COLUMNS, rows: CONSOLE_ROWS })
   const processEvents = new EventEmitter()
   const io = fakeIo()
   const calls: Array<readonly string[]> = []
@@ -185,13 +194,14 @@ export function openConsole(
     config: overrides.install ?? defaultInstallConfig(journalDir),
   }
 
+  const underlying = overrides.dispatch ?? dispatch
   const recordingDispatch = async (
     argv: readonly string[],
     commandIo: CliIo,
     options?: DispatchOptions,
   ): Promise<number> => {
     calls.push([...argv])
-    return dispatch(argv, commandIo, options)
+    return underlying(argv, commandIo, options)
   }
 
   const dispatchOptions: DispatchOptions = {

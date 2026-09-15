@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { ansiStyle, plainStyle } from '../../src/tui/ansi.js'
+import { ansiStyle, padRight, plainStyle } from '../../src/tui/ansi.js'
 import { visibleSections } from '../../src/tui/catalogue/index.js'
 import {
   ACTION_COLUMN_WIDTH,
@@ -10,6 +10,7 @@ import {
   SIGNIN_TITLE,
 } from '../../src/tui/constants.js'
 import {
+  SIGNIN_BOOTSTRAP_PREFIX,
   SIGNIN_SERVICES_DOWN_HINT,
   SIGNIN_SERVICES_EXTERNAL_HINT,
   SIGNIN_SERVICES_PREFIX,
@@ -28,6 +29,7 @@ import { type OutputPanel, outputPanelOf } from '../../src/tui/output.js'
 import { render } from '../../src/tui/render.js'
 import { SIGNIN_BUSY_TEXT, SIGNIN_FOOTER } from '../../src/tui/render-signin.js'
 import { servicesHeaderPart, type ServiceSummary } from '../../src/tui/services-summary.js'
+import { signedOut } from '../../src/tui/update-signin.js'
 
 /**
  * The two screens phase 5 gave words to: the sign-in screen, which now says
@@ -74,6 +76,7 @@ interface SigninPatch {
   readonly services?: readonly ServiceSummary[]
   readonly notice?: string
   readonly busy?: boolean
+  readonly bootstrapTokenPath?: string
 }
 
 function signinModel(patch: SigninPatch = {}, size: TerminalSize = DEFAULT_SIZE): Model {
@@ -210,6 +213,79 @@ describe('render-signin: the services banner of the sign-in screen', () => {
     const lines = render(signinModel({ services: DOWN_SERVICES, busy: true }), plainStyle)
     expect(lines.at(-1)).toContain(SIGNIN_FOOTER)
     expect(joined(lines)).toContain(SIGNIN_BUSY_TEXT)
+  })
+})
+
+/**
+ * The bootstrap token file line (phase 6, F6b): while the one-time owner
+ * token is still in its file, the sign-in screen says where. The path is a
+ * host fact read once when the console opens, so the line is a property of
+ * the screen it was opened with — a screen that follows a lost session
+ * (`signedOut`) never carries it, because the sign-in that just ended is the
+ * one that consumed the file.
+ */
+describe('render-signin: the bootstrap token file line', () => {
+  const TOKEN_PATH = '/srv/mcpcut/bootstrap-token'
+
+  test('names the file while the screen knows of one', () => {
+    const text = joined(render(signinModel({ bootstrapTokenPath: TOKEN_PATH }), plainStyle))
+
+    expect(text).toContain(`${SIGNIN_BOOTSTRAP_PREFIX}${TOKEN_PATH}`)
+  })
+
+  test('says nothing about it when there is none', () => {
+    const text = joined(render(signinModel(), plainStyle))
+
+    expect(text).not.toContain(SIGNIN_BOOTSTRAP_PREFIX)
+  })
+
+  test('sits under the services line, once status has answered', () => {
+    const lines = render(
+      signinModel({ services: RUNNING_SERVICES, bootstrapTokenPath: TOKEN_PATH }),
+      plainStyle,
+    )
+    const servicesRow = lines.findIndex((line) => line.includes(SIGNIN_SERVICES_PREFIX))
+    const bootstrapRow = lines.findIndex((line) => line.includes(SIGNIN_BOOTSTRAP_PREFIX))
+
+    expect(servicesRow).toBeGreaterThanOrEqual(0)
+    expect(bootstrapRow).toBe(servicesRow + 1)
+  })
+
+  test('a long path is cut at the columns rather than widening the frame', () => {
+    const size: TerminalSize = { columns: 40, rows: 10 }
+    const longPath = `/${'x'.repeat(60)}/bootstrap-token`
+
+    const lines = render(signinModel({ bootstrapTokenPath: longPath }, size), plainStyle)
+    const line = lines.find((each) => each.startsWith(SIGNIN_BOOTSTRAP_PREFIX))
+
+    expect(line).toBe(padRight(`${SIGNIN_BOOTSTRAP_PREFIX}${longPath}`, size.columns))
+    expect(lines.every((each) => each.length === size.columns)).toBe(true)
+  })
+
+  test('an escape sequence in the path never reaches the frame', () => {
+    const text = joined(
+      render(signinModel({ bootstrapTokenPath: '/tmp/\x1b[31mred/bootstrap-token' }), plainStyle),
+    )
+
+    expect(text).not.toContain('\x1b[31m')
+    expect(text).toContain(SIGNIN_BOOTSTRAP_PREFIX)
+  })
+
+  test('the screen a lost session returns to does not carry it', () => {
+    const before = signinModel({ bootstrapTokenPath: TOKEN_PATH })
+    const after = signedOut(before.size, 'session lost', before.install)
+
+    expect(joined(render(after, plainStyle))).not.toContain(SIGNIN_BOOTSTRAP_PREFIX)
+  })
+
+  test.each(SIZES)('keeps the frame at exactly $rows × $columns', (size) => {
+    const lines = render(
+      signinModel({ services: DOWN_SERVICES, bootstrapTokenPath: TOKEN_PATH }, size),
+      plainStyle,
+    )
+
+    expect(lines).toHaveLength(size.rows)
+    expect(lines.every((line) => line.length === size.columns)).toBe(true)
   })
 })
 

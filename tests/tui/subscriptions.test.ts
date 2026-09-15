@@ -1,15 +1,21 @@
 import { describe, expect, test } from 'vitest'
 import { visibleSections } from '../../src/tui/catalogue/index.js'
 import type { SectionSpec } from '../../src/tui/catalogue/types.js'
-import { APPROVALS_POLL_INTERVAL_MS } from '../../src/tui/constants-live.js'
+import {
+  APPROVALS_POLL_INTERVAL_MS,
+  WIZARD_STOPWATCH_INTERVAL_MS,
+} from '../../src/tui/constants-live.js'
 import { formOf } from '../../src/tui/form.js'
 import {
   initialModel,
   mainScreenOf,
+  type DeployStepId,
   type MainScreen,
   type Model,
   type Session,
   type TerminalSize,
+  type WizardScreen,
+  type WizardStage,
 } from '../../src/tui/model.js'
 import { defaultInstallConfig } from '../../src/setup/defaults.js'
 import { subscriptionOf } from '../../src/tui/subscriptions.js'
@@ -43,6 +49,22 @@ function tabOf(id: string): number {
 
 function modelOn(id: string, patch: Partial<MainScreen> = {}): Model {
   return { screen: mainScreen({ sectionIndex: tabOf(id), ...patch }), size: SIZE }
+}
+
+/** The first-run wizard, at whichever stage the case needs. */
+function wizardScreen(stage: WizardStage): WizardScreen {
+  const config = defaultInstallConfig('/var/lib/x')
+  const screen = wizardScreenOf({ mode: 'first-run', configPath: '/home/op/.mcpcut/config.json', config })
+
+  return { ...screen, stage }
+}
+
+/** The deploy ladder with exactly one rung running. */
+function deployingWith(running: DeployStepId): WizardStage {
+  const ids: readonly DeployStepId[] = ['setup', 'start-ui', 'start-serve']
+  const steps = ids.map((id) => ({ id, state: id === running ? 'running' : 'pending' }) as const)
+
+  return { kind: 'deploying', steps }
 }
 
 /** A tab that claims a timer but names no reader — the shape the invariant forbids. */
@@ -139,15 +161,8 @@ describe('a screen with no action list has no subscription at all', () => {
     expect(subscriptionOf(initialModel(SIZE))).toBeUndefined()
   })
 
-  test('the wizard polls nothing', () => {
-    const config = defaultInstallConfig('/var/lib/x')
-    const screen = wizardScreenOf({
-      mode: 'first-run',
-      configPath: '/home/op/.mcpcut/config.json',
-      config,
-    })
-
-    expect(subscriptionOf({ screen, size: SIZE })).toBeUndefined()
+  test('the wizard on its form polls nothing', () => {
+    expect(subscriptionOf({ screen: wizardScreen({ kind: 'form' }), size: SIZE })).toBeUndefined()
   })
 })
 
@@ -162,5 +177,33 @@ describe('an interval alone is not enough: there must be something to run', () =
 
   test('a section index outside the list answers undefined rather than crashing', () => {
     expect(subscriptionOf(modelOn('approvals', { sectionIndex: 99 }))).toBeUndefined()
+  })
+})
+
+describe('the wizard counts seconds while a service is starting (F8)', () => {
+  test.each([['start-ui'], ['start-serve']] as const)(
+    'the deploying stage with %s running subscribes to the stopwatch',
+    (running) => {
+      const model: Model = { screen: wizardScreen(deployingWith(running)), size: SIZE }
+
+      expect(subscriptionOf(model)).toBe(WIZARD_STOPWATCH_INTERVAL_MS)
+    },
+  )
+
+  test('`setup` running counts nothing: its wait has no fixed limit to count against', () => {
+    const model: Model = { screen: wizardScreen(deployingWith('setup')), size: SIZE }
+
+    expect(subscriptionOf(model)).toBeUndefined()
+  })
+
+  test('the final screen counts nothing', () => {
+    const stage: WizardStage = { kind: 'done', steps: deployingWith('setup').steps, quitAsked: false }
+
+    expect(subscriptionOf({ screen: wizardScreen(stage), size: SIZE })).toBeUndefined()
+  })
+
+  test('the main screen answers as it did before the wizard had a subscription', () => {
+    expect(subscriptionOf(modelOn('approvals'))).toBe(APPROVALS_POLL_INTERVAL_MS)
+    expect(subscriptionOf(modelOn('home'))).toBeUndefined()
   })
 })

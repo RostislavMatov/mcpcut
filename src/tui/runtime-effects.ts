@@ -1,5 +1,3 @@
-import { ADMIN_TOKEN_ENV_VAR } from '../admin/constants.js'
-import { adminFromEnv, type TokenAdmin } from '../cli/admin-token.js'
 import type { DispatchFn, DispatchOptions } from '../cli/dispatch-types.js'
 import { captureBothIo } from '../setup/capture-io.js'
 import type { ReopenCell, TokenCell, WizardOutcome, WizardOutcomeCell } from './cells.js'
@@ -13,6 +11,7 @@ import {
   type DispatchOutcome,
 } from './run-result.js'
 import { fileSink, memorySink, type RunSink, type SinkStreamFactory } from './run-sink.js'
+import { isSessionFresh, signIn, type SessionDeps } from './runtime-signin.js'
 import { messageOf } from './runtime-terminal.js'
 import { parseServicesJson } from './services-summary.js'
 import {
@@ -81,15 +80,16 @@ export interface WizardDeps {
   readonly outcome: WizardOutcomeCell
 }
 
-/** What executing an effect needs: the dispatcher, its seams, and the session. */
-export interface EffectDeps {
+/**
+ * What executing an effect needs: the dispatcher, its seams, and the session
+ * (`SessionDeps` — the store, the token cell and the stderr the sign-in half
+ * in `runtime-signin.ts` reports to).
+ */
+export interface EffectDeps extends SessionDeps {
   readonly dispatch: DispatchFn
   readonly dispatchOptions: DispatchOptions
   /** The environment commands inherit, before the session token is added to it. */
   readonly env: NodeJS.ProcessEnv
-  /** Journal directory holding the admin store; defaults to the process-wide one. */
-  readonly journalDir?: string
-  readonly token: TokenCell
   /** Present only while the first-run wizard is on screen (phase 3). */
   readonly wizard?: WizardDeps
   /**
@@ -163,46 +163,9 @@ export async function executeEffect(effect: Effect, deps: EffectDeps): Promise<M
   }
 }
 
-/**
- * Resolves a token through the same store lookup the admin CLI and the web UI
- * use. The token is handed over in an environment of its own rather than
- * through `deps.env`, so a stale `MCP_ADMIN_TOKEN` inherited by the console's
- * own process cannot answer for the operator who just typed one.
- */
-async function resolveAdmin(token: string, deps: EffectDeps): Promise<TokenAdmin> {
-  return adminFromEnv({
-    env: { [ADMIN_TOKEN_ENV_VAR]: token },
-    ...(deps.journalDir !== undefined ? { journalDir: deps.journalDir } : {}),
-  })
-}
-
-/** Signs in: the token is kept only when the store named an admin behind it. */
-async function signIn(token: string, deps: EffectDeps): Promise<Msg> {
-  try {
-    const result = await resolveAdmin(token, deps)
-    if (result.kind === 'ok') deps.token.set(token)
-    return { kind: 'signin-result', result }
-  } catch (error: unknown) {
-    // `adminFromEnv` rethrows a store fault it does not classify; on the
-    // sign-in screen that is a notice to read, not a reason to lose the screen.
-    return { kind: 'signin-result', result: { kind: 'unreadable', detail: messageOf(error) } }
-  }
-}
-
-/**
- * Whether the session still resolves. An unreadable store counts as lost as
- * well: the console cannot attribute the run, and fail-closed is the whole
- * point of re-checking. The sign-in screen it drops back to will report the
- * store's own detail if the fault persists.
- */
-async function isSessionFresh(token: string, deps: EffectDeps): Promise<boolean> {
-  try {
-    const resolved = await resolveAdmin(token, deps)
-    return resolved.kind === 'ok'
-  } catch {
-    return false
-  }
-}
+// Resolving a token, signing in and the freshness check live in
+// `runtime-signin.ts` since phase 6, when the sign-in grew the removal of the
+// bootstrap token file (F6) and this file had no room for it.
 
 /** The caller's options with the session token on every seam that carries one. */
 function optionsFor(token: string, deps: EffectDeps): DispatchOptions {

@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Example launchd agent for the McpCut agent front (`mcpcut serve`).
+
+  This is an example, not something `mcpcut` installs or reads. Copy it to
+  ~/Library/LaunchAgents/com.mcpcut.serve.plist, replace every `/Users/you`
+  and the node path exactly as described in com.mcpcut.ui.plist, and follow
+  docs/deploy/README.md. The install config must say "supervisor": "external".
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.mcpcut.serve</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/you/mcp-control-plane/dist/cli.js</string>
+    <string>serve</string>
+  </array>
+
+  <!-- The bind, the policy path and fail-closed come from this config
+       (`serve.host`, `serve.port`, `serve.policy`, `serve.failClosed`). -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>MCPCUT_CONFIG</key>
+    <string>/Users/you/.mcpcut/config.json</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/you/.mcp-journal/run/serve.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/you/.mcp-journal/run/serve.log</string>
+
+  <key>Umask</key>
+  <integer>63</integer>
+
+  <key>ExitTimeOut</key>
+  <integer>30</integer>
+</dict>
+</plist>

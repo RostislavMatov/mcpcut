@@ -22,7 +22,7 @@ import {
   type SessionManager,
 } from './auth.js'
 import { authorize, matchRoute, type RouteEntry } from './authz.js'
-import { handleLoginRequest } from './login-flow.js'
+import { handleLoginRequest, type LoginFlowDeps } from './login-flow.js'
 import {
   assertHandlersComplete,
   describeError,
@@ -133,6 +133,8 @@ export interface UiServerOptions {
   readonly clock?: () => number
   /** Diagnostics sink; defaults to `process.stderr`. */
   readonly stderr?: WarnSink
+  /** Runs after each successful login (`LoginFlowDeps.afterSignIn`); its failure never changes the answer. */
+  readonly afterSignIn?: LoginFlowDeps['afterSignIn']
 }
 
 /** The per-connection timeouts a live listener enforces, read back from it (tests). */
@@ -418,6 +420,7 @@ export function createUiServer(opts: UiServerOptions): UiServer {
               ...(opts.trustedProxyHeader !== undefined
                 ? { trustedProxyHeader: opts.trustedProxyHeader }
                 : {}),
+              ...(opts.afterSignIn !== undefined ? { afterSignIn: opts.afterSignIn } : {}),
             },
             loginCtx,
             req,

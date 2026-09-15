@@ -1,5 +1,6 @@
 import { padRight, type Style } from './ansi.js'
 import { visibleActions } from './catalogue/index.js'
+import type { ActionSpec } from './catalogue/types.js'
 import {
   ACTIVE_MARKER,
   CONSOLE_TITLE,
@@ -15,10 +16,11 @@ import {
   TAB_SEPARATOR,
 } from './constants.js'
 import { TOKEN_HOLD_FOOTER } from './constants-live.js'
-import { bodyWidthsOf } from './layout.js'
+import { actionWindowOf, type BodyLayout, bodyLayoutOfRows, fillTo } from './layout.js'
 import type { MainScreen, TerminalSize } from './model.js'
+import { helpLines } from './render-help.js'
 import { isOutputClipped } from './render-output.js'
-import { firstVisibleIndex, paneLines } from './render-panes.js'
+import { paneLines } from './render-panes.js'
 import { servicesHeaderPart } from './services-summary.js'
 import { tabWindowOf } from './tabs.js'
 
@@ -33,20 +35,26 @@ import { tabWindowOf } from './tabs.js'
  * lines exactly `columns` wide, so the caller can count rows without
  * measuring anything.
  *
- * Widths are clamped rather than assumed: a terminal narrower than the layout
- * gets a pane of zero columns and a clipped action column, because an
- * operator who shrank a window wants their session back, not a refusal.
+ * Since phase 6 (F1) the body has a second shape. `layout.ts` decides: below
+ * `NARROW_COLUMNS` it stacks — a band of actions, a blank row, a pane the
+ * full width of the terminal — and the band is drawn only on the `actions`
+ * pane, since a form or a question wants every row it can get. The `?` pane
+ * (F3) is the one that ignores the layout in both shapes: it is an overlay
+ * over the whole body. Nothing here measures a width itself; every number
+ * comes from the layout, so the reducer's clamps and these lines agree.
  */
 
 /**
  * The footer while a run is in flight (owner tail Q22).
  *
- * `update.ts` makes the keyboard deaf until the run answers, so a slow
- * command used to read as a wedged console: the pane said `running: $ …` and
- * every key did nothing, with no line saying why or what still works.
+ * Phase 5 said keys were IGNORED, because `update.ts` made the keyboard deaf
+ * until the run answered and a slow command read as a wedged console. Since
+ * phase 6 (F5, Q30) the reducer queues them and replays them after the run,
+ * so the footer says so — the one line that tells an operator typing ahead
+ * is safe.
  */
 export const RUNNING_HELP_FOOTER =
-  'running… · keys are ignored until it finishes · Ctrl-C aborts'
+  'running… · keys are queued until it finishes · Ctrl-C aborts'
 
 /**
  * The footer while the output pane is cut on either side (owner tail Q24). It
@@ -114,7 +122,7 @@ function tabsLine(screen: MainScreen, columns: number, style: Style): string {
   return `${padded.slice(0, start)}${style.inverse(padded.slice(start, end))}${padded.slice(end)}`
 }
 
-/** The body: the action column and the pane, joined row by row. */
+/** The body: the help overlay, or the action list and the pane in the layout's shape. */
 function bodyLines(
   screen: MainScreen,
   columns: number,
@@ -123,9 +131,25 @@ function bodyLines(
 ): readonly string[] {
   if (rows <= 0) return []
 
-  const widths = bodyWidthsOf(columns)
-  const actions = actionColumn(screen, widths.action, rows)
-  const pane = paneLines(screen, widths.pane, rows, style)
+  const layout = bodyLayoutOfRows(columns, rows, actionsOf(screen).length)
+  // F3: help is an overlay in both layouts — the one pane that takes the
+  // action column's place, because its lines are written for the full width.
+  if (screen.pane.kind === 'help') return fillTo(helpLines(columns, rows), rows, columns)
+  if (layout.mode === 'stacked') return stackedBody(screen, columns, layout, rows, style)
+
+  return twoColumnBody(screen, layout, rows, style)
+}
+
+/** The wide shape: the action column and the pane, joined row by row. */
+function twoColumnBody(
+  screen: MainScreen,
+  layout: BodyLayout,
+  rows: number,
+  style: Style,
+): readonly string[] {
+  const { widths } = layout
+  const actions = actionColumn(screen, widths.action, layout.actionRows)
+  const pane = paneLines(screen, widths.pane, layout.paneRows, style)
   const gap = ' '.repeat(widths.gap)
 
   return Array.from(
@@ -134,18 +158,49 @@ function bodyLines(
   )
 }
 
-/** The left column: one row per action the signed-in role may run. */
-function actionColumn(screen: MainScreen, width: number, rows: number): readonly string[] {
+/**
+ * The narrow shape (F1): on the `actions` pane a band of actions, a blank
+ * row and the pane under it; on any other pane the pane alone, because a
+ * form or a question is what the operator is on and the list would only
+ * take rows from it. The band is filled to its row count BEFORE the pane
+ * is appended, so the pane starts on the same row whatever the list holds.
+ */
+function stackedBody(
+  screen: MainScreen,
+  columns: number,
+  layout: BodyLayout,
+  rows: number,
+  style: Style,
+): readonly string[] {
+  if (screen.pane.kind !== 'actions') return fillTo(paneLines(screen, columns, rows, style), rows, columns)
+
+  const band = fillTo(actionColumn(screen, columns, layout.actionRows), layout.actionRows, columns)
+  const pane = paneLines(screen, columns, layout.paneRows, style)
+
+  return fillTo([...band, padRight('', columns), ...pane], rows, columns)
+}
+
+/** The actions of the open section the signed-in role may run — none when there is no section. */
+function actionsOf(screen: MainScreen): readonly ActionSpec[] {
   const section = screen.sections[screen.sectionIndex]
   if (section === undefined) return []
 
-  const actions = visibleActions(section, screen.session.role)
-  // The column scrolls with the cursor: on a short terminal the selected
-  // action must be the one the operator can see, not one below the fold.
-  const first = firstVisibleIndex(screen.actionIndex, actions.length, rows)
-  return actions.slice(first, first + rows).map((action, index) =>
+  return visibleActions(section, screen.session.role)
+}
+
+/**
+ * The action list: one row per action, cut to the window that keeps the
+ * selected one on screen — on a short terminal, or in the stacked band, the
+ * selected action must be the one the operator can see, not one below the
+ * fold. The window is the layout's (`actionWindowOf`), the same in both shapes.
+ */
+function actionColumn(screen: MainScreen, width: number, rows: number): readonly string[] {
+  const actions = actionsOf(screen)
+  const window = actionWindowOf(actions.length, screen.actionIndex, rows)
+
+  return actions.slice(window.first, window.last + 1).map((action, index) =>
     padRight(
-      `${first + index === screen.actionIndex ? ACTIVE_MARKER : INACTIVE_MARKER}${action.title}`,
+      `${window.first + index === screen.actionIndex ? ACTIVE_MARKER : INACTIVE_MARKER}${action.title}`,
       width,
     ),
   )
@@ -167,10 +222,16 @@ function footerText(screen: MainScreen, columns: number, bodyRows: number): stri
   return isPaneClipped(screen, columns, bodyRows) ? CLIPPED_HELP_FOOTER : KEY_HELP_FOOTER
 }
 
-/** Whether the output on screen — if any is on screen — is cut on either side. */
+/**
+ * Whether the output on screen — if any is on screen — is cut on either side.
+ * The pane's width and rows come from the layout: in the stacked shape the
+ * pane is the whole terminal wide, and a footer that measured the two-column
+ * pane would offer `[ ] scroll` for a line that is not cut at all.
+ */
 function isPaneClipped(screen: MainScreen, columns: number, bodyRows: number): boolean {
   const { output } = screen
   if (output === undefined || screen.pane.kind !== 'actions') return false
 
-  return isOutputClipped(output, bodyWidthsOf(columns).pane, bodyRows)
+  const layout = bodyLayoutOfRows(columns, bodyRows, actionsOf(screen).length)
+  return isOutputClipped(output, layout.widths.pane, layout.paneRows)
 }

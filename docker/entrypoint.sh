@@ -5,6 +5,12 @@
 # image and the config is written exactly once, by whichever container comes
 # first — compose orders `serve` after a healthy `ui`. The one-time owner
 # token goes to this container's stdout: `docker compose logs ui`.
+#
+# `--admin`, never `--no-admin`: with an admin minted here, `ui` starts over a
+# store that already has one and never writes the bootstrap-token file
+# (`<data dir>/bootstrap-token`, README "Admin UI") — that path is for
+# installs left without an admin, which this image never is. Unchanged from
+# before that file existed; see README "Docker".
 set -eu
 
 # A function, not a string: an unquoted `$CLI` would word-split on whatever

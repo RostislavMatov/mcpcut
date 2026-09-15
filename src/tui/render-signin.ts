@@ -9,6 +9,7 @@ import {
   SIGNIN_TOKEN_LABEL,
 } from './constants.js'
 import {
+  SIGNIN_BOOTSTRAP_PREFIX,
   SIGNIN_SERVICES_DOWN_HINT,
   SIGNIN_SERVICES_EXTERNAL_HINT,
   SIGNIN_SERVICES_PREFIX,
@@ -84,7 +85,18 @@ function signInBlockOf(screen: SigninScreen, install: InstallFacts | undefined):
     '',
     ...(notice === undefined ? [] : [sanitizeLine(notice)]),
     ...servicesBannerLines(screen.services, install),
+    ...bootstrapTokenLines(screen.bootstrapTokenPath),
   ]
+}
+
+/**
+ * Where the first owner's one-time token is, while its file is still there
+ * (phase 6, F6b). Sanitised like the notice: the path is measured for the
+ * block's centring and cut by `padRight` on a narrow terminal, and both
+ * count characters, so nothing invisible may be in it.
+ */
+function bootstrapTokenLines(path: string | undefined): readonly string[] {
+  return path === undefined ? [] : [`${SIGNIN_BOOTSTRAP_PREFIX}${sanitizeLine(path)}`]
 }
 
 /**

@@ -1,0 +1,35 @@
+# Example systemd USER unit for the McpCut agent front (`mcpcut serve`).
+#
+# This is an example, not something `mcpcut` installs or reads. Copy it to
+# ~/.config/systemd/user/mcpcut-serve.service, adapt the two paths in
+# ExecStart and Environment, and follow docs/deploy/README.md. The install
+# config it points at must say "supervisor": "external" (written by
+# `mcpcut setup --yes --supervisor external`); otherwise `mcpcut start`/`stop`
+# would fight this unit for the same process.
+
+[Unit]
+Description=McpCut agent front (mcpcut serve)
+Documentation=file:%h/mcp-control-plane/README.md
+After=network.target
+# Not `Requires=`: `serve` does not need `ui` to run (README "Admin UI"),
+# and a restart of one must not take the other down.
+
+[Service]
+Type=simple
+# See mcpcut-ui.service for the notes on %h and on the node binary.
+ExecStart=/usr/bin/env node %h/mcp-control-plane/dist/cli.js serve
+Environment=MCPCUT_CONFIG=%h/.mcpcut/config.json
+# The bind, the policy path and --fail-closed come from that config
+# (`serve.host`, `serve.port`, `serve.policy`, `serve.failClosed`); keep the
+# ExecStart line bare so the config stays the one place they are set.
+Restart=on-failure
+RestartSec=2s
+KillSignal=SIGTERM
+TimeoutStopSec=30
+NoNewPrivileges=true
+UMask=0077
+# Logs: `journalctl --user -u mcpcut-serve`; see mcpcut-ui.service for how to
+# also feed <data dir>/run/serve.log so that `mcpcut logs serve` has a file.
+
+[Install]
+WantedBy=default.target

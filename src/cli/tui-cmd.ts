@@ -1,7 +1,9 @@
 import { homedir } from 'node:os'
-import { ansiStyle, type Style } from '../tui/ansi.js'
+import { bootstrapTokenPathFor, hasBootstrapTokenFile } from '../admin/bootstrap-file.js'
+import { JOURNAL_DIR } from '../config.js'
+import { styleFor, type Style } from '../tui/ansi.js'
 import { DEFAULT_TUI_SIGNALS, ESCAPE_CODE_TIMEOUT_MS, EXIT_OK } from '../tui/constants.js'
-import { initialModel, installFactsOf } from '../tui/model.js'
+import { initialModel, installFactsOf, type SigninHostFacts } from '../tui/model.js'
 import { createReopenCell, createTokenCell, type ReopenCell } from '../tui/runtime-effects.js'
 import { runConsole, type ConsoleDeps, type TuiTerminal } from '../tui/runtime.js'
 import { describeDataDirProblem, resolveDataDir } from '../setup/data-dir.js'
@@ -75,6 +77,7 @@ export interface TuiCommandOptions {
   readonly isTty?: boolean
   /** Streams the console reads keys from and draws on. Defaults to the process ones. */
   readonly terminal?: TuiTerminal
+  /** Overrides the style; the default asks the environment (`NO_COLOR`, `TERM=dumb` — F2). */
   readonly style?: Style
   /** Where signal and crash listeners go. Defaults to `process`. */
   readonly processEvents?: NodeJS.EventEmitter
@@ -146,7 +149,7 @@ export async function runTui(
     return await openWizard(opts, env, install, consoleDeps, reopen)
   }
 
-  return await openConsole(consoleDeps, install, reopenCell, reopen)
+  return await openConsole(consoleDeps, install, reopenCell, reopen, opts.journalDir ?? JOURNAL_DIR)
 }
 
 /** The wizard over this install's config, and the sign-in screen after it. */
@@ -181,15 +184,30 @@ async function openConsole(
   install: InstallConfigLoad,
   reopenCell: ReopenCell,
   reopen: ReopenFn,
+  journalDir: string,
 ): Promise<number> {
+  const signin = signinHostFactsOf(journalDir)
   const code = await runConsole({
     ...consoleDeps,
-    initial: (size) => initialModel(size, installFactsOf(install)),
+    initial: (size) => initialModel(size, installFactsOf(install), signin),
   })
   const argv = reopenCell.get()
   if (code !== EXIT_OK || argv === undefined) return code
 
   return await reopen(argv)
+}
+
+/**
+ * Whether the first owner's one-time token file is still there, read ONCE as
+ * the console opens (phase 6, F6b): a host fact like the install config, not
+ * something the reducer could learn later. `journalDir` is the directory the
+ * console's own stores read — the seam when a caller gave one, the
+ * process-wide default otherwise, exactly as `createAdminStore` resolves it —
+ * so the screen never points at a file another install owns.
+ */
+function signinHostFactsOf(journalDir: string): SigninHostFacts {
+  const path = bootstrapTokenPathFor(journalDir)
+  return hasBootstrapTokenFile(path) ? { bootstrapTokenPath: path } : {}
 }
 
 /**
@@ -206,10 +224,13 @@ function consoleDepsOf(
 ): Omit<ConsoleDeps, 'initial'> {
   return {
     terminal: opts.terminal ?? defaultTerminal(),
-    style: opts.style ?? ansiStyle,
+    // The seam wins over the environment, so a test that asked for plain
+    // frames gets them whatever shell runs the suite.
+    style: opts.style ?? styleFor(env),
     stderr: io.stderr,
     effects: {
       dispatch,
+      stderr: io.stderr,
       dispatchOptions: dispatchOptionsFor(opts),
       env,
       ...(opts.journalDir !== undefined ? { journalDir: opts.journalDir } : {}),

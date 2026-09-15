@@ -34,6 +34,12 @@
 # One-time owner token:   docker compose logs ui
 # The console in a shell: docker compose exec -it ui mcpcut
 #
+# The entrypoint passes `--admin` (from `MCPCUT_ADMIN`), never `--no-admin`,
+# so the bootstrap-token file `<data dir>/bootstrap-token` that a bare `ui`
+# over an empty store writes (README "Admin UI") never applies here: `setup`
+# mints the owner itself and the token goes to this container's stdout, as it
+# always has. Behaviour unchanged; see README "Docker".
+#
 # Rotate the owner token after the first sign-in: it went to stdout, so a copy
 # sits in this container's json-file log, readable by anyone who can run
 # `docker compose logs`. The same command recovers a token that was missed:

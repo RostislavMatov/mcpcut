@@ -6,15 +6,22 @@ import {
   ACTIVE_MARKER,
   CARET,
   FIELD_LABEL_MAX_WIDTH,
-  HELP_LINES,
   INACTIVE_MARKER,
   QUIT_WITH_TOKEN_QUESTION,
   SECRET_MASK_CHAR,
 } from './constants.js'
-import { TOKEN_HOLD_BANNER } from './constants-live.js'
+import {
+  TOKEN_HOLD_BANNER,
+  TOKEN_HOLD_BANNER_MAX_LINES,
+  TOKEN_HOLD_BANNER_SHORT,
+} from './constants-live.js'
 import type { FieldState, Form } from './form.js'
-import { fillTo } from './layout.js'
+import { fillTo, wrapWords } from './layout.js'
+
+/** Moved to the layout leaf in phase 6; re-exported so its callers here need not move with it. */
+export { wrapWords } from './layout.js'
 import type { MainScreen, RunRequest } from './model.js'
+import { helpLines } from './render-help.js'
 import { outputLines } from './render-output.js'
 
 /**
@@ -87,12 +94,29 @@ function paneBody(
     case 'confirm':
       return plainPane([...wrapWords(pane.question, width), '', CONFIRM_ANSWER_LINE], width, rows)
     case 'help':
-      return plainPane(HELP_LINES, width, rows)
+      // Since phase 6 (F3) `render-main.ts` draws `help` as a full-width
+      // overlay before it ever asks for a pane, so this arm is not reached
+      // from there. It stays so the switch is exhaustive over `Pane`, and it
+      // draws the same lines as the overlay so the two can never disagree.
+      return fillTo(helpLines(width, rows), rows, width)
     case 'quit-confirm':
       return quitConfirmPane(screen, width, rows)
     case 'token-hold':
       return tokenHoldPane(screen, width, rows, style)
   }
+}
+
+/**
+ * Which token banner a pane this wide gets (F4, Q29): the long one while it
+ * wraps to no more than `TOKEN_HOLD_BANNER_MAX_LINES`, the short one beyond.
+ * The rule is the fact of wrapping, not a column threshold, so the 54-column
+ * pane of an 80-column terminal and the full 40 of a stacked one are judged
+ * the same way — each gets two lines of banner and keeps the token on screen.
+ */
+export function bannerFor(width: number): string {
+  return wrapWords(TOKEN_HOLD_BANNER, width).length > TOKEN_HOLD_BANNER_MAX_LINES
+    ? TOKEN_HOLD_BANNER_SHORT
+    : TOKEN_HOLD_BANNER
 }
 
 /**
@@ -105,7 +129,7 @@ function tokenHoldPane(
   rows: number,
   style: Style,
 ): readonly string[] {
-  const banner = wrapWords(TOKEN_HOLD_BANNER, width).map((line) =>
+  const banner = wrapWords(bannerFor(width), width).map((line) =>
     style.inverse(padRight(line, width)),
   )
   const head = [...banner, padRight('', width)]
@@ -122,27 +146,6 @@ function quitConfirmPane(screen: MainScreen, width: number, rows: number): reado
   const question = [...wrapWords(QUIT_WITH_TOKEN_QUESTION, width), ''].map((line) => padRight(line, width))
   const below = screen.output === undefined ? [] : outputLines(screen.output, width, rows - question.length)
   return fillTo([...question, ...below], rows, width)
-}
-
-/**
- * Breaks a question at spaces so its answer is never cut off by the pane:
- * a confirmation that hides its own "[y/N]" behind an ellipsis is worse than
- * none. A single word longer than the pane still falls to `fitWidth`.
- */
-export function wrapWords(text: string, width: number): readonly string[] {
-  if (width <= 0) return [text]
-  const lines: string[] = []
-  let current = ''
-  for (const word of text.split(' ')) {
-    const candidate = current === '' ? word : `${current} ${word}`
-    if (candidate.length <= width || current === '') {
-      current = candidate
-    } else {
-      lines.push(current)
-      current = word
-    }
-  }
-  return [...lines, current]
 }
 
 /** Lines that are only text: fitted, padded and filled out to the pane. */

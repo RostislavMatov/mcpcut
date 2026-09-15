@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Example launchd agent for the McpCut admin console (`mcpcut ui`).
+
+  This is an example, not something `mcpcut` installs or reads. Copy it to
+  ~/Library/LaunchAgents/com.mcpcut.ui.plist and replace every `/Users/you`
+  with your home directory and `/opt/homebrew/bin/node` with the node binary
+  `which node` prints (`/usr/local/bin/node` on Intel Macs, or wherever nvm
+  or volta put it): launchd expands neither `~` nor `$HOME`, and PATH is not
+  your shell's. Then follow docs/deploy/README.md. The install config it
+  points at must say "supervisor": "external" (written by
+  `mcpcut setup --yes --supervisor external`); otherwise `mcpcut start`/`stop`
+  would fight launchd for the same process.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.mcpcut.ui</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/you/mcp-control-plane/dist/cli.js</string>
+    <string>ui</string>
+  </array>
+
+  <!-- The bind and the TLS/allowlist flags come from this config. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>MCPCUT_CONFIG</key>
+    <string>/Users/you/.mcpcut/config.json</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Restart only after a failure, like systemd's Restart=on-failure;
+       `launchctl bootout` still stops it for good. -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <!-- Both streams into the same file the service manager would have used,
+       so `mcpcut logs ui` reads it. `mcpcut setup` creates <data dir>/run/;
+       if it is missing, `mkdir -m 0700 ~/.mcp-journal/run` first. -->
+  <key>StandardOutPath</key>
+  <string>/Users/you/.mcp-journal/run/ui.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/you/.mcp-journal/run/ui.log</string>
+
+  <!-- 0o077 in decimal: plists have no octal. Files the process creates are
+       owner-only, like the data directory. -->
+  <key>Umask</key>
+  <integer>63</integer>
+
+  <!-- Same grace as TimeoutStopSec in the systemd unit. -->
+  <key>ExitTimeOut</key>
+  <integer>30</integer>
+</dict>
+</plist>

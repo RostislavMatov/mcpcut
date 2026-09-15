@@ -96,15 +96,18 @@ of an empty store needs none, and every change is recorded in the journal under 
 `
 
 /**
- * The one-time bootstrap line for a first start with no admins. It carries the
- * plaintext token, so it is written to stderr ONLY (stdout is a daemon's silent
- * channel and is routinely redirected into files or logs by supervisors), and
- * exactly once per process.
+ * The bootstrap notice for a first start with no admins (phase 6, F6). It
+ * names the FILE the one-time token was written to and never the token: under
+ * the service manager stderr is `run/ui.log`, and a credential in a log is a
+ * credential in every copy, tail and screenshot of that log. Written to
+ * stderr (stdout is a daemon's silent channel), exactly once per process.
  */
-export function bootstrapNotice(host: string, port: number, name: string, token: string): string {
+export function bootstrapNotice(host: string, port: number, name: string, tokenPath: string): string {
   return (
     `[ui] no admins found: created "${name}" with role owner\n` +
-    `[ui] sign in at http://${host}:${port}/login as "${name}" with token: ${token}\n` +
-    `[ui] ${TOKEN_ONCE_NOTICE.trimEnd()} Rotate it with: mcp-journal admin rotate ${name}\n`
+    `[ui] its one-time token is in ${tokenPath} (mode 0600); ` +
+    `sign in at http://${host}:${port}/login as "${name}"\n` +
+    `[ui] the file is deleted after the first sign-in. ` +
+    `Rotate the token later with: mcp-journal admin rotate ${name}\n`
   )
 }

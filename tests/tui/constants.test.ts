@@ -44,14 +44,26 @@ import {
   APPROVALS_POLL_INTERVAL_MS,
   autoRefreshIntroLine,
   EXTERNAL_GLYPH,
+  HELP_CLOSE_LINE,
+  HELP_KEY_COLUMN,
+  HELP_WRAP_INDENT,
   MS_PER_SECOND,
+  NARROW_COLUMNS,
+  PENDING_KEYS_MAX,
+  STACKED_ACTION_ROWS_SHARE,
+  SIGNIN_BOOTSTRAP_PREFIX,
   SIGNIN_SERVICES_DOWN_HINT,
   SIGNIN_SERVICES_EXTERNAL_HINT,
   SIGNIN_SERVICES_PREFIX,
   TOKEN_HOLD_BANNER,
+  TOKEN_HOLD_BANNER_MAX_LINES,
+  TOKEN_HOLD_BANNER_SHORT,
   TOKEN_HOLD_FOOTER,
+  WIZARD_STOPWATCH_INTERVAL_MS,
 } from '../../src/tui/constants-live.js'
 import { START_READY_TIMEOUT_MS } from '../../src/services/constants.js'
+import { RUNNING_HELP_FOOTER } from '../../src/tui/render-main.js'
+import { paneWidthOf } from '../../src/tui/layout.js'
 
 /** Where the description of every `?` line starts, counted from the phase-2 lines. */
 const HELP_KEY_COLUMN_WIDTH = 24
@@ -298,5 +310,79 @@ describe('the help panel after phase 5', () => {
     expect(line).toBeDefined()
     expect(line).toContain('token')
     expect(line?.indexOf('answer')).toBe(HELP_KEY_COLUMN_WIDTH)
+  })
+})
+
+/**
+ * Phase 6's words and numbers (F1, F3, F4, F5, F8). The `?` overlay splits a
+ * line that no longer fits at `HELP_KEY_COLUMN`, so every help line has to
+ * have a space there — or be shorter than the column altogether.
+ */
+describe('the words and numbers of phase 6', () => {
+  const PHASE_6_STRINGS: readonly string[] = [
+    HELP_CLOSE_LINE,
+    TOKEN_HOLD_BANNER_SHORT,
+    RUNNING_HELP_FOOTER,
+    SIGNIN_BOOTSTRAP_PREFIX,
+    deployWaitingDetail(START_READY_TIMEOUT_MS, 3),
+  ]
+
+  test.each(PHASE_6_STRINGS)('"%s" is at most 80 columns wide and not empty', (line) => {
+    expect(line.length).toBeLessThanOrEqual(DEFAULT_COLUMNS)
+    expect(line).not.toBe('')
+  })
+
+  test('every help line is shorter than the key column or has a space just before it', () => {
+    expect(HELP_KEY_COLUMN).toBe(HELP_KEY_COLUMN_WIDTH)
+    for (const line of HELP_LINES) {
+      const splittable = line.length < HELP_KEY_COLUMN || line[HELP_KEY_COLUMN - 1] === ' '
+      expect(splittable, `"${line}"`).toBe(true)
+    }
+  })
+
+  test('the wrapped description is indented by less than the key column', () => {
+    expect(HELP_WRAP_INDENT).toBe(2)
+    expect(HELP_WRAP_INDENT).toBeLessThan(HELP_KEY_COLUMN)
+  })
+
+  test('the closing line of the overlay says what any key does', () => {
+    expect(HELP_CLOSE_LINE).toBe('any key closes this help')
+  })
+
+  test('the short token banner fits the two-column pane of the default terminal on one line', () => {
+    expect(TOKEN_HOLD_BANNER_SHORT).toBe('One-time token on screen: copy it, then press y.')
+    expect(TOKEN_HOLD_BANNER_SHORT.length).toBeLessThanOrEqual(paneWidthOf(DEFAULT_COLUMNS))
+    expect(TOKEN_HOLD_BANNER_MAX_LINES).toBe(2)
+  })
+
+  test('the running footer says keys are queued, not ignored, and still names Ctrl-C', () => {
+    expect(RUNNING_HELP_FOOTER).toBe(
+      'running… · keys are queued until it finishes · Ctrl-C aborts',
+    )
+  })
+
+  test('the key buffer has a fixed ceiling', () => {
+    expect(PENDING_KEYS_MAX).toBe(32)
+  })
+
+  test('the stacked layout threshold and share are the numbers of F1', () => {
+    expect(NARROW_COLUMNS).toBe(60)
+    expect(STACKED_ACTION_ROWS_SHARE).toBe(3)
+  })
+
+  test('the wizard stopwatch ticks in whole seconds', () => {
+    expect(WIZARD_STOPWATCH_INTERVAL_MS).toBe(1_000)
+    expect(WIZARD_STOPWATCH_INTERVAL_MS % MS_PER_SECOND).toBe(0)
+  })
+
+  test('the waiting line without seconds is the phase-3 sentence, byte for byte', () => {
+    expect(deployWaitingDetail(15_000)).toBe('waiting for the service to answer (up to 15 s)')
+    expect(deployWaitingDetail(15_000, 0)).toBe(deployWaitingDetail(15_000))
+  })
+
+  test('the waiting line with seconds counts them against the timeout', () => {
+    expect(deployWaitingDetail(15_000, 3)).toBe(
+      'waiting for the service to answer (3 s of up to 15 s)',
+    )
   })
 })

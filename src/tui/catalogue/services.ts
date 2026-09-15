@@ -30,10 +30,12 @@ import type { ActionSpec, SectionSpec } from './types.js'
  * dead ends.
  *
  * - `status` is `viewer`: a table of two ports names nobody.
- * - `logs` sits ABOVE `viewer` on purpose. `run/ui.log` holds whatever the
- *   daemon wrote at boot, and after `setup --yes --no-admin` that includes the
- *   bootstrap token (ADR-0012, "Consequences") — a tail is therefore not a
- *   read a viewer is offered.
+ * - `logs` sits ABOVE `viewer` on purpose. A daemon log carries everything
+ *   the daemon printed — its own diagnostics and every line an external MCP
+ *   server made it print (a stderr tail, a refused frame, a tool name) — so a
+ *   tail is a read of raw upstream output, not a table of ports, and is not
+ *   offered to a viewer (phase 6, F6 rewrote the reason: the bootstrap token
+ *   no longer passes through the log at all).
  * - `start` and `stop` are `operator`: they move what agents can reach.
  * - `setup` is `owner`: it rewrites the install config.
  *

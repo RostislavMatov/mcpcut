@@ -57,15 +57,16 @@ export function adminsAlreadyExist(count: number): string {
 /**
  * The warning `--no-admin` earns. Skipping the owner does not remove the
  * bootstrap — it moves it: the first `ui` start creates `owner` itself and
- * writes the plaintext token to its own stderr, which the manager points at
- * the daemon log. That file is then a live credential on disk, and an
- * operator who chose this path has to be told so in the same breath.
+ * writes the plaintext token to the one-time bootstrap file (0600, phase 6
+ * F6), which the first sign-in deletes. Until then that file is a live
+ * credential on disk, and an operator who chose this path has to be told
+ * where it will be in the same breath.
  */
-export function noAdminWarning(uiLogPath: string): string {
+export function noAdminWarning(tokenPath: string): string {
   return (
     `${SETUP_LABEL}--no-admin: this install has no admin yet. The first "ui" start will create ` +
-    `"owner" and print its token into ${uiLogPath} — treat that file as a secret, ` +
-    `or run "${CLI_NAME} admin add <name> --role owner" before starting anything.\n`
+    `"owner" and write its one-time token to ${tokenPath} (0600); the file is deleted after ` +
+    `the first sign-in — or run "${CLI_NAME} admin add <name> --role owner" before starting anything.\n`
   )
 }
 

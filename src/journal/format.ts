@@ -10,8 +10,14 @@
  * which escapes control characters on its own.
  */
 
-/** C0 control characters plus DEL: never safe to print to a terminal raw. */
-const CONTROL_CHAR_PATTERN = /[\x00-\x1f\x7f]/g
+/**
+ * C0 control characters, DEL and the C1 range (0x80-0x9f): none is safe to
+ * print to a terminal raw. C1 matters as much as ESC — xterm and its kin honour
+ * the 8-bit CSI (0x9b) and OSC (0x9d) exactly like their ESC-prefixed forms,
+ * and they arrive as ordinary UTF-8 text (`src/tui/ansi.ts` strips the same
+ * range for the console; `mcpcut logs` prints a daemon's log through here).
+ */
+const CONTROL_CHAR_PATTERN = /[\x00-\x1f\x7f-\x9f]/g
 
 /** What an unsafe control character is replaced with. */
 const CONTROL_CHAR_REPLACEMENT = '?'

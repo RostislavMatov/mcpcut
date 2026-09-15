@@ -10,7 +10,7 @@ import {
   HEADER_ROWS,
   SIGNIN_TITLE,
 } from '../../../src/tui/constants.js'
-import { TOKEN_HOLD_BANNER } from '../../../src/tui/constants-live.js'
+import { NARROW_COLUMNS, TOKEN_HOLD_BANNER } from '../../../src/tui/constants-live.js'
 import { waitForScreen, type FakeTerminal } from './fake-terminal.js'
 
 /**
@@ -99,28 +99,56 @@ export function tabsLineOf(fake: FakeTerminal): string {
   return (screenLines(fake)[1] ?? '').trimEnd()
 }
 
+/** The rows of a frame that hold the action list, and how wide the list is there. */
+interface ActionBand {
+  readonly rows: readonly string[]
+  readonly width: number
+}
+
 /**
- * The titles in the action column of a drawn frame, top to bottom.
+ * Where the action list is in a drawn frame.
  *
- * The body band is a fixed height, so the rows are taken by index rather than
- * by trying to tell a footer from an action — and each row's first
- * `ACTIVE_MARKER.length` characters are the cursor gutter, not the title.
+ * At the harness's 80 columns it is the left column of the body band, a
+ * fixed height, so the rows are taken by index rather than by trying to tell
+ * a footer from an action. Below `NARROW_COLUMNS` the layout stacks (phase
+ * 6, F1): the list is a full-width band right under the header, and the row
+ * it ends at is the blank one the renderer puts between the band and the
+ * pane — the first blank row, since the band is filled to its height before
+ * the pane is appended. Either way each row's first `ACTIVE_MARKER.length`
+ * characters are the cursor gutter, not the title.
  */
-export function actionTitlesIn(screen: string): readonly string[] {
-  return screen
-    .split('\n')
-    .slice(HEADER_ROWS, HEADER_ROWS + BODY_ROWS)
-    .map((line) => line.slice(ACTIVE_MARKER.length, ACTION_COLUMN_WIDTH).trimEnd())
-    .filter((title) => title !== '')
+function actionBandOf(screen: string, columns: number): ActionBand {
+  const lines = screen.split('\n')
+  if (columns >= NARROW_COLUMNS) {
+    return { rows: lines.slice(HEADER_ROWS, HEADER_ROWS + BODY_ROWS), width: ACTION_COLUMN_WIDTH }
+  }
+
+  const body = lines.slice(HEADER_ROWS)
+  const blank = body.findIndex((line) => line.trim() === '')
+  return { rows: body.slice(0, blank < 0 ? body.length : blank), width: columns }
+}
+
+function titleOf(row: string, width: number): string {
+  return row.slice(ACTIVE_MARKER.length, width).trimEnd()
+}
+
+/** The titles in the action list of a drawn frame, top to bottom. */
+export function actionTitlesIn(screen: string, columns: number = CONSOLE_COLUMNS): readonly string[] {
+  const { rows, width } = actionBandOf(screen, columns)
+  return rows.map((row) => titleOf(row, width)).filter((title) => title !== '')
 }
 
 /** Which of `actionTitlesIn`'s entries the cursor is on, or `-1` when none is. */
-export function activeActionIndexIn(screen: string): number {
-  return screen
-    .split('\n')
-    .slice(HEADER_ROWS, HEADER_ROWS + BODY_ROWS)
-    .filter((line) => line.slice(ACTIVE_MARKER.length, ACTION_COLUMN_WIDTH).trimEnd() !== '')
-    .findIndex((line) => line.startsWith(ACTIVE_MARKER))
+export function activeActionIndexIn(screen: string, columns: number = CONSOLE_COLUMNS): number {
+  const { rows, width } = actionBandOf(screen, columns)
+  return rows
+    .filter((row) => titleOf(row, width) !== '')
+    .findIndex((row) => row.startsWith(ACTIVE_MARKER))
+}
+
+/** The columns a console's terminal reports, which decide where its action list is. */
+function columnsOf(app: RunningConsole): number {
+  return app.fake.terminal.output.columns ?? CONSOLE_COLUMNS
 }
 
 /** Signs in with `token` and waits for the header that says who is signed in. */
@@ -165,7 +193,8 @@ export async function goToSection(
   if (section === undefined) throw new Error(`role "${role}" has no "${sectionId}" section`)
 
   const titles = visibleActions(section, role).map((action) => action.title)
-  const isThere = (screen: string): boolean => sameTitles(actionTitlesIn(screen), titles)
+  const columns = columnsOf(app)
+  const isThere = (screen: string): boolean => sameTitles(actionTitlesIn(screen, columns), titles)
   if (isThere(app.fake.screen())) return
 
   const digit = Math.min(index, LAST_DIGIT_INDEX)
@@ -182,16 +211,17 @@ function sameTitles(actual: readonly string[], expected: readonly string[]): boo
 /** Moves the action cursor onto `title` and opens it with Enter. */
 export async function chooseAction(app: RunningConsole, title: string): Promise<void> {
   const screen = app.fake.screen()
-  const target = actionTitlesIn(screen).indexOf(title)
+  const columns = columnsOf(app)
+  const target = actionTitlesIn(screen, columns).indexOf(title)
   if (target < 0) throw new Error(`no action "${title}" on screen:\n${screen}`)
 
-  const current = activeActionIndexIn(screen)
+  const current = activeActionIndexIn(screen, columns)
   const key = target > current ? DOWN_KEY : UP_KEY
   for (let step = 0; step < Math.abs(target - current); step += 1) app.fake.type(key)
 
   await waitForScreen(
     app.fake,
-    (drawn) => activeActionIndexIn(drawn) === target,
+    (drawn) => activeActionIndexIn(drawn, columns) === target,
     `the "${title}" action to be selected`,
   )
   app.fake.type(ENTER)

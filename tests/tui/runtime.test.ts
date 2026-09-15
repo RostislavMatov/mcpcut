@@ -1,56 +1,55 @@
 import { EventEmitter } from 'node:events'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { PassThrough } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { ADMIN_TOKEN_ENV_VAR } from '../../src/admin/constants.js'
-import { createAdminStore } from '../../src/admin/store.js'
-import type { CliWritable, DispatchFn } from '../../src/cli/dispatch-types.js'
+import type { DispatchFn } from '../../src/cli/dispatch-types.js'
 import { defaultInstallConfig } from '../../src/setup/defaults.js'
-import { ENTER_SCREEN, LEAVE_SCREEN, plainStyle, type Style } from '../../src/tui/ansi.js'
+import { plainStyle } from '../../src/tui/ansi.js'
 import type { SectionSpec } from '../../src/tui/catalogue/types.js'
 import {
   ACTIVE_MARKER,
-  DEFAULT_TUI_SIGNALS,
   EXIT_INTERRUPTED,
   EXIT_OK,
   SECRET_MASK_CHAR,
   SIGNIN_TITLE,
-  WINDOWS_UNSUPPORTED_REASON,
-  WIZARD_TITLE_FIRST_RUN,
 } from '../../src/tui/constants.js'
 import type { Model, Msg, Session, TerminalSize } from '../../src/tui/model.js'
 import {
   createReopenCell,
   createTokenCell,
   createWizardOutcomeCell,
-  type ReopenCell,
   type TokenCell,
 } from '../../src/tui/runtime-effects.js'
-import {
-  createLoop,
-  runConsole,
-  type ConsoleDeps,
-  type TuiTerminal,
-} from '../../src/tui/runtime.js'
+import { createLoop } from '../../src/tui/runtime.js'
 import { wizardScreenOf, type WizardPrefill } from '../../src/tui/wizard-fields.js'
-import { createFakeTerminal, waitForScreen, type FakeTerminal } from './support/fake-terminal.js'
+import { createFakeTerminal, waitForScreen } from './support/fake-terminal.js'
+import {
+  ADMIN_NAME,
+  ADMIN_ROLE,
+  CONSOLE_ENV,
+  captureStderr,
+  closeRuntimeStand,
+  createTestAdmin,
+  depsOf,
+  openRuntimeStand,
+  quietDispatch,
+  signedInConsole,
+  startConsole,
+  waitForUntilTrue,
+} from './support/runtime-harness.js'
 
 /**
  * The console's runtime (mcpcut phase 2, task 13): the only effectful module
  * of the console, and therefore the only one whose tests are about a terminal
  * rather than about a value.
  *
- * Three properties are pinned here, and they are the reasons this module
- * exists at all. The terminal is RESTORED on every exit path — a quit key, an
- * interrupt, a signal, an uncaught exception, a pty that died mid-frame —
- * because a console that leaves a shell in raw mode on the alternate screen
- * has broken the terminal it was handed. Nothing the runtime installs on the
- * process outlives it: the signal and crash listeners are removed in the same
- * `finally` that restores the screen. And the returned promise always
- * RESOLVES with an exit code, never rejects, because the caller is a CLI
- * command that has a terminal to restore of its own.
+ * This file holds the loop: the effect queue, keys decoded from bytes, effects
+ * folded back in, the subscription timer and the effects nobody typed (phase
+ * 5), and an action that leaves the console. The three properties the module
+ * exists for — the terminal RESTORED on every exit path, nothing left on the
+ * process, a promise that always RESOLVES — are pinned in
+ * `runtime-lifecycle.test.ts` (split in phase 6, task 9). The stand both
+ * share, a console over a `PassThrough` and a temp admin store, is
+ * `support/runtime-harness.ts`.
  *
  * The tests drive real bytes through a `PassThrough` (`support/fake-terminal.
  * ts`) so `readline.emitKeypressEvents` does the decoding it will do in
@@ -59,222 +58,12 @@ import { createFakeTerminal, waitForScreen, type FakeTerminal } from './support/
  * decoder, not the console, gets right or wrong.
  */
 
-/** Short enough to keep the lone-`Esc` test quick; the console ships with 100. */
-const ESCAPE_TIMEOUT_MS = 10
-
-/** How long a quit waits for a command in flight here; the console ships with 2 s. */
-const QUIT_DRAIN_TEST_MS = 100
-
-/** The admin the sign-in tests resolve to, created in a temp store. */
-const ADMIN_NAME = 'alice'
-const ADMIN_ROLE = 'owner'
-const SIGNED_IN_HEADER = `${ADMIN_NAME} (${ADMIN_ROLE})`
-
 /** An action of the Admins section, and one of Home: what a frame is read for. */
 const ADMINS_ACTION = 'rotate'
 const ADMINS_SECTION_KEY = '2'
 
-let journalDir: string
-
-/** Every console started by a test, so none of them outlives it. */
-const running: Array<{ readonly harness: Harness }> = []
-
-beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-runtime-'))
-})
-
-afterEach(async () => {
-  for (const { harness } of running.splice(0)) {
-    harness.processEvents.emit('SIGTERM')
-    await harness.exit.catch(() => undefined)
-  }
-  await rm(journalDir, { recursive: true, force: true })
-})
-
-// ---------------------------------------------------------------------------
-// Harness
-// ---------------------------------------------------------------------------
-
-interface CapturedStderr extends CliWritable {
-  text(): string
-}
-
-function captureStderr(): CapturedStderr {
-  const chunks: string[] = []
-  return {
-    write: (chunk: string) => chunks.push(chunk),
-    text: () => chunks.join(''),
-  }
-}
-
-/** A `dispatch` that answers success and writes nothing. */
-const quietDispatch: DispatchFn = async () => EXIT_OK
-
-interface Harness {
-  readonly fake: FakeTerminal
-  readonly processEvents: EventEmitter
-  readonly exit: Promise<number>
-  errText(): string
-}
-
-interface StartOptions {
-  readonly dispatch?: DispatchFn
-  readonly terminal?: TuiTerminal
-  readonly style?: Style
-  readonly columns?: number
-  readonly rows?: number
-  /** The screen the console opens on; the sign-in screen when absent. */
-  readonly initial?: (size: TerminalSize) => Model
-  /** A session already in hand, for a console that opens past the sign-in screen. */
-  readonly token?: TokenCell
-  /** Where an action that leaves the console puts the argv to reopen with. */
-  readonly reopen?: ReopenCell
-}
-
-/** The console's own environment: distinctive, so a seam carrying it is recognisable. */
-const CONSOLE_ENV: NodeJS.ProcessEnv = { MCPCUT_CONFIG: '/home/alice/.mcpcut/config.json' }
-
-function depsOf(
-  terminal: TuiTerminal,
-  processEvents: EventEmitter,
-  stderr: CliWritable,
-  dispatch: DispatchFn,
-  style: Style = plainStyle,
-  token: TokenCell = createTokenCell(),
-  reopen?: ReopenCell,
-): ConsoleDeps {
-  return {
-    terminal,
-    style,
-    stderr,
-    effects: {
-      dispatch,
-      dispatchOptions: { admin: { journalDir } },
-      env: CONSOLE_ENV,
-      journalDir,
-      token,
-      ...(reopen === undefined ? {} : { reopen }),
-    },
-    processEvents,
-    signals: DEFAULT_TUI_SIGNALS,
-    escapeCodeTimeoutMs: ESCAPE_TIMEOUT_MS,
-    quitDrainTimeoutMs: QUIT_DRAIN_TEST_MS,
-    platform: 'linux',
-  }
-}
-
-/** Starts a console and hands back everything a test needs to watch it. */
-function startConsole(options: StartOptions = {}): Harness {
-  const fake = createFakeTerminal({
-    ...(options.columns !== undefined ? { columns: options.columns } : {}),
-    ...(options.rows !== undefined ? { rows: options.rows } : {}),
-  })
-  const processEvents = new EventEmitter()
-  const stderr = captureStderr()
-  const exit = runConsole({
-    ...depsOf(
-      options.terminal ?? fake.terminal,
-      processEvents,
-      stderr,
-      options.dispatch ?? quietDispatch,
-      options.style ?? plainStyle,
-      options.token ?? createTokenCell(),
-      options.reopen,
-    ),
-    ...(options.initial !== undefined ? { initial: options.initial } : {}),
-  })
-  const harness: Harness = { fake, processEvents, exit, errText: () => stderr.text() }
-  running.push({ harness })
-  return harness
-}
-
-/** An admin in the temp store, with the one-time token the console signs in with. */
-async function createTestAdmin(): Promise<string> {
-  const created = await createAdminStore({ journalDir }).createAdmin(ADMIN_NAME, ADMIN_ROLE)
-  return created.token
-}
-
-/** Starts a console and signs it in, leaving it on the main screen. */
-async function signedInConsole(options: StartOptions = {}): Promise<{
-  readonly harness: Harness
-  readonly token: string
-}> {
-  const token = await createTestAdmin()
-  const harness = startConsole(options)
-  await waitForScreen(harness.fake, (screen) => screen.includes(SIGNIN_TITLE), 'the sign-in screen')
-  harness.fake.type(`${token}\r`)
-  await waitForScreen(
-    harness.fake,
-    (screen) => screen.includes(SIGNED_IN_HEADER),
-    'the header of a signed-in console',
-  )
-  return { harness, token }
-}
-
-// ---------------------------------------------------------------------------
-// Opening and leaving
-// ---------------------------------------------------------------------------
-
-describe('runConsole: the initial screen seam', () => {
-  /** What `mcpcut` hands the wizard when no config exists yet. */
-  function wizardPrefill(): WizardPrefill {
-    return {
-      mode: 'first-run',
-      configPath: '/home/alice/.mcpcut/config.json',
-      config: defaultInstallConfig('/var/lib/x'),
-    }
-  }
-
-  test('opens on the screen the caller built, not on the sign-in screen', async () => {
-    const prefill = wizardPrefill()
-    const harness = startConsole({
-      initial: (size) => ({ screen: wizardScreenOf(prefill), size }),
-    })
-
-    await waitForScreen(
-      harness.fake,
-      (screen) => screen.includes(WIZARD_TITLE_FIRST_RUN),
-      'the first-run wizard',
-    )
-
-    harness.fake.type('\x03')
-    await expect(harness.exit).resolves.toBe(EXIT_OK)
-    expect(harness.fake.restored()).toBe(true)
-  })
-
-  test('is asked for the terminal size once, and the sign-in screen stands without it', async () => {
-    const sizes: TerminalSize[] = []
-    const harness = startConsole({
-      columns: 100,
-      rows: 30,
-      initial: (size) => {
-        sizes.push(size)
-        return { screen: wizardScreenOf(wizardPrefill()), size }
-      },
-    })
-
-    await waitForScreen(
-      harness.fake,
-      (screen) => screen.includes(WIZARD_TITLE_FIRST_RUN),
-      'the first-run wizard',
-    )
-    harness.fake.resize(120, 40)
-
-    expect(sizes).toEqual([{ columns: 100, rows: 30 }])
-    harness.fake.type('\x03')
-    await expect(harness.exit).resolves.toBe(EXIT_OK)
-  })
-
-  test('without the seam the console still opens on the sign-in screen', async () => {
-    const harness = startConsole()
-
-    await waitForScreen(harness.fake, (screen) => screen.includes(SIGNIN_TITLE), 'the sign-in screen')
-
-    expect(harness.fake.screen()).not.toContain(WIZARD_TITLE_FIRST_RUN)
-    harness.fake.type('\x03')
-    await expect(harness.exit).resolves.toBe(EXIT_OK)
-  })
-})
+beforeEach(openRuntimeStand)
+afterEach(closeRuntimeStand)
 
 // ---------------------------------------------------------------------------
 // The effect queue
@@ -355,279 +144,6 @@ describe('the queue: what a settled console still owes the wizard', () => {
 
     expect(dispatched).toHaveLength(1)
     expect(dispatched[0]?.[0]).toBe('setup')
-  })
-})
-
-describe('runConsole: opening the screen', () => {
-  test('enters the alternate screen before it draws anything, on the sign-in screen', async () => {
-    const harness = startConsole()
-
-    await waitForScreen(harness.fake, (screen) => screen.includes(SIGNIN_TITLE), 'the sign-in screen')
-
-    expect(harness.fake.frames()[0]).toBe(ENTER_SCREEN)
-    expect(harness.fake.rawModeCalls[0]).toBe(true)
-    harness.fake.type('\x03')
-    await expect(harness.exit).resolves.toBe(EXIT_OK)
-  })
-
-  test('draws a frame of exactly as many lines as the terminal has rows', async () => {
-    const harness = startConsole({ columns: 40, rows: 10 })
-
-    await waitForScreen(harness.fake, (screen) => screen.includes(SIGNIN_TITLE), 'the sign-in screen')
-
-    const lines = harness.fake.screen().split('\n')
-    expect(lines).toHaveLength(10)
-    expect(lines.every((line) => line.length <= 40)).toBe(true)
-  })
-
-  test('falls back to 80x24 when the terminal reports no size at all', async () => {
-    const chunks: string[] = []
-    const input = new PassThrough()
-    const output = Object.assign(new EventEmitter(), {
-      write: (chunk: string) => chunks.push(chunk),
-    })
-    const harness = startConsole({ terminal: { input, output } })
-
-    await waitForUntilTrue(() => chunks.some((chunk) => chunk.includes(SIGNIN_TITLE)))
-
-    const frame = chunks.at(-1) ?? ''
-    expect(frame.split('\r\n')).toHaveLength(24)
-    input.write('\x03')
-    await expect(harness.exit).resolves.toBe(EXIT_OK)
-  })
-
-  test('refuses on Windows before it touches the terminal', async () => {
-    const fake = createFakeTerminal()
-    const stderr = captureStderr()
-
-    const code = await runConsole({
-      ...depsOf(fake.terminal, new EventEmitter(), stderr, quietDispatch),
-      platform: 'win32',
-    })
-
-    expect(code).toBe(EXIT_INTERRUPTED)
-    expect(stderr.text()).toContain(WINDOWS_UNSUPPORTED_REASON)
-    expect(fake.frames()).toEqual([])
-    expect(fake.rawModeCalls).toEqual([])
-  })
-})
-
-describe('runConsole: the ways out', () => {
-  test('Ctrl-C quits with 0 and restores the terminal', async () => {
-    const harness = startConsole()
-    await waitForScreen(harness.fake, (screen) => screen.includes(SIGNIN_TITLE), 'the sign-in screen')
-
-    harness.fake.type('\x03')
-
-    await expect(harness.exit).resolves.toBe(EXIT_OK)
-    expect(harness.fake.restored()).toBe(true)
-  })
-
-  test('a lone Esc on the sign-in screen quits once the escape timeout is up', async () => {
-    const harness = startConsole()
-    await waitForScreen(harness.fake, (screen) => screen.includes(SIGNIN_TITLE), 'the sign-in screen')
-
-    harness.fake.type('\x1b')
-
-    await expect(harness.exit).resolves.toBe(EXIT_OK)
-    expect(harness.fake.restored()).toBe(true)
-  })
-
-  test('q on a signed-in console quits with 0, and no frame ever held the token', async () => {
-    const { harness, token } = await signedInConsole()
-
-    harness.fake.type('q')
-
-    await expect(harness.exit).resolves.toBe(EXIT_OK)
-    expect(harness.fake.restored()).toBe(true)
-    expect(harness.fake.frames().some((frame) => frame.includes(token))).toBe(false)
-  })
-
-  test('a signal ends the console with 1, restores it and leaves no listener behind', async () => {
-    const harness = startConsole()
-    await waitForScreen(harness.fake, (screen) => screen.includes(SIGNIN_TITLE), 'the sign-in screen')
-
-    harness.processEvents.emit('SIGTERM')
-
-    await expect(harness.exit).resolves.toBe(EXIT_INTERRUPTED)
-    expect(harness.fake.restored()).toBe(true)
-    for (const signal of DEFAULT_TUI_SIGNALS) {
-      expect(harness.processEvents.listenerCount(signal)).toBe(0)
-    }
-    expect(harness.processEvents.listenerCount('uncaughtException')).toBe(0)
-    expect(harness.processEvents.listenerCount('unhandledRejection')).toBe(0)
-    expect(harness.fake.terminal.input.listenerCount('keypress')).toBe(0)
-    expect(harness.fake.terminal.output.listenerCount('resize')).toBe(0)
-  })
-
-  test('a second signal during the exit changes nothing: the console leaves once', async () => {
-    const harness = startConsole()
-    await waitForScreen(harness.fake, (screen) => screen.includes(SIGNIN_TITLE), 'the sign-in screen')
-
-    harness.processEvents.emit('SIGTERM')
-    harness.processEvents.emit('SIGHUP')
-
-    await expect(harness.exit).resolves.toBe(EXIT_INTERRUPTED)
-    expect(harness.fake.frames().filter((frame) => frame.includes(LEAVE_SCREEN))).toHaveLength(1)
-  })
-
-  test('SIGHUP with a dead pty still resolves 1 instead of throwing out of the restore', async () => {
-    const harness = startConsole()
-    await waitForScreen(harness.fake, (screen) => screen.includes(SIGNIN_TITLE), 'the sign-in screen')
-
-    harness.fake.failWrites()
-    harness.processEvents.emit('SIGHUP')
-
-    await expect(harness.exit).resolves.toBe(EXIT_INTERRUPTED)
-  })
-
-  test('a write that fails while drawing ends the console rather than throwing', async () => {
-    const harness = startConsole()
-    await waitForScreen(harness.fake, (screen) => screen.includes(SIGNIN_TITLE), 'the sign-in screen')
-
-    harness.fake.failWrites()
-    harness.fake.type('x')
-
-    await expect(harness.exit).resolves.toBe(EXIT_INTERRUPTED)
-  })
-
-  test('a terminal already gone when the console opens is reported, and raw mode dropped', async () => {
-    const fake = createFakeTerminal()
-    fake.failWrites()
-    const stderr = captureStderr()
-
-    const code = await runConsole(
-      depsOf(fake.terminal, new EventEmitter(), stderr, quietDispatch),
-    )
-
-    expect(code).toBe(EXIT_INTERRUPTED)
-    expect(stderr.text()).toContain('EPIPE')
-    expect(fake.rawModeCalls).toEqual([true, false])
-  })
-
-  test('a fault in the pure core is reported and ends the console with 1', async () => {
-    let broken = false
-    const brittleStyle: Style = {
-      bold: (text) => {
-        if (broken) throw new Error('the renderer blew up')
-        return text
-      },
-      inverse: (text) => text,
-      dim: (text) => text,
-    }
-    const harness = startConsole({ style: brittleStyle })
-    await waitForScreen(harness.fake, (screen) => screen.includes(SIGNIN_TITLE), 'the sign-in screen')
-
-    broken = true
-    harness.fake.type('x')
-
-    await expect(harness.exit).resolves.toBe(EXIT_INTERRUPTED)
-    expect(harness.errText()).toContain('the renderer blew up')
-    expect(harness.fake.restored()).toBe(true)
-  })
-
-  test('an uncaught exception ends the console with 1 and reports it on stderr', async () => {
-    const harness = startConsole()
-    await waitForScreen(harness.fake, (screen) => screen.includes(SIGNIN_TITLE), 'the sign-in screen')
-
-    harness.processEvents.emit('uncaughtException', new Error('boom'))
-
-    await expect(harness.exit).resolves.toBe(EXIT_INTERRUPTED)
-    expect(harness.errText()).toContain('boom')
-    expect(harness.fake.restored()).toBe(true)
-  })
-
-  test('an unhandled rejection of a value that is not an Error is reported too', async () => {
-    const harness = startConsole()
-    await waitForScreen(harness.fake, (screen) => screen.includes(SIGNIN_TITLE), 'the sign-in screen')
-
-    harness.processEvents.emit('unhandledRejection', 'kaput')
-
-    await expect(harness.exit).resolves.toBe(EXIT_INTERRUPTED)
-    expect(harness.errText()).toContain('kaput')
-  })
-
-  test('Ctrl-C leaves within the drain bound even while a command never answers', async () => {
-    // Everything but the header refresh: since phase 5 the sign-in screen asks
-    // for `status` as it opens, and a dispatcher that hangs on THAT would
-    // never let the console be signed in at all.
-    const hung: DispatchFn = (argv) =>
-      argv[0] === 'status' ? Promise.resolve(EXIT_OK) : new Promise<number>(() => undefined)
-    const { harness } = await signedInConsole({ dispatch: hung })
-    harness.fake.type('\r')
-    await waitForScreen(harness.fake, (screen) => screen.includes('running:'), 'the busy line')
-
-    harness.fake.type('\x03')
-
-    await expect(harness.exit).resolves.toBe(EXIT_OK)
-    expect(harness.fake.restored()).toBe(true)
-  })
-
-  test('the fault report reaches stderr only after the terminal is restored', async () => {
-    const fake = createFakeTerminal()
-    const processEvents = new EventEmitter()
-    const restoredAtWrite: boolean[] = []
-    const stderr: CliWritable = {
-      write: (chunk: string) => {
-        restoredAtWrite.push(fake.restored())
-        return chunk
-      },
-    }
-    const exit = runConsole(depsOf(fake.terminal, processEvents, stderr, quietDispatch))
-    await waitForScreen(fake, (screen) => screen.includes(SIGNIN_TITLE), 'the sign-in screen')
-
-    processEvents.emit('uncaughtException', new Error('boom'))
-
-    await expect(exit).resolves.toBe(EXIT_INTERRUPTED)
-    expect(restoredAtWrite).toEqual([true])
-  })
-
-  test('the token cell is empty once the console has left', async () => {
-    const token = await createTestAdmin()
-    const cell = createTokenCell()
-    const fake = createFakeTerminal()
-    const processEvents = new EventEmitter()
-    const exit = runConsole(
-      depsOf(fake.terminal, processEvents, captureStderr(), quietDispatch, plainStyle, cell),
-    )
-    await waitForScreen(fake, (screen) => screen.includes(SIGNIN_TITLE), 'the sign-in screen')
-    fake.type(`${token}\r`)
-    await waitForScreen(fake, (screen) => screen.includes(SIGNED_IN_HEADER), 'the signed-in header')
-    expect(cell.get()).toBe(token)
-
-    fake.type('q')
-
-    await expect(exit).resolves.toBe(EXIT_OK)
-    expect(cell.get()).toBeUndefined()
-  })
-
-  test("an 'error' event on the output ends the console quietly with 1", async () => {
-    const harness = startConsole()
-    await waitForScreen(harness.fake, (screen) => screen.includes(SIGNIN_TITLE), 'the sign-in screen')
-
-    harness.fake.terminal.output.emit('error', new Error('EPIPE'))
-
-    await expect(harness.exit).resolves.toBe(EXIT_INTERRUPTED)
-    expect(harness.fake.restored()).toBe(true)
-    expect(harness.errText()).toBe('')
-  })
-
-  test('a terminal with no setRawMode is driven and restored all the same', async () => {
-    const chunks: string[] = []
-    const input = new PassThrough()
-    const output = Object.assign(new EventEmitter(), {
-      isTTY: true,
-      columns: 80,
-      rows: 24,
-      write: (chunk: string) => chunks.push(chunk),
-    })
-    const harness = startConsole({ terminal: { input, output } })
-
-    await waitForUntilTrue(() => chunks.some((chunk) => chunk.includes(SIGNIN_TITLE)))
-    input.write('\x03')
-
-    await expect(harness.exit).resolves.toBe(EXIT_OK)
-    expect(chunks.at(-1)).toBe(LEAVE_SCREEN)
   })
 })
 
@@ -1036,12 +552,3 @@ describe('createLoop: a fault after the console was already leaving', () => {
     expect(stderr.text()).toContain('the pure core threw')
   })
 })
-
-/** The bare-terminal test has no `FakeTerminal` to read frames off. */
-async function waitForUntilTrue(predicate: () => boolean): Promise<void> {
-  const deadline = Date.now() + 2_000
-  while (!predicate()) {
-    if (Date.now() > deadline) throw new Error('timed out waiting for the first frame')
-    await new Promise((resolve) => setTimeout(resolve, 5))
-  }
-}
