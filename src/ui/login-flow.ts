@@ -1,4 +1,5 @@
 import type { IncomingMessage } from 'node:http'
+import { UNKNOWN_TOKEN_NOTICE } from '../admin/constants.js'
 import type { AdminRecord } from '../admin/store.js'
 import { formatReadableField } from '../journal/format.js'
 import type { AdminResolver, LoginRateLimiter, PenaltyGate, SessionManager } from './auth.js'
@@ -6,15 +7,21 @@ import { loginRateLimitKey, serializeSessionCookie } from './auth.js'
 import {
   BODY_TOO_MANY_REQUESTS,
   BODY_UNAUTHORIZED,
+  CONTENT_TYPE_HTML,
   CONTENT_TYPE_JSON,
+  HTML_MEDIA_TYPE,
   HTTP_STATUS_SEE_OTHER,
   HTTP_STATUS_TOO_MANY_REQUESTS,
   HTTP_STATUS_UNAUTHORIZED,
   LOGIN_GLOBAL_PENALTY_WARNING,
   LOGIN_RATE_LIMIT_WARNING,
   POST_LOGIN_LOCATION,
+  SCRIPT_REQUEST_HEADER,
+  SCRIPT_REQUEST_VALUE,
   SESSION_CAPACITY_WARNING,
+  TOO_MANY_ATTEMPTS_NOTICE,
 } from './constants.js'
+import { renderLoginPage } from './pages/login.js'
 import { headerValue, parseBodyFields, type UiRequestContext, type UiResult } from './routes.js'
 
 /**
@@ -91,6 +98,41 @@ function refusal(status: number, body: Buffer): UiResult {
 }
 
 /**
+ * True when this request is a BROWSER NAVIGATION — a person who pressed a
+ * button on a page, not a script or a client that parses JSON.
+ *
+ * Two signals, both cheap and both only about the SHAPE of the answer, never
+ * about whether it is allowed: an `Accept` that asks for HTML, and the absence
+ * of the page script's own "a `fetch()` is asking" marker (the same header the
+ * dead-session refusal already switches on). Forging either buys nothing.
+ */
+function wantsHtml(ctx: UiRequestContext): boolean {
+  if (headerValue(ctx.headers, SCRIPT_REQUEST_HEADER) === SCRIPT_REQUEST_VALUE) return false
+  return (headerValue(ctx.headers, 'accept') ?? '').includes(HTML_MEDIA_TYPE)
+}
+
+/**
+ * The refused sign-in, in the shape its caller can use: for a browser the
+ * `/login` page again, carrying the error and the form; for anything else the
+ * byte-identical JSON body that has always been there (UX-1).
+ *
+ * The status and the NO-ORACLE property are untouched either way — the page is
+ * rendered from one constant sentence, so a token that never existed, one that
+ * was rotated and one whose admin is gone still produce byte-identical
+ * documents. `no-store` and the security headers are added by the server core,
+ * as on every other response.
+ */
+function refuseLogin(ctx: UiRequestContext, status: number, body: Buffer, error: string): UiResult {
+  if (!wantsHtml(ctx)) return refusal(status, body)
+  return {
+    kind: 'response',
+    status,
+    headers: { 'content-type': CONTENT_TYPE_HTML },
+    body: renderLoginPage({ error }),
+  }
+}
+
+/**
  * Waits out the global-ceiling delay, if one is owed.
  *
  * Past the concurrency bound the delay is SKIPPED, not turned into a refusal:
@@ -137,7 +179,7 @@ export async function handleLoginRequest(
   // hands an attacker nothing either.
   if (!deps.rateLimiter.allow(key)) {
     deps.stderr.write(`${LOGIN_RATE_LIMIT_WARNING}\n`)
-    return refusal(HTTP_STATUS_TOO_MANY_REQUESTS, BODY_TOO_MANY_REQUESTS)
+    return refuseLogin(ctx, HTTP_STATUS_TOO_MANY_REQUESTS, BODY_TOO_MANY_REQUESTS, TOO_MANY_ATTEMPTS_NOTICE)
   }
   // Counted here, one statement after the check and before the first `await`,
   // so concurrent attempts on this key cannot all pass a window none of them
@@ -153,14 +195,16 @@ export async function handleLoginRequest(
   const token = fields.token
   const admin =
     token !== undefined && token !== '' ? await deps.adminStore.findAdminByToken(token) : undefined
-  if (admin === undefined) return refusal(HTTP_STATUS_UNAUTHORIZED, BODY_UNAUTHORIZED)
+  if (admin === undefined) {
+    return refuseLogin(ctx, HTTP_STATUS_UNAUTHORIZED, BODY_UNAUTHORIZED, UNKNOWN_TOKEN_NOTICE)
+  }
   deps.rateLimiter.recordSuccess(key)
   const created = deps.sessions.create(admin)
   if (!created.ok) {
     // Caps are never met by evicting a live session, so a refusal is the honest
     // answer: the plane is holding as many sessions as it will hold.
     deps.stderr.write(`${SESSION_CAPACITY_WARNING} (${created.reason})\n`)
-    return refusal(HTTP_STATUS_TOO_MANY_REQUESTS, BODY_TOO_MANY_REQUESTS)
+    return refuseLogin(ctx, HTTP_STATUS_TOO_MANY_REQUESTS, BODY_TOO_MANY_REQUESTS, TOO_MANY_ATTEMPTS_NOTICE)
   }
   await runAfterSignIn(deps, admin)
   return {

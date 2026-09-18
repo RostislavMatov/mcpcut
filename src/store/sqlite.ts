@@ -1,6 +1,7 @@
 import { chmod, mkdir, open } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { dirname } from 'node:path'
-import { DatabaseSync, backup } from 'node:sqlite'
+import type { DatabaseSync } from 'node:sqlite'
 import { JOURNAL_DIR_MODE, JOURNAL_FILE_MODE } from '../config.js'
 
 /**
@@ -10,6 +11,26 @@ import { JOURNAL_DIR_MODE, JOURNAL_FILE_MODE } from '../config.js'
  * as `src/protocol/mcp.ts` for the MCP spec. Stores write their own SQL
  * against the handle; they never import `node:sqlite` directly.
  */
+
+/**
+ * The driver is required, not statically imported — and the reason is WHEN,
+ * not how.
+ *
+ * A builtin ES module is compiled during the LINK phase of the entry's module
+ * graph, which finishes before the first line of any module body runs. So the
+ * `ExperimentalWarning` `node:sqlite` prints on load was already queued before
+ * the CLI could install its one-line filter, and headed every command's stderr
+ * and both daemon logs (user-journey smoke 2026-09-18, UX-7). `createRequire`
+ * moves the load to the evaluation of THIS module, which happens after
+ * `cli/warning-filter-install.ts` — the entry's first import — has run.
+ *
+ * Types still come from `node:sqlite` through `import type` above (erased, so
+ * it links nothing) and the cast below, so nothing about the API surface is
+ * loosened; only the moment of loading moved. The architecture test that pins
+ * this module as the sole point of contact reads import specifiers and still
+ * sees exactly one file naming the driver.
+ */
+const sqlite = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite')
 
 export type SynchronousMode = 'normal' | 'full'
 
@@ -198,7 +219,7 @@ export async function openSqlite(
 
     // The constructor and PRAGMAs are synchronous by design of node:sqlite;
     // only the fs setup above has an async form.
-    db = new DatabaseSync(filePath)
+    db = new sqlite.DatabaseSync(filePath)
   } catch (error: unknown) {
     throw new SqliteOpenError(filePath, error)
   }
@@ -246,7 +267,7 @@ export async function backupSqlite(handle: SqliteHandle, destPath: string): Prom
     const fh = await open(destPath, 'wx', JOURNAL_FILE_MODE)
     await fh.close()
 
-    return await backup(handle.db, destPath)
+    return await sqlite.backup(handle.db, destPath)
   } catch (error: unknown) {
     throw new SqliteBackupError(handle.filePath, destPath, error)
   }

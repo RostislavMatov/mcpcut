@@ -140,3 +140,83 @@ export function quarantinedError(id: SynthesizableId, info: QuarantinedErrorInfo
     data: { reason: 'quarantined', toolName: info.toolName, serverName: info.serverName },
   })
 }
+
+export interface MethodDenialErrorInfo {
+  /** The JSON-RPC method that was refused. Not a tool — see below. */
+  readonly method: string
+  readonly serverName: string
+  readonly rule: string
+}
+
+/**
+ * The two refusals of a NON-TOOL method (`resources/*`, `prompts/*`,
+ * `completion/complete`). They used to borrow {@link denialError}, which says
+ * `Call to tool "resources/list"` — a sentence that tells the reader to look
+ * for a tool by that name, of which there is none, and which sent the
+ * user-journey smoke (2026-09-18, UX-4) looking for one. `method` is also what
+ * `data` carries, for the same reason.
+ *
+ * Neither message names the command that would fix it, on the same grounds as
+ * {@link approvalTimeoutError}: the only reader of this string is the party
+ * being gated, and a remediation command handed to it through the channel it
+ * reads and trusts by default is a different thing from one an owner looks up
+ * (README §"Registry, agents, vault" holds the `agent grant` form).
+ */
+export function methodNotGrantedError(id: SynthesizableId, info: MethodDenialErrorInfo): Buffer {
+  return synthesizeError(id, {
+    code: ERROR_CODE_POLICY_DENIED,
+    message:
+      `Method "${info.method}" was refused: this agent has no resources/prompts grant for ` +
+      `server "${info.serverName}", so no resource or prompt on it is reachable. ` +
+      'Only a human operator can widen the grant.',
+    data: {
+      reason: 'agent_no_method_grant',
+      method: info.method,
+      serverName: info.serverName,
+      rule: info.rule,
+    },
+  })
+}
+
+/**
+ * A method no grant can describe at all: outside the enumerated vocabulary in
+ * `agents/method-grants.ts`, therefore denied for every agent regardless of
+ * what it was granted (fail closed — a method a later spec revision adds must
+ * not be admitted by an existing wildcard).
+ */
+export function methodNotGrantableError(id: SynthesizableId, info: MethodDenialErrorInfo): Buffer {
+  return synthesizeError(id, {
+    code: ERROR_CODE_POLICY_DENIED,
+    message:
+      `Method "${info.method}" was refused: the control plane has no way to express a grant ` +
+      'for it, so it is denied for every agent on every server. This is not something a grant ' +
+      'can change.',
+    data: {
+      reason: 'method_not_grantable',
+      method: info.method,
+      serverName: info.serverName,
+      rule: info.rule,
+    },
+  })
+}
+
+/**
+ * Every OTHER refusal of a non-tool method: a grant that exists but does not
+ * cover the requested resource URI or prompt name, and a frame whose params
+ * were unreadable. The rule names which, so the message quotes it rather than
+ * restating one of them and being wrong about the other.
+ */
+export function methodDeniedError(id: SynthesizableId, info: MethodDenialErrorInfo): Buffer {
+  return synthesizeError(id, {
+    code: ERROR_CODE_POLICY_DENIED,
+    message:
+      `Method "${info.method}" on server "${info.serverName}" was refused by rule ` +
+      `"${info.rule}". A human operator decides what an agent may reach.`,
+    data: {
+      reason: 'agent_method_denied',
+      method: info.method,
+      serverName: info.serverName,
+      rule: info.rule,
+    },
+  })
+}

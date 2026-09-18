@@ -232,3 +232,41 @@ describe('prune: hours are accepted, and the cutoff itself is retained', () => {
     expect(io.out()).toContain('Deleted 3 record(s)')
   })
 })
+
+/**
+ * A refusal an operator can read (user-journey smoke 2026-09-18, UX-6).
+ * `prune` was the one command that answered an argument error with the WHOLE
+ * top-level help table — about 110 lines — which scrolled the sentence naming
+ * the mistake off a standard terminal. Every other command prints its own
+ * synopsis and lets the full table be asked for.
+ */
+describe('prune: an argument error prints this command, not the whole CLI', () => {
+  const OTHER_COMMAND_ROW = 'mcp-journal wrap'
+
+  test('a bad --older-than value names the mistake and stays short', async () => {
+    const io = fakeIo()
+
+    const exitCode = await run(['--older-than', '0s'], io)
+
+    expect(exitCode).toBe(1)
+    const err = io.err()
+    expect(err).toContain('Invalid --older-than "0s"')
+    expect(err).toContain('mcp-journal prune --older-than <duration>')
+    expect(err).toContain('mcpcut --help')
+    expect(err).not.toContain(OTHER_COMMAND_ROW)
+    expect(err.split('\n').length).toBeLessThan(12)
+  })
+
+  test('a missing value, an unknown flag and a stray positional stay equally short', async () => {
+    const cases: string[][] = [[], ['--nope'], ['90d']]
+    for (const args of cases) {
+      const io = fakeIo()
+
+      const exitCode = await run(args, io)
+
+      expect(exitCode, args.join(' ')).toBe(1)
+      expect(io.err(), args.join(' ')).not.toContain(OTHER_COMMAND_ROW)
+      expect(io.err(), args.join(' ')).toContain('mcp-journal prune --older-than')
+    }
+  })
+})

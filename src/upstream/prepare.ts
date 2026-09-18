@@ -116,9 +116,14 @@ export function formatVaultFailure(
   result: Exclude<ResolveVaultRefsResult, { readonly status: 'resolved' }>,
 ): string {
   if (result.status === 'missing-secrets') {
+    // ONE line, remedy included. This string is not only a stderr line: the
+    // probe engine carries it as the `vault-refused` status message, and every
+    // view that prints a status field sanitizes control characters into `?`, so
+    // an interior newline surfaced as `crm-token?Add each with: …` in
+    // `server add|list|show` (user-journey smoke 2026-09-18, UX-3).
     return (
-      `missing vault secret(s) for the server's ${what}: ${result.missing.join(', ')}\n` +
-      `Add each with: mcp-journal vault set <name>\n`
+      `missing vault secret(s) for the server's ${what}: ${result.missing.join(', ')} — ` +
+      `add each with: mcp-journal vault set <name>\n`
     )
   }
   if (result.status === 'invalid-refs') {

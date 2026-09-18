@@ -11,6 +11,7 @@ import {
   BODY_SESSION_NOT_FOUND,
   BODY_UPSTREAM_TIMEOUT,
   HTTP_STATUS_BAD_REQUEST,
+  HTTP_STATUS_FORBIDDEN,
   HTTP_STATUS_GATEWAY_TIMEOUT,
   REFUSAL_CODE_PATTERN,
 } from './server-constants.js'
@@ -186,6 +187,13 @@ export function jsonPlan(
 const UNKNOWN_SERVER_REFUSAL = 'unknown-server'
 
 /**
+ * The refusal code for an authenticated agent with no grant for the server it
+ * addressed (`cli/serve-constants.ts`, restated here because the transport must
+ * not import the semantic layer — ADR-0001's invariant, same as above).
+ */
+const NO_GRANT_REFUSAL = 'no-grant'
+
+/**
  * The part of a refusal that may reach an agent: the leading code token,
  * and only when it is code-shaped. `"protocol-mismatch: server \"x\" is
  * registered as stateless — see docs/adr/..."` becomes `protocol-mismatch`;
@@ -197,7 +205,18 @@ function refusalCodeOf(error: string): string | null {
   return REFUSAL_CODE_PATTERN.test(code) ? code : null
 }
 
-/** Maps a factory refusal to a plan: unknown server → 404, anything else → 400. */
+/**
+ * Maps a factory refusal to a plan: unknown server → 404, no grant → 403,
+ * anything else → 400.
+ *
+ * 403 for `no-grant` (user-journey smoke 2026-09-18, UX-11): the agent
+ * authenticated, sent a well-formed request, and was refused for WHO it is.
+ * 400 was only ever the catch-all, and it told a client to look for a mistake
+ * in its own bytes. 400 remains right for everything else here — the
+ * session-model mismatch ADR-0002 pins, and the vault/secret refusals, which
+ * are all statements about the request or the server it names, not about the
+ * caller's authorization.
+ */
 export function refusalPlan(refusal: OpenSessionRefusal): ResponsePlan {
   const code = refusalCodeOf(refusal.error)
   if (code === null) {
@@ -206,7 +225,11 @@ export function refusalPlan(refusal: OpenSessionRefusal): ResponsePlan {
   if (code === UNKNOWN_SERVER_REFUSAL) {
     return jsonPlan(HTTP_STATUS_NOT_FOUND, BODY_NOT_FOUND)
   }
-  return jsonPlan(HTTP_STATUS_BAD_REQUEST, Buffer.from(JSON.stringify({ error: code }), 'utf8'))
+  const body = Buffer.from(JSON.stringify({ error: code }), 'utf8')
+  if (code === NO_GRANT_REFUSAL) {
+    return jsonPlan(HTTP_STATUS_FORBIDDEN, body)
+  }
+  return jsonPlan(HTTP_STATUS_BAD_REQUEST, body)
 }
 
 /**

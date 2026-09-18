@@ -210,6 +210,23 @@ function formatListReadable(entries: readonly PendingApproval[], nowMs: number):
   return entries.map((entry) => formatListLine(entry, nowMs)).join('')
 }
 
+/**
+ * What the wait column says when the queue entry carries no `waitExpiresAt`
+ * at all (a request enqueued before M4, or by a caller that declared no wait).
+ * Named rather than blank: "we do not know" and "the agent left" are different
+ * facts, and only one of them means an approval still delivers the call.
+ */
+const AGENT_WAIT_UNKNOWN = 'unknown'
+
+/**
+ * What the wait column says once the agent's own window has closed. The words
+ * are the point: the entry is still listed and still approvable, but the call
+ * it belonged to is gone, so approving now only mints a grant the agent has to
+ * come back and use (the M2 dogfood tail, and the reason the web card carries
+ * the same sentence).
+ */
+const AGENT_WAIT_ELAPSED = 'elapsed(retry-only)'
+
 /** Every field printed here comes from a queue file on disk -- untrusted, like a journal record. */
 function formatListLine(entry: PendingApproval, nowMs: number): string {
   const approvalId = formatReadableField(entry.approvalId)
@@ -217,14 +234,39 @@ function formatListLine(entry: PendingApproval, nowMs: number): string {
   const toolName = formatReadableField(entry.toolName)
   const argsPreview = formatReadableField(JSON.stringify(entry.argsRedacted))
   const remaining = formatTimeRemaining(entry, nowMs)
-  return `${approvalId}  server=${serverName} tool=${toolName} class=${entry.toolClass} expires_in=${remaining} args=${argsPreview}\n`
+  const waiting = formatAgentWait(entry, nowMs)
+  return (
+    `${approvalId}  server=${serverName} tool=${toolName} class=${entry.toolClass} ` +
+    `agent_waits=${waiting} expires_in=${remaining} args=${argsPreview}\n`
+  )
+}
+
+/**
+ * The AGENT's remaining wait, which is not the grant window: the queue entry
+ * expires in minutes, while the call blocking on it gives up in seconds
+ * (`approval.waitTimeoutMs`). Printing only the grant window told an operator
+ * they had four minutes to decide when they had forty seconds (user-journey
+ * smoke UX-8). `waitExpiresAt` has been on the record since M4 and in
+ * `--json`; this is the same fact in the view a human reads.
+ */
+function formatAgentWait(entry: PendingApproval, nowMs: number): string {
+  const waitExpiresAt = entry.waitExpiresAt
+  if (waitExpiresAt === undefined) return AGENT_WAIT_UNKNOWN
+  const deadlineMs = Date.parse(waitExpiresAt)
+  if (Number.isNaN(deadlineMs)) return AGENT_WAIT_UNKNOWN
+  const remainingMs = deadlineMs - nowMs
+  return remainingMs > 0 ? formatDuration(remainingMs) : AGENT_WAIT_ELAPSED
 }
 
 /** `entry.expired` is derived by `queue.list()` from the same clock, so the two never disagree. */
 function formatTimeRemaining(entry: PendingApproval, nowMs: number): string {
   if (entry.expired) return 'expired'
 
-  const remainingMs = Math.max(0, Date.parse(entry.expiresAt) - nowMs)
+  return formatDuration(Math.max(0, Date.parse(entry.expiresAt) - nowMs))
+}
+
+/** `Nm Ns` (or bare seconds under a minute) — the shape both clocks are printed in. */
+function formatDuration(remainingMs: number): string {
   const totalSeconds = Math.floor(remainingMs / MS_PER_SECOND)
   const minutes = Math.floor(totalSeconds / (MS_PER_MINUTE / MS_PER_SECOND))
   const seconds = totalSeconds % (MS_PER_MINUTE / MS_PER_SECOND)

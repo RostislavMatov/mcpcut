@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+// First, on purpose: it silences the one `node:sqlite` experimental warning
+// that used to head every command's stderr and every daemon log
+// (`cli/warning-filter.ts`, user-journey smoke UX-7).
+import './cli/warning-filter-install.js'
 import { realpathSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { runAdminCommand } from './cli/admin-cmd.js'
@@ -133,7 +137,7 @@ export async function dispatch(
   if (command === 'prune') return runPruneCommand(rest, io, opts.prune)
   if (command === 'keygen') return runKeygenCommand(rest, io, opts.keygen)
   if (command === 'sessions' || command === 'show') {
-    return runJournalCommandGroup(command, rest, io, opts.journalDir, USAGE)
+    return runJournalCommandGroup(command, rest, io, opts.journalDir)
   }
   if (command === 'policy') return runPolicyCommand(rest, io, opts.policy)
   if (command === 'quarantine') return runQuarantine(rest, io, opts.quarantine)

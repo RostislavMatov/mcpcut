@@ -74,8 +74,8 @@ describe('runServe: grants inherited from a group', () => {
     // Act
     const response = await fixture.post(INITIALIZE_BODY)
 
-    // Assert — the unchanged no-grant refusal
-    expect(response.status).toBe(400)
+    // Assert — the unchanged no-grant refusal (403 since UX-11)
+    expect(response.status).toBe(403)
     expect(await response.json()).toHaveProperty('error')
   })
 })

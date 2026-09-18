@@ -6,7 +6,11 @@ import { formatReadableField } from '../journal/format.js'
 import { RESERVED_OBJECT_KEYS } from '../policy/constants.js'
 import type { CascadeHalfStatus, CascadeVerdict } from '../journal/access-edit-record.js'
 import type { AccessEditActor } from '../journal/record.js'
-import { adminFromEnv } from './admin-token.js'
+import {
+  REMOVE_DROPPED_RECORD_MESSAGE,
+  serverAuditLine,
+  serverChangeActor,
+} from './server-attribution.js'
 import { countGrantReferences, type GrantReferenceCount } from './server-grant-refs.js'
 import type { ServerCliIo, ServerCliOptions } from './server-cmd.js'
 
@@ -30,12 +34,6 @@ export interface CascadeResult {
   /** Which halves actually ran; a `failed` half contributed no names. */
   readonly verdict: CascadeVerdict
 }
-
-const UNATTRIBUTED_MESSAGE =
-  '[audit] server remove not attributed: set MCP_ADMIN_TOKEN to record who removed the server\n'
-
-const DROPPED_RECORD_MESSAGE =
-  '[journal] the server was removed, but its journal record was dropped (see the sink diagnostics above)\n'
 
 /** `N agent grants, M groups` — the same phrasing on stderr and stdout. */
 export function cascadeSummary(cascade: CascadeResult): string {
@@ -111,28 +109,6 @@ export async function cascadeGrants(
   }
 }
 
-/** The admin behind `MCP_ADMIN_TOKEN`, or an unattributed actor plus one warning. */
-async function removeActor(io: ServerCliIo, opts: ServerCliOptions): Promise<AccessEditActor> {
-  const resolved = await adminFromEnv({
-    ...(opts.journalDir !== undefined ? { journalDir: opts.journalDir } : {}),
-    ...(opts.env !== undefined ? { env: opts.env } : {}),
-  })
-  if (resolved.kind === 'ok') {
-    return { adminName: resolved.name, role: resolved.role, via: 'cli' }
-  }
-  io.stderr.write(UNATTRIBUTED_MESSAGE)
-  return { adminName: null, role: null, via: 'cli' }
-}
-
-/** The audit line (ADR-0009 O5): who removed what, and how far it reached. */
-function auditLineOf(actor: AccessEditActor, name: string, cascade: CascadeResult): string {
-  const who =
-    actor.adminName === null
-      ? 'unattributed'
-      : `${formatReadableField(actor.adminName)} (${String(actor.role)})`
-  return `[audit] server remove by ${who}: "${formatReadableField(name)}", cascaded: ${cascadeSummary(cascade)}\n`
-}
-
 /** Records the cascade; a dropped record is reported, never fatal — the removal already happened. */
 async function journalRemoval(
   actor: AccessEditActor,
@@ -154,7 +130,7 @@ async function journalRemoval(
     diagnostics: (line) => io.stderr.write(line),
   })
   if (!outcome.written) {
-    io.stderr.write(DROPPED_RECORD_MESSAGE)
+    io.stderr.write(REMOVE_DROPPED_RECORD_MESSAGE)
   }
 }
 
@@ -169,8 +145,8 @@ export async function reportCascade(
   io: ServerCliIo,
   opts: ServerCliOptions,
 ): Promise<void> {
-  const actor = await removeActor(io, opts)
-  io.stderr.write(auditLineOf(actor, name, cascade))
+  const actor = await serverChangeActor('remove', io, opts)
+  io.stderr.write(serverAuditLine('remove', actor, name, `, cascaded: ${cascadeSummary(cascade)}`))
   await journalRemoval(actor, name, cascade, io, opts)
 }
 

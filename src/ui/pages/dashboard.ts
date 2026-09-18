@@ -118,11 +118,13 @@ function tile(
   href: string,
   strong: boolean,
   seed: number,
+  liveKey?: string,
 ): Html {
   const cls = strong ? 'tile tile-strong' : 'tile'
+  const live = liveKey === undefined ? html`` : html` data-live-text="${liveKey}"`
   return html`<a class="${cls}" href="${safeUrl(href)}">
     <span class="label">${label}</span>
-    <span class="tile-row"><span class="tile-value num">${value}</span><span class="tile-unit">${unit}</span></span>
+    <span class="tile-row"><span class="tile-value num"${live}>${value}</span><span class="tile-unit">${unit}</span></span>
     ${tileBars(seed)}
   </a>`
 }
@@ -130,7 +132,9 @@ function tile(
 function renderTiles(input: DashboardPageInput): Html {
   const held = pendingTotalOf(input)
   const s = input.summary
-  const heldTile = tile('Held', String(held), 'awaiting approval', '/', held > 0, TILE_SEEDS[0])
+  // The Held tile is the only one a queue swap can change; the other three
+  // describe registry/inventory state no approval touches.
+  const heldTile = tile('Held', String(held), 'awaiting approval', '/', held > 0, TILE_SEEDS[0], TILE_HELD_LIVE_KEY)
   if (s === undefined) return html`<section class="tiles dash-tiles">${heldTile}</section>`
   return html`<section class="tiles dash-tiles">
     ${heldTile}
@@ -171,9 +175,19 @@ function renderServersStrip(s: DashboardSummary): Html {
   </section>`
 }
 
+/**
+ * The two counts that describe the queue but sit OUTSIDE its live region: the
+ * panel head and the Held tile. Both carry `data-live-text`, so a settle or an
+ * SSE swap of the region updates them in place instead of leaving a stale "3
+ * held" over an empty queue (UX-12). The keys are the contract with
+ * `assets/app-js.ts` and are pinned by `tests/ui/page-contracts.test.ts`.
+ */
+const QUEUE_HELD_LIVE_KEY = 'queue-held'
+const TILE_HELD_LIVE_KEY = 'tile-held'
+
 function renderQueuePanel(input: DashboardPageInput): Html {
   return html`<section class="panel panel-strong dash-queue" aria-label="Approval queue">
-    <div class="panel-hd"><h1>Approval queue</h1><span class="small dim num">${String(pendingTotalOf(input))} held</span></div>
+    <div class="panel-hd"><h1>Approval queue</h1><span class="small dim num" data-live-text="${QUEUE_HELD_LIVE_KEY}">${String(pendingTotalOf(input))} held</span></div>
     ${renderQueueRegion(input)}
   </section>`
 }

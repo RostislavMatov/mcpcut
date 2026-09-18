@@ -272,6 +272,42 @@ describe('McpCut quarantine page structure', () => {
     expect(renderQuarantinePage({ cards: [], csrfToken: CSRF })).toContain('0 held')
   })
 
+  /**
+   * A form the route would refuse with a 403 is worse than no form (the rule
+   * `pages/agents.ts` already follows). Until the user-journey smoke
+   * (2026-09-18, UX-5) this page was the one exception: a `viewer` saw
+   * APPROVE/REJECT on every card, pressed one, and got a bare refusal.
+   * The server-side check is untouched — this only stops offering what it
+   * will not allow.
+   */
+  test('below operator the approve/reject controls are not rendered at all', () => {
+    const doc = renderQuarantinePage({
+      cards: [changedCard],
+      csrfToken: CSRF,
+      currentAdmin: { name: 'val', role: 'viewer' },
+    })
+
+    expect(doc).not.toContain('/quarantine/approve')
+    expect(doc).not.toContain('/quarantine/reject')
+    expect(doc).toContain('Releasing a tool needs the operator role')
+    // The review itself is still fully visible: a viewer reads the diff.
+    expect(doc).toContain('surfaceDelta: widened')
+    expect(doc).toContain('properties.force')
+  })
+
+  test('operator and owner keep both controls', () => {
+    for (const role of ['operator', 'owner']) {
+      const doc = renderQuarantinePage({
+        cards: [changedCard],
+        csrfToken: CSRF,
+        currentAdmin: { name: 'op', role },
+      })
+
+      expect(doc, role).toContain('action="/quarantine/approve"')
+      expect(doc, role).toContain('action="/quarantine/reject"')
+    }
+  })
+
   test('a truncated diff shows the explicit, alert-styled marker (M5 lesson)', () => {
     const doc = renderQuarantinePage({ cards: [{ ...changedCard, truncated: true }], csrfToken: CSRF })
     expect(doc).toMatch(/class="pill pill-alert[^"]*">diff truncated</)
@@ -311,7 +347,13 @@ describe('McpCut quarantine page structure', () => {
 
   test('strips invisible bidi characters from a spoofed tool name in the head, flags it, and keeps the raw name in the form (audit 2026-09-02 F1)', () => {
     const raw = `read_file${RTL_OVERRIDE}txt.exe`
-    const doc = renderQuarantinePage({ cards: [{ ...changedCard, toolName: raw }], csrfToken: CSRF })
+    // As an operator: the round-trip field this asserts on only exists where
+    // the release forms do (UX-5).
+    const doc = renderQuarantinePage({
+      cards: [{ ...changedCard, toolName: raw }],
+      csrfToken: CSRF,
+      currentAdmin: { name: 'op', role: 'operator' },
+    })
     expect(doc).toMatch(/<span class="tool-name">read_filetxt\.exe<span class="name-flag"/)
     // The POST must still name the exact tool: the raw bytes ride only in the round-trip field.
     expect(doc).toContain(`name="tool" value="${raw}"`)
@@ -342,7 +384,11 @@ describe('McpCut quarantine page structure', () => {
   })
 
   test('approve is primary, reject is secondary; both carry server/tool/csrf', () => {
-    const doc = renderQuarantinePage({ cards: [changedCard], csrfToken: CSRF })
+    const doc = renderQuarantinePage({
+      cards: [changedCard],
+      csrfToken: CSRF,
+      currentAdmin: { name: 'op', role: 'operator' },
+    })
     expect(doc).toMatch(/action="\/quarantine\/approve" data-action="\/quarantine\/approve"/)
     expect(doc).toMatch(/action="\/quarantine\/reject" data-action="\/quarantine\/reject"/)
     expect(doc).toMatch(/<button type="submit" class="secondary">Reject</)

@@ -7,7 +7,6 @@ import {
   runShowCommand,
   type JournalCliIo,
 } from '../../src/cli/journal-cmds.js'
-import { USAGE } from '../../src/cli/usage.js'
 import { migrateJournalFiles } from '../../src/journal/import.js'
 import type { JournalRecord } from '../../src/journal/record.js'
 import { createJournalSink } from '../../src/journal/sink.js'
@@ -129,7 +128,7 @@ describe('runShowCommand: the legacy hint', () => {
     await writeDbSession('shown')
     const io = fakeIo()
 
-    const exitCode = await runShowCommand(['shown'], io, journalDir, USAGE)
+    const exitCode = await runShowCommand(['shown'], io, journalDir)
 
     expect(exitCode).toBe(0)
     expect(io.err()).not.toContain(LEGACY_HINT)
@@ -139,7 +138,7 @@ describe('runShowCommand: the legacy hint', () => {
     await writeLegacySession('un-imported')
     const io = fakeIo()
 
-    const exitCode = await runShowCommand(['un-imported'], io, journalDir, USAGE)
+    const exitCode = await runShowCommand(['un-imported'], io, journalDir)
 
     expect(exitCode).toBe(0)
     expect(io.err()).toContain('un-imported')
@@ -151,9 +150,45 @@ describe('runShowCommand: the legacy hint', () => {
     await writeLegacySession('someone-elses-legacy-file')
     const io = fakeIo()
 
-    const exitCode = await runShowCommand(['shown'], io, journalDir, USAGE)
+    const exitCode = await runShowCommand(['shown'], io, journalDir)
 
     expect(exitCode).toBe(0)
     expect(io.err()).not.toContain(LEGACY_HINT)
+  })
+})
+
+/**
+ * `show` had the defect `prune` had (user-journey smoke 2026-09-18, UX-6): an
+ * invalid `--direction`/`--kind` value, or a missing session id, was answered
+ * with the whole top-level help table, so the list of allowed values scrolled
+ * off the screen above it. The command now prints its own synopsis.
+ */
+describe('runShowCommand: an argument error prints this command, not the whole CLI', () => {
+  const OTHER_COMMAND_ROW = 'mcp-journal wrap'
+
+  test('an invalid --kind names the allowed values and stays short', async () => {
+    const io = fakeIo()
+
+    const exitCode = await runShowCommand(['s1', '--kind', 'bogus'], io, journalDir)
+
+    expect(exitCode).toBe(1)
+    const err = io.err()
+    expect(err).toContain('Invalid --kind "bogus"')
+    expect(err).toContain('mcp-journal show <sessionId>')
+    expect(err).toContain('mcpcut --help')
+    expect(err).not.toContain(OTHER_COMMAND_ROW)
+  })
+
+  test('an invalid --direction and a missing session id stay equally short', async () => {
+    const cases: string[][] = [['s1', '--direction', 'sideways'], []]
+    for (const args of cases) {
+      const io = fakeIo()
+
+      const exitCode = await runShowCommand(args, io, journalDir)
+
+      expect(exitCode, args.join(' ')).toBe(1)
+      expect(io.err(), args.join(' ')).not.toContain(OTHER_COMMAND_ROW)
+      expect(io.err(), args.join(' ')).toContain('mcp-journal show <sessionId>')
+    }
   })
 })

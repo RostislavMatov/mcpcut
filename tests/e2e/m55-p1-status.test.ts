@@ -153,8 +153,13 @@ describe('scenario 1 — the gate: registration alone yields tools and a white d
       // The white (alive, no fresh traffic) dot with its SSE hook.
       expect(page.body).toContain('class="dot srv-dot" data-server="gate-srv"')
 
-      // "Without a single agent call": every journal record is the probe's own.
-      const records = await readJournalRecords(tempDir)
+      // "Without a single agent call": the only traffic record is the probe's
+      // own. The registration also leaves its `access-edit` attribution record
+      // (UX-9, who registered this server) — a record ABOUT the command, not a
+      // call through the plane, so it is set aside rather than counted here.
+      const all = await readJournalRecords(tempDir)
+      expect(all.map((record) => record.kind)).toContain('access-edit')
+      const records = all.filter((record) => record.kind !== 'access-edit')
       expect(records.length).toBeGreaterThan(0)
       for (const record of records) {
         expect(record.kind).toBe('probe')

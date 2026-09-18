@@ -13,7 +13,6 @@ import { loadSigningPrivateKey } from '../journal/signing.js'
 import { formatReadableField } from '../journal/format.js'
 import { recordAccessChange, type AccessWriteOptions } from './access-cmd-write.js'
 import { requireAdminFromEnv, type AdminRefusalWording, type RequiredAdmin } from './admin-token.js'
-import { USAGE } from './usage.js'
 
 /**
  * `mcp-journal prune --older-than <duration> [--yes]` (M5 wave 6, task 6.1).
@@ -91,6 +90,22 @@ const PRUNE_REFUSAL: AdminRefusalWording = {
 const EXIT_OK = 0
 const EXIT_USAGE_ERROR = 1
 
+/**
+ * THIS command's synopsis, not the whole CLI's table.
+ *
+ * Until the user-journey smoke (2026-09-18, UX-6) an argument error here
+ * printed `cli/usage.ts` in full — about 110 lines — so `prune --older-than 0s`
+ * scrolled the one sentence naming the mistake off the top of a standard
+ * terminal, which is the opposite of what a usage error is for. The pattern is
+ * the one `backup`, `keygen` and `export` already follow: name the command,
+ * name the mistake, and point at `--help` for everything else.
+ */
+const PRUNE_USAGE =
+  'Usage: mcp-journal prune --older-than <duration> [--yes]\n' +
+  '  <duration>  a positive whole number of hours or days, e.g. 36h or 90d\n' +
+  '  --yes       actually delete; without it nothing is deleted and the plan is printed\n' +
+  'See `mcpcut --help` for every command.\n'
+
 const MS_PER_HOUR = 3_600_000
 const MS_PER_DAY = 24 * MS_PER_HOUR
 
@@ -134,25 +149,25 @@ export async function runPruneCommand(
       strict: true,
     })
   } catch (error) {
-    io.stderr.write(`${error instanceof Error ? error.message : String(error)}\n\n${USAGE}`)
+    io.stderr.write(`${error instanceof Error ? error.message : String(error)}\n\n${PRUNE_USAGE}`)
     return EXIT_USAGE_ERROR
   }
   const { values, positionals } = parsed
   if (positionals.length > 0) {
-    io.stderr.write(`prune takes no positional arguments (got: ${positionals.join(' ')})\n\n${USAGE}`)
+    io.stderr.write(`prune takes no positional arguments (got: ${positionals.join(' ')})\n\n${PRUNE_USAGE}`)
     return EXIT_USAGE_ERROR
   }
 
   const rawDuration = values['older-than']
   if (rawDuration === undefined) {
-    io.stderr.write(`prune requires --older-than <duration>, e.g. --older-than 90d\n\n${USAGE}`)
+    io.stderr.write(`prune requires --older-than <duration>, e.g. --older-than 90d\n\n${PRUNE_USAGE}`)
     return EXIT_USAGE_ERROR
   }
   const durationMs = parseRetentionDuration(rawDuration)
   if (durationMs === null) {
     io.stderr.write(
       `Invalid --older-than "${rawDuration}": expected a positive whole number of hours or days, ` +
-        `no longer than ${MAX_RETENTION_DAYS} days -- e.g. 36h or 90d\n\n${USAGE}`,
+        `no longer than ${MAX_RETENTION_DAYS} days -- e.g. 36h or 90d\n\n${PRUNE_USAGE}`,
     )
     return EXIT_USAGE_ERROR
   }

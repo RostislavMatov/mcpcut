@@ -1,3 +1,4 @@
+import { UNKNOWN_TOKEN_NOTICE } from '../admin/constants.js'
 import { BRAND_NAME } from '../brand.js'
 import { TOKEN_ONCE_NOTICE } from '../cli/ui-constants.js'
 import type { DeployStepId, DeployStepState, WizardMode } from './model.js'
@@ -117,13 +118,12 @@ export const SIGNIN_TITLE = 'Sign in'
 export const SIGNIN_TOKEN_LABEL = 'Token'
 
 /**
- * The answer to a token that resolves to no admin. Deliberately the same for a
- * token that never existed and one that was rotated or revoked: the console is
- * local and under the same uid as the store, but saying which is which would
- * still turn the screen into an oracle for no gain to the operator.
+ * The answer to a token that resolves to no admin. Shared verbatim with the
+ * web `/login` page since UX-1 — one sentence, so neither surface can drift
+ * into saying more than the other (`admin/constants.ts` explains why it says
+ * so little).
  */
-export const SIGNIN_UNKNOWN_TOKEN_NOTICE =
-  'Token not recognised: it may have been rotated, or the admin removed.'
+export const SIGNIN_UNKNOWN_TOKEN_NOTICE = UNKNOWN_TOKEN_NOTICE
 
 /** Shown on the sign-in screen when a session stopped resolving mid-use. */
 export const SESSION_LOST_NOTICE =

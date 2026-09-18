@@ -226,7 +226,10 @@ describe('update: the queue is replayed when the run answers', () => {
     expect(screen.sectionIndex).toBe(JOURNAL_TAB)
     expect(screen.busy).toBeUndefined()
     expect('pendingKeys' in screen).toBe(false)
-    expect(screen.output?.command).toContain('admin list')
+    // The run's panel landed and was then left behind by the replayed Tab:
+    // since UX-10 a section switch clears the pane, and a queued Tab is the
+    // operator saying "take me elsewhere" as much as a live one is.
+    expect(screen.output).toBeUndefined()
     expect(step.effects).toEqual([])
   })
 
