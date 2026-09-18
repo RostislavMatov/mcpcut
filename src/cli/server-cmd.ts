@@ -1,7 +1,7 @@
 import { parseArgs } from 'node:util'
 import { formatReadableField } from '../journal/format.js'
 import { ADD_USAGE, buildCandidate, parseAddArgs } from './server-add-args.js'
-import { reportServerAdd } from './server-attribution.js'
+import { reportServerAdd, requireServerOwner, type ServerChangeActor } from './server-attribution.js'
 import { warnAboutExistingGrants } from './server-grant-refs.js'
 import { formatPolicyErrors } from '../policy/load.js'
 import { parseServerRecord, type ServerRecord } from '../registry/schema.js'
@@ -46,11 +46,11 @@ export interface ServerCliOptions {
   /** Directory holding `registry.json`. Defaults to `JOURNAL_DIR`. */
   readonly journalDir?: string
   /**
-   * Environment holding `MCP_ADMIN_TOKEN`, read for ATTRIBUTION only (the
-   * `approvals-cmd.ts` seam): probe records, and since M5.5 п.2 the
-   * `server remove` cascade record. Never an access barrier — a missing token
-   * downgrades the record to unattributed, it does not refuse the command.
-   * Defaults to `process.env`.
+   * Environment holding `MCP_ADMIN_TOKEN` (the `approvals-cmd.ts` seam).
+   * `add` and `remove` REQUIRE an owner's token (owner decision 2026-09-18,
+   * `server-attribution.ts`), `refresh` an operator's; `list` and `show` only
+   * use it to attribute their lazy probes and work without one. Defaults to
+   * `process.env`.
    */
   readonly env?: NodeJS.ProcessEnv
   /** Probe seams for tests (engine stub, horizons, list deadline, clock). */
@@ -76,6 +76,7 @@ const REMOVE_USAGE = `Usage:
       and group (cascade). An UNKNOWN name is refused: --prune-grants is the
       explicit way to prune grants that dangle behind a name the registry has
       already forgotten.
+      Needs a personal admin token in MCP_ADMIN_TOKEN, role owner.
 `
 
 function describeError(error: unknown): string {
@@ -97,6 +98,10 @@ export async function runServerAdd(
     io.stderr.write(ADD_USAGE)
     return 1
   }
+  // Owner-only, and asked BEFORE validation touches anything: the registration
+  // probe below runs the registered command, so nobody unnamed gets that far.
+  const actor = await requireServerOwner(io, opts)
+  if (actor === undefined) return 1
 
   const built = buildCandidate(parsed.name, parsed.values)
   if (!built.ok) {
@@ -122,7 +127,7 @@ export async function runServerAdd(
   // Past this point the registry write has LANDED: nothing may turn the
   // command into a failure. Who registered it is recorded first, before the
   // probe below actually RUNS the command that was just registered (UX-9).
-  await reportServerAdd(result.record.name, io, opts)
+  await reportServerAdd(result.record.name, actor, io, opts)
   // M3a: the name may still be granted by agents or groups from an earlier
   // registration, which would silently hand them access to this new server.
   await warnAboutExistingGrants(result.record.name, io, opts)
@@ -294,10 +299,11 @@ function parseRemoveArgs(args: string[], io: ServerCliIo): RemoveArgs | undefine
  */
 async function pruneDanglingGrants(
   name: string,
+  actor: ServerChangeActor,
   io: ServerCliIo,
   opts: ServerCliOptions,
 ): Promise<number> {
-  const cascade = await cascadeServerRemoval(name, io, opts)
+  const cascade = await cascadeServerRemoval(name, actor, io, opts)
   io.stdout.write(
     `server "${formatReadableField(name)}" was not registered; ` +
       `pruned dangling grants: ${cascadeSummary(cascade)}\n`,
@@ -326,13 +332,17 @@ export async function runServerRemove(
     return 1
   }
   const { name } = parsed
+  // Owner-only (owner decision 2026-09-18), `--prune-grants` included: both
+  // branches rewrite grants, and neither may be anybody's anonymous act.
+  const actor = await requireServerOwner(io, opts)
+  if (actor === undefined) return 1
 
   let removed: string
   try {
     const result = await makeStore(opts).removeServer(name)
     if (result.status === 'not-found') {
       return parsed.pruneGrants
-        ? await pruneDanglingGrants(name, io, opts)
+        ? await pruneDanglingGrants(name, actor, io, opts)
         : await refuseUnknownServer(name, io, opts)
     }
     removed = result.record.name
@@ -344,7 +354,7 @@ export async function runServerRemove(
   // Past this point the registry write has LANDED: nothing may turn the
   // command into a failure, and the cascade — which never throws — always
   // leaves an audit line and an `access-edit` record behind.
-  const cascade = await cascadeServerRemoval(removed, io, opts)
+  const cascade = await cascadeServerRemoval(removed, actor, io, opts)
   io.stdout.write(`removed server "${removed}"; cascaded: ${cascadeSummary(cascade)}\n`)
   return 0
 }

@@ -28,9 +28,17 @@ import { createRegistryStore } from '../../src/registry/store.js'
 import { openSqlite } from '../../src/store/sqlite.js'
 
 let journalDir: string
+/**
+ * `server add|remove` are owner-only (owner decision 2026-09-18), so every
+ * test runs as this owner unless it passes an `env` of its own. The gate
+ * itself is pinned in `server-owner-gate.test.ts`.
+ */
+let ownerEnv: NodeJS.ProcessEnv
 
 beforeEach(async () => {
   journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-server-cmd-'))
+  const { token } = await createAdminStore({ journalDir }).createAdmin('root', 'owner')
+  ownerEnv = { MCP_ADMIN_TOKEN: token }
 })
 
 afterEach(async () => {
@@ -88,7 +96,7 @@ const opts = (
   extra: { probes?: Partial<ServerProbeOptions>; env?: NodeJS.ProcessEnv } = {},
 ): ServerCliOptions => ({
   journalDir,
-  env: extra.env ?? {},
+  env: extra.env ?? ownerEnv,
   probes: { runProbe: stubProbe(), ...(extra.probes ?? {}) },
 })
 
@@ -132,9 +140,9 @@ const ADD_GITHUB = [
  * launch, and — since O8 — it EXECUTES that process once through the
  * registration probe. It left no journal record at all, so a registry an
  * auditor reads could not answer "who put this here", while its mirror image
- * `server remove` had answered "who took it away" since M5.5 п.2. No role gate
- * is added here (that is the owner's call): the attribution is best-effort,
- * exactly as `server remove`'s is.
+ * `server remove` had answered "who took it away" since M5.5 п.2. Since the
+ * owner's decision of the same day both are owner-only, so the record always
+ * names somebody — the refusals live in `server-owner-gate.test.ts`.
  */
 describe('server add: who registered it', () => {
   test('a valid token attributes the record and the audit line to that admin', async () => {
@@ -154,21 +162,15 @@ describe('server add: who registered it', () => {
     })
   })
 
-  test('without a token the record is unattributed and stderr says so, in the words `remove` uses', async () => {
+  test('without a token nothing is registered, so there is no "nobody named" record to write', async () => {
     const io = fakeIo()
 
-    const exitCode = await runServerAdd(ADD_GITHUB, io, opts())
+    const exitCode = await runServerAdd(ADD_GITHUB, io, opts({ env: {} }))
 
-    expect(exitCode).toBe(0)
-    expect(io.err()).toContain('not attributed')
+    expect(exitCode).toBe(1)
     expect(io.err()).toContain('MCP_ADMIN_TOKEN')
-    expect(io.err()).toContain('[audit] server add by unattributed: "github"')
-    const records = await accessEditRecords()
-    expect(records[0]?.payload).toMatchObject({
-      actor: { adminName: null, role: null, via: 'cli' },
-      action: 'server.add',
-      server: 'github',
-    })
+    expect(io.err()).not.toContain('unattributed')
+    await expect(accessEditRecords()).resolves.toEqual([])
   })
 
   test('a registration that was REFUSED leaves no record: nothing changed', async () => {
@@ -532,7 +534,7 @@ describe('server remove — cascade into grants and groups (G6, Task 10)', () =>
     expect(records).toHaveLength(1)
     expect(records[0]?.kind).toBe('access-edit')
     expect(records[0]?.payload).toEqual({
-      actor: { adminName: null, role: null, via: 'cli' },
+      actor: { adminName: 'root', role: 'owner', via: 'cli' },
       action: 'server.remove',
       server: 'github',
       affectedAgents: ['bot-a', 'bot-b'],
@@ -541,16 +543,17 @@ describe('server remove — cascade into grants and groups (G6, Task 10)', () =>
     })
   })
 
-  test('without a token the record is unattributed and stderr says so — the removal still happens', async () => {
+  test('without a token the removal is refused: the server stays and nothing is journalled', async () => {
     await seedServer('github')
     const io = fakeIo()
 
-    const exitCode = await runServerRemove(['github'], io, opts())
+    const exitCode = await runServerRemove(['github'], io, opts({ env: {} }))
 
-    expect(exitCode).toBe(0)
-    expect(io.err()).toContain('not attributed')
+    expect(exitCode).toBe(1)
     expect(io.err()).toContain('MCP_ADMIN_TOKEN')
-    expect(io.err()).toContain('[audit] server remove by unattributed: "github", cascaded: 0 agent grants, 0 groups')
+    expect(io.err()).not.toContain('unattributed')
+    expect(await createRegistryStore(journalDir).getServer('github')).toBeDefined()
+    await expect(accessEditRecords()).resolves.toEqual([])
   })
 
   test('a valid token attributes the record and the audit line to that admin', async () => {
@@ -732,7 +735,7 @@ describe('server remove — a half-failing cascade (F2)', () => {
     await runServerRemove(['github'], io, opts())
 
     // Assert
-    expect(io.err()).toContain('[audit] server remove by unattributed: "github", cascaded: 2 agent grants, 0 groups')
+    expect(io.err()).toContain('[audit] server remove by root (owner): "github", cascaded: 2 agent grants, 0 groups')
   })
 })
 
@@ -1041,7 +1044,7 @@ describe('server list status column (M5.5 п.1, Task 8)', () => {
     await seedServer('github')
     const io = fakeIo()
 
-    const exitCode = await runServerList([], io, opts())
+    const exitCode = await runServerList([], io, opts({ env: {} }))
 
     expect(exitCode).toBe(0)
     expect(await storedStatusOf('github')).toMatchObject({ initiator: { trigger: 'lazy' } })
@@ -1107,7 +1110,7 @@ describe('server refresh (M5.5 п.1, Task 8)', () => {
     const spy = spyProbe()
     const io = fakeIo()
 
-    const exitCode = await runServerRefresh(['github'], io, opts({ probes: { runProbe: spy.runProbe } }))
+    const exitCode = await runServerRefresh(['github'], io, opts({ env: {}, probes: { runProbe: spy.runProbe } }))
 
     expect(exitCode).toBe(1)
     expect(io.err()).toContain('MCP_ADMIN_TOKEN')

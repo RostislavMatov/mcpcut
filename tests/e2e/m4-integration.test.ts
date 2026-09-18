@@ -354,7 +354,7 @@ describe('e2e: scenario 7 — a changed inputSchema quarantines the tool and sho
     }
 
     // The same server name, now serving a widened schema for `write_note`.
-    expect((await plane.run(['server', 'remove', SERVER])).code).toBe(0)
+    expect((await plane.run(['server', 'remove', SERVER], await asOwner(plane))).code).toBe(0)
     expect((await addServer(SERVER, 'v2')).code).toBe(0)
     // `server remove` cascades (M5.5 p.2, G6): the agent's grant for the server
     // went with it, so the re-registered server must be granted again.

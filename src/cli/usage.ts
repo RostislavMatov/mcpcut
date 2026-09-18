@@ -36,9 +36,11 @@ ${TUI_SYNOPSIS_LINES.join('\n')}
   mcp-journal server add <name> --transport stdio|http ...
                                          Register an MCP server (see server add --help);
                                          probes it once right after registration
+                                         (MCP_ADMIN_TOKEN, role owner)
   mcp-journal server list|show <name>|remove <name> [--prune-grants]
                                          Inspect or edit the server registry; list and show
                                          print liveness + latency, probing stale servers.
+                                         remove needs MCP_ADMIN_TOKEN, role owner.
                                          remove of an UNKNOWN name is refused; --prune-grants
                                          prunes grants left dangling behind such a name
   mcp-journal server refresh <name>     Force a probe of one server, re-shooting tools/list
