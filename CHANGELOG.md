@@ -178,6 +178,16 @@ All notable changes to this project are documented here. The format follows
   for a tool nobody has ever observed. The stored descriptor keeps
   `readOnlyHint`/`destructiveHint` under every size cap, so a server cannot
   pad a descriptor until its hints are dropped.
+- **Every decision record of an agent session names the agent.** `agentName`
+  used to be stamped only on `require-approval-pending`; allowed, denied,
+  approved, timed-out and bookkeeping records named nobody, so the journal's
+  agent filter found only held calls and an exported report could not say
+  which agent made a call that went through. The name is now stamped by the
+  one writer every decision record passes through, from the session's
+  authenticated scope and never from the record's draft. Sessions without an
+  agent (`wrap`) still carry no such key; records written before this change
+  are not rewritten.
+
 - **The bootstrap owner token no longer lands in `run/ui.log`.** When `ui`
   starts over a store with no admins (the `setup --yes --no-admin` path), it
   writes the one-time token to `<data dir>/bootstrap-token` — mode 0600,
