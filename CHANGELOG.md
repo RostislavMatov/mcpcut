@@ -191,12 +191,10 @@ All notable changes to this project are documented here. The format follows
   can describe. The JSON-RPC error talks about a *method* instead of opening
   with `Call to tool "resources/list"`. Journals written before this keep their
   old text and are still recognised by name.
-- **`mcp-journal server add` is attributed like `server remove`**: with
-  `MCP_ADMIN_TOKEN` set it writes an `access-edit` record (`server.add`) and an
-  `[audit] server add by <name> (<role>)` line; without one both say
-  `unattributed` and the registration still happens. Neither command is gated
-  by a role — worth knowing, since registering a server decides what the plane
-  may launch and the registration probe runs it once.
+- **`mcp-journal server add` is journaled like `server remove`**: it writes an
+  `access-edit` record (`server.add`) and an
+  `[audit] server add by <name> (<role>)` line naming the owner who ran it (see
+  Security below: both commands are owner-only).
 - **`approvals list` shows the agent's own deadline**, not only the queue
   entry's: `agent_waits=42s expires_in=4m55s`, and
   `agent_waits=elapsed(retry-only)` once the blocked call has given up and an
@@ -226,6 +224,21 @@ All notable changes to this project are documented here. The format follows
 
 ### Security
 
+- **`server add` and `server remove` are owner-only** (breaking for scripts).
+  Both now need `MCP_ADMIN_TOKEN` set to an owner's personal token — the role
+  the admin UI's `/servers` write routes have always required — and refuse
+  (`Refusing to change the server registry: …`, exit 1) before validating,
+  writing or probing anything. Until now they ran without a token and
+  journaled the change as `unattributed`, although registering a server
+  decides which process the plane may launch and the registration probe runs
+  it once. `--prune-grants` is gated the same way; `server list|show` still
+  need no token (ADR-0010, owner decision 2026-09-18).
+- **Registering or editing a server in the admin UI is journaled.**
+  `POST /servers/add` and `POST /servers/edit` now write an `access-edit`
+  record (`server.add`, and the new action `server.update`) under the
+  signed-in admin's name; before, only the removal did, so the journal could
+  not say who registered a server from the browser. If the record cannot be
+  written the change still stands and the success page says so.
 - **A policy file written after start-up is enforced without a restart.**
   `setup` starts `serve` before any `policy.json` exists; a front (or a
   long-lived `connect` session) that started with no policy used to stay
