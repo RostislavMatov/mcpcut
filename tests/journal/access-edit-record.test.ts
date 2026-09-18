@@ -435,6 +435,23 @@ describe('buildAccessEditRecord', () => {
     expect(serialized).toContain(REDACTED_PLACEHOLDER)
   })
 
+  test('a server.update record names the server and who re-pointed it, and nothing else (2026-09-18)', () => {
+    const record = buildAccessEditRecord({
+      info: { actor: { adminName: 'alice', role: 'owner', via: 'ui' }, action: 'server.update', server: 'notes' },
+      clock: () => FIXED_NOW_MS,
+    })
+    expect(record.kind).toBe('access-edit')
+    expect(record.sessionId).toBe(ACCESS_EDIT_SESSION_ID)
+    expect(record.payload).toEqual({
+      actor: { adminName: 'alice', role: 'owner', via: 'ui' },
+      action: 'server.update',
+      server: 'notes',
+    })
+    // Re-pointing a server is not a call an agent made against it.
+    expect(matchesFilters(record, { kind: 'access-edit', text: 'server.update' })).toBe(true)
+    expect(matchesFilters(record, { outcome: 'allow' })).toBe(false)
+  })
+
   test('two records built from the same info still get distinct ids', () => {
     expect(grantRecord().id).not.toBe(grantRecord().id)
   })

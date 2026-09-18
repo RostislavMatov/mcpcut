@@ -2,15 +2,14 @@ import { GRANT_SERVER_NAME_PATTERN } from '../../agents/constants.js'
 import type { AgentsStore } from '../../agents/store.js'
 import type { GroupsStore } from '../../groups/store.js'
 import type { CascadeHalfStatus } from '../../journal/access-edit-record.js'
-import type { AccessEditInfo } from '../../journal/record.js'
 import { RESERVED_OBJECT_KEYS } from '../../policy/constants.js'
 import type { RegistryStore } from '../../registry/store.js'
-import { AUDIT_RECORD_DROPPED_WARNING, HTTP_STATUS_NOT_FOUND, HTTP_STATUS_OK } from '../constants.js'
-import { renderNotice } from '../pages/notice.js'
+import { HTTP_STATUS_NOT_FOUND, HTTP_STATUS_OK } from '../constants.js'
 import { renderPruneDangling, renderRemoveWarning } from '../pages/servers-holders.js'
 import type { UiHandler, UiRequestContext, UiResult } from '../routes.js'
-import type { AccessEditJournalOutcome, AccessEditJournalPort } from './agents.js'
-import { csrfTokenOf, currentAdminOf, fieldsOf, redirect } from './request-helpers.js'
+import type { AccessEditJournalPort } from './agents.js'
+import { csrfTokenOf, currentAdminOf, fieldsOf } from './request-helpers.js'
+import { journalServerChange, serverChangeApplied } from './servers-journal.js'
 
 /**
  * `POST /servers/remove` — the interstitial, the removal and the G6 cascade
@@ -97,77 +96,21 @@ export function createServersRemoveHandler(deps: ServersRemoveDeps): UiHandler {
     }
   }
 
-  /**
-   * Records the cascade in the journal and says whether the record landed.
-   * The removal has already happened when this runs, so a journal that cannot
-   * be reached must not turn a completed removal into a 500: the injected
-   * writer never throws by contract (`groups/journal-access-edit.ts` returns a
-   * drop indicator instead), and this guard keeps that true for ANY injected
-   * port — a port that threw has not written either, so it answers as a drop.
-   * No port at all is the composition root's choice, not a lost record.
-   */
-  async function journalRemoval(
-    ctx: UiRequestContext,
-    server: string,
-    agentsHalf: HalfResult,
-    groupsHalf: HalfResult,
-  ): Promise<AccessEditJournalOutcome> {
-    const write = deps.journalAccessEdit
-    if (write === undefined) return { written: true }
-    const info: AccessEditInfo = {
-      actor: {
-        adminName: ctx.session?.adminName ?? null,
-        role: ctx.session?.role ?? null,
-        via: 'ui',
-      },
-      action: 'server.remove',
-      server,
-      affectedAgents: agentsHalf.names,
-      affectedGroups: groupsHalf.names,
-      cascade: { agents: agentsHalf.status, groups: groupsHalf.status },
-    }
-    try {
-      const { written } = await write(info)
-      return { written }
-    } catch {
-      // Contained, not swallowed: the audit sink above already recorded the
-      // attributed removal, the writer's own diagnostics report the fault,
-      // and the verdict puts it on the admin's success page.
-      return { written: false }
-    }
-  }
-
-  /**
-   * The answer once the removal and its cascade are done: the plain 303 when
-   * the audit record landed, the success notice carrying the F1 warning when
-   * it was dropped — the removal stands either way, so never an error status.
-   * The notice needs the signed-in admin for its layout; the route table
-   * guarantees one, and the session-less shape (impossible in production, the
-   * context type merely allows it) keeps the redirect rather than rendering a
-   * page under a fabricated identity.
-   */
-  function applied(ctx: UiRequestContext, server: string, journal: AccessEditJournalOutcome): UiResult {
-    const session = ctx.session
-    if (journal.written || session === undefined) return redirect('/servers')
-    const body = renderNotice({
-      title: 'Servers',
-      message: `removed ${server}`,
-      ok: true,
-      backHref: '/servers',
-      backLabel: 'Back to servers',
-      session,
-      warning: AUDIT_RECORD_DROPPED_WARNING,
-    })
-    return { kind: 'response', status: HTTP_STATUS_OK, body }
-  }
-
   /** Both cascade halves, plus the audit line and the journal record. */
   async function cascade(ctx: UiRequestContext, server: string): Promise<UiResult> {
     const agentsHalf = await runHalf('agents', server, () => deps.agents.ungrantServerEverywhere(server))
     const groupsHalf = await runHalf('groups', server, () => deps.groups.ungrantServerEverywhere(server))
     audit(ctx, 'server.remove', server)
-    const journal = await journalRemoval(ctx, server, agentsHalf, groupsHalf)
-    return applied(ctx, server, journal)
+    // The removal has already happened: the shared journal half contains a
+    // failing port and puts a dropped record on the success page (audit F1).
+    const journal = await journalServerChange(deps.journalAccessEdit, ctx, {
+      action: 'server.remove',
+      server,
+      affectedAgents: agentsHalf.names,
+      affectedGroups: groupsHalf.names,
+      cascade: { agents: agentsHalf.status, groups: groupsHalf.status },
+    })
+    return serverChangeApplied(ctx, `removed ${server}`, journal)
   }
 
   /**

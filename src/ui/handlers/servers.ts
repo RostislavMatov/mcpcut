@@ -7,7 +7,8 @@ import type { PolicyView } from '../../policy/edit/policy-view.js'
 import { HTTP_STATUS_BAD_REQUEST, HTTP_STATUS_NOT_FOUND, HTTP_STATUS_OK } from '../constants.js'
 import { roleSatisfies } from '../authz.js'
 import type { UiHandler, UiRequestContext, UiResult } from '../routes.js'
-import { csrfTokenOf, currentAdminOf, fieldsOf, redirect } from './request-helpers.js'
+import { csrfTokenOf, currentAdminOf, fieldsOf } from './request-helpers.js'
+import { journalServerChange, serverChangeApplied } from './servers-journal.js'
 import {
   agentsGranting,
   createServersRemoveHandler,
@@ -47,8 +48,9 @@ import {
  * Registry mutations reuse
  * the SAME validation as the CLI (`parseServerRecord`), which rejects any
  * secret-shaped literal with the same "put it in the vault" hint, and every
- * mutation is attributed to the acting admin via the optional `audit` sink
- * (`actor: 'ui'` + `adminName`).
+ * mutation is attributed to the acting admin twice: on the optional `audit`
+ * sink (`actor: 'ui'` + `adminName`) and as an `access-edit` journal record
+ * (`handlers/servers-journal.ts`) — the line an exported report can show.
  */
 
 /** One attributed UI mutation, for the audit sink. */
@@ -275,24 +277,24 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
     } catch (error: unknown) {
       return rejectedAdd(ctx, fields, error instanceof Error ? error.message : String(error))
     }
-    audit(ctx, 'server.add', parsed.record.name)
+    const name = parsed.record.name
+    audit(ctx, 'server.add', name)
+    // The record of WHO registered goes before the probe RUNS the command
+    // (same order as the CLI's `runServerAdd`). The write has landed, so a
+    // dropped record is a warning on the success page, never a 500.
+    const journal = await journalServerChange(deps.journalAccessEdit, ctx, {
+      action: 'server.add',
+      server: name,
+    })
     // O8: ONE automatic probe (with tools/list) right after the human
     // confirmed exactly this command line — never before the registry write,
     // never awaited, attributed to the confirming admin.
     if (deps.probes !== undefined) {
-      startProbe(deps.probes, parsed.record.name, probeInitiatorOf(ctx, 'registration'))
+      startProbe(deps.probes, name, probeInitiatorOf(ctx, 'registration'))
     }
-    return redirect('/servers')
+    return serverChangeApplied(ctx, `registered ${name}`, journal)
   }
 
-  /**
-   * Saves an edited definition. The name is NOT editable: whatever the form
-   * posts, the candidate is built with the ORIGINAL name (grants, inventory
-   * and quarantine state are keyed by it — see `registry/store.ts
-   * updateServer`). Validation and the confirmation interstitial mirror the
-   * add flow: editing a stdio command is the same remote-code-execution power
-   * as registering one.
-   */
   /**
    * The `grantedTo` half of the add confirmation (T3): who already grants this
    * NAME, which the registry knows nothing about. Absent when nothing does, so
@@ -311,6 +313,15 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
     return { grantedTo: { agents, groups } }
   }
 
+  /**
+   * Saves an edited definition. The name is NOT editable: whatever the form
+   * posts, the candidate is built with the ORIGINAL name (grants, inventory
+   * and quarantine state are keyed by it — see `registry/store.ts
+   * updateServer`). Validation and the confirmation interstitial mirror the
+   * add flow: editing a stdio command is the same remote-code-execution power
+   * as registering one — which is also why it leaves the same kind of journal
+   * record (`server.update`), with the same dropped-record warning.
+   */
   async function serversEdit(ctx: UiRequestContext): Promise<UiResult> {
     const fields = fieldsOf(ctx)
     const original = fields.original ?? ''
@@ -336,8 +347,13 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
     if (result.status === 'not-found') {
       return { kind: 'response', status: HTTP_STATUS_NOT_FOUND, body: 'unknown server' }
     }
-    audit(ctx, 'server.update', result.record.name)
-    return redirect('/servers')
+    const name = result.record.name
+    audit(ctx, 'server.update', name)
+    const journal = await journalServerChange(deps.journalAccessEdit, ctx, {
+      action: 'server.update',
+      server: name,
+    })
+    return serverChangeApplied(ctx, `updated ${name}`, journal)
   }
 
   // The removal flow (interstitial + G6 cascade + journal) lives in its own
