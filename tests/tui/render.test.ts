@@ -17,8 +17,6 @@ import {
   SIGNIN_TITLE,
   SIGNIN_TOKEN_LABEL,
   SIGNIN_UNKNOWN_TOKEN_NOTICE,
-  TAB_OVERFLOW_LEFT,
-  TAB_OVERFLOW_RIGHT,
 } from '../../src/tui/constants.js'
 import { editFocused, formOf, validateForm, type Form } from '../../src/tui/form.js'
 import {
@@ -42,6 +40,7 @@ import { render } from '../../src/tui/render.js'
 import { CLIPPED_HELP_FOOTER, RUNNING_HELP_FOOTER } from '../../src/tui/render-main.js'
 import { SIGNIN_BUSY_TEXT, SIGNIN_FOOTER } from '../../src/tui/render-signin.js'
 import { servicesHeaderPart, type ServiceSummary } from '../../src/tui/services-summary.js'
+import { TAB_ACTIVE_MARK, TAB_OVERFLOW_LEFT, TAB_OVERFLOW_RIGHT } from '../../src/tui/tabs-constants.js'
 import { wizardScreenOf } from '../../src/tui/wizard-fields.js'
 import { CLI_NAME } from '../../src/setup/constants.js'
 import { defaultInstallConfig } from '../../src/setup/defaults.js'
@@ -239,11 +238,31 @@ describe('render: the header of the main screen', () => {
     expect(lines[2]).toBe('─'.repeat(DEFAULT_SIZE.columns))
   })
 
-  test('inverses the active tab only', () => {
+  test('inverses the active tab only, and leaves its mark outside the inversion', () => {
     const lines = render(mainModel({ sectionIndex: 1 }), ansiStyle)
 
-    expect(lines[1]).toContain(`\x1b[7m2 Admins\x1b[27m`)
+    expect(lines[1]).toContain(`${TAB_ACTIVE_MARK}\x1b[7m2 Admins\x1b[27m`)
     expect(lines[1]).not.toContain(`\x1b[7m1 Home\x1b[27m`)
+  })
+
+  test('marks the active tab with a glyph in plain style (Q33)', () => {
+    const lines = render(mainModel({ sectionIndex: 1 }), plainStyle)
+
+    expect(lines[1]).toContain(`${TAB_ACTIVE_MARK}2 Admins`)
+    expect(lines[1]).toBe(
+      '‹ ▸2 Admins  3 Servers  4 Vault  5 Agents  6 Groups  7 Policy  8 Quarantine ›'
+        .padEnd(DEFAULT_SIZE.columns),
+    )
+    expect(lines[1]?.split(TAB_ACTIVE_MARK).length).toBe(2)
+  })
+
+  test('without colour the active tab is still told apart from its neighbour (Q33)', () => {
+    // Wide enough that every tab fits: the window cannot scroll and differ on its own.
+    const wide: TerminalSize = { columns: 200, rows: 50 }
+    const admins = render(mainModel({ sectionIndex: 1 }, wide), plainStyle)
+    const servers = render(mainModel({ sectionIndex: 2 }, wide), plainStyle)
+
+    expect(admins[1]).not.toBe(servers[1])
   })
 
   test('scrolls the tab bar to the last section and marks what it scrolled past', () => {
@@ -270,6 +289,15 @@ describe('render: the header of the main screen', () => {
 
       expect(lines[1]?.length).toBe(DEFAULT_SIZE.columns)
       expect(lines[1]).not.toContain('…')
+      expect(lines[1]).toContain(`${TAB_ACTIVE_MARK}${sectionIndex + 1} `)
+    }
+  })
+
+  test('the marked ansi tab bar is as wide as the terminal once SGR is stripped', () => {
+    for (const sectionIndex of [0, 5, visibleSections(OWNER.role).length - 1]) {
+      const lines = render(mainModel({ sectionIndex }), ansiStyle)
+
+      expect(lines[1]?.replace(/\x1b\[[0-9;]*m/g, '').length).toBe(DEFAULT_SIZE.columns)
     }
   })
 

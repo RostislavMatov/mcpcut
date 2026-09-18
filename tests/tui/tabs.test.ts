@@ -1,12 +1,8 @@
 import { describe, expect, test } from 'vitest'
 import { visibleSections } from '../../src/tui/catalogue/index.js'
-import {
-  DEFAULT_COLUMNS,
-  TAB_OVERFLOW_LEFT,
-  TAB_OVERFLOW_RIGHT,
-  TAB_SEPARATOR,
-} from '../../src/tui/constants.js'
+import { DEFAULT_COLUMNS } from '../../src/tui/constants.js'
 import { tabWindowOf, type TabWindow } from '../../src/tui/tabs.js'
+import { TAB_OVERFLOW_LEFT, TAB_OVERFLOW_RIGHT, TAB_SEPARATOR } from '../../src/tui/tabs-constants.js'
 
 /**
  * The tab bar is a window over the section labels (mcpcut phase 4, Task 9):

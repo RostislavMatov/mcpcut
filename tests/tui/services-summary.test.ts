@@ -56,6 +56,22 @@ describe('parseServicesJson', () => {
     expect(parsed?.[0]).not.toHaveProperty('logPath')
   })
 
+  test('a status carrying the exposure warning (Q31) still reads, and the header is unchanged', () => {
+    const exposed: ServiceStatus = {
+      ...RUNNING_UI,
+      host: '0.0.0.0',
+      exposure: { level: 'warn', detail: 'ui binds 0.0.0.0: reachable from the network.' },
+    }
+
+    const parsed = parseServicesJson(statusJson([exposed, STOPPED_SERVE]))
+
+    expect(parsed).toEqual([
+      { service: 'ui', state: 'running', host: '0.0.0.0', port: 8091 },
+      { service: 'serve', state: 'stopped', host: '127.0.0.1', port: 8090 },
+    ])
+    expect(servicesHeaderPart(parsed)).toBe('ui ● 0.0.0.0:8091 · serve ○ 127.0.0.1:8090')
+  })
+
   test('parses an empty status list as an empty list, not as a failure', () => {
     expect(parseServicesJson(statusJson([]))).toEqual([])
   })

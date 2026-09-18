@@ -11,9 +11,6 @@ import {
   INACTIVE_MARKER,
   KEY_HELP_FOOTER,
   RULE_CHAR,
-  TAB_OVERFLOW_LEFT,
-  TAB_OVERFLOW_RIGHT,
-  TAB_SEPARATOR,
 } from './constants.js'
 import { TOKEN_HOLD_FOOTER } from './constants-live.js'
 import { actionWindowOf, type BodyLayout, bodyLayoutOfRows, fillTo } from './layout.js'
@@ -23,6 +20,13 @@ import { isOutputClipped } from './render-output.js'
 import { paneLines } from './render-panes.js'
 import { servicesHeaderPart } from './services-summary.js'
 import { tabWindowOf } from './tabs.js'
+import {
+  TAB_ACTIVE_MARK,
+  TAB_IDLE_MARK,
+  TAB_OVERFLOW_LEFT,
+  TAB_OVERFLOW_RIGHT,
+  TAB_SEPARATOR,
+} from './tabs-constants.js'
 
 /**
  * The main screen (mcpcut phase 2, Task 10): who is signed in, which section
@@ -97,12 +101,17 @@ function headerText(screen: MainScreen): string {
  * The tab bar: a window over the section labels, since eleven of them are
  * half again as wide as an 80-column terminal (`tabs.ts` decides which fit).
  *
+ * Every label carries a one-column mark in front, `TAB_ACTIVE_MARK` on the
+ * active one, so the bar tells the tabs apart in every style (Q33).
+ *
  * The active tab is inversed AFTER the whole line has been padded, and only
  * when the padding did not cut into it: a style applied to an already-
  * truncated span would put its terminator in the wrong place.
  */
 function tabsLine(screen: MainScreen, columns: number, style: Style): string {
-  const labels = screen.sections.map((section, index) => `${index + 1} ${section.title}`)
+  const labels = screen.sections.map((section, index) =>
+    `${index === screen.sectionIndex ? TAB_ACTIVE_MARK : TAB_IDLE_MARK}${index + 1} ${section.title}`,
+  )
   const window = tabWindowOf(labels, screen.sectionIndex, columns)
   const left = window.hiddenBefore ? TAB_OVERFLOW_LEFT : ''
   const right = window.hiddenAfter ? TAB_OVERFLOW_RIGHT : ''
@@ -112,10 +121,12 @@ function tabsLine(screen: MainScreen, columns: number, style: Style): string {
   const active = labels[screen.sectionIndex]
   if (active === undefined || screen.sectionIndex < window.first) return padded
 
-  const start = left.length + labels
+  // The inversion covers the label without its mark: the mark is what tells
+  // the active tab apart when there is no colour at all (Q33).
+  const start = TAB_ACTIVE_MARK.length + left.length + labels
     .slice(window.first, screen.sectionIndex)
     .reduce((total, label) => total + label.length + TAB_SEPARATOR.length, 0)
-  const end = start + active.length
+  const end = start + active.length - TAB_ACTIVE_MARK.length
   const limit = plain.length > columns ? Math.max(0, columns - 1) : padded.length
   if (end > limit) return padded
 

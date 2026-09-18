@@ -19,6 +19,8 @@ import {
   DATA_DIR_ENV_VAR,
 } from '../../src/setup/constants.js'
 import { installConfigSchema } from '../../src/setup/schema.js'
+import { valuesOf } from '../../src/tui/form.js'
+import { setupArgvOf, WIZARD_FIELD, wizardScreenOf } from '../../src/tui/wizard-fields.js'
 import { VAULT_KEY_FILE_NAME } from '../../src/vault/constants.js'
 
 /**
@@ -343,6 +345,31 @@ describe('setup --yes: the overlay rule', () => {
     // Assert
     expect(exitCode).toBe(0)
     expect(installConfigSchema.parse(await readConfig()).ui.behindTls).toBe(false)
+  })
+
+  test('writes probeHost from its flags, and the wizard\'s full-argv rerun keeps it', async () => {
+    expect(
+      await runSetupCommand(
+        await fullRunArgs(['--ui-probe-host', 'ui', '--serve-probe-host', 'serve']),
+        fakeIo(),
+        { env, home },
+      ),
+    ).toBe(0)
+    expect(installConfigSchema.parse(await readConfig()).serve.probeHost).toBe('serve')
+
+    // The wizard never asks about probeHost: its argv states every field it
+    // does ask about and relies on the overlay for the rest.
+    const config = installConfigSchema.parse(await readConfig())
+    const form = wizardScreenOf({ mode: 'edit', configPath: configPathOf(), config }).form
+    const values = { ...valuesOf(form), [WIZARD_FIELD.admin]: 'owner' }
+    // `setupArgvOf` starts with the command word; `runSetupCommand` takes what follows it.
+    const wizardArgv = setupArgvOf(values).slice(1)
+    const exitCode = await runSetupCommand(wizardArgv, fakeIo(), { env, home })
+
+    expect(exitCode).toBe(0)
+    const written = installConfigSchema.parse(await readConfig())
+    expect(written.ui.probeHost).toBe('ui')
+    expect(written.serve.probeHost).toBe('serve')
   })
 
   test('honours an injected config load and an injected config path', async () => {

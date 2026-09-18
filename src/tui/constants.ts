@@ -337,8 +337,9 @@ export const WIZARD_DONE_FOOTER = 'Enter sign in · q quit'
 //
 // Nine more sections than the two of phase 2, which brings three words the
 // console did not need before: what a secret looks like in the command line
-// the panel prints, how a tab bar that no longer fits reports its edges, and
-// what a run whose output went to a file says instead of that output.
+// the panel prints, how a tab bar that no longer fits reports its edges (now
+// in `tabs-constants.ts`), and what a run whose output went to a file says
+// instead of that output.
 // ---------------------------------------------------------------------------
 
 /**
@@ -350,17 +351,6 @@ export const WIZARD_DONE_FOOTER = 'Enter sign in · q quit'
  * and nothing else.
  */
 export const SECRET_DISPLAY_MASK = '***'
-
-/** Separator between two tabs of the section bar. */
-export const TAB_SEPARATOR = '  '
-
-/**
- * What the tab bar puts at an edge it scrolled past. Eleven sections do not
- * fit in 80 columns, so the bar is a window over the labels, and these two
- * markers are how it admits there is more on either side.
- */
-export const TAB_OVERFLOW_LEFT = '‹ '
-export const TAB_OVERFLOW_RIGHT = ' ›'
 
 /**
  * Ceiling of the label column of a catalogue form. Phase 2 padded every label

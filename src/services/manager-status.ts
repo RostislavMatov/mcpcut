@@ -1,5 +1,6 @@
 import { EXTERNAL_SUPERVISOR, type ServiceName } from './constants.js'
-import { bindOf, type ManagerContext, type ServiceStatus } from './manager-types.js'
+import { withExposure } from './exposure.js'
+import { bindOf, probeTargetOf, type ManagerContext, type ServiceStatus } from './manager-types.js'
 import { logFilePathFor, pidFilePathFor } from './paths.js'
 import { isProcessAlive, readPidFile, type PidRecord } from './pid-file.js'
 
@@ -32,6 +33,13 @@ import { isProcessAlive, readPidFile, type PidRecord } from './pid-file.js'
  * other branch could act on a record that does not parse.
  */
 export async function statusOfService(ctx: ManagerContext, service: ServiceName): Promise<ServiceStatus> {
+  // Every branch below is wrapped, so the exposure warning (Q31) is judged on
+  // whichever host the status ends up naming — the record's or the config's.
+  return withExposure(ctx.config, await rawStatusOf(ctx, service))
+}
+
+/** The status itself, before the exposure warning is attached. */
+async function rawStatusOf(ctx: ManagerContext, service: ServiceName): Promise<ServiceStatus> {
   const bind = bindOf(ctx.config, service)
   const logPath = logFilePathFor(ctx.dataDir, service)
   const read = await readPidFile(pidFilePathFor(ctx.dataDir, service))
@@ -49,15 +57,18 @@ export async function statusOfService(ctx: ManagerContext, service: ServiceName)
   if (read.kind === 'absent') {
     // Nothing of ours, but the port may still be busy: compose, systemd or an
     // operator's own shell. Reporting that as `stopped` would invite a start
-    // that could only fail on EADDRINUSE.
-    const answering = await ctx.probe(service, bind.host, bind.port)
+    // that could only fail on EADDRINUSE. The probe dials `probeHost` when the
+    // config names one (Q32); the status still reports the bind.
+    const target = probeTargetOf(ctx.config, service)
+    const answering = await ctx.probe(service, target.host, target.port)
     // Under `supervisor: external` there is no pid file to find and nothing
     // mcpcut may spawn, so BOTH answers need naming (phase 5, Q16): a bare
     // `stopped` there reads as "press start", and a start is exactly what this
     // install must not do — the detail sends the operator to the supervisor
     // that owns the daemons instead.
     const managedOutside = ctx.config.supervisor === EXTERNAL_SUPERVISOR
-    const detail = detailForAbsent(managedOutside, answering, bind.host, bind.port)
+    // The detail names the address that was dialled: that is what answered or not.
+    const detail = detailForAbsent(managedOutside, answering, target.host, target.port)
     return {
       service,
       state: answering ? 'external' : 'stopped',

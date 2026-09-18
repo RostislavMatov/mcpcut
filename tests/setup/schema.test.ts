@@ -104,6 +104,36 @@ describe('installConfigSchema: the refusals', () => {
     expect(problemsOf({ ...validConfig(), ui: { host: '', port: 8091 } }).join('\n')).toContain('ui.host:')
   })
 
+  test('accepts a probeHost on either service: the address a pid-less status dials', () => {
+    const parsed = installConfigSchema.safeParse({
+      ...validConfig(),
+      ui: { host: '0.0.0.0', port: 8091, probeHost: 'ui' },
+      serve: { host: '0.0.0.0', port: 8090, probeHost: 'serve' },
+    })
+
+    expect(parsed.success).toBe(true)
+  })
+
+  test('refuses an empty probeHost', () => {
+    expect(problemsOf({ ...validConfig(), ui: { host: '0.0.0.0', port: 8091, probeHost: '' } }).join('\n')).toContain(
+      'ui.probeHost:',
+    )
+  })
+
+  test('refuses a probeHost longer than a DNS name can be', () => {
+    const tooLong = 'a'.repeat(254)
+
+    expect(
+      problemsOf({ ...validConfig(), serve: { host: '0.0.0.0', port: 8090, probeHost: tooLong } }).join('\n'),
+    ).toContain('serve.probeHost:')
+  })
+
+  test('an unknown key beside probeHost is still refused', () => {
+    expect(
+      problemsOf({ ...validConfig(), ui: { host: '0.0.0.0', port: 8091, probeHost: 'ui', probe: 'x' } }),
+    ).toContain('ui: unknown key "probe"')
+  })
+
   test('refuses the literal origin "null": the opaque origin can never be allowed', () => {
     const problems = problemsOf({
       ...validConfig(),

@@ -41,8 +41,12 @@ export interface SetupArgs {
   readonly dataDir?: string
   readonly uiHost?: string
   readonly uiPort?: number
+  /** Where a pid-less `status` dials the UI (compose: the service name); never the bind. */
+  readonly uiProbeHost?: string
   readonly serveHost?: string
   readonly servePort?: number
+  /** Where a pid-less `status` dials `serve` (compose: the service name); never the bind. */
+  readonly serveProbeHost?: string
   readonly admin?: string
   readonly supervisor?: Supervisor
 }
@@ -74,11 +78,13 @@ export function overlaySetupArgs(base: InstallConfig, args: SetupArgs, cwd: stri
       // remembered in the file, so `--no-behind-tls` has to be able to write
       // the `false` that takes it back.
       ...(args.behindTls !== undefined ? { behindTls: args.behindTls } : {}),
+      ...(args.uiProbeHost !== undefined ? { probeHost: args.uiProbeHost } : {}),
     },
     serve: {
       ...base.serve,
       ...(args.serveHost !== undefined ? { host: args.serveHost } : {}),
       ...(args.servePort !== undefined ? { port: args.servePort } : {}),
+      ...(args.serveProbeHost !== undefined ? { probeHost: args.serveProbeHost } : {}),
     },
     ...(args.supervisor !== undefined ? { supervisor: args.supervisor } : {}),
   }
@@ -99,8 +105,10 @@ interface SetupFlagValues {
   readonly 'data-dir'?: string | undefined
   readonly 'ui-host'?: string | undefined
   readonly 'ui-port'?: string | undefined
+  readonly 'ui-probe-host'?: string | undefined
   readonly 'serve-host'?: string | undefined
   readonly 'serve-port'?: string | undefined
+  readonly 'serve-probe-host'?: string | undefined
   readonly admin?: string | undefined
   readonly supervisor?: string | undefined
 }
@@ -137,8 +145,10 @@ export function parseSetupArgs(args: readonly string[]): SetupArgsResult {
       ...optionalString('dataDir', parsed.values['data-dir']),
       ...optionalString('uiHost', parsed.values['ui-host']),
       ...(uiPort.port !== undefined ? { uiPort: uiPort.port } : {}),
+      ...optionalString('uiProbeHost', parsed.values['ui-probe-host']),
       ...optionalString('serveHost', parsed.values['serve-host']),
       ...(servePort.port !== undefined ? { servePort: servePort.port } : {}),
+      ...optionalString('serveProbeHost', parsed.values['serve-probe-host']),
       ...optionalString('admin', admin),
       ...(supervisor.supervisor !== undefined ? { supervisor: supervisor.supervisor } : {}),
     },
@@ -169,8 +179,10 @@ function parseFlags(args: readonly string[]): FlagsResult {
         'data-dir': { type: 'string' },
         'ui-host': { type: 'string' },
         'ui-port': { type: 'string' },
+        'ui-probe-host': { type: 'string' },
         'serve-host': { type: 'string' },
         'serve-port': { type: 'string' },
+        'serve-probe-host': { type: 'string' },
         admin: { type: 'string' },
         supervisor: { type: 'string' },
       },

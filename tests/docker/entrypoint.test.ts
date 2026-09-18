@@ -140,6 +140,54 @@ describe.skipIf(process.platform === 'win32')('docker/entrypoint.sh', () => {
     expect(loggedArgv()[0]).not.toContain('--ui-port 8091')
   })
 
+  /**
+   * Q32 follow-up: the probe hosts are the compose service names, which only
+   * resolve on the compose project network. On a bare `docker run` a default
+   * of `ui`/`serve` would persist names that never resolve, and the
+   * container's own UI would read `stopped` — so without the variables the
+   * flags are absent and `setup` keeps its own default.
+   */
+  test('without the probe-host variables the setup call carries no probe-host flags', () => {
+    runEntrypoint(['ui'])
+
+    expect(loggedArgv()[0]).not.toContain('--ui-probe-host')
+    expect(loggedArgv()[0]).not.toContain('--serve-probe-host')
+  })
+
+  test('MCPCUT_SERVE_PROBE_HOST adds the serve probe-host flag to the setup call', () => {
+    runEntrypoint(['ui'], { MCPCUT_SERVE_PROBE_HOST: 'plane-serve' })
+
+    expect(loggedArgv()[0]).toContain('--serve-probe-host plane-serve ')
+    expect(loggedArgv()[0]).not.toContain('--ui-probe-host')
+  })
+
+  test('MCPCUT_UI_PROBE_HOST adds the ui probe-host flag to the setup call', () => {
+    runEntrypoint(['serve'], { MCPCUT_UI_PROBE_HOST: 'plane-ui' })
+
+    expect(loggedArgv()[0]).toContain('--ui-probe-host plane-ui ')
+    expect(loggedArgv()[0]).not.toContain('--serve-probe-host')
+  })
+
+  test('an empty probe-host variable adds no flag', () => {
+    runEntrypoint(['ui'], { MCPCUT_UI_PROBE_HOST: '', MCPCUT_SERVE_PROBE_HOST: '' })
+
+    expect(loggedArgv()[0]).toBe(SETUP_ARGV)
+  })
+
+  test.skipIf(DASH === undefined)('dash passes both probe-host flags when both variables are set', () => {
+    const { status, stderr } = runEntrypoint(
+      ['ui'],
+      { MCPCUT_UI_PROBE_HOST: 'ui', MCPCUT_SERVE_PROBE_HOST: 'serve' },
+      DASH,
+    )
+
+    expect(stderr).toBe('')
+    expect(status).toBe(0)
+    expect(loggedArgv()[0]).toBe(
+      SETUP_ARGV.replace(' --admin owner', ' --ui-probe-host ui --serve-probe-host serve --admin owner'),
+    )
+  })
+
   test('a non-service command never triggers setup', () => {
     const { status } = runEntrypoint(['--help'])
 

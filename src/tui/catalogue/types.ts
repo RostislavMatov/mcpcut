@@ -148,6 +148,11 @@ export interface SectionSpec {
   readonly minRole: Role
   /** Lines the pane shows before anything has been run. */
   readonly intro: readonly string[]
+  /**
+   * Replaces `intro` under `supervisor: external`, where the intro would advise
+   * an action this install hides (Q32: Home's `Services ▸ start`).
+   */
+  readonly externalIntro?: readonly string[]
   readonly actions: readonly ActionSpec[]
   /** Action re-run by the `r` key, when the section has one that reads its own state. */
   readonly refreshActionId?: string

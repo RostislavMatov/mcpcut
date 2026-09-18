@@ -41,16 +41,25 @@ const originList = z
 
 const bindSchema = z.strictObject({ host: hostSchema, port: portSchema })
 
+/**
+ * The address `status` dials when the service has no pid file — compose or
+ * systemd, where the service is the neighbour's name on the network (Q32).
+ * It never changes the bind: `host` stays where the service listens.
+ */
+const probeHostSchema = hostSchema.optional()
+
 export const installConfigSchema = z.strictObject({
   version: z.literal(INSTALL_CONFIG_VERSION),
   dataDir: boundedString.refine(isAbsolute, 'dataDir must be an absolute path'),
   ui: bindSchema.extend({
+    probeHost: probeHostSchema,
     behindTls: z.boolean().optional(),
     allowedHosts: stringList.optional(),
     allowedOrigins: originList.optional(),
     trustedProxyHeader: boundedString.optional(),
   }),
   serve: bindSchema.extend({
+    probeHost: probeHostSchema,
     allowedHosts: stringList.optional(),
     allowedOrigins: originList.optional(),
     failClosed: z.boolean().optional(),

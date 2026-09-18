@@ -71,13 +71,22 @@ export function visibleSections(
 }
 
 /**
- * The section with the actions this install cannot offer taken out — and the
- * SAME object when nothing is taken out, so the common case allocates nothing
- * and identity comparisons in tests and renderers stay meaningful.
+ * The section with the actions this install cannot offer taken out and, under
+ * `supervisor: external`, its `externalIntro` in place of the intro — and the
+ * SAME object when nothing changes, so the common case allocates nothing and
+ * identity comparisons in tests and renderers stay meaningful.
  */
 function narrowedByFacts(section: SectionSpec, facts: InstallFacts): SectionSpec {
   const actions = section.actions.filter((action) => meetsRequirement(action, facts))
-  return actions.length === section.actions.length ? section : { ...section, actions }
+  const intro = facts.supervisor === EXTERNAL_SUPERVISOR ? section.externalIntro : undefined
+  if (actions.length === section.actions.length && intro === undefined) return section
+
+  return {
+    ...section,
+    // The original array when none was removed, so the action list keeps its identity.
+    actions: actions.length === section.actions.length ? section.actions : actions,
+    ...(intro === undefined ? {} : { intro }),
+  }
 }
 
 /**

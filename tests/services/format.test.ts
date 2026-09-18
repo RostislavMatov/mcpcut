@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'vitest'
-import { formatStartResult, formatStatusTable, formatStopResult, statusJson } from '../../src/services/format.js'
+import {
+  formatExposureWarnings,
+  formatStartResult,
+  formatStatusTable,
+  formatStopResult,
+  statusJson,
+} from '../../src/services/format.js'
 import type { ServiceStatus, StartResult, StopResult } from '../../src/services/manager.js'
 
 /**
@@ -84,6 +90,40 @@ describe('statusJson', () => {
         state: 'stopped',
       },
     ])
+  })
+})
+
+describe('formatExposureWarnings', () => {
+  const EXPOSED_UI: ServiceStatus = {
+    ...RUNNING_UI,
+    host: '0.0.0.0',
+    exposure: {
+      level: 'warn',
+      detail:
+        'ui binds 0.0.0.0: reachable from the network. Terminate TLS in front ' +
+        "(ui: --behind-tls + --allowed-host; serve: agents' bearer tokens travel in clear otherwise) — ADR-0004",
+    },
+  }
+
+  test('writes one labelled warning line per exposed service (Q31)', () => {
+    const text = formatExposureWarnings([EXPOSED_UI, STOPPED_SERVE])
+
+    expect(text).toBe(
+      'ui:    warning: ui binds 0.0.0.0: reachable from the network. Terminate TLS in front ' +
+        "(ui: --behind-tls + --allowed-host; serve: agents' bearer tokens travel in clear otherwise) — ADR-0004\n",
+    )
+  })
+
+  test('is empty when no service is exposed', () => {
+    expect(formatExposureWarnings([RUNNING_UI, STOPPED_SERVE])).toBe('')
+  })
+
+  test('escapes control characters in a detail that quotes a host read from a pid file', () => {
+    const text = formatExposureWarnings([
+      { ...STOPPED_SERVE, exposure: { level: 'warn', detail: 'serve binds 10.0.0.5\x1b[2K: reachable' } },
+    ])
+
+    expect(text).toBe('serve: warning: serve binds 10.0.0.5?[2K: reachable\n')
   })
 })
 
