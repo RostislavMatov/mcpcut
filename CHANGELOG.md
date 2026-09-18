@@ -226,6 +226,16 @@ All notable changes to this project are documented here. The format follows
 
 ### Security
 
+- **A policy file written after start-up is enforced without a restart.**
+  `setup` starts `serve` before any `policy.json` exists; a front (or a
+  long-lived `connect` session) that started with no policy used to stay
+  journaling-only until restarted, while the admin UI already showed the new
+  file's hash. Such a process now keeps looking where its entry point reads
+  and adopts the first valid file that appears, on the very next call
+  (`policy adopted: <path> (<hash>)` in its log). A broken file is never
+  adopted and is reported; after adoption the source is pinned as if it had
+  been there from the start. `wrap` without a policy is unchanged (ADR-0009,
+  amendment 2026-09-18).
 - **Skipping `tools/list` no longer lowers a tool's class.** A call was
   classified from the descriptor its own session had seen listed, and from the
   tool's name alone when the agent never asked for the catalog — so

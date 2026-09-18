@@ -385,6 +385,20 @@ the admin UI or via `policy set` — takes effect on the next call without a
 restart; a broken edit leaves the last valid policy in force and is reported
 loudly on stderr rather than silently relaxing anything.
 
+The same goes for a policy file that did not exist yet. `setup` starts `serve`
+before you have written any policy, and a `connect` session may outlive the
+moment you write one: a process that started with **no** policy file (it says
+`journaling only` at start-up) keeps looking where that entry point reads, and
+the first **valid** `policy.json` to appear there is adopted on the next call —
+`policy adopted: <path> (<hash>)` in the process's log, no restart. A file that
+does not parse or validate is never adopted: the process says
+`policy file not adopted: …; still journaling only` and picks it up once it is
+fixed. After adoption the source is pinned exactly as if it had been there at
+start-up. Two limits: sessions that were already open keep the approval
+timeouts and fail-closed setting they were wired with until they are reopened,
+and `wrap` without a policy is a different mode altogether (no gate is built),
+so a `wrap` run still needs a restart to come under a new policy.
+
 Resolution order (first found wins, **no merging** across sources):
 `--policy <path>` → `$MCP_JOURNAL_POLICY` → `./.mcp-journal/policy.json` →
 `~/.mcp-journal/policy.json`. A broken or explicitly-named-but-missing policy

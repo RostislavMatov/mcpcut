@@ -7,6 +7,7 @@ import {
   type PolicyShadowedEvent,
   type PolicyStat,
 } from '../policy/reload.js'
+import { createAwaitingPolicyProvider, type PolicyAdoptedEvent } from '../policy/reload-await.js'
 import type { Policy } from '../policy/schema.js'
 import type { PolicySourceCandidate } from '../policy/source.js'
 
@@ -71,6 +72,45 @@ export function createReloadingPolicy(args: ReloadingPolicyArgs): PolicyProvider
   })
 }
 
+export interface AwaitingPolicyArgs {
+  /** The policy in force while no file exists (`journalingOnlyPolicy()`). */
+  readonly fallback: Policy
+  /** Exactly what `resolvePolicySource` returned for this entry point (ADR-0005). */
+  readonly loadOptions: LoadPolicyOptions
+  /** `resolvePolicySource().candidates`: where this entry point looks, in order. None existed at start-up. */
+  readonly candidates: readonly PolicySourceCandidate[]
+  readonly stderr: PolicyReloadStderr
+}
+
+/**
+ * The provider for a start-up that found NO policy file: journaling only for
+ * now, and the first valid file to appear where this entry point looks is
+ * adopted without a restart (owner decision 2026-09-18; the rule is in
+ * `policy/reload-await.ts`, the wording below).
+ */
+export function createAwaitingPolicy(args: AwaitingPolicyArgs): PolicyProvider {
+  return createAwaitingPolicyProvider({
+    fallback: args.fallback,
+    loadOptions: args.loadOptions,
+    candidates: args.candidates.map((candidate) => candidate.path),
+    onAdopted: (event) => {
+      args.stderr.write(formatPolicyAdopted(event))
+    },
+    onRejected: (failure) => {
+      args.stderr.write(formatPolicyNotAdopted(failure))
+    },
+    onReload: (event) => {
+      args.stderr.write(formatPolicyReloaded(event))
+    },
+    onError: (failure) => {
+      args.stderr.write(formatPolicyReloadFailure(failure))
+    },
+    onShadowed: (event) => {
+      args.stderr.write(formatPolicyShadowed(event))
+    },
+  })
+}
+
 /** The candidate paths tried before the one that was actually loaded. */
 function precedingCandidatesOf(
   candidates: readonly PolicySourceCandidate[],
@@ -84,6 +124,19 @@ function precedingCandidatesOf(
 /** `policy reloaded: <hash8> -> <hash8>` */
 export function formatPolicyReloaded(event: PolicyReloadEvent): string {
   return `policy reloaded: ${shortHash(event.hashBefore)} -> ${shortHash(event.hashAfter)}\n`
+}
+
+/** `policy adopted: <path> (<hash8>); enforcing it from now on — …` */
+export function formatPolicyAdopted(event: PolicyAdoptedEvent): string {
+  return (
+    `policy adopted: ${event.sourcePath} (${shortHash(event.hashAfter)}); enforcing it from now on — ` +
+    'sessions already open keep their approval timeouts and fail-closed setting until reopened\n'
+  )
+}
+
+/** `policy file not adopted: <path>: <errors>; still journaling only` */
+export function formatPolicyNotAdopted(failure: PolicyReloadFailure): string {
+  return `policy file not adopted: ${failure.sourcePath}: ${failure.errors.join('; ')}; still journaling only\n`
 }
 
 /** `policy reload failed: <path>: <errors>; keeping policy <hash8>` */
