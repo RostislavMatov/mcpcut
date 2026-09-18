@@ -80,6 +80,14 @@ export interface Inventory {
    * read on the decision path, where O4 withdraws an explicit `allow` on it.
    */
   surfaceDeltaOf(toolName: string): SurfaceDelta | undefined
+  /**
+   * The descriptor stored for `toolName` (latest observed, else approved), or
+   * `undefined` when none is stored. Synchronous for the same reason `stateOf`
+   * is: the gate classifies a call from it when the session itself never saw
+   * a `tools/list` -- a choice that belongs to the agent, and must not decide
+   * the tool's class.
+   */
+  descriptorOf(toolName: string): ToolDescriptor | undefined
   /** True once at least one `observeToolsList` has been processed (even if it failed). */
   hasObservedCatalog(): boolean
   /** False after a failed persist or a corrupt/unavailable store; resets to true on a clean observe. */
@@ -156,6 +164,10 @@ export function createInventory(serverName: string, opts: CreateInventoryOptions
     return snapshots.deltas.get(toolName)
   }
 
+  function descriptorOf(toolName: string): ToolDescriptor | undefined {
+    return snapshots.descriptors.get(toolName)
+  }
+
   function hasObservedCatalog(): boolean {
     return observed
   }
@@ -198,6 +210,7 @@ export function createInventory(serverName: string, opts: CreateInventoryOptions
     observeToolsList,
     stateOf,
     surfaceDeltaOf,
+    descriptorOf,
     hasObservedCatalog,
     isCatalogTrusted,
     approve,
