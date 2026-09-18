@@ -6,6 +6,7 @@ import { createApprovalQueue } from '../../src/policy/approvals/queue.js'
 import { requestLine, waitUntil, waitUntilAsync } from '../proxy/harness.js'
 import type { UiClient, UiTestHarness } from '../ui/harness.js'
 import {
+  asOwner,
   createPlane,
   runOnboarding,
   startConnect,
@@ -107,13 +108,16 @@ export function createM4Context(journalDir: string): M4Context {
       ...extra,
     })
 
-  const addServer = (name: string, variant: SchemaVariant): Promise<CliRun> =>
-    plane.run([
-      'server', 'add', name,
-      '--transport', 'stdio',
-      '--command', process.execPath,
-      '--args', [M4_FIXTURE, variant].join(','),
-    ])
+  const addServer = async (name: string, variant: SchemaVariant): Promise<CliRun> =>
+    plane.run(
+      [
+        'server', 'add', name,
+        '--transport', 'stdio',
+        '--command', process.execPath,
+        '--args', [M4_FIXTURE, variant].join(','),
+      ],
+      await asOwner(plane),
+    )
 
   async function openSession(token: string, sessionId: string): Promise<ConnectDriver> {
     const live = startConnect({ plane, token, sessionId, argv: ['connect', SERVER, '--agent', AGENT] })

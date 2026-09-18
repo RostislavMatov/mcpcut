@@ -12,6 +12,7 @@ import { readJournalRecords, requestLine, waitUntilAsync } from '../proxy/harnes
 import { collectPersistedBytes } from '../support/persisted-bytes.js'
 import { startUiHarness, type UiTestHarness } from '../ui/harness.js'
 import {
+  asOwner,
   createPlane,
   HTTP_STATELESS_FIXTURE,
   runConnectLines,
@@ -78,14 +79,20 @@ function writeControl(path: string, control: Record<string, unknown>): Promise<v
  * CLI, real clock) sees them as stale without any sleeping.
  */
 function backdatedProbeSeam(): DispatchOptions {
-  return { server: { env: {}, probes: { now: () => Date.now() - BACKDATE_MS } } }
+  return { server: { probes: { now: () => Date.now() - BACKDATE_MS } } }
+}
+
+/** `extra` with the plane owner's token on the `server` seam (`server add` is owner-only). */
+async function asServerOwner(extra: DispatchOptions = {}): Promise<DispatchOptions> {
+  const owner = await asOwner(plane)
+  return { ...extra, server: { ...extra.server, ...owner.server } }
 }
 
 /** `server add` for a stdio server backed by the controllable fixture. */
 async function addStdioServer(
   name: string,
   controlPath: string,
-  extra: DispatchOptions = { server: { env: {} } },
+  extra: DispatchOptions = {},
 ): Promise<CliRun> {
   const run = await plane.run(
     [
@@ -94,7 +101,7 @@ async function addStdioServer(
       '--command', process.execPath,
       '--args', [PROBE_FIXTURE, controlPath].join(','),
     ],
-    extra,
+    await asServerOwner(extra),
   )
   expect(run.err, `server add ${name} failed`).not.toMatch(/error/i)
   expect(run.code).toBe(0)
@@ -103,7 +110,9 @@ async function addStdioServer(
 
 /** Mints a named admin through the CLI and returns its one-time token. */
 async function mintAdminToken(name: string, role: string): Promise<string> {
-  const run = await plane.run(['admin', 'add', name, '--role', role])
+  // Not the bootstrap any more: the plane's owner exists as soon as the first
+  // `server add` ran, so every further admin is minted by that owner.
+  const run = await plane.run(['admin', 'add', name, '--role', role], await asOwner(plane))
   expect(run.code).toBe(0)
   const token = /^token: (\S+)$/m.exec(run.out)?.[1]
   if (token === undefined) throw new Error(`admin add printed no token: ${run.out}`)
@@ -366,7 +375,7 @@ describe('scenario 5 — vault values never surface on any probe-facing plane', 
             '--header', 'authorization=vault:probe-secret',
             '--protocol', 'stateless',
           ],
-          { server: { env: {} } },
+          await asServerOwner(),
         )
         expect(add.code).toBe(0)
         expect(add.out).toMatch(/probe: alive/)

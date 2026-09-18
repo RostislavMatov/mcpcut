@@ -71,7 +71,9 @@ function seamsFor(journalDir: string): DispatchOptions {
   const loadPolicy = { cwd: journalDir, journalDir, env: {} }
   return {
     journalDir,
-    server: { journalDir },
+    // `server add|remove` are owner-only since 2026-09-18, so this seam needs
+    // the same isolation from the developer's shell as the ones below.
+    server: { journalDir, env: {} },
     // `env: {}` keeps a token exported in the developer's own shell out of the
     // command under test; `asOwner()` puts this plane's own token back in.
     vault: { journalDir, env: {} },
@@ -208,7 +210,7 @@ async function mintOwner(plane: Plane): Promise<DispatchOptions> {
   const argv = ['admin', 'add', CLI_OWNER, '--role', 'owner']
   const token = tokenFrom(expectOk(argv, await plane.run(argv)), 'admin add')
   const env = { [ADMIN_TOKEN_ENV_VAR]: token }
-  return { agent: { env }, vault: { env }, admin: { env } }
+  return { server: { env }, agent: { env }, vault: { env }, admin: { env } }
 }
 
 /** `agent create` + `agent grant` for a server that is already registered. */
@@ -283,6 +285,9 @@ export interface OnboardingArgs {
  */
 export async function runOnboarding(plane: Plane, args: OnboardingArgs): Promise<string> {
   expectOk(['vault', 'init'], await plane.run(['vault', 'init']))
+  // Every write below runs as the plane's owner: `server add` since the owner
+  // decision of 2026-09-18, `vault set` since S2, `agent create|grant` since T4.
+  const owner = await asOwner(plane)
 
   const addArgv = [
     'server',
@@ -296,14 +301,11 @@ export async function runOnboarding(plane: Plane, args: OnboardingArgs): Promise
     args.args.join(','),
     ...Object.entries(args.env ?? {}).flatMap(([key, value]) => ['--env', `${key}=${value}`]),
   ]
-  expectOk(addArgv, await plane.run(addArgv))
+  expectOk(addArgv, await plane.run(addArgv, owner))
 
   if (args.secret !== undefined) {
     const setArgv = ['vault', 'set', args.secret.name]
     const value = args.secret.value
-    // `vault set` runs as the plane's owner (owner decision S2, 2026-09-03),
-    // the same admin `agent create|grant` below run as.
-    const owner = await asOwner(plane)
     expectOk(
       setArgv,
       // The value arrives on stdin, never in argv (which `ps` exposes) — the

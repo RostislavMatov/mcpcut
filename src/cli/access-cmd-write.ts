@@ -64,8 +64,9 @@ export type AccessOp =
  * decision 2026-09-06): the bootstrap `admin add` on an empty store, where
  * nobody holds a token yet, and `admin rotate --recover`, the way back in
  * when the last owner lost theirs. Both are RECORDED — with this actor, the
- * same "nobody named" the unattributed CLI `server remove` writes — rather
- * than left out of the journal or faked into a name.
+ * "nobody named" CLI `server add|remove` also wrote until they became
+ * owner-only on 2026-09-18 — rather than left out of the journal or faked
+ * into a name.
  */
 export const UNATTRIBUTED_ACTOR = Object.freeze({ adminName: null, role: null }) as UnattributedActor
 

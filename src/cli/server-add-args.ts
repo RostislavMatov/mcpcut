@@ -14,6 +14,7 @@ export const ADD_USAGE = `Usage:
     stdio:  --command <cmd> [--args a,b,c] [--env K=V]...
     http:   --url <url> [--header K=V]... [--protocol sessionful|stateless|auto]
   Env/header values are either non-secret literals or vault references (vault:<name>).
+  Needs a personal admin token in MCP_ADMIN_TOKEN, role owner.
 `
 
 /** Flag values `server add` accepts, straight out of `parseArgs`. */

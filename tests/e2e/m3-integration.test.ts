@@ -323,7 +323,7 @@ describe('e2e: both HTTP session models reach the journal through `serve`', () =
       '--transport', 'http',
       '--url', fixture.url,
       '--protocol', 'stateless',
-    ])
+    ], await asOwner(plane))
     expect(added.code).toBe(0)
     const token = await createGrantedAgent(plane, AGENT, HTTP_SERVER)
     const policyPath = await writePolicyFile(plane, ALLOW_ALL_POLICY)

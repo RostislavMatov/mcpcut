@@ -5,11 +5,10 @@ import { createGroupsStore } from '../groups/store.js'
 import { formatReadableField } from '../journal/format.js'
 import { RESERVED_OBJECT_KEYS } from '../policy/constants.js'
 import type { CascadeHalfStatus, CascadeVerdict } from '../journal/access-edit-record.js'
-import type { AccessEditActor } from '../journal/record.js'
 import {
   REMOVE_DROPPED_RECORD_MESSAGE,
   serverAuditLine,
-  serverChangeActor,
+  type ServerChangeActor,
 } from './server-attribution.js'
 import { countGrantReferences, type GrantReferenceCount } from './server-grant-refs.js'
 import type { ServerCliIo, ServerCliOptions } from './server-cmd.js'
@@ -21,10 +20,10 @@ import type { ServerCliIo, ServerCliOptions } from './server-cmd.js'
  * record. Split out of `server-cmd.ts` for the file-size budget, exactly like
  * `server-status-cmd.ts`.
  *
- * Attribution is BEST EFFORT (plan m55-server-groups, open detail 2):
- * `server remove` predates named admins and runs from scripts, so a missing
- * or unusable `MCP_ADMIN_TOKEN` warns once and records "nobody named" instead
- * of refusing a removal that never needed a token.
+ * The actor is ALWAYS a named owner (owner decision 2026-09-18): the gate in
+ * `server-attribution.ts` runs before `runServerRemove` touches anything, so
+ * the best-effort "nobody named" record this module used to write (plan
+ * m55-server-groups, open detail 2) no longer has a way to arise from here.
  */
 
 /** What the cascade touched — for the audit line, the record and stdout. */
@@ -111,7 +110,7 @@ export async function cascadeGrants(
 
 /** Records the cascade; a dropped record is reported, never fatal — the removal already happened. */
 async function journalRemoval(
-  actor: AccessEditActor,
+  actor: ServerChangeActor,
   name: string,
   cascade: CascadeResult,
   io: ServerCliIo,
@@ -135,33 +134,35 @@ async function journalRemoval(
 }
 
 /**
- * Attribution + audit line + journal record for a cascade that already ran.
- * Emitted UNCONDITIONALLY once the change is applied — including when a half
- * failed — so an applied change never goes unrecorded.
+ * Audit line + journal record for a cascade that already ran. Emitted
+ * UNCONDITIONALLY once the change is applied — including when a half failed —
+ * so an applied change never goes unrecorded.
  */
 export async function reportCascade(
   name: string,
   cascade: CascadeResult,
+  actor: ServerChangeActor,
   io: ServerCliIo,
   opts: ServerCliOptions,
 ): Promise<void> {
-  const actor = await serverChangeActor('remove', io, opts)
   io.stderr.write(serverAuditLine('remove', actor, name, `, cascaded: ${cascadeSummary(cascade)}`))
   await journalRemoval(actor, name, cascade, io, opts)
 }
 
 /**
- * Runs the whole post-registry half of `server remove`: cascade, attribution,
- * audit line, journal record. Returns what was touched so the caller can
- * report it on stdout. Never throws — see `cascadeGrants`.
+ * Runs the whole post-registry half of `server remove`: cascade, audit line,
+ * journal record — attributed to the owner the gate already resolved. Returns
+ * what was touched so the caller can report it on stdout. Never throws — see
+ * `cascadeGrants`.
  */
 export async function cascadeServerRemoval(
   name: string,
+  actor: ServerChangeActor,
   io: ServerCliIo,
   opts: ServerCliOptions,
 ): Promise<CascadeResult> {
   const cascade = await cascadeGrants(name, io, opts)
-  await reportCascade(name, cascade, io, opts)
+  await reportCascade(name, cascade, actor, io, opts)
   return cascade
 }
 
