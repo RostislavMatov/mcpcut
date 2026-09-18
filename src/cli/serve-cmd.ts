@@ -6,11 +6,11 @@ import { createAgentsStore, type AgentsStore } from '../agents/store.js'
 import type { JournalSinkOptions } from '../journal/sink.js'
 import { INVENTORY_FILE_NAME } from '../policy/inventory.js'
 import { loadPolicy, type LoadPolicyOptions, type PolicyLoadResult } from '../policy/load.js'
-import { mapPolicyProvider, staticPolicyProvider, type PolicyProvider } from '../policy/reload.js'
+import { mapPolicyProvider, type PolicyProvider } from '../policy/reload.js'
 import { resolvePolicySource } from '../policy/source.js'
 import type { Policy } from '../policy/schema.js'
 import { journalingOnlyPolicy } from './connect-policy.js'
-import { createReloadingPolicy } from './policy-reload.js'
+import { createAwaitingPolicy, createReloadingPolicy } from './policy-reload.js'
 import { guardDiagnostics } from '../proxy/diagnostics.js'
 import { createGroupsStore, type GroupsStore } from '../groups/store.js'
 import { createRegistryStore, type RegistryStore } from '../registry/store.js'
@@ -281,8 +281,21 @@ async function resolvePolicy(
     // "journal everything, let agent grants decide", never a stricter implicit
     // default — turning enforcement on is an explicit operator act (M2 rule),
     // and the two entry points must not diverge on it.
-    io.stderr.write('serve: no policy file found; journaling only (agent grants still apply)\n')
-    return { policy: staticPolicyProvider(applyFailClosed(journalingOnlyPolicy(), flags.failClosed)) }
+    //
+    // The fallback WAITS for a file (smoke 2026-09-18, M1): `setup` starts this
+    // front before the operator has written any policy, and the first valid
+    // one to appear where `serve` looks is adopted without a restart.
+    io.stderr.write(
+      'serve: no policy file found; journaling only (agent grants still apply) — ' +
+        'a policy.json that appears later is adopted without a restart\n',
+    )
+    const awaiting = createAwaitingPolicy({
+      fallback: journalingOnlyPolicy(),
+      loadOptions: source.loadOptions,
+      candidates: source.candidates,
+      stderr: io.stderr,
+    })
+    return { policy: mapPolicyProvider(awaiting, (policy) => applyFailClosed(policy, flags.failClosed)) }
   }
   io.stderr.write(`serve: policy loaded from ${result.sourcePath}\n`)
   // The override is a mapping over the provider, so it survives a hot reload

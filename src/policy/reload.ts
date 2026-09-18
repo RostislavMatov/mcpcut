@@ -10,6 +10,7 @@ import {
   firstExistingSync,
   observeVersion,
   observeVersionSync,
+  safely,
   syncFsOf,
   type PolicyReadFileSync,
   type PolicyStat,
@@ -281,14 +282,6 @@ export function createPolicyProvider(args: CreatePolicyProviderArgs): PolicyProv
   })
 }
 
-/** A diagnostics callback that throws must not take the provider down with it. */
-function safely(callback: () => void): void {
-  try {
-    callback()
-  } catch {
-    // Deliberately dropped: the only place left to report to is the callback that just failed.
-  }
-}
 
 function noop(): void {
   // Intentionally empty.

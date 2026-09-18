@@ -181,3 +181,12 @@ export function isEnoent(error: unknown): boolean {
 export function describeCause(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause)
 }
+
+/** A diagnostics callback that throws must not take the provider down with it. */
+export function safely(callback: () => void): void {
+  try {
+    callback()
+  } catch {
+    // Deliberately dropped: the only place left to report to is the callback that just failed.
+  }
+}

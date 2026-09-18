@@ -1,5 +1,5 @@
 import { loadPolicy, type LoadPolicyOptions, type PolicyLoadResult } from '../policy/load.js'
-import { staticPolicyProvider, type PolicyProvider } from '../policy/reload.js'
+import type { PolicyProvider } from '../policy/reload.js'
 import { resolvePolicySource } from '../policy/source.js'
 import { parsePolicy, type Policy } from '../policy/schema.js'
 import {
@@ -7,7 +7,7 @@ import {
   policyFlagRefusal,
   policySourceIgnoredNote,
 } from './connect-constants.js'
-import { createReloadingPolicy } from './policy-reload.js'
+import { createAwaitingPolicy, createReloadingPolicy } from './policy-reload.js'
 
 /**
  * Policy resolution for `connect`, and the policy a run gets when no file
@@ -54,9 +54,14 @@ import { createReloadingPolicy } from './policy-reload.js'
  * A loaded file is handed over as a hot-reloading provider (wave 2 of the
  * policy-tool-rules-ui plan): the session re-reads it when it changes on
  * disk, through the SAME neutralized `loadOptions` resolved here, so the
- * agent-launched trust class keeps holding for the life of the process. The
- * journaling-only fallback has no file behind it and never reloads — turning
- * enforcement on remains an explicit operator act plus a restart.
+ * agent-launched trust class keeps holding for the life of the process.
+ *
+ * The journaling-only fallback WAITS for a file (owner decision 2026-09-18,
+ * smoke finding M1; it used to be static, "an explicit operator act plus a
+ * restart"): writing the policy is the explicit act, and a long-lived session
+ * that kept allowing everything after it was the surprise. The first valid
+ * file to appear in the state directory -- the only place this trust class
+ * reads -- is adopted; a broken one is reported and never adopted.
  */
 
 /** Minimal writable-stream shape this module needs, so tests can inject capture objects. */
@@ -133,7 +138,15 @@ export async function resolveConnectPolicy(
   }
   if (result.status === 'disabled') {
     args.io.stderr.write('policy: none found, journaling only (agent grants still apply)\n')
-    return { status: 'resolved', policy: staticPolicyProvider(journalingOnlyPolicy()) }
+    return {
+      status: 'resolved',
+      policy: createAwaitingPolicy({
+        fallback: journalingOnlyPolicy(),
+        loadOptions: source.loadOptions,
+        candidates: source.candidates,
+        stderr: args.io.stderr,
+      }),
+    }
   }
   args.io.stderr.write(`policy: loaded from ${result.sourcePath}\n`)
   return {

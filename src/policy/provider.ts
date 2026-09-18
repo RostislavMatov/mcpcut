@@ -73,6 +73,11 @@ export function mapPolicyProvider(
     },
     maybeRefresh: () => source.maybeRefresh(),
     refresh: () => source.refresh(),
-    sourcePath: source.sourcePath,
+    // Read through, never copied: a source that started with no file reports
+    // the one it ADOPTED later (`policy/reload-await.ts`), and a wrapper that
+    // froze the path it saw at wiring would name the wrong file for good.
+    get sourcePath(): string {
+      return source.sourcePath
+    },
   })
 }

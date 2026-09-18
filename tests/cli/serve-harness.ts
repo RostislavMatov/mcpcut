@@ -93,6 +93,12 @@ export interface StartServeOptions {
   /** Extra argv appended after the standard `--port 0 --policy <path>`. */
   readonly argv?: readonly string[]
   readonly policy?: unknown
+  /**
+   * Start with NO policy file anywhere: the file is removed, `--policy` is not
+   * passed and resolution is confined to the temp directory, so the run takes
+   * the journaling-only branch. `policyPath` is where the home candidate lives.
+   */
+  readonly withoutPolicy?: boolean
   /** Grant for the agent; omitted means "created with no grant at all". */
   readonly grant?: readonly string[] | '*'
   readonly grantServer?: string
@@ -145,10 +151,13 @@ export async function startServe(opts: StartServeOptions = {}): Promise<ServeFix
 
   const io = captureIo()
   let handle: ServeHandle | undefined
-  const exit = runServe(['--port', '0', '--policy', policyPath, ...(opts.argv ?? [])], io, {
+  if (opts.withoutPolicy === true) await rm(policyPath)
+  const policyArgv = opts.withoutPolicy === true ? [] : ['--policy', policyPath]
+  const exit = runServe(['--port', '0', ...policyArgv, ...(opts.argv ?? [])], io, {
     journalDir,
     signals: [],
     revocationPollIntervalMs: POLL_INTERVAL_MS,
+    ...(opts.withoutPolicy === true ? { loadPolicy: { cwd: journalDir, env: {} } } : {}),
     ...opts.serveOptions,
     onListening: (started) => {
       handle = started
