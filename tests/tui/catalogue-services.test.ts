@@ -195,6 +195,7 @@ describe('an install somebody else supervises is offered less', () => {
   })
 
   test('nothing else about the catalogue changes: the other sections are the same objects', () => {
+    // Services loses start/stop; Home swaps its intro for `externalIntro` (Q32).
     // Arrange
     const owned = visibleSections('owner')
 
@@ -204,7 +205,7 @@ describe('an install somebody else supervises is offered less', () => {
     // Assert
     expect(external).toHaveLength(owned.length)
     for (const [index, section] of owned.entries()) {
-      if (section.id === 'services') expect(external[index]).not.toBe(section)
+      if (section.id === 'services' || section.id === 'home') expect(external[index]).not.toBe(section)
       else expect(external[index], section.id).toBe(section)
     }
   })

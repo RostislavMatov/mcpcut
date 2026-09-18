@@ -136,7 +136,7 @@ describe('console end to end: sign in, add an admin, list, quit', () => {
     // (`tabs.ts`): it holds the tab that was just opened and marks each side
     // it scrolled past. Admins is the second of eleven, so `1 Home` is behind
     // the left marker and the window runs rightwards from the active tab.
-    expect(tabsLineOf(fake)).toMatch(/^‹ 2 Admins {2}3 Servers/)
+    expect(tabsLineOf(fake)).toMatch(/^‹ ▸2 Admins {2}3 Servers/)
     expect(tabsLineOf(fake)).toContain('8 Quarantine')
 
     fake.type(DOWN_KEY)
@@ -315,7 +315,7 @@ describe('console end to end: role', () => {
     )
     // The owner-only sections are not merely refused to a viewer: the tab bar
     // never numbers them, so this role's digit 2 is Servers, not Admins.
-    expect(tabsLineOf(fake)).toMatch(/^1 Home {2}2 Servers {2}3 Agents/)
+    expect(tabsLineOf(fake)).toMatch(/^▸1 Home {2}2 Servers {2}3 Agents/)
     expect(tabsLineOf(fake)).not.toContain('Admins')
     expect(tabsLineOf(fake)).not.toContain('Vault')
 

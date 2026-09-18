@@ -60,10 +60,11 @@ export const SETUP_SYNOPSIS_LINES: readonly string[] = [
   `${ROW_INDENT}${`${CLI_NAME} setup`.padEnd(USAGE_DESCRIPTION_COLUMN - ROW_INDENT.length)}Interactive setup on a terminal: the same questions as the flags below`,
   `${ROW_INDENT}${CLI_NAME} setup --yes [--data-dir <dir>] [--ui-host H] [--ui-port N] [--serve-host H] [--serve-port N]`,
   `${FLAG_CONTINUATION_INDENT}[--behind-tls|--no-behind-tls] [--admin <name>|--no-admin] [--supervisor ${SUPERVISORS.join('|')}]`,
-  `${FLAG_CONTINUATION_INDENT}[--start] [--force]`,
+  `${FLAG_CONTINUATION_INDENT}[--ui-probe-host H] [--serve-probe-host H] [--start] [--force]`,
   `${DESCRIPTION_INDENT}Write the install config, prepare the data directory, run the`,
   `${DESCRIPTION_INDENT}checks and mint the first owner`,
   `${DESCRIPTION_INDENT}--behind-tls is remembered across reruns; --no-behind-tls takes it back`,
+  `${DESCRIPTION_INDENT}--*-probe-host: where status dials a service it has no pid file for`,
   `${DESCRIPTION_INDENT}--force, --no-admin and --start apply to --yes only`,
 ]
 

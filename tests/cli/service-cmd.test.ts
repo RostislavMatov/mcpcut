@@ -318,6 +318,53 @@ describe('mcpcut status', () => {
     expect(keys).toEqual([...keys].sort())
   })
 
+  describe('a bind reachable from the network (Q31)', () => {
+    const EXPOSED_UI = statusOf('ui', 'running', {
+      pid: 1,
+      host: '0.0.0.0',
+      exposure: { level: 'warn', detail: 'ui binds 0.0.0.0: reachable from the network. — ADR-0004' },
+    })
+
+    function exposedManager(): FakeManager {
+      return fakeManager({ status: { ui: EXPOSED_UI, serve: statusOf('serve', 'running', { pid: 2 }) } })
+    }
+
+    test('the table stays on stdout and the warning goes to stderr, exit unchanged', async () => {
+      const io = fakeIo()
+
+      const exitCode = await runServiceCommand('status', [], io, withManager(exposedManager()))
+
+      expect(exitCode).toBe(0)
+      expect(io.out()).toBe(
+        'ui     running  pid 1  0.0.0.0:8091    —\n' + 'serve  running  pid 2  127.0.0.1:8090  —\n',
+      )
+      expect(io.err()).toBe('ui:    warning: ui binds 0.0.0.0: reachable from the network. — ADR-0004\n')
+    })
+
+    test('--json carries the field and writes nothing to stderr', async () => {
+      const io = fakeIo()
+
+      const exitCode = await runServiceCommand('status', ['--json'], io, withManager(exposedManager()))
+
+      expect(exitCode).toBe(0)
+      expect(io.err()).toBe('')
+      const rows = JSON.parse(io.out()) as readonly Record<string, unknown>[]
+      expect(rows[0]?.['exposure']).toEqual(EXPOSED_UI.exposure)
+      expect('exposure' in (rows[1] ?? {})).toBe(false)
+    })
+
+    test('an install with nothing exposed writes nothing to stderr', async () => {
+      const io = fakeIo()
+      const manager = fakeManager({
+        status: { ui: statusOf('ui', 'running', { pid: 1 }), serve: statusOf('serve', 'stopped') },
+      })
+
+      await runServiceCommand('status', [], io, withManager(manager))
+
+      expect(io.err()).toBe('')
+    })
+  })
+
   test('refuses a positional service name rather than silently ignoring it', async () => {
     const io = fakeIo()
     const manager = fakeManager()

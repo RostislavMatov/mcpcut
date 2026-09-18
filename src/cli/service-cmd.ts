@@ -2,6 +2,7 @@ import { errnoCodeOf } from '../errno.js'
 import { formatReadableField } from '../journal/format.js'
 import { type ServiceName } from '../services/constants.js'
 import {
+  formatExposureWarnings,
   formatStartResult,
   formatStatusTable,
   formatStopResult,
@@ -210,6 +211,17 @@ async function runStatus(
     statuses.push(await manager.status(service))
   }
   io.stdout.write(parsed.json ? statusJson(statuses) : formatStatusTable(statuses))
+  // A reachable bind is a warning, not a failure (Q31): it goes to stderr and
+  // leaves the exit code alone. Not under `--json` — the field is already in
+  // the document, and the console header reads `status --json` through a
+  // capture, so that form stays machine-clean. The table form is what the
+  // console runs on Home and Services, and there the warning DOES land in the
+  // panel under `— stderr —`, on purpose: that is where the console shows it
+  // (`tests/tui/output-status-exposure.test.ts`).
+  if (!parsed.json) {
+    const warnings = formatExposureWarnings(statuses)
+    if (warnings !== '') io.stderr.write(warnings)
+  }
   return statuses.every((status) => status.state === 'running') ? EXIT_OK : EXIT_FAILURE
 }
 

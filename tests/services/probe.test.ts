@@ -21,6 +21,9 @@ import { probeHostFor, probeService, probeServe, probeUi } from '../../src/servi
 /** Short deadline for the negative cases so a failing probe cannot stall the suite. */
 const FAST_TIMEOUT_MS = 500
 
+/** One past the last TCP port: the socket layer refuses it before dialling. */
+const OUT_OF_RANGE_PORT = 70_000
+
 const cleanups: Array<() => Promise<void>> = []
 
 afterEach(async () => {
@@ -149,6 +152,76 @@ describe('probeUi', () => {
   })
 })
 
+describe('probeUi through the UI Host screen (Q32)', () => {
+  /**
+   * The UI bound to a wildcard admits only localhost names in `Host`
+   * (`src/net/origin-host.ts`), so a probe that sent `Host: ui:8091` from the
+   * neighbour container would read 403 and call a healthy UI stopped.
+   */
+  async function startHostScreenedUi(): Promise<{ readonly port: number; readonly seen: string[] }> {
+    const seen: string[] = []
+    const server = createHttpServer((req, res) => {
+      const address = server.address() as AddressInfo
+      seen.push(req.headers.host ?? '')
+      const allowed = req.headers.host === `localhost:${address.port}`
+      res.writeHead(req.url === '/login' && allowed ? 200 : 403)
+      res.end()
+    })
+    onDispose(() => closeHttp(server))
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
+    return { port: (server.address() as AddressInfo).port, seen }
+  }
+
+  test('sends Host: localhost:<port> whatever address it dials, so a Host-screened UI answers 200', async () => {
+    const ui = await startHostScreenedUi()
+
+    expect(await probeUi('127.0.0.1', ui.port, PROBE_TIMEOUT_MS)).toBe(true)
+    expect(ui.seen).toEqual([`localhost:${ui.port}`])
+  })
+
+  test('a redirect is not the UI answering: 302 is false and is not followed', async () => {
+    const hits: string[] = []
+    const server = createHttpServer((req, res) => {
+      hits.push(req.url ?? '')
+      res.writeHead(req.url === '/login' ? 302 : 200, { location: '/elsewhere' })
+      res.end()
+    })
+    onDispose(() => closeHttp(server))
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
+    const { port } = server.address() as AddressInfo
+
+    expect(await probeUi('127.0.0.1', port, PROBE_TIMEOUT_MS)).toBe(false)
+    expect(hits).toEqual(['/login'])
+  })
+
+  test('leaves no socket or timer behind after a successful probe', async () => {
+    const port = await startHttp(200)
+    const before = process.getActiveResourcesInfo().length
+
+    expect(await probeUi('127.0.0.1', port, PROBE_TIMEOUT_MS)).toBe(true)
+
+    expect(process.getActiveResourcesInfo().length).toBeLessThanOrEqual(before)
+  })
+
+  test('is false, not a rejection, when the host name does not resolve', async () => {
+    expect(await probeUi('no-such-service.invalid', 8091, FAST_TIMEOUT_MS)).toBe(false)
+  })
+
+  /**
+   * `http.request` validates the port synchronously (`ERR_SOCKET_BAD_PORT`),
+   * inside the Promise executor — a hand-edited config must not turn
+   * `status` into a crash. Nor into a leak: Node opens the socket handle
+   * BEFORE it validates the port, so a throw would strand that handle.
+   */
+  test.each([OUT_OF_RANGE_PORT, -1])('is false, not a rejection, for the invalid port %i', async (port) => {
+    const before = process.getActiveResourcesInfo().length
+
+    await expect(probeUi('127.0.0.1', port, FAST_TIMEOUT_MS)).resolves.toBe(false)
+
+    expect(process.getActiveResourcesInfo().length).toBeLessThanOrEqual(before)
+  })
+})
+
 describe('probeServe', () => {
   test('is true when a TCP listener accepts the connection', async () => {
     const port = await startTcp()
@@ -160,6 +233,14 @@ describe('probeServe', () => {
     const port = await closedPort()
 
     expect(await probeServe('127.0.0.1', port, FAST_TIMEOUT_MS)).toBe(false)
+  })
+
+  test.each([OUT_OF_RANGE_PORT, -1])('is false, not a rejection, for the invalid port %i', async (port) => {
+    const before = process.getActiveResourcesInfo().length
+
+    await expect(probeServe('127.0.0.1', port, FAST_TIMEOUT_MS)).resolves.toBe(false)
+
+    expect(process.getActiveResourcesInfo().length).toBeLessThanOrEqual(before)
   })
 
   test('leaves no socket behind after a successful probe', async () => {

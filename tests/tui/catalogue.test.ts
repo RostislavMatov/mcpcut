@@ -8,7 +8,8 @@ import {
   visibleActions,
   visibleSections,
 } from '../../src/tui/catalogue/index.js'
-import type { ActionSpec } from '../../src/tui/catalogue/types.js'
+import { HOME_SECTION } from '../../src/tui/catalogue/home.js'
+import type { ActionSpec, SectionSpec } from '../../src/tui/catalogue/types.js'
 
 /**
  * The catalogue as the console reads it: the four pure lookups every screen is
@@ -170,6 +171,29 @@ describe('the fields of the Admins section', () => {
   })
 })
 
+describe('visibleSections: externalIntro', () => {
+  const plain: SectionSpec = {
+    id: 'plain',
+    title: 'Plain',
+    minRole: 'viewer',
+    intro: ['own words'],
+    externalIntro: ['external words'],
+    actions: [{ id: 'list', title: 'list', minRole: 'viewer', command: 'x', fields: [], argv: () => ['x'] }],
+  }
+
+  test('replaces the intro under supervisor: external and leaves the original untouched', () => {
+    const [narrowed] = visibleSections('viewer', [plain], { supervisor: 'external' })
+
+    expect(narrowed?.intro).toEqual(['external words'])
+    expect(narrowed).not.toBe(plain)
+    expect(plain.intro).toEqual(['own words'])
+  })
+
+  test('is ignored under mcpcut: the section comes back as the same object', () => {
+    expect(visibleSections('viewer', [plain], { supervisor: 'mcpcut' })[0]).toBe(plain)
+  })
+})
+
 describe('the Home section', () => {
   const home = SECTIONS.find((section) => section.id === 'home')
 
@@ -178,6 +202,29 @@ describe('the Home section', () => {
     expect(home?.intro.join('\n')).toContain('connect <server> --agent <name>')
     expect(home?.intro.join('\n')).toContain('wrap --server <name>')
     expect(home?.intro.join('\n')).toContain('MCP_AGENT_TOKEN')
+  })
+
+  test('under an external supervisor the intro stops advising Services ▸ start (Q32)', () => {
+    const external = visibleSections('owner', SECTIONS, { supervisor: 'external' }).find(
+      (section) => section.id === 'home',
+    )
+
+    expect(external?.intro).toEqual([
+      'Run an agent through the plane (outside this console):',
+      '  mcpcut connect <server> --agent <name>',
+      '  mcpcut wrap --server <name> -- <command…>',
+      'MCP_AGENT_TOKEN goes in the agent’s own environment.',
+      'Services are run by compose or systemd',
+      '(supervisor: external): mcpcut only reports.',
+    ])
+    expect(external?.actions).toBe(HOME_SECTION.actions)
+  })
+
+  test('on an install mcpcut supervises, Home is the very same object, start advice included', () => {
+    const owned = visibleSections('owner').find((section) => section.id === 'home')
+
+    expect(owned).toBe(HOME_SECTION)
+    expect(owned?.intro.at(-1)).toBe('A service marked ○ in the header: Services ▸ start.')
   })
 
   test('its only action is `status`, which is also its refresh', () => {

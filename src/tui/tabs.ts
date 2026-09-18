@@ -1,4 +1,4 @@
-import { TAB_OVERFLOW_LEFT, TAB_OVERFLOW_RIGHT, TAB_SEPARATOR } from './constants.js'
+import { TAB_OVERFLOW_LEFT, TAB_OVERFLOW_RIGHT, TAB_SEPARATOR } from './tabs-constants.js'
 
 /**
  * Which tabs the section bar can show (mcpcut phase 4, Task 9).

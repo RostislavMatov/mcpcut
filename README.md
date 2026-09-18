@@ -215,6 +215,18 @@ waits **5 s**, then escalates to `SIGKILL` and reports `forced`; a `stale` pid
 file is only cleared. On Windows `start`/`stop` refuse: run `mcpcut ui` and
 `mcpcut serve` in the foreground, or use a Windows service.
 
+When a service binds an address other hosts can reach (anything but
+loopback), `status` repeats the warning `setup` gives at install time — one
+line per such service on **stderr**, `<service>: warning: <service> binds
+<host>: reachable from the network. …`, with the same advice and ADR-0004
+pointer. Stdout and the exit code are unchanged, and a stopped service is
+warned about too: the configured bind becomes reachable the moment it starts.
+`status --json` writes nothing to stderr; instead the exposed service's object
+carries `"exposure": {"level": "warn", "detail": "…"}` (the field sits on each
+service because the document is an array; a loopback install's JSON is
+unchanged). The console runs the table form on Home and Services, so the
+warning shows in the panel under `— stderr —`.
+
 `supervisor: external` in the config (what the Docker entrypoint writes, and
 what you should write before handing the processes to systemd or launchd)
 turns `start` and `stop` into a refusal with an explanation; `status` and
@@ -290,12 +302,40 @@ docker compose run --rm ui admin rotate owner   # a missed or leaked token
 Rotate the owner token after the first sign-in: a copy sits in the
 container's log, readable by anyone who can run `docker compose logs`.
 Inside the container the console's Services section shows `status` and
-`logs` only — compose owns the processes. The header draws the service of
-the container you are in as `◉` ("answering, but not our pid"); the other
-service shows as `○`, because each container has its own network namespace
-and the probe of `0.0.0.0:<port>` from inside `ui` never reaches `serve`.
-Trust `docker compose ps` for the second service; a per-service probe host
-is an open item.
+`logs` only — compose owns the processes, and Home says so instead of
+pointing at `Services ▸ start`. Each container has its own network namespace,
+so a probe of the `0.0.0.0` bind (dialled as loopback) reaches only the
+container it runs in. The install config therefore carries an optional
+`probeHost` per service: the address `status` dials for a service that has no
+pid file (compose, systemd). `docker-compose.yml` sets
+`MCPCUT_UI_PROBE_HOST=ui` and `MCPCUT_SERVE_PROBE_HOST=serve` on both
+services, the entrypoint turns them into `setup --ui-probe-host ui
+--serve-probe-host serve`, and the header draws both services `◉` from either
+container. The entrypoint passes each flag only when its variable is set and
+non-empty: a bare `docker run` without them writes no `probeHost` and probes
+its own loopback, where compose service names would resolve nowhere. If you
+rename a compose service, rename the variable's value too. `probeHost` never
+changes the bind — `host`/`port` in `status` stay where the service listens;
+the `detail` names the address that was dialled. A service with a pid file of
+ours is always probed on the host recorded in that file.
+
+An install whose config predates `probeHost` gets it from a rerun of setup —
+admins already exist, so no token is minted or printed — followed by a
+restart:
+
+```
+docker compose run --rm ui setup --yes --ui-probe-host ui --serve-probe-host serve
+docker compose restart
+```
+
+A rerun without the flags keeps the value already in the config. There is no
+flag that clears it: remove the `probeHost` key from the config file by hand
+(`/home/node/.mcpcut/config.json` on the `mcp-config` volume;
+`~/.mcpcut/config.json` outside Docker).
+
+Inside compose `mcpcut status` warns that `ui` and `serve` bind `0.0.0.0`
+(see [Services](#services)). That is expected: the address is the
+container's, and the ports are published to host loopback only.
 
 ## Usage
 
@@ -626,7 +666,8 @@ mcp-journal prune --older-than <duration> [--yes]    # --yes needs MCP_ADMIN_TOK
 mcp-journal setup                                     # interactive setup on a terminal: the same questions as the flags below
 mcp-journal setup --yes [--data-dir <dir>] [--ui-host H] [--ui-port N] [--serve-host H] [--serve-port N]
                   [--behind-tls|--no-behind-tls] [--admin <name>|--no-admin] [--supervisor mcpcut|external]
-                  [--start] [--force]                 # write the install config, prepare the data directory, mint the first owner
+                  [--ui-probe-host H] [--serve-probe-host H] [--start] [--force]
+                                                      # write the install config, prepare the data directory, mint the first owner
 mcp-journal start|stop [ui|serve]                     # start/stop the services as detached daemons (pid + log in <data dir>/run)
 mcp-journal status [--json]                           # running = pid alive AND answering on its port
 mcp-journal logs <ui|serve> [--lines N]               # tail of a service log (default 50 lines)

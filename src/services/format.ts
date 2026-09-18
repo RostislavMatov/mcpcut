@@ -51,6 +51,18 @@ export function statusJson(statuses: readonly ServiceStatus[]): string {
   return `${canonicalJson(statuses)}\n`
 }
 
+/**
+ * One stderr line per service whose bind is reachable from the network (Q31);
+ * '' when none is. The detail quotes a host that may have come out of a pid
+ * file, so it is screened like every other foreign field here.
+ */
+export function formatExposureWarnings(statuses: readonly ServiceStatus[]): string {
+  return statuses
+    .filter((status) => status.exposure !== undefined)
+    .map((status) => labelled(status.service, `warning: ${readable(status.exposure?.detail ?? '')}`))
+    .join('')
+}
+
 /** The line `mcpcut start` prints for one service. */
 export function formatStartResult(service: ServiceName, result: StartResult): string {
   switch (result.kind) {

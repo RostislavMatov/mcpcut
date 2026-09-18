@@ -26,10 +26,23 @@
 # mints the `owner` admin, printing that one-time token to the container's
 # output. The entrypoint takes its answers from `MCPCUT_DATA_DIR`,
 # `MCPCUT_UI_HOST`/`MCPCUT_UI_PORT`, `MCPCUT_SERVE_HOST`/`MCPCUT_SERVE_PORT`
-# and `MCPCUT_ADMIN` — set them in an `environment:` block to change what the
-# install is. Do NOT set `MCP_JOURNAL_DIR` here: it outranks the config for
-# every command, so `setup` refuses the run (`dataDirConflict`) and, under
-# `set -eu` with `restart: unless-stopped`, the container crash-loops.
+# and `MCPCUT_ADMIN` — add them to both services' `environment:` blocks to
+# change what the install is. Do NOT set `MCP_JOURNAL_DIR` here: it outranks
+# the config for every command, so `setup` refuses the run (`dataDirConflict`)
+# and, under `set -eu` with `restart: unless-stopped`, the container
+# crash-loops.
+#
+# `MCPCUT_UI_PROBE_HOST`/`MCPCUT_SERVE_PROBE_HOST` become `probeHost` in the
+# config: the address `mcpcut status` dials for the neighbour container, which
+# a `0.0.0.0` bind rewritten to loopback never reaches. The entrypoint has no
+# default for them (a bare `docker run` has no `ui`/`serve` names to resolve),
+# so each service below sets them to the service names — per service, not in
+# the `x-plane` block, because `<<:` is a shallow merge and a service's own
+# `environment:` would silently drop them. Rename a service, rename these too.
+# An install whose config predates the field gets it from a rerun (admins
+# exist, so no token is printed):
+#
+#   docker compose run --rm ui setup --yes --ui-probe-host ui --serve-probe-host serve
 #
 # One-time owner token:   docker compose logs ui
 # The console in a shell: docker compose exec -it ui mcpcut
@@ -86,6 +99,11 @@ services:
     # screening still admits only localhost names — reach it at
     # http://localhost:8091.
     command: ["ui"]
+    environment:
+      # Either container may run the first `setup` (see the header); both carry
+      # the neighbour names that resolve on the project network.
+      MCPCUT_UI_PROBE_HOST: ui
+      MCPCUT_SERVE_PROBE_HOST: serve
     ports:
       - "127.0.0.1:8091:8091"
     # `ui` spawns registry MCP servers too — the connection probe (ADR-0008)
@@ -106,6 +124,11 @@ services:
     # Same source as `ui` above: `MCPCUT_SERVE_HOST` / `MCPCUT_SERVE_PORT` →
     # the config the entrypoint wrote (defaults 0.0.0.0:8090).
     command: ["serve"]
+    environment:
+      # Either container may run the first `setup` (see the header); both carry
+      # the neighbour names that resolve on the project network.
+      MCPCUT_UI_PROBE_HOST: ui
+      MCPCUT_SERVE_PROBE_HOST: serve
     # `ui` writes the install config on its first start; waiting for it to be
     # healthy means `serve` finds the config already there instead of both
     # containers racing to run `setup` (the entrypoint's file check makes the

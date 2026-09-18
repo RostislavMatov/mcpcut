@@ -92,6 +92,26 @@ All notable changes to this project are documented here. The format follows
   command including the service ones. `setup --yes` refuses when the exported
   value and the data directory it would write disagree, rather than preparing
   one directory while the daemons serve another.
+- **`mcpcut status` warns about a network-reachable bind** — for every
+  service bound to anything but loopback it writes
+  `<service>: warning: <detail>` to stderr, the same finding and ADR-0004
+  pointer `setup` prints; stdout and the exit code are unchanged, and a
+  stopped service is warned about too. `status --json` writes nothing to
+  stderr and instead adds `"exposure": {"level": "warn", "detail": …}` to the
+  exposed service's object; a loopback install's JSON is unchanged. In the
+  console the warning shows in the panel under `— stderr —`.
+- **`probeHost` per service** (`ui.probeHost`, `serve.probeHost`; flags
+  `setup --ui-probe-host H` / `--serve-probe-host H`, kept by a rerun without
+  them) — the address `status` dials for a service with no pid file, so under
+  compose each container sees its neighbour instead of reporting it
+  `stopped`. `docker-compose.yml` sets `MCPCUT_UI_PROBE_HOST=ui` and
+  `MCPCUT_SERVE_PROBE_HOST=serve`; the entrypoint passes the flags only when
+  those are set. The bind in `status` is unchanged and the detail names the
+  dialled address. Existing compose installs: `docker compose run --rm ui
+  setup --yes --ui-probe-host ui --serve-probe-host serve`, then restart. The
+  UI probe now sends `Host: localhost:<port>` so it passes the UI's `Host`
+  screening under a wildcard bind. Under `supervisor: external` the console's
+  Home no longer suggests `Services ▸ start`.
 
 ### Changed
 
@@ -140,6 +160,10 @@ All notable changes to this project are documented here. The format follows
   in for an owner who lost theirs; the record then carries `recovery: true` and
   no admin name, so an auditor can tell it apart. Scripts that ran `admin add`
   after the first admin must export the owner token first.
+- **Console: the active section tab is marked `▸`** in every style —
+  including `NO_COLOR` and `TERM=dumb`, where inversion alone left it
+  unmarked. Each tab label carries a one-column mark and tabs are separated by
+  one space, so the tab bar is one column wider than before for the same tabs.
 
 ### Security
 

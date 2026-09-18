@@ -385,9 +385,19 @@ describe('the whole catalogue fits the 80-column screen', () => {
 
   test('every intro line fits the pane, so none of them is cut in half', () => {
     for (const section of SECTIONS) {
-      for (const line of section.intro) {
+      for (const line of [...section.intro, ...(section.externalIntro ?? [])]) {
         expect(line.length, `intro of ${section.id}: ${line}`).toBeLessThanOrEqual(LINE_MAX_CHARS)
       }
+    }
+  })
+
+  test('an externalIntro is at most one line taller than the intro it replaces', () => {
+    // A taller intro pushes the pane's hint off a screen laid out for the intro.
+    for (const section of SECTIONS) {
+      if (section.externalIntro === undefined) continue
+      expect(section.externalIntro.length, `externalIntro of ${section.id}`).toBeLessThanOrEqual(
+        section.intro.length + 1,
+      )
     }
   })
 

@@ -38,6 +38,10 @@ describe('parseSetupArgs: the flags a non-interactive install is described by', 
       'ops',
       '--supervisor',
       'external',
+      '--ui-probe-host',
+      'ui',
+      '--serve-probe-host',
+      'serve',
     ])
 
     expect(parsed).toEqual({
@@ -55,6 +59,8 @@ describe('parseSetupArgs: the flags a non-interactive install is described by', 
         servePort: 9002,
         admin: 'ops',
         supervisor: 'external',
+        uiProbeHost: 'ui',
+        serveProbeHost: 'serve',
       },
     })
   })
@@ -221,6 +227,31 @@ describe('overlaySetupArgs: the flags the operator typed, laid over the config t
     expect(overlaid.supervisor).toBe('external')
   })
 
+  test('--serve-probe-host alone writes serve.probeHost and nothing else', () => {
+    const overlaid = overlaySetupArgs(base, { ...NO_SETUP_ARGS, serveProbeHost: 'serve' }, '/work')
+
+    expect(overlaid).toEqual({ ...base, serve: { ...base.serve, probeHost: 'serve' } })
+  })
+
+  test('--ui-probe-host alone writes ui.probeHost and nothing else', () => {
+    const overlaid = overlaySetupArgs(base, { ...NO_SETUP_ARGS, uiProbeHost: 'ui' }, '/work')
+
+    expect(overlaid).toEqual({ ...base, ui: { ...base.ui, probeHost: 'ui' } })
+  })
+
+  test('a probeHost an earlier run wrote survives a rerun that does not mention it', () => {
+    const withProbe: InstallConfig = {
+      ...base,
+      ui: { ...base.ui, probeHost: 'ui' },
+      serve: { ...base.serve, probeHost: 'serve' },
+    }
+
+    const overlaid = overlaySetupArgs(withProbe, { ...NO_SETUP_ARGS, uiHost: '0.0.0.0', servePort: 9002 }, '/work')
+
+    expect(overlaid.ui.probeHost).toBe('ui')
+    expect(overlaid.serve.probeHost).toBe('serve')
+  })
+
   test('never mutates the config it was handed', () => {
     const snapshot = structuredClone(base)
 
@@ -240,6 +271,7 @@ describe('SETUP_USAGE', () => {
     // has to name the flag that takes it back where an operator reads the flags.
     expect(SETUP_USAGE).toContain('--behind-tls|--no-behind-tls')
     expect(SETUP_USAGE).toContain('--behind-tls is remembered')
+    expect(SETUP_USAGE).toContain('[--ui-probe-host H] [--serve-probe-host H]')
     expect(SETUP_USAGE.endsWith('\n')).toBe(true)
   })
 })

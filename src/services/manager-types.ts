@@ -64,6 +64,14 @@ export interface ServiceStatus {
   readonly logPath: string
   /** Why the state is what it is, whenever that is not obvious from the state. */
   readonly detail?: string
+  /** Set only when the bind is reachable from the network (ADR-0004 warning, Q31). */
+  readonly exposure?: ServiceExposure
+}
+
+/** A bind other hosts can reach — present only when there is something to warn about. */
+export interface ServiceExposure {
+  readonly level: 'warn'
+  readonly detail: string
 }
 
 /** The outcome of `mcpcut start <service>`. */
@@ -139,4 +147,20 @@ export function managerContextOf(deps: ServiceManagerDeps): ManagerContext {
 /** The address one service is configured to listen on. */
 export function bindOf(config: InstallConfig, service: ServiceName): { readonly host: string; readonly port: number } {
   return service === 'ui' ? config.ui : config.serve
+}
+
+/**
+ * The address a status dials for a service it has NO pid file for (Q32):
+ * `probeHost` when the config names one — inside compose that is the
+ * neighbour's service name, since a wildcard bind rewritten to loopback only
+ * ever reaches this container — and the bind otherwise. The port is always
+ * the bind's. A pid record never goes through here: mcpcut started that
+ * process on the record's address, and that is where it is probed.
+ */
+export function probeTargetOf(
+  config: InstallConfig,
+  service: ServiceName,
+): { readonly host: string; readonly port: number } {
+  const bind = service === 'ui' ? config.ui : config.serve
+  return { host: bind.probeHost ?? bind.host, port: bind.port }
 }

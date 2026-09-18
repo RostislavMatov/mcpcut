@@ -21,17 +21,26 @@ const statusAction: ActionSpec = {
   argv: () => ['status'],
 }
 
+/** The part of Home's intro that holds on every install, whoever supervises it. */
+const RUN_AN_AGENT_LINES: readonly string[] = [
+  'Run an agent through the plane (outside this console):',
+  `  ${CLI_NAME} connect <server> --agent <name>`,
+  `  ${CLI_NAME} wrap --server <name> -- <command…>`,
+  'MCP_AGENT_TOKEN goes in the agent’s own environment.',
+]
+
 /** The console's first screen: what runs, and how an agent reaches the plane. */
 export const HOME_SECTION: SectionSpec = {
   id: 'home',
   title: 'Home',
   minRole: 'viewer',
-  intro: [
-    'Run an agent through the plane (outside this console):',
-    `  ${CLI_NAME} connect <server> --agent <name>`,
-    `  ${CLI_NAME} wrap --server <name> -- <command…>`,
-    'MCP_AGENT_TOKEN goes in the agent’s own environment.',
-    'A service marked ○ in the header: Services ▸ start.',
+  intro: [...RUN_AN_AGENT_LINES, 'A service marked ○ in the header: Services ▸ start.'],
+  // Under `supervisor: external` there is no `Services ▸ start` to press (Q32).
+  // Two lines, not one: the pane beside the action column is 54 columns wide.
+  externalIntro: [
+    ...RUN_AN_AGENT_LINES,
+    'Services are run by compose or systemd',
+    '(supervisor: external): mcpcut only reports.',
   ],
   actions: [statusAction],
   refreshActionId: 'status',
