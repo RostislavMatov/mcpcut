@@ -12,7 +12,7 @@ import {
  *
  * OWNER DECISION O6: a mechanism, never a default. Nothing in this codebase
  * calls `pruneRecordsOlderThan` on a timer; rows leave the journal only when
- * an operator runs `mcp-journal prune --older-than`. Deleting evidence is a
+ * an operator runs `mcpcut prune --older-than`. Deleting evidence is a
  * decision a person makes, and the first auditor who names a retention period
  * is the earliest point at which a default could be anything but a guess.
  *

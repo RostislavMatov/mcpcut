@@ -125,7 +125,7 @@ export async function importLegacyApprovals(db: ApprovalsDb): Promise<number> {
   return imported
 }
 
-/** Status set `mcp-journal migrate` reports for the approvals queue (its own, not the four
+/** Status set `mcpcut migrate` reports for the approvals queue (its own, not the four
  * document stores' `LegacyMigrationStatus`): the queue has no `native` case worth
  * distinguishing here — a queue created by ordinary use, with no legacy files ever seen,
  * reports the same `no-file` a fresh install would. */
@@ -149,7 +149,7 @@ export interface ApprovalsMigrationResult {
 
 /**
  * The explicit-command counterpart of `importLegacyApprovals`'s lazy import, used by
- * `mcp-journal migrate` (`src/cli/migrate-cmd.ts`) to report on the approvals queue up
+ * `mcpcut migrate` (`src/cli/migrate-cmd.ts`) to report on the approvals queue up
  * front, mirroring `migrateLegacyStateFile` (`store-migrate.ts`) for the document stores.
  *
  * `journalDir`, not `baseDir`: every production caller derives the queue's directory the

@@ -110,7 +110,7 @@ describe('corrupt registry file', () => {
   let journalDir: string
 
   beforeEach(async () => {
-    journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-registry-hardening-'))
+    journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-registry-hardening-'))
   })
 
   afterEach(async () => {

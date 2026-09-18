@@ -23,7 +23,7 @@ import type { SpliceErrorOrigin } from './splice.js'
 import { autoServerName } from './wire-policy.js'
 
 /**
- * Orchestrates one `mcp-journal wrap` run: spawns the wrapped MCP server,
+ * Orchestrates one `mcpcut wrap` run: spawns the wrapped MCP server,
  * relays client stdio through it in both directions, journals every line
  * (redacted) plus stderr, and forwards signals to the child.
  *

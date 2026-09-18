@@ -66,7 +66,7 @@ export function trustClassOf(entryPoint: EntryPoint): TrustClass {
 /** One agent-controlled source that exists and was ignored, in the order it would have been consulted. */
 export interface IgnoredPolicySource {
   readonly kind: 'env' | 'project'
-  /** How the source is named to the operator: `$MCP_JOURNAL_POLICY`, or the absolute project path. */
+  /** How the source is named to the operator: `$MCPCUT_POLICY`, or the absolute project path. */
   readonly descriptor: string
 }
 
@@ -171,7 +171,7 @@ export async function resolvePolicySource(
     status: 'resolved',
     entryPoint,
     trustClass,
-    // Neutralization: an empty environment removes `$MCP_JOURNAL_POLICY`, and a
+    // Neutralization: an empty environment removes `$MCPCUT_POLICY`, and a
     // `cwd` pointing at the state directory keeps `loadPolicy`'s project-level
     // candidate inside the operator's own directory too.
     loadOptions: { env: {}, cwd: journalDir, journalDir, ...readFileOption },
@@ -226,7 +226,7 @@ function resolveCandidate(cwd: string, value: string): string {
 /**
  * The agent-controlled sources that exist and are being ignored, in resolution
  * order. Existence matters: a note printed on every run is a note operators
- * learn to skip (ADR-0005). `$MCP_JOURNAL_POLICY` counts as present whenever
+ * learn to skip (ADR-0005). `$MCPCUT_POLICY` counts as present whenever
  * it is set at all -- an empty or unreadable value is still an override the
  * operator wrote and expects to have an effect.
  */

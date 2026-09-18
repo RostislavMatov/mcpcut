@@ -515,14 +515,14 @@ describe('setup --yes --no-admin', () => {
 })
 
 /**
- * `MCP_JOURNAL_DIR` outranks the config for every other command (TS-H3 /
+ * `MCPCUT_DATA_DIR` outranks the config for every other command (TS-H3 /
  * SEC-M5). `setup` cannot honour it and cannot ignore it: honouring it would
  * write a config whose `dataDir` the operator did not ask for, ignoring it
  * would prepare one directory while every later command uses another — vault,
  * signing key and owner in one plane, daemons serving a second one, and a `ui`
  * bootstrapping its own owner into `run/ui.log`. So it refuses.
  */
-describe('setup --yes with MCP_JOURNAL_DIR exported', () => {
+describe('setup --yes with MCPCUT_DATA_DIR exported', () => {
   test('refuses when the variable and the config disagree, naming both paths', async () => {
     const io = fakeIo()
     const exported = join(home, 'elsewhere')

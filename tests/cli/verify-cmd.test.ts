@@ -9,7 +9,7 @@ import type { JournalRecord } from '../../src/journal/record.js'
 import { createJournalSink } from '../../src/journal/sink.js'
 
 /**
- * `mcp-journal verify [--session <id>]` end to end: records land through the
+ * `mcpcut verify [--session <id>]` end to end: records land through the
  * real sink/batch-writer into a real tmpdir `journal.db`, then are tampered
  * with directly via SQL (never through the sink -- that is the whole point:
  * simulating an edit that bypassed the journaling path entirely), then
@@ -21,7 +21,7 @@ import { createJournalSink } from '../../src/journal/sink.js'
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-verify-cmd-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-verify-cmd-'))
 })
 
 afterEach(async () => {

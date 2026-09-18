@@ -123,14 +123,14 @@ export function formatVaultFailure(
     // `server add|list|show` (user-journey smoke 2026-09-18, UX-3).
     return (
       `missing vault secret(s) for the server's ${what}: ${result.missing.join(', ')} — ` +
-      `add each with: mcp-journal vault set <name>\n`
+      `add each with: mcpcut vault set <name>\n`
     )
   }
   if (result.status === 'invalid-refs') {
     return `invalid vault reference(s) in the server's ${what}: ${result.refs.join(', ')}\n`
   }
   if (result.failure.status === 'not-initialized') {
-    return 'the vault is not initialized; run: mcp-journal vault init\n'
+    return 'the vault is not initialized; run: mcpcut vault init\n'
   }
   return `the vault could not be read: ${result.failure.message}\n`
 }

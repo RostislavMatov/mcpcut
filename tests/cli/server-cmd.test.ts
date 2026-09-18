@@ -36,7 +36,7 @@ let journalDir: string
 let ownerEnv: NodeJS.ProcessEnv
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-server-cmd-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-server-cmd-'))
   const { token } = await createAdminStore({ journalDir }).createAdmin('root', 'owner')
   ownerEnv = { MCP_ADMIN_TOKEN: token }
 })

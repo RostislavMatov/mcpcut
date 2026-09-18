@@ -25,7 +25,7 @@ import {
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-batch-test-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-batch-test-'))
 })
 
 afterEach(async () => {

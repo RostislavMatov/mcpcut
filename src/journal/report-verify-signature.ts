@@ -19,7 +19,7 @@ import { publicKeyFingerprint } from './signing.js'
  *   and nothing else; it must never suppress the byte checks (that is the
  *   orchestrator's job, but the `unreadable` state is modelled here).
  * - V8: `createPublicKey` happily derives a public key from a PRIVATE PEM,
- *   so `--pub ~/.mcp-journal/signing.key` printed PASS. The documented next
+ *   so `--pub ~/.mcpcut/data/signing.key` printed PASS. The documented next
  *   step in the workflow is "hand the auditor the public key", and an
  *   operator who discovers that `signing.key` "works" has a plausible route
  *   to shipping the installation's private key.

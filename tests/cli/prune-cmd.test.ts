@@ -12,7 +12,7 @@ import { generateAndWriteSigningKeyPair } from '../../src/journal/signing.js'
 import { createJournalSink } from '../../src/journal/sink.js'
 
 /**
- * `mcp-journal prune --older-than <duration>` (M5 wave 6, task 6.1).
+ * `mcpcut prune --older-than <duration>` (M5 wave 6, task 6.1).
  *
  * Deleting journal records is irreversible and destroys evidence, so the
  * command's default is to say what it WOULD do; `--yes` is what actually
@@ -28,7 +28,7 @@ let journalDir: string
 let ownerEnv: NodeJS.ProcessEnv
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-prune-cmd-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-prune-cmd-'))
   const { token } = await createAdminStore({ journalDir }).createAdmin('alice', 'owner')
   ownerEnv = { [ADMIN_TOKEN_ENV_VAR]: token }
 })
@@ -241,7 +241,7 @@ describe('prune: hours are accepted, and the cutoff itself is retained', () => {
  * synopsis and lets the full table be asked for.
  */
 describe('prune: an argument error prints this command, not the whole CLI', () => {
-  const OTHER_COMMAND_ROW = 'mcp-journal wrap'
+  const OTHER_COMMAND_ROW = 'mcpcut wrap'
 
   test('a bad --older-than value names the mistake and stays short', async () => {
     const io = fakeIo()
@@ -251,7 +251,7 @@ describe('prune: an argument error prints this command, not the whole CLI', () =
     expect(exitCode).toBe(1)
     const err = io.err()
     expect(err).toContain('Invalid --older-than "0s"')
-    expect(err).toContain('mcp-journal prune --older-than <duration>')
+    expect(err).toContain('mcpcut prune --older-than <duration>')
     expect(err).toContain('mcpcut --help')
     expect(err).not.toContain(OTHER_COMMAND_ROW)
     expect(err.split('\n').length).toBeLessThan(12)
@@ -266,7 +266,7 @@ describe('prune: an argument error prints this command, not the whole CLI', () =
 
       expect(exitCode, args.join(' ')).toBe(1)
       expect(io.err(), args.join(' ')).not.toContain(OTHER_COMMAND_ROW)
-      expect(io.err(), args.join(' ')).toContain('mcp-journal prune --older-than')
+      expect(io.err(), args.join(' ')).toContain('mcpcut prune --older-than')
     }
   })
 })

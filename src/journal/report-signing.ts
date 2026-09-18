@@ -108,7 +108,7 @@ export function signReportManifest(
     throw new TypeError(
       `Refusing to sign the report manifest: the signing key is ${algorithm}, but this report ` +
         `format signs with ${REPORT_SIGNATURE_ALGORITHM} only. Generate an installation key ` +
-        'with: mcp-journal keygen',
+        'with: mcpcut keygen',
     )
   }
   const keyFingerprint = privateKeyFingerprint(privateKeyPem)

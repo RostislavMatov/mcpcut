@@ -29,7 +29,7 @@ import { MAX_SUMMARY_DECISION_ROWS, type ReportDecisionRow } from './report-summ
  * Raised when the journal holds a row the export format cannot represent
  * faithfully. Distinct from an I/O failure: nothing is wrong with the disk,
  * the DATA is shaped in a way that makes an honest export impossible, and
- * the operator's next step is `mcp-journal verify`, not a retry.
+ * the operator's next step is `mcpcut verify`, not a retry.
  */
 export class ReportExportError extends Error {
   constructor(message: string) {
@@ -223,7 +223,7 @@ export async function streamRecords(
  * (same-uid actor -- already inside the threat model) made every future
  * export of that installation verify as tampered, or buried a real finding
  * under the noise. Refusing loudly, naming the row, and sending the operator
- * to `mcp-journal verify` is the only answer that neither lies nor hides.
+ * to `mcpcut verify` is the only answer that neither lies nor hides.
  */
 function rejectUnrepresentableDoc(seq: number, doc: string): void {
   if (!doc.includes('\n')) return
@@ -231,7 +231,7 @@ function rejectUnrepresentableDoc(seq: number, doc: string): void {
     `Refusing to export: the journal row at seq ${seq} holds a raw newline inside its stored ` +
       'record, which records.jsonl (one record per line) cannot represent faithfully. The ' +
       'record is not re-encoded, because the hash chain attests its exact bytes. Investigate ' +
-      'the row first: mcp-journal verify',
+      'the row first: mcpcut verify',
   )
 }
 

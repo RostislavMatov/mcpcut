@@ -26,7 +26,7 @@ import type { ActionSpec, SectionSpec } from './types.js'
  * its records go to the path in the `out` field via `stdoutToField` and the
  * pane shows a one-line receipt instead (`savedToLine`).
  *
- * The path is deliberately NOT in argv: `mcp-journal export` has no `--out`
+ * The path is deliberately NOT in argv: `mcpcut export` has no `--out`
  * of its own (that flag belongs to `export --report`, which is the Audit
  * section's action), and a path appended anyway would be read as a stray
  * positional. The runtime opens the file itself with `wx`, which is why the

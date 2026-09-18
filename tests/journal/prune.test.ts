@@ -32,7 +32,7 @@ import type { SqliteHandle } from '../../src/store/sqlite.js'
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-prune-test-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-prune-test-'))
 })
 
 afterEach(async () => {

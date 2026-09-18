@@ -21,7 +21,7 @@ import { createJournalSink } from '../../src/journal/sink.js'
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-journal-cmds-test-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-journal-cmds-test-'))
 })
 
 afterEach(async () => {
@@ -94,7 +94,7 @@ describe('runSessionsCommand: the legacy hint', () => {
     expect(exitCode).toBe(0)
     expect(io.out()).toContain('db-session')
     expect(io.err()).toContain('2 legacy *.jsonl session file(s) are not imported')
-    expect(io.err()).toContain('mcp-journal migrate')
+    expect(io.err()).toContain('mcpcut migrate')
   })
 
   test('goes silent again after migrate imports the files', async () => {
@@ -142,7 +142,7 @@ describe('runShowCommand: the legacy hint', () => {
 
     expect(exitCode).toBe(0)
     expect(io.err()).toContain('un-imported')
-    expect(io.err()).toContain('mcp-journal migrate')
+    expect(io.err()).toContain('mcpcut migrate')
   })
 
   test('stays silent for a different session even when other legacy files exist (targeted, not noisy)', async () => {
@@ -164,7 +164,7 @@ describe('runShowCommand: the legacy hint', () => {
  * off the screen above it. The command now prints its own synopsis.
  */
 describe('runShowCommand: an argument error prints this command, not the whole CLI', () => {
-  const OTHER_COMMAND_ROW = 'mcp-journal wrap'
+  const OTHER_COMMAND_ROW = 'mcpcut wrap'
 
   test('an invalid --kind names the allowed values and stays short', async () => {
     const io = fakeIo()
@@ -174,7 +174,7 @@ describe('runShowCommand: an argument error prints this command, not the whole C
     expect(exitCode).toBe(1)
     const err = io.err()
     expect(err).toContain('Invalid --kind "bogus"')
-    expect(err).toContain('mcp-journal show <sessionId>')
+    expect(err).toContain('mcpcut show <sessionId>')
     expect(err).toContain('mcpcut --help')
     expect(err).not.toContain(OTHER_COMMAND_ROW)
   })
@@ -188,7 +188,7 @@ describe('runShowCommand: an argument error prints this command, not the whole C
 
       expect(exitCode, args.join(' ')).toBe(1)
       expect(io.err(), args.join(' ')).not.toContain(OTHER_COMMAND_ROW)
-      expect(io.err(), args.join(' ')).toContain('mcp-journal show <sessionId>')
+      expect(io.err(), args.join(' ')).toContain('mcpcut show <sessionId>')
     }
   })
 })

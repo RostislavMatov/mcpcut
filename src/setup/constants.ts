@@ -1,6 +1,6 @@
 /**
  * Constants of the install config (`~/.mcpcut/config.json`) — the file that
- * tells every `mcpcut`/`mcp-journal` process where the data directory is and
+ * tells every `mcpcut` process where the data directory is and
  * on which addresses the two services live (phase 1, task 2).
  *
  * Per the per-area convention (`src/cli/serve-constants.ts`, `src/policy/
@@ -17,10 +17,11 @@
  * temporal dead zone at module-evaluation time.
  */
 
+import { join } from 'node:path'
+
 /**
- * The command an operator types. Both `bin` names run the same `dist/cli.js`
- * (C1), and every message that tells a human what to run says `mcpcut` — the
- * name the install docs use. Deliberately not `BRAND_NAME` ('McpCut'): this is
+ * The command an operator types — the package's only `bin` name, and what
+ * every message that tells a human what to run says. Deliberately not `BRAND_NAME` ('McpCut'): this is
  * an argv token, not a title, and `src/brand.ts` is off the `config.ts`
  * resolution chain anyway (see the invariant above).
  */
@@ -36,14 +37,11 @@ export const CONFIG_FILE_NAME = 'config.json'
 export const CONFIG_PATH_ENV_VAR = 'MCPCUT_CONFIG'
 
 /**
- * Overrides the data directory, outranking the config file. Named after the
- * journal rather than the CLI (`MCPCUT_*`) because what moves IS the journal's
- * directory — the databases, the vault and the signing key all live in it —
- * and the same name then reads correctly under both `bin` entries. The value
- * must be an ABSOLUTE path: the config field it outranks is required to be
+ * Overrides the data directory — the databases, the vault and the signing
+ * key all live in it — outranking the config file. The value must be an ABSOLUTE path: the config field it outranks is required to be
  * one, and a relative value would mean a different directory in every shell.
  */
-export const DATA_DIR_ENV_VAR = 'MCP_JOURNAL_DIR'
+export const DATA_DIR_ENV_VAR = 'MCPCUT_DATA_DIR'
 
 /** Per-service bind overrides, ranked above the config and below the flags. */
 export const UI_HOST_ENV_VAR = 'MCPCUT_UI_HOST'
@@ -73,11 +71,14 @@ export const INSTALL_CONFIG_FILE_MODE = 0o600
 export const INSTALL_CONFIG_DIR_MODE = 0o700
 
 /**
- * Name of the data directory when nothing overrides it — exactly the
- * `~/.mcp-journal` an install has always used, so a host with no config file
- * behaves byte-for-byte as before.
+ * The data directory, relative to `$HOME`, when nothing overrides it:
+ * `~/.mcpcut/data`. A subdirectory of the install directory, so everything an
+ * install owns sits under one root — and never that root itself, which holds
+ * `config.json`. The project-level policy directory (`PROJECT_POLICY_SUBDIR`)
+ * deliberately has a different name, so a command typed in `$HOME` cannot
+ * find a "project" policy inside the install (ADR-0013).
  */
-export const DEFAULT_DATA_DIR_NAME = '.mcp-journal'
+export const DEFAULT_DATA_DIR_NAME = join(CONFIG_DIR_NAME, 'data')
 
 /**
  * Refuse to even parse a config larger than this. The document is a handful

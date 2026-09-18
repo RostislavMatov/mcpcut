@@ -18,7 +18,7 @@ import type { AdminRefusalWording } from './admin-token.js'
 import { adminOf, recordHostOp, resolveHostOpActor } from './host-op-write.js'
 
 /**
- * `mcp-journal migrate` — imports legacy `*.json` state (agents, admins,
+ * `mcpcut migrate` — imports legacy `*.json` state (agents, admins,
  * registry, tool inventory) into `state.db`, one line per store. Each import
  * is performed by READING through the document's own domain store, i.e. the
  * same lazy, domain-validated path `createJsonStore` runs on first touch —

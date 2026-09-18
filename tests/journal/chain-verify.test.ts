@@ -21,7 +21,7 @@ import type { SqliteHandle } from '../../src/store/sqlite.js'
  * `verifyChain`/`sessionChainSpan` (M5 wave 3, task 3.3): the pure walk over
  * `journal_records`, unit-tested against a real tmpdir SQLite database (no
  * mocks -- project rule). CLI-level tamper tests (sink-written, then
- * SQL-tampered, then `mcp-journal verify` invoked) live in
+ * SQL-tampered, then `mcpcut verify` invoked) live in
  * `tests/cli/verify-cmd.test.ts`; this file is the core's own behavior in
  * isolation, including the direct-SQL edge cases (legacy NULL-hash rows)
  * that only a raw INSERT can set up.
@@ -30,7 +30,7 @@ import type { SqliteHandle } from '../../src/store/sqlite.js'
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-chain-verify-test-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-chain-verify-test-'))
 })
 
 afterEach(async () => {

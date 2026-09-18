@@ -360,5 +360,5 @@ function describeForcedRemoval(
       ? 'its content is not a valid lock record'
       : 'its record claims a live holder, but the file itself has not been touched'
   const seconds = Math.round(mtimeAgeMs / 1000)
-  return `mcp-journal: removing abandoned lockfile ${lockPath}: ${reason} (mtime unchanged for ${seconds}s); recovering the store`
+  return `mcpcut: removing abandoned lockfile ${lockPath}: ${reason} (mtime unchanged for ${seconds}s); recovering the store`
 }

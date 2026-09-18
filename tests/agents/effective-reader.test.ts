@@ -20,7 +20,7 @@ let agents: AgentsStore
 let groups: GroupsStore
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-effective-reader-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-effective-reader-'))
   agents = createAgentsStore({ journalDir })
   groups = createGroupsStore({ journalDir })
 })

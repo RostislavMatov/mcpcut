@@ -9,7 +9,7 @@ import { createApprovalQueue } from '../../src/policy/approvals/queue.js'
 import { StoreCorruptError } from '../../src/policy/store.js'
 
 /**
- * Behavior of `mcp-journal migrate`: imports legacy `*.json` state into
+ * Behavior of `mcpcut migrate`: imports legacy `*.json` state into
  * `state.db`, one line per store, then a summary line. Routing (`dispatch`
  * wiring `migrate` to this module) is covered separately in
  * `tests/cli/dispatch.test.ts`.
@@ -18,7 +18,7 @@ import { StoreCorruptError } from '../../src/policy/store.js'
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-migrate-cmd-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-migrate-cmd-'))
 })
 
 afterEach(async () => {

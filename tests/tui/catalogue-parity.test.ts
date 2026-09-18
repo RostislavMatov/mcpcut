@@ -46,7 +46,7 @@ const EXCLUDED_FROM_CATALOGUE: readonly CommandPair[] = [
 const NOT_YET_COVERED: readonly CommandPair[] = []
 
 /** A row of the table: two spaces, a binary name, the command, then the rest. */
-const ROW_PATTERN = new RegExp(`^${ROW_INDENT}(?:mcp-journal|mcpcut) (\\S+)(?: (.*))?$`)
+const ROW_PATTERN = new RegExp(`^${ROW_INDENT}(?:mcpcut|mcpcut) (\\S+)(?: (.*))?$`)
 
 /** A bare word — a subcommand looks like this, a `<placeholder>` or a `--flag` does not. */
 const BARE_WORD_PATTERN = /^[a-z][a-z-]*$/
@@ -242,9 +242,9 @@ describe('every command of the CLI is accounted for', () => {
 describe('usagePairs: the description of a row is never mistaken for its synopsis', () => {
   test('a pipe or a placeholder in the prose yields no phantom pair', () => {
     const usage = [
-      `${ROW_INDENT}mcp-journal approvals list [--json]   List pending approval | requests, one row each`,
-      `${ROW_INDENT}mcp-journal backup <destDir>   Back up into <dir>|zip`,
-      `${ROW_INDENT}mcp-journal status [--json]   Print a table | one row per service`,
+      `${ROW_INDENT}mcpcut approvals list [--json]   List pending approval | requests, one row each`,
+      `${ROW_INDENT}mcpcut backup <destDir>   Back up into <dir>|zip`,
+      `${ROW_INDENT}mcpcut status [--json]   Print a table | one row per service`,
     ].join('\n')
 
     expect(usagePairs(usage)).toEqual([
@@ -255,7 +255,7 @@ describe('usagePairs: the description of a row is never mistaken for its synopsi
   })
 
   test('a synopsis longer than the description column keeps all its subcommands', () => {
-    const usage = `${ROW_INDENT}mcp-journal group create|remove|list|show|grant|ungrant|join|leave <name>  Manage groups`
+    const usage = `${ROW_INDENT}mcpcut group create|remove|list|show|grant|ungrant|join|leave <name>  Manage groups`
 
     expect(usagePairs(usage).map((pair) => pair.subcommand)).toEqual([
       'create',

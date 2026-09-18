@@ -55,8 +55,8 @@ let journalDir: string
 let outParent: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-report-sweep-journal-'))
-  outParent = await mkdtemp(join(tmpdir(), 'mcp-journal-report-sweep-out-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-report-sweep-journal-'))
+  outParent = await mkdtemp(join(tmpdir(), 'mcpcut-report-sweep-out-'))
 })
 
 afterEach(async () => {
@@ -81,7 +81,7 @@ function capturingIo(): CapturedIo {
 
 describe('export --report: no secret reaches the artifacts that leave the host', () => {
   test('a private-key PEM and a bearer token in journaled traffic appear nowhere in the export', async () => {
-    const foreignKeyDir = await mkdtemp(join(tmpdir(), 'mcp-journal-report-sweep-keydir-'))
+    const foreignKeyDir = await mkdtemp(join(tmpdir(), 'mcpcut-report-sweep-keydir-'))
     try {
       // Key material an MCP server or agent could put into a tool call --
       // deliberately NOT this installation's own key, so the assertion is

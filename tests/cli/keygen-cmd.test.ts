@@ -6,7 +6,7 @@ import { runKeygenCommand } from '../../src/cli/keygen-cmd.js'
 import { publicKeyFingerprint, signingKeyPathFor, signingPubPathFor } from '../../src/journal/signing.js'
 
 /**
- * `mcp-journal keygen` (M5 wave 4, task 4.2): the operator-facing half of
+ * `mcpcut keygen` (M5 wave 4, task 4.2): the operator-facing half of
  * `journal/signing.ts`'s key generation. Real tmpdir, real Ed25519 keys --
  * no crypto mocks.
  */
@@ -14,7 +14,7 @@ import { publicKeyFingerprint, signingKeyPathFor, signingPubPathFor } from '../.
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-keygen-cmd-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-keygen-cmd-'))
 })
 
 afterEach(async () => {

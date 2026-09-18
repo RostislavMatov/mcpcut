@@ -18,7 +18,7 @@ let journalDir: string
 let baseDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-ui-watch-test-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-ui-watch-test-'))
   baseDir = join(journalDir, 'approvals')
 })
 

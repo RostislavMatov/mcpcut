@@ -13,7 +13,7 @@ import { createVaultStore, type VaultStore } from '../../src/vault/store.js'
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-vault-store-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-vault-store-'))
 })
 
 afterEach(async () => {

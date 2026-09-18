@@ -50,7 +50,7 @@ const FIXED_NOW_MS = Date.parse('2026-08-24T10:00:00.000Z')
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-probe-record-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-probe-record-'))
 })
 
 afterEach(async () => {

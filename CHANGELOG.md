@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **One name: `mcpcut`.** The working name `mcp-journal` is gone from the
+  product (ADR-0013). The package and its only `bin` entry are `mcpcut`; the
+  default data directory is `~/.mcpcut/data`, next to the install config in
+  `~/.mcpcut/`; the environment overrides are `MCPCUT_DATA_DIR` and
+  `MCPCUT_POLICY`; the project-level policy file is
+  `<cwd>/.mcpcut-project/policy.json` — deliberately not `.mcpcut`, so a command
+  run from `$HOME` cannot mistake the install directory for a project;
+  `export --report` defaults to `./mcpcut-report`; the vault's AAD label is
+  `mcpcut-vault:v<N>`. Nothing reads the old names: a pre-release store under
+  `~/.mcp-journal` is opened by pointing `dataDir` (or `MCPCUT_DATA_DIR`) at
+  it, and its vault secrets have to be set again, because the AAD label is
+  part of what AES-GCM authenticates.
+
 ### Added
 
 - **First-run wizard**: a bare `mcpcut` on a terminal with no install config,
@@ -66,13 +81,11 @@ All notable changes to this project are documented here. The format follows
   `docs/deploy/`, with install steps in `docs/deploy/README.md`; they are
   examples to adapt, not something `mcpcut` installs. README gained «First
   run», «Services» and «Docker» sections.
-- **`mcpcut` binary**: a second `bin` entry pointing at the same file as
-  `mcp-journal` — the two names are one dispatcher with identical behaviour.
 - **Install config** `~/.mcpcut/config.json` (path overridable with
   `MCPCUT_CONFIG`): the data directory and the `ui` / `serve` bindings, resolved
   at process start with the priority **flag > environment variable > config >
-  default**. `MCP_JOURNAL_DIR` overrides the data directory without a config
-  file; with neither, the directory stays `$HOME/.mcp-journal` as before. A
+  default**. `MCPCUT_DATA_DIR` overrides the data directory without a config
+  file; with neither, the directory is `$HOME/.mcpcut/data`. A
   config that cannot be read or does not validate makes every command except
   `--help` and `setup` refuse, naming the file and the problems.
 - **`setup --yes`**: non-interactive install — writes the config, prepares the
@@ -88,7 +101,7 @@ All notable changes to this project are documented here. The format follows
   **and** the service answers on its port. `run/` and the files in it stay
   owner-only: a start refuses otherwise, and `setup` reports the same condition
   as a `run dir` row in its preflight.
-- **`MCP_JOURNAL_DIR` must be an absolute path**, and it is honoured by every
+- **`MCPCUT_DATA_DIR` must be an absolute path**, and it is honoured by every
   command including the service ones. `setup --yes` refuses when the exported
   value and the data directory it would write disagree, rather than preparing
   one directory while the daemons serve another.
@@ -138,7 +151,7 @@ All notable changes to this project are documented here. The format follows
 - **Docker**: the image's entrypoint runs `setup --yes --supervisor external`
   on the first start of `ui`/`serve` (binds from `MCPCUT_UI_HOST`/`_PORT`,
   `MCPCUT_SERVE_HOST`/`_PORT`; owner token in `docker compose logs ui`), the
-  install config lives on its own volume (`mcp-config`), `serve` starts after
+  install config and the data share one volume (`mcpcut`, at `~/.mcpcut`), `serve` starts after
   `ui` is healthy, and `mcpcut` is on the image's `PATH` —
   `docker compose exec -it ui mcpcut` opens the console.
 - `start`/`stop`/`logs` without an install config now point at `mcpcut` (the
@@ -191,7 +204,7 @@ All notable changes to this project are documented here. The format follows
   can describe. The JSON-RPC error talks about a *method* instead of opening
   with `Call to tool "resources/list"`. Journals written before this keep their
   old text and are still recognised by name.
-- **`mcp-journal server add` is journaled like `server remove`**: it writes an
+- **`mcpcut server add` is journaled like `server remove`**: it writes an
   `access-edit` record (`server.add`) and an
   `[audit] server add by <name> (<role>)` line naming the owner who ran it (see
   Security below: both commands are owner-only).
@@ -208,7 +221,7 @@ All notable changes to this project are documented here. The format follows
   logs. Exactly that one warning is suppressed; every other warning Node emits
   still reaches stderr.
 - **The vault-refused probe message reads as one line**: `missing vault
-  secret(s) for the server's headers: crm-token — add each with: mcp-journal
+  secret(s) for the server's headers: crm-token — add each with: mcpcut
   vault set <name>`. A newline in it used to surface as `crm-token?Add each…`
   in `server add|list|show`.
 - **The admin UI offers no control the role cannot use.** Below `operator` the

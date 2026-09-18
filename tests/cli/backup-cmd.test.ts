@@ -10,7 +10,7 @@ import { openStateDbShared } from '../../src/policy/store-backend.js'
 import type { JournalRecord } from '../../src/journal/record.js'
 
 /**
- * Behavior of `mcp-journal backup <destDir>`: an online SQLite backup of both
+ * Behavior of `mcpcut backup <destDir>`: an online SQLite backup of both
  * `state.db` and `journal.db` into a destination directory. Routing
  * (`dispatch` wiring `backup` to this module) is covered separately in
  * `tests/cli/dispatch.test.ts`.
@@ -20,8 +20,8 @@ let journalDir: string
 let destDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-backup-cmd-src-'))
-  destDir = join(await mkdtemp(join(tmpdir(), 'mcp-journal-backup-cmd-dest-')), 'snapshot')
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-backup-cmd-src-'))
+  destDir = join(await mkdtemp(join(tmpdir(), 'mcpcut-backup-cmd-dest-')), 'snapshot')
 })
 
 afterEach(async () => {
@@ -150,7 +150,7 @@ describe('backup: destDir is a symlink', () => {
   test("refuses, exit 1, and leaves the link target's mode and contents untouched", async () => {
     // A symlink pre-staged where the operator will point the backup: the
     // command's chmod would otherwise tighten SOMEBODY ELSE'S directory to 0700.
-    const targetDir = await mkdtemp(join(tmpdir(), 'mcp-journal-backup-cmd-target-'))
+    const targetDir = await mkdtemp(join(tmpdir(), 'mcpcut-backup-cmd-target-'))
     await chmod(targetDir, 0o755)
     await symlink(targetDir, destDir)
     await writeJournalRecord()

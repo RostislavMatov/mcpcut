@@ -26,7 +26,7 @@ import { createRegistryStore } from '../../src/registry/store.js'
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-server-gate-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-server-gate-'))
 })
 
 afterEach(async () => {

@@ -112,7 +112,7 @@ export function runningManager(journalDir: string): ServiceManager {
  *
  * `policy` gets `cwd` as well as `journalDir` so that both the file `policy
  * set` writes and the file `policy show` resolves are inside the temp
- * directory: the project-level candidate is `<cwd>/.mcp-journal/policy.json`
+ * directory: the project-level candidate is `<cwd>/.mcpcut-project/policy.json`
  * and the home-level one is `<journalDir>/policy.json` (ADR-0005).
  */
 export function consoleDispatchOptions(

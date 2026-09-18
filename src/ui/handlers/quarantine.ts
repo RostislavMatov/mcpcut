@@ -22,7 +22,7 @@ import type { AccessEditJournalPort } from './agents.js'
  *
  * Since owner decision Q17 (2026-09-08) a successful release also leaves an
  * `access-edit` journal record (`quarantine.approve` / `quarantine.reject`,
- * `via: 'ui'`) — the same record `mcp-journal quarantine approve` writes with
+ * `via: 'ui'`) — the same record `mcpcut quarantine approve` writes with
  * `via: 'cli'`, so the two surfaces are indistinguishable in form. Until Q17
  * the stderr audit line was the only attribution the web path left, which put
  * the one hash-chained account of who let a tool out of quarantine outside

@@ -17,8 +17,8 @@ let journalDir: string
 let stderr: string[]
 
 beforeEach(async () => {
-  cwd = await mkdtemp(join(tmpdir(), 'mcp-journal-connect-adopt-cwd-'))
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-connect-adopt-home-'))
+  cwd = await mkdtemp(join(tmpdir(), 'mcpcut-connect-adopt-cwd-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-connect-adopt-home-'))
   stderr = []
 })
 
@@ -55,8 +55,8 @@ describe('connect started with no policy file', () => {
   test('never adopts a project file from the agent’s working directory', async () => {
     const policy = await startedWithoutPolicy()
 
-    await mkdir(join(cwd, '.mcp-journal'), { recursive: true })
-    await writeFile(join(cwd, '.mcp-journal', 'policy.json'), DENY_ALL, 'utf8')
+    await mkdir(join(cwd, '.mcpcut-project'), { recursive: true })
+    await writeFile(join(cwd, '.mcpcut-project', 'policy.json'), DENY_ALL, 'utf8')
     await policy.refresh()
 
     expect(policy.current().defaultDecision).toBe('allow')

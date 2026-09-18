@@ -27,7 +27,7 @@ const TEST_TIMEOUT_MS = 20_000
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-retry-timer-test-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-retry-timer-test-'))
 })
 
 afterEach(async () => {

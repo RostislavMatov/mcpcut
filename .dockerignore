@@ -16,7 +16,7 @@ docs
 
 # Local state that must never leak into an image layer: the journal directory
 # holds proxied traffic, the vault and the installation's signing key.
-.mcp-journal
+.mcpcut-project
 *.db
 *.db-wal
 *.db-shm

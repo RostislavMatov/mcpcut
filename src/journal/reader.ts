@@ -54,7 +54,7 @@ export interface SessionReadResult {
  *
  * Legacy `*.jsonl` files are NOT listed (M4.5 wave 5): `journal.db` is the one
  * carrier of journal truth, and an un-imported file becomes visible only after
- * `mcp-journal migrate`. A database session with no rows left — an import
+ * `mcpcut migrate`. A database session with no rows left — an import
  * marker alone — is omitted because there is nothing to show.
  */
 export async function listSessions(dir: string = JOURNAL_DIR): Promise<SessionSummary[]> {
@@ -106,7 +106,7 @@ export async function readSession(
  *
  * The session is read from `journal.db` whole and uncapped — this is the
  * one-shot print, so a page limit would be silent truncation. A session the
- * database is not the carrier for reads as empty; `mcp-journal migrate` is
+ * database is not the carrier for reads as empty; `mcpcut migrate` is
  * what makes a legacy `*.jsonl` one of its own.
  */
 export async function readSessionWithStats(

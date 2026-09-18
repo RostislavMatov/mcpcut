@@ -17,7 +17,7 @@ import type { InstallConfig } from '../../src/setup/schema.js'
 /**
  * Resolving the data directory (phase 1, task 4) — the decision `src/config.ts`
  * makes once, at import, for every command in the process. Its three sources
- * are ranked `MCP_JOURNAL_DIR` > install config > `~/.mcp-journal`, and a
+ * are ranked `MCPCUT_DATA_DIR` > install config > `~/.mcpcut/data`, and a
  * config that cannot be read is reported as a value rather than thrown, so the
  * dispatcher can refuse with an explanation instead of the process dying
  * before any command exists.
@@ -45,7 +45,7 @@ function invalidLoad(problems: readonly string[]): InstallConfigLoad {
 const ABSENT_LOAD: InstallConfigLoad = { kind: 'absent', path: CONFIG_PATH }
 
 describe('resolveDataDir', () => {
-  test('MCP_JOURNAL_DIR outranks the config file', () => {
+  test('MCPCUT_DATA_DIR outranks the config file', () => {
     const resolution = resolveDataDir({
       env: { [DATA_DIR_ENV_VAR]: '/srv/from-env' },
       home: '/home/op',
@@ -56,7 +56,7 @@ describe('resolveDataDir', () => {
     expect(resolution.source).toBe('env')
   })
 
-  test('an empty MCP_JOURNAL_DIR counts as not set, like every other env seam', () => {
+  test('an empty MCPCUT_DATA_DIR counts as not set, like every other env seam', () => {
     const resolution = resolveDataDir({
       env: { [DATA_DIR_ENV_VAR]: '' },
       home: '/home/op',
@@ -67,7 +67,7 @@ describe('resolveDataDir', () => {
     expect(resolution.source).toBe('config')
   })
 
-  test('a relative MCP_JOURNAL_DIR is refused, never resolved against the working directory', () => {
+  test('a relative MCPCUT_DATA_DIR is refused, never resolved against the working directory', () => {
     const resolution = resolveDataDir({
       env: { [DATA_DIR_ENV_VAR]: 'plane-data' },
       home: '/home/op',
@@ -84,7 +84,7 @@ describe('resolveDataDir', () => {
     ])
   })
 
-  test('a relative MCP_JOURNAL_DIR reports the config faults it found as well', () => {
+  test('a relative MCPCUT_DATA_DIR reports the config faults it found as well', () => {
     const resolution = resolveDataDir({
       env: { [DATA_DIR_ENV_VAR]: './plane-data' },
       home: '/home/op',
@@ -105,9 +105,13 @@ describe('resolveDataDir', () => {
     expect(resolution.configPath).toBe(CONFIG_PATH)
   })
 
-  test('no config file at all leaves the historical ~/.mcp-journal in place', () => {
+  test('no config file at all lands inside the install directory, at ~/.mcpcut/data', () => {
     const resolution = resolveDataDir({ env: {}, home: '/home/op', load: ABSENT_LOAD })
 
+    // Spelled out, not built from the constant: everything the install owns
+    // lives under one directory, and the data is a subdirectory of it — never
+    // the install directory itself, where `config.json` sits.
+    expect(resolution.dataDir).toBe(join('/home/op', '.mcpcut', 'data'))
     expect(resolution.dataDir).toBe(join('/home/op', DEFAULT_DATA_DIR_NAME))
     expect(resolution.source).toBe('default')
     expect(resolution.problem).toBeUndefined()
@@ -128,7 +132,7 @@ describe('resolveDataDir', () => {
     ])
   })
 
-  test('an unusable config is still reported when MCP_JOURNAL_DIR answers the question', () => {
+  test('an unusable config is still reported when MCPCUT_DATA_DIR answers the question', () => {
     const resolution = resolveDataDir({
       env: { [DATA_DIR_ENV_VAR]: '/srv/from-env' },
       home: '/home/op',

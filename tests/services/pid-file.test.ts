@@ -32,7 +32,7 @@ import {
 let dataDir: string
 
 beforeEach(async () => {
-  dataDir = await mkdtemp(join(tmpdir(), 'mcp-journal-pid-file-'))
+  dataDir = await mkdtemp(join(tmpdir(), 'mcpcut-pid-file-'))
 })
 
 afterEach(async () => {

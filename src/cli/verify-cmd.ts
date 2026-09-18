@@ -18,7 +18,7 @@ import { adminOf, resolveHostOpActor } from './host-op-write.js'
 import { attemptSignChainHead, recordVerifySign, VERIFY_SIGN_REFUSAL } from './verify-sign.js'
 
 /**
- * `mcp-journal verify [--session <id>]` -- the operator/auditor-facing half
+ * `mcpcut verify [--session <id>]` -- the operator/auditor-facing half
  * of the M5 wave 3 hash chain (`journal/chain-verify.ts` does the walk; this
  * module is argv, output formatting, and the exit code). Mirrors
  * `export-cmd.ts`'s shape: a journal-dir test seam, a probe-only DB open
@@ -77,12 +77,12 @@ const EXIT_USAGE_ERROR = 1
 const EXIT_CHAIN_BROKEN = 2
 
 const USAGE =
-  'Usage: mcp-journal verify [--session <id>] [--sign]\n' +
-  '       mcp-journal verify --report <dir> [--pub <path>] [--require-signature]\n' +
+  'Usage: mcpcut verify [--session <id>] [--sign]\n' +
+  '       mcpcut verify --report <dir> [--pub <path>] [--require-signature]\n' +
   'Recomputes the record hash chain (seq order) and reports where it stays\n' +
   'consistent with what is stored, and where it does not.\n' +
   '--sign additionally signs the current chain HEAD (not every record) with\n' +
-  'this installation\'s Ed25519 key ("mcp-journal keygen"); see its own output\n' +
+  'this installation\'s Ed25519 key ("mcpcut keygen"); see its own output\n' +
   'for what that anchor does and does not prove.\n' +
   '--report verifies an EXPORTED report directory offline instead: no database\n' +
   'is opened at all, so it runs on a machine that has only the export and a\n' +
@@ -124,7 +124,7 @@ function reportModeConflict(values: {
     return (
       '--report cannot be combined with --session: --session narrows a walk over the journal database, ' +
       'while --report verifies an already-exported directory whose scope was fixed at export time ' +
-      '(scope the export instead: mcp-journal export --report --session <id>).'
+      '(scope the export instead: mcpcut export --report --session <id>).'
     )
   }
   return null

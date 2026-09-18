@@ -35,7 +35,7 @@ let sink: JournalSink
 let errors: unknown[]
 
 beforeEach(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), 'mcp-journal-gate-reload-test-'))
+  tempDir = await mkdtemp(join(tmpdir(), 'mcpcut-gate-reload-test-'))
   sink = createJournalSink(SESSION_ID, { dir: tempDir })
   errors = []
 })

@@ -14,11 +14,11 @@
 # `connect`, the stdio proxy, is not here on purpose: the agent's own client
 # spawns it and speaks to it over stdin/stdout, so it has no container shape.
 #
-# Policy resolution (ADR-0005) tries, in order: --policy, $MCP_JOURNAL_POLICY,
-# <cwd>/.mcp-journal/policy.json, <journalDir>/policy.json. The image's WORKDIR
-# (/app) holds no `.mcp-journal`, so both processes land on the file in the
+# Policy resolution (ADR-0005) tries, in order: --policy, $MCPCUT_POLICY,
+# <cwd>/.mcpcut-project/policy.json, <journalDir>/policy.json. The image's WORKDIR
+# (/app) holds no `.mcpcut-project`, so both processes land on the file in the
 # volume — the same one the UI writes. Do NOT bind-mount a checkout over /app:
-# a `.mcp-journal/policy.json` in it would shadow the volume's policy, and the
+# a `.mcpcut-project/policy.json` in it would shadow the volume's policy, and the
 # console would then be editing rules the proxies do not enforce.
 #
 # The first start of `ui` runs `setup --yes --supervisor external` from the
@@ -27,7 +27,7 @@
 # output. The entrypoint takes its answers from `MCPCUT_DATA_DIR`,
 # `MCPCUT_UI_HOST`/`MCPCUT_UI_PORT`, `MCPCUT_SERVE_HOST`/`MCPCUT_SERVE_PORT`
 # and `MCPCUT_ADMIN` — add them to both services' `environment:` blocks to
-# change what the install is. Do NOT set `MCP_JOURNAL_DIR` here: it outranks
+# change what the install is. Do NOT set `MCPCUT_DATA_DIR` here: it outranks
 # the config for every command, so `setup` refuses the run (`dataDirConflict`)
 # and, under `set -eu` with `restart: unless-stopped`, the container
 # crash-loops.
@@ -66,15 +66,14 @@ x-plane: &plane
     context: .
   image: mcp-control-plane:local
   volumes:
-    # Mounted at $HOME/.mcp-journal, which is what src/config.ts derives
-    # JOURNAL_DIR from. Both databases, the vault, policy.json and the
-    # installation signing key live here.
-    - mcp-data:/home/node/.mcp-journal
-    # The install config, written by the entrypoint on the first start of
-    # whichever service container comes first. It is a volume of its own so
-    # that it survives `docker compose down` and a rebuilt image, and so that
-    # a second start skips setup instead of repeating it.
-    - mcp-config:/home/node/.mcpcut
+    # One volume for the whole install directory, $HOME/.mcpcut: `data/` is
+    # what src/config.ts derives JOURNAL_DIR from (both databases, the vault,
+    # policy.json, the installation signing key), and `config.json` beside it
+    # is the install config the entrypoint writes on the first start of
+    # whichever service container comes first. On a volume it survives
+    # `docker compose down` and a rebuilt image, so a second start skips setup
+    # instead of repeating it.
+    - mcpcut:/home/node/.mcpcut
   restart: unless-stopped
   # The CLI installs SIGINT/SIGTERM handlers and shuts down gracefully; give
   # in-flight batches room to commit before the daemon is killed.
@@ -151,5 +150,4 @@ services:
       retries: 3
 
 volumes:
-  mcp-data:
-  mcp-config:
+  mcpcut:

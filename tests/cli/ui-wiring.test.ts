@@ -117,9 +117,9 @@ function buildDeps(overrides: BuildDepsOverrides): Parameters<typeof composeUi>[
   const hub = { hasCapacity: () => true } as unknown as EventHub
 
   return {
-    journalDir: '/tmp/mcp-journal-ui-wiring-test',
-    approvalsBaseDir: '/tmp/mcp-journal-ui-wiring-test/approvals',
-    inventoryStorePath: '/tmp/mcp-journal-ui-wiring-test/inventory.json',
+    journalDir: '/tmp/mcpcut-ui-wiring-test',
+    approvalsBaseDir: '/tmp/mcpcut-ui-wiring-test/approvals',
+    inventoryStorePath: '/tmp/mcpcut-ui-wiring-test/inventory.json',
     adminStore,
     agents,
     registry,

@@ -27,7 +27,7 @@ import type { SqliteHandle } from '../../src/store/sqlite.js'
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-db-read-test-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-db-read-test-'))
 })
 
 afterEach(async () => {

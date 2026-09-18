@@ -19,7 +19,7 @@ describe('runWrap', () => {
   let journalDir: string
 
   beforeEach(async () => {
-    journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-wrap-test-'))
+    journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-wrap-test-'))
   })
 
   afterEach(async () => {

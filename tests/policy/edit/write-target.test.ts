@@ -17,16 +17,16 @@ import {
  * file while the card claimed there was no policy at all.
  *
  * Who reads the resolved file is computed, never guessed: `connect`
- * (agent-launched) reads `<journalDir>/.mcp-journal/policy.json` then
+ * (agent-launched) reads `<journalDir>/.mcpcut-project/policy.json` then
  * `<journalDir>/policy.json`; every operator-launched entry reads the
  * four-source order.
  */
 
-const JOURNAL_DIR = '/state/mcp-journal'
+const JOURNAL_DIR = '/state/mcpcut'
 const WORK_DIR = '/work/project'
 const FLAT = join(JOURNAL_DIR, 'policy.json')
-const NESTED = join(JOURNAL_DIR, '.mcp-journal', 'policy.json')
-const PROJECT = join(WORK_DIR, '.mcp-journal', 'policy.json')
+const NESTED = join(JOURNAL_DIR, '.mcpcut-project', 'policy.json')
+const PROJECT = join(WORK_DIR, '.mcpcut-project', 'policy.json')
 
 function deps(present: readonly string[]): PolicyEditTargetDeps {
   return { exists: async (path) => present.includes(path) }
@@ -53,8 +53,8 @@ describe('resolvePolicyEditTarget -- which file an edit lands in', () => {
     expect(resolved.path).toBe(PROJECT)
   })
 
-  test('$MCP_JOURNAL_POLICY is the target even when the file is missing -- the entry point is bound to that path', async () => {
-    const resolved = await target([FLAT], { env: { MCP_JOURNAL_POLICY: '/etc/mcp/policy.json' } })
+  test('$MCPCUT_POLICY is the target even when the file is missing -- the entry point is bound to that path', async () => {
+    const resolved = await target([FLAT], { env: { MCPCUT_POLICY: '/etc/mcp/policy.json' } })
     expect(resolved.path).toBe('/etc/mcp/policy.json')
   })
 

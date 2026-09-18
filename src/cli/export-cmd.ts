@@ -7,7 +7,7 @@ import { assertValidSessionId } from '../journal/session-id.js'
 import { runExportReportCommand } from './report-cmd.js'
 
 /**
- * `mcp-journal export` — streams the journal's records as JSONL to stdout,
+ * `mcpcut export` — streams the journal's records as JSONL to stdout,
  * one `doc` per line, verbatim as persisted. Whole-journal export walks
  * `journal.db` in `seq` order (global write order — the order M5's hash
  * chain will attest); `--session <id>` narrows to one session's own `seq`
@@ -45,12 +45,12 @@ export interface ExportCommandOptions {
 }
 
 const USAGE =
-  'Usage: mcp-journal export [--session <id>]\n' +
-  '       mcp-journal export --report [--session <id>] [--out <dir>]\n' +
+  'Usage: mcpcut export [--session <id>]\n' +
+  '       mcpcut export --report [--session <id>] [--out <dir>]\n' +
   'Export journal records as JSONL to stdout, or (--report) as an\n' +
   'evidentiary report directory -- report.json, records.jsonl, summary.md,\n' +
-  'and signature.json when a signing key exists ("mcp-journal keygen").\n' +
-  '--out defaults to "mcp-journal-report" under the current directory and\n' +
+  'and signature.json when a signing key exists ("mcpcut keygen").\n' +
+  '--out defaults to "mcpcut-report" under the current directory and\n' +
   'must be an empty or nonexistent directory.\n'
 
 /**
@@ -92,7 +92,7 @@ export async function runExportCommand(
     // missing evidence is actually needed.
     io.stderr.write(
       `--out only applies together with --report (got: --out ${values.out} without --report)\n` +
-        `Did you mean: mcp-journal export --report --out ${values.out}\n\n${USAGE}`,
+        `Did you mean: mcpcut export --report --out ${values.out}\n\n${USAGE}`,
     )
     return 1
   }
@@ -165,7 +165,7 @@ async function writeLegacyHint(io: ExportCliIo, journalDir: string): Promise<voi
     if (unimported.length > 0) {
       io.stderr.write(
         `${unimported.length} legacy *.jsonl session file(s) are not imported; ` +
-          'run `mcp-journal migrate` to see them.\n',
+          'run `mcpcut migrate` to see them.\n',
       )
     }
   } catch {

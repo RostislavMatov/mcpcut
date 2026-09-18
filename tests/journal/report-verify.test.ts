@@ -44,7 +44,7 @@ const AS_OF = '2026-08-18T12:00:00.000Z'
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-report-verify-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-report-verify-'))
 })
 
 afterEach(async () => {
@@ -319,7 +319,7 @@ describe('verifyReportExport: the signature', () => {
   test("a different installation's public key fails the signature check", async () => {
     const fixture = await buildExport()
     const signed = await signWith(fixture.manifest)
-    const otherDir = await mkdtemp(join(tmpdir(), 'mcp-journal-other-install-'))
+    const otherDir = await mkdtemp(join(tmpdir(), 'mcpcut-other-install-'))
     try {
       const otherPair = await generateAndWriteSigningKeyPair(otherDir)
 
@@ -1131,7 +1131,7 @@ describe('verifyReportExport: an unreasonably long line', () => {
 /**
  * A PRIVATE key handed to `--pub` (finding V8). `createPublicKey` happily
  * derives a public key from a private PEM, so `verify --report --pub
- * ~/.mcp-journal/signing.key` printed PASS -- and an operator who discovers
+ * ~/.mcpcut/data/signing.key` printed PASS -- and an operator who discovers
  * that `signing.key` "works" has a plausible route to shipping the
  * installation's private key to an auditor.
  */

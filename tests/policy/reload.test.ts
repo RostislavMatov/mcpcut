@@ -280,8 +280,8 @@ describe('createPolicyProvider — the contract the gate relies on', () => {
   })
 
   test('a preceding candidate is noticed on the sync path too', () => {
-    const stand = createStand({ precedingCandidates: ['/plane/.mcp-journal/policy.json'] })
-    stand.shadowing.add('/plane/.mcp-journal/policy.json')
+    const stand = createStand({ precedingCandidates: ['/plane/.mcpcut-project/policy.json'] })
+    stand.shadowing.add('/plane/.mcpcut-project/policy.json')
     stand.provider.maybeRefresh()
     expect(stand.shadowed).toHaveLength(1)
   })
@@ -537,7 +537,7 @@ describe('createPolicyProvider — ADR-0005: the source is pinned to the entry p
         journalDir: '/plane',
         // A project-level file has appeared since the home-level one was loaded.
         readFile: (path) =>
-          path === '/project/.mcp-journal/policy.json'
+          path === '/project/.mcpcut-project/policy.json'
             ? Promise.resolve(JSON.stringify(DENY_ALL))
             : Promise.resolve(JSON.stringify(ALLOW_ALL)),
       },
@@ -549,7 +549,7 @@ describe('createPolicyProvider — ADR-0005: the source is pinned to the entry p
 
     expect(provider.current().defaultDecision).toBe('allow')
     expect(failures).toHaveLength(1)
-    expect(failures[0]!.errors.join('\n')).toContain('/project/.mcp-journal/policy.json')
+    expect(failures[0]!.errors.join('\n')).toContain('/project/.mcpcut-project/policy.json')
   })
 
   test('with only the readFile seam injected, the version is derived from that reader', async () => {
@@ -573,7 +573,7 @@ describe('createPolicyProvider — ADR-0005: the source is pinned to the entry p
 })
 
 describe('createPolicyProvider — a higher-priority candidate created after binding (shadowing)', () => {
-  const PROJECT_PATH = '/plane/.mcp-journal/policy.json'
+  const PROJECT_PATH = '/plane/.mcpcut-project/policy.json'
 
   test('a preceding candidate that appears is reported ONCE, and the bound policy is never re-targeted', async () => {
     const stand = createStand({ precedingCandidates: [PROJECT_PATH] })

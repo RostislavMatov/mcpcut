@@ -14,7 +14,7 @@ import {
 import { renderResult } from './verify-report-render.js'
 
 /**
- * `mcp-journal verify --report <dir> [--pub <path>] [--require-signature]`
+ * `mcpcut verify --report <dir> [--pub <path>] [--require-signature]`
  * (M5 wave 5, task 5.3): the auditor's procedure. Files, formatting and the
  * exit code live here; the checks themselves are in
  * `journal/report-verify.ts`, the untrusted-input validation in
@@ -172,7 +172,7 @@ async function loadManifest(reportDir: string): Promise<ManifestLookup> {
       ok: false,
       message:
         `No "${REPORT_FILES.manifest}" at "${path}". Point --report at the directory an ` +
-        '"mcp-journal export --report" run produced (it holds report.json, records.jsonl and summary.md).\n',
+        '"mcpcut export --report" run produced (it holds report.json, records.jsonl and summary.md).\n',
     }
   }
   if (text.status === 'error') {
@@ -220,7 +220,7 @@ async function loadKey(request: ReportVerifyRequest, io: ReportVerifyIo): Promis
     io.stderr.write(
       `No public key at "${request.pubPath}"${request.pubExplicit ? '' : ' (the default location)'}. ` +
         'This export is signed, so pass the public key the operator handed over: ' +
-        'mcp-journal verify --report <dir> --pub <path to signing.pub>\n',
+        'mcpcut verify --report <dir> --pub <path to signing.pub>\n',
     )
     return null
   }
@@ -266,7 +266,7 @@ async function readTextIfPresent(path: string, maxBytes: number): Promise<TextLo
         status: 'error',
         message:
           `the file is ${size} bytes, past this command's ${maxBytes}-byte limit for it. A report ` +
-          'directory holding a file that large did not come from "mcp-journal export --report".',
+          'directory holding a file that large did not come from "mcpcut export --report".',
       }
     }
     return { status: 'ok', text: await handle.readFile('utf8') }

@@ -39,7 +39,7 @@ const AS_OF = '2026-08-18T12:00:00.000Z'
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-report-test-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-report-test-'))
 })
 
 afterEach(async () => {
@@ -625,7 +625,7 @@ describe('buildJournalReport: a doc holding a raw newline (P3)', () => {
     ).rejects.toThrow(/seq 1/)
     await expect(
       buildJournalReport(handle, { now: () => AS_OF }, collectingSink()),
-    ).rejects.toThrow(/mcp-journal verify/)
+    ).rejects.toThrow(/mcpcut verify/)
   })
 })
 

@@ -61,7 +61,7 @@ let approvalsDir: string
 let errors: unknown[]
 
 beforeEach(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), 'mcp-journal-gate-actor-test-'))
+  tempDir = await mkdtemp(join(tmpdir(), 'mcpcut-gate-actor-test-'))
   approvalsDir = join(tempDir, 'approvals')
   sink = createJournalSink(SESSION_ID, { dir: tempDir })
   queue = createApprovalQueue({ baseDir: approvalsDir })

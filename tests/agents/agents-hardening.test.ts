@@ -17,7 +17,7 @@ let journalDir: string
 let store: AgentsStore
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-agents-hardening-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-agents-hardening-'))
   store = createAgentsStore({ journalDir })
 })
 

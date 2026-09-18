@@ -137,7 +137,7 @@ export async function holdPort(port: number): Promise<() => Promise<void>> {
 export interface WizardStand {
   readonly home: string
   readonly dataDir: string
-  /** Empty but for the config path: no `MCP_ADMIN_TOKEN`, no `MCP_JOURNAL_DIR`. */
+  /** Empty but for the config path: no `MCP_ADMIN_TOKEN`, no `MCPCUT_DATA_DIR`. */
   readonly env: NodeJS.ProcessEnv
   readonly uiPort: number
   readonly servePort: number

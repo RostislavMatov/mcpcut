@@ -26,7 +26,7 @@ import {
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-signing-test-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-signing-test-'))
 })
 
 afterEach(async () => {
@@ -213,7 +213,7 @@ describe('sign / verify round trip', () => {
   })
 
   test('a valid signature verified against a DIFFERENT public key fails', async () => {
-    const journalDirB = await mkdtemp(join(tmpdir(), 'mcp-journal-signing-test-b-'))
+    const journalDirB = await mkdtemp(join(tmpdir(), 'mcpcut-signing-test-b-'))
     try {
       const generatedA = await generateAndWriteSigningKeyPair(journalDir)
       const generatedB = await generateAndWriteSigningKeyPair(journalDirB)
@@ -268,7 +268,7 @@ describe('publicKeyFingerprint', () => {
   })
 
   test('two different keypairs have different fingerprints', async () => {
-    const journalDirB = await mkdtemp(join(tmpdir(), 'mcp-journal-signing-test-fp-b-'))
+    const journalDirB = await mkdtemp(join(tmpdir(), 'mcpcut-signing-test-fp-b-'))
     try {
       const generatedA = await generateAndWriteSigningKeyPair(journalDir)
       const generatedB = await generateAndWriteSigningKeyPair(journalDirB)

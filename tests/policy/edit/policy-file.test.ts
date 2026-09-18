@@ -34,7 +34,7 @@ let tempDir: string
 let policyPath: string
 
 beforeEach(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), 'mcp-journal-policy-file-'))
+  tempDir = await mkdtemp(join(tmpdir(), 'mcpcut-policy-file-'))
   policyPath = join(tempDir, 'policy.json')
 })
 

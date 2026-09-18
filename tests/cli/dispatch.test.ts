@@ -31,7 +31,7 @@ import { createFakeTerminal, waitForScreen } from '../tui/support/fake-terminal.
 let tempDir: string
 
 beforeEach(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), 'mcp-journal-dispatch-test-'))
+  tempDir = await mkdtemp(join(tmpdir(), 'mcpcut-dispatch-test-'))
 })
 
 afterEach(async () => {
@@ -377,7 +377,7 @@ describe('dispatch: an unusable install config', () => {
   const BROKEN_CONFIG_PATH = '/home/op/.mcpcut/config.json'
 
   const broken: DataDirResolution = {
-    dataDir: '/home/op/.mcp-journal',
+    dataDir: '/home/op/.mcpcut/data',
     source: 'default',
     configPath: BROKEN_CONFIG_PATH,
     problem: ['dataDir: dataDir must be an absolute path'],
@@ -424,7 +424,7 @@ describe('dispatch: an unusable install config', () => {
   test('a usable resolution routes as before', async () => {
     const io = fakeIo()
     const usable: DataDirResolution = {
-      dataDir: '/home/op/.mcp-journal',
+      dataDir: '/home/op/.mcpcut/data',
       source: 'default',
       configPath: BROKEN_CONFIG_PATH,
     }
@@ -550,7 +550,7 @@ describe('dispatch: a bare invocation', () => {
   const CONFIG_PATH = '/home/op/.mcpcut/config.json'
 
   const broken: DataDirResolution = {
-    dataDir: '/home/op/.mcp-journal',
+    dataDir: '/home/op/.mcpcut/data',
     source: 'default',
     configPath: CONFIG_PATH,
     problem: ['dataDir: dataDir must be an absolute path'],
@@ -616,7 +616,7 @@ describe('dispatch: a bare invocation', () => {
     const io = fakeIo()
     const fake = createFakeTerminal()
     const usable: DataDirResolution = {
-      dataDir: '/home/op/.mcp-journal',
+      dataDir: '/home/op/.mcpcut/data',
       source: 'config',
       configPath: CONFIG_PATH,
     }
@@ -700,7 +700,7 @@ describe('dispatch: tui', () => {
   test('a top-level --help still prints the full usage over a broken config', async () => {
     const io = fakeIo()
     const broken: DataDirResolution = {
-      dataDir: '/home/op/.mcp-journal',
+      dataDir: '/home/op/.mcpcut/data',
       source: 'default',
       configPath: '/home/op/.mcpcut/config.json',
       problem: ['dataDir: dataDir must be an absolute path'],

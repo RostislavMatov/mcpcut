@@ -3,11 +3,10 @@ import { loadInstallConfigSync } from './setup/load.js'
 
 /**
  * Where this process keeps its data, decided once at import (phase 1, task 4):
- * `MCP_JOURNAL_DIR` > `~/.mcpcut/config.json` > `~/.mcp-journal`. An install
- * with neither of the first two lands on exactly the directory it always
- * used. The full resolution — which source answered, and why a config file
- * was refused — is exported beside the path, because a broken config must be
- * something the dispatcher can PRINT: `resolveDataDir` never throws, so an
+ * `MCPCUT_DATA_DIR` > `~/.mcpcut/config.json` > `~/.mcpcut/data`. The full
+ * resolution — which source answered, and why a config file was refused — is
+ * exported beside the path, because a broken config must be something the
+ * dispatcher can PRINT: `resolveDataDir` never throws, so an
  * unreadable file cannot abort the process before a command can explain it.
  */
 export const JOURNAL_DIR_RESOLUTION: DataDirResolution = resolveDataDir({

@@ -160,7 +160,7 @@ export function detachedSpawnOptions(logFd: number, env: NodeJS.ProcessEnv, cwd:
     detached: true,
     stdio: ['ignore', logFd, logFd],
     env: daemonEnv(env, cwd),
-    // `<cwd>/.mcp-journal/policy.json` is one of the policy sources
+    // `<cwd>/.mcpcut-project/policy.json` is one of the policy sources
     // (ADR-0005); rooting the daemon at the data dir keeps that lookup inside
     // the install instead of wherever the operator's shell happened to be.
     cwd,
@@ -173,7 +173,7 @@ export function detachedSpawnOptions(logFd: number, env: NodeJS.ProcessEnv, cwd:
  *
  * Setting it is a structural bind (review TS-H3/SEC-M5). The manager writes
  * the child's pid file under `<dataDir>/run/`, so a child that resolved a
- * DIFFERENT install — because the operator's shell exported `MCP_JOURNAL_DIR`
+ * DIFFERENT install — because the operator's shell exported `MCPCUT_DATA_DIR`
  * at some other path — would serve one plane while the manager reported on
  * another. `MCPCUT_CONFIG` still passes through: it names the config file,
  * and the data directory taken from it is the one being overridden here

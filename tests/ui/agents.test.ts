@@ -352,7 +352,7 @@ describe('store failures are classified, not flattened to 400 (T-2)', () => {
   }
 
   test('an unrecognized store error is a detail-free 500, not a 400 echoing it', async () => {
-    const secretish = 'EACCES: /home/alice/.mcp-journal/agents.json.lock held by pid 4242'
+    const secretish = 'EACCES: /home/alice/.mcpcut/data/agents.json.lock held by pid 4242'
     const failing = createAgentsHandlers({ agentsStore: brokenStore(new Error(secretish)), groups, registry })
     const admin = session('owner')
     await seedServer('github')

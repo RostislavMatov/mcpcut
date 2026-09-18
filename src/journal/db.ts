@@ -89,7 +89,7 @@ const CREATE_IMPORTED_SESSIONS_TABLE =
   'CREATE TABLE IF NOT EXISTS imported_sessions (session_id TEXT PRIMARY KEY) STRICT'
 
 /**
- * Retention markers (M5 wave 6): one row per `mcp-journal prune`, holding the
+ * Retention markers (M5 wave 6): one row per `mcpcut prune`, holding the
  * `seq` boundary of the deleted prefix and the `record_hash` the surviving
  * chain now hangs from. The semantics live in `prune.ts`; the DDL lives here
  * because this is where the journal's schema is created, and both the writer

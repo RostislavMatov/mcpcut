@@ -15,7 +15,7 @@ import { recordAccessChange, type AccessWriteOptions } from './access-cmd-write.
 import { requireAdminFromEnv, type AdminRefusalWording, type RequiredAdmin } from './admin-token.js'
 
 /**
- * `mcp-journal prune --older-than <duration> [--yes]` (M5 wave 6, task 6.1).
+ * `mcpcut prune --older-than <duration> [--yes]` (M5 wave 6, task 6.1).
  *
  * THE DEFAULT IS TO NOT DELETE. Without `--yes` the command prints exactly
  * what it would remove and stops. Every other read command in this CLI can be
@@ -101,7 +101,7 @@ const EXIT_USAGE_ERROR = 1
  * name the mistake, and point at `--help` for everything else.
  */
 const PRUNE_USAGE =
-  'Usage: mcp-journal prune --older-than <duration> [--yes]\n' +
+  'Usage: mcpcut prune --older-than <duration> [--yes]\n' +
   '  <duration>  a positive whole number of hours or days, e.g. 36h or 90d\n' +
   '  --yes       actually delete; without it nothing is deleted and the plan is printed\n' +
   'See `mcpcut --help` for every command.\n'
@@ -260,9 +260,9 @@ function dryRunReport(plan: PrunePlan, cutoffIso: string, rawDuration: string, s
     `  cutoff:        ${cutoffIso} (--older-than ${rawDuration})\n` +
     `  would delete:  ${plan.deletedCount} record(s), seq ${plan.firstSeq}..${plan.prunedThroughSeq}\n` +
     `  chain head of that prefix: ${plan.headRecordHash ?? '(none -- those records predate the chain)'}\n` +
-    `  marker would be: ${signed ? 'signed with this installation\'s key' : 'UNSIGNED (no signing key; run `mcp-journal keygen` first if you want one)'}\n` +
+    `  marker would be: ${signed ? 'signed with this installation\'s key' : 'UNSIGNED (no signing key; run `mcpcut keygen` first if you want one)'}\n` +
     '\nRe-run with --yes to delete. This cannot be undone, and the deleted records exist nowhere\n' +
-    'else unless you exported them first (mcp-journal export --report).\n'
+    'else unless you exported them first (mcpcut export --report).\n'
   )
 }
 
@@ -287,7 +287,7 @@ function appliedReport(deletedCount: number, marker: PruneMarker | null, firstRe
     `${lines.join('\n')}\n\n` +
     'What this marker is worth: it is this host\'s own statement about what it deleted. A process\n' +
     'running as the same user could have deleted records and written no marker at all. Only an\n' +
-    'anchor you recorded OUT OF BAND before the prune (mcp-journal verify --sign, or a report\'s\n' +
+    'anchor you recorded OUT OF BAND before the prune (mcpcut verify --sign, or a report\'s\n' +
     'chain head) lets anyone check this claim against something this host cannot rewrite.\n'
   )
 }

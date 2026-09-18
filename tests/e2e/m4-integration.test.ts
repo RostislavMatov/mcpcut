@@ -38,7 +38,7 @@ import {
 /**
  * Milestone 4 end-to-end (Task 18): the admin UI and the traffic plane driven
  * together, each through its real entry point — `dispatch()` for every CLI
- * command and agent session, `runUi()` (the `mcp-journal ui` process body) for
+ * command and agent session, `runUi()` (the `mcpcut ui` process body) for
  * the UI — over one temp journal directory and real HTTP sockets.
  *
  * What only this file can show is the COMPOSITION: that the file approvals
@@ -60,7 +60,7 @@ let plane: Plane
 let ui: UiTestHarness | null = null
 
 beforeEach(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), 'mcp-journal-m4-'))
+  tempDir = await mkdtemp(join(tmpdir(), 'mcpcut-m4-'))
   ctx = createM4Context(tempDir)
   plane = ctx.plane
 })

@@ -36,7 +36,7 @@ let journalDir: string
 let storePath: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-quarantine-token-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-quarantine-token-'))
   storePath = join(journalDir, 'tool-inventory.json')
 })
 

@@ -18,7 +18,7 @@ import {
 } from '../../src/journal/signing.js'
 
 /**
- * `mcp-journal verify --report <dir> [--pub <path>]` (M5 wave 5, task 5.3) --
+ * `mcpcut verify --report <dir> [--pub <path>]` (M5 wave 5, task 5.3) --
  * the auditor's procedure, end to end and with NO database open.
  *
  * Export directories here are produced by the real library
@@ -34,8 +34,8 @@ let journalDir: string
 let reportDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-verify-report-home-'))
-  reportDir = await mkdtemp(join(tmpdir(), 'mcp-journal-verify-report-dir-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-verify-report-home-'))
+  reportDir = await mkdtemp(join(tmpdir(), 'mcpcut-verify-report-dir-'))
 })
 
 afterEach(async () => {
@@ -174,7 +174,7 @@ describe('verify --report: an intact export', () => {
   })
 
   test('never opens or creates a journal database', async () => {
-    const emptyHome = await mkdtemp(join(tmpdir(), 'mcp-journal-no-db-'))
+    const emptyHome = await mkdtemp(join(tmpdir(), 'mcpcut-no-db-'))
     try {
       await writeExport()
       const io = fakeIo()
@@ -189,7 +189,7 @@ describe('verify --report: an intact export', () => {
   })
 
   test('accepts an explicit --pub path, which is the real auditor case', async () => {
-    const keyHome = await mkdtemp(join(tmpdir(), 'mcp-journal-key-home-'))
+    const keyHome = await mkdtemp(join(tmpdir(), 'mcpcut-key-home-'))
     try {
       await writeExport({ sign: true, keyDir: keyHome })
       const handedOverPub = join(reportDir, 'handed-over.pub')
@@ -232,7 +232,7 @@ describe('verify --report: a check fails (exit 2)', () => {
   })
 
   test("verification against a DIFFERENT installation's public key exits 2", async () => {
-    const otherHome = await mkdtemp(join(tmpdir(), 'mcp-journal-other-home-'))
+    const otherHome = await mkdtemp(join(tmpdir(), 'mcpcut-other-home-'))
     try {
       await writeExport({ sign: true })
       await generateAndWriteSigningKeyPair(otherHome)
@@ -274,7 +274,7 @@ describe('verify --report: a check fails (exit 2)', () => {
   })
 
   test('a failed check wins over a could-not-run: no key AND tampered bytes exits 2', async () => {
-    const keyHome = await mkdtemp(join(tmpdir(), 'mcp-journal-key-away-'))
+    const keyHome = await mkdtemp(join(tmpdir(), 'mcpcut-key-away-'))
     try {
       await writeExport({ sign: true, keyDir: keyHome })
       const path = join(reportDir, REPORT_FILES.records)
@@ -374,7 +374,7 @@ describe('verify --report: could not run (exit 1)', () => {
   })
 
   test('signature.json present but no public key file exits 1, not 2', async () => {
-    const keyHome = await mkdtemp(join(tmpdir(), 'mcp-journal-key-elsewhere-'))
+    const keyHome = await mkdtemp(join(tmpdir(), 'mcpcut-key-elsewhere-'))
     try {
       await writeExport({ sign: true, keyDir: keyHome })
       const io = fakeIo()
@@ -586,7 +586,7 @@ describe('verify --report --require-signature (V11)', () => {
   })
 
   test('a signed export whose key is unavailable exits 2 with the flag, 1 without', async () => {
-    const keyHome = await mkdtemp(join(tmpdir(), 'mcp-journal-key-far-'))
+    const keyHome = await mkdtemp(join(tmpdir(), 'mcpcut-key-far-'))
     try {
       await writeExport({ sign: true, keyDir: keyHome })
 
@@ -639,7 +639,7 @@ describe('verify --report: argument errors print usage (V13)', () => {
     const exitCode = await run(['--report'], io)
 
     expect(exitCode).toBe(1)
-    expect(io.err()).toContain('Usage: mcp-journal verify')
+    expect(io.err()).toContain('Usage: mcpcut verify')
   })
 
   test('an unknown flag prints usage and exits 1', async () => {
@@ -648,7 +648,7 @@ describe('verify --report: argument errors print usage (V13)', () => {
     const exitCode = await run(['--report', reportDir, '--not-a-flag'], io)
 
     expect(exitCode).toBe(1)
-    expect(io.err()).toContain('Usage: mcp-journal verify')
+    expect(io.err()).toContain('Usage: mcpcut verify')
   })
 })
 

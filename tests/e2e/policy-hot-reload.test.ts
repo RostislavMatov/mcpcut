@@ -38,7 +38,7 @@ let tempDir: string
 let plane: Plane
 
 beforeEach(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), 'mcp-journal-e2e-reload-'))
+  tempDir = await mkdtemp(join(tmpdir(), 'mcpcut-e2e-reload-'))
   plane = createPlane(tempDir)
 })
 
@@ -148,7 +148,7 @@ describe('policy hot reload through a live connect session', () => {
       const live = await startLiveSession('reload-e2e-3')
       await callEcho(live, 1)
 
-      // `connect` resolves `<journalDir>/.mcp-journal/policy.json` BEFORE
+      // `connect` resolves `<journalDir>/.mcpcut-project/policy.json` BEFORE
       // `<journalDir>/policy.json` (ADR-0005); it did not exist at start-up.
       const nestedDir = join(plane.journalDir, PROJECT_POLICY_SUBDIR)
       const nestedPath = join(nestedDir, 'policy.json')

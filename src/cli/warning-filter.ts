@@ -50,7 +50,7 @@ export interface WarningHost {
 }
 
 /** Marks a host whose `'warning'` listeners this module has already replaced. */
-const INSTALLED = Symbol.for('mcp-journal.warning-filter.installed')
+const INSTALLED = Symbol.for('mcpcut.warning-filter.installed')
 
 /** The `type` of a warning, from either shape `process.emitWarning` accepts. */
 function warningTypeOf(warning: string | Error, options: unknown): string | undefined {

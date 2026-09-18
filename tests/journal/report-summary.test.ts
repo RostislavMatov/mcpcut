@@ -27,7 +27,7 @@ const ESC = String.fromCharCode(0x1b)
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-report-summary-test-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-report-summary-test-'))
 })
 
 afterEach(async () => {

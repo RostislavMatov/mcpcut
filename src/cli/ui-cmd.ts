@@ -31,10 +31,10 @@ import { bootstrapAdmin, type BoundAddress } from './ui-bootstrap.js'
 import { composeUi } from './ui-wiring.js'
 
 /**
- * `mcp-journal ui` (M4 Task 16): the admin UI's process entry point, built to
+ * `mcpcut ui` (M4 Task 16): the admin UI's process entry point, built to
  * the same shape as `serve` — flags → stores → server → listen → wait →
  * graceful shutdown, with `onListening` as the test seam and every dependency
- * injectable so a test never touches the real `~/.mcp-journal`.
+ * injectable so a test never touches the real `~/.mcpcut/data`.
  *
  * Three lifecycle decisions worth stating:
  *

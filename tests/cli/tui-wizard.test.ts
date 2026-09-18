@@ -73,10 +73,10 @@ describe('wizardPrefillOf: what the form says before anything is typed', () => {
     expect(prefill.config.serve.port).toBe(9090)
   })
 
-  test('MCP_JOURNAL_DIR outranks the config, exactly as every command ranks it', () => {
+  test('MCPCUT_DATA_DIR outranks the config, exactly as every command ranks it', () => {
     const prefill = wizardPrefillOf({
       install: okInstall,
-      env: { MCP_JOURNAL_DIR: '/srv/x' },
+      env: { MCPCUT_DATA_DIR: '/srv/x' },
       home: HOME,
       cwd: '/w',
     })

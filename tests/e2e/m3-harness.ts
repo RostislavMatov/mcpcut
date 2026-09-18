@@ -14,7 +14,7 @@ import { waitUntil } from '../proxy/harness.js'
  * Plumbing for `tests/e2e/m3-integration.test.ts`.
  *
  * The one rule this harness exists to enforce: **every command goes through
- * `dispatch()`**, exactly as the `mcp-journal` binary routes it, with each
+ * `dispatch()`**, exactly as the `mcpcut` binary routes it, with each
  * store redirected into one temp directory through the `DispatchOptions`
  * seams. Nothing here reaches into a store module directly — an e2e that
  * seeded `agents.json` itself would stop proving that the documented CLI
@@ -64,7 +64,7 @@ function mergeOptions(base: DispatchOptions, extra: DispatchOptions): DispatchOp
 /**
  * Builds the dispatch seams that point every store, queue and policy lookup
  * at `journalDir`. `loadPolicy` is pinned to the temp dir on purpose: without
- * it a run would discover the repository's own `./.mcp-journal/policy.json`
+ * it a run would discover the repository's own `./.mcpcut-project/policy.json`
  * and the test would depend on a file it does not own.
  */
 function seamsFor(journalDir: string): DispatchOptions {
@@ -131,7 +131,7 @@ export function createPlane(journalDir: string): Plane {
 /** Fails loudly with the command's own diagnostics rather than a bare exit code. */
 function expectOk(argv: readonly string[], result: CliRun): CliRun {
   if (result.code !== 0) {
-    throw new Error(`"mcp-journal ${argv.join(' ')}" exited ${result.code}: ${result.err}`)
+    throw new Error(`"mcpcut ${argv.join(' ')}" exited ${result.code}: ${result.err}`)
   }
   return result
 }
@@ -334,7 +334,7 @@ export interface ConnectDriver {
 }
 
 /**
- * Starts `mcp-journal connect` through `dispatch()` against an injected
+ * Starts `mcpcut connect` through `dispatch()` against an injected
  * client stdio pair — the same shape a real agent's process gives it.
  */
 export function startConnect(args: ConnectRunArgs): ConnectDriver {
@@ -428,7 +428,7 @@ export interface ServeRun {
   shutdown(): Promise<CliRun>
 }
 
-/** Starts `mcp-journal serve` through `dispatch()` on an ephemeral port. */
+/** Starts `mcpcut serve` through `dispatch()` on an ephemeral port. */
 export async function startServe(
   plane: Plane,
   argv: readonly string[] = [],

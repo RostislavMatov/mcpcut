@@ -40,7 +40,7 @@ async function readRecords(dir: string): Promise<JournalRecord[]> {
 }
 
 beforeEach(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), 'mcp-journal-sink-hardening-'))
+  tempDir = await mkdtemp(join(tmpdir(), 'mcpcut-sink-hardening-'))
 })
 
 afterEach(async () => {

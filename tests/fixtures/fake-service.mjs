@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Stand-in for `mcp-journal ui` / `mcp-journal serve` in the service-manager
+// Stand-in for `mcpcut ui` / `mcpcut serve` in the service-manager
 // tests (mcpcut phase 1, Task 10). The manager spawns whatever `cliPath` it
 // is given as `node <cliPath> <service> --host H --port P [...]`, and the
 // tests cannot point it at `dist/cli.js` (the suite runs from source), so

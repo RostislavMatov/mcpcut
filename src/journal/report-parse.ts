@@ -283,7 +283,7 @@ function formatVersionError(value: Record<string, unknown>, expected: number, la
   const foundText = found === undefined ? 'absent' : JSON.stringify(found)
   return (
     `formatVersion: unsupported ${label} version ${foundText}; this build understands version ` +
-    `${expected} only. A newer report needs a newer mcp-journal.`
+    `${expected} only. A newer report needs a newer mcpcut.`
   )
 }
 

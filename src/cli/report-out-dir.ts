@@ -2,7 +2,7 @@ import { chmod, lstat, mkdir, readdir, realpath } from 'node:fs/promises'
 import { JOURNAL_DIR_MODE } from '../config.js'
 
 /**
- * Where `mcp-journal export --report` is allowed to write (M5 wave 5, review
+ * Where `mcpcut export --report` is allowed to write (M5 wave 5, review
  * round). Split out of `report-cmd.ts` because "is this directory safe to put
  * evidence in" is a self-contained question with three independent answers to
  * get right, and because that file is at the project's 400-line cap.

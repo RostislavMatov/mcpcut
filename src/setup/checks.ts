@@ -231,7 +231,7 @@ async function presentDatabases(dir: string): Promise<readonly string[]> {
  * be worse than no preflight.
  *
  * Only the home-level file is checked, and by explicit path. The other three
- * policy sources (`--policy`, `$MCP_JOURNAL_POLICY`, the project-level file)
+ * policy sources (`--policy`, `$MCPCUT_POLICY`, the project-level file)
  * belong to a process's invocation, not to the install `setup` is describing.
  */
 export async function checkPolicy(dir: string): Promise<CheckResult> {

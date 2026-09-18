@@ -14,7 +14,7 @@ let storePath: string
 let operatorOptions: { storePath: string; journalDir: string; env: NodeJS.ProcessEnv }
 
 beforeEach(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), 'mcp-journal-quarantine-cmd-test-'))
+  tempDir = await mkdtemp(join(tmpdir(), 'mcpcut-quarantine-cmd-test-'))
   storePath = join(tempDir, 'tool-inventory.json')
   const { token } = await createAdminStore({ journalDir: tempDir }).createAdmin('op', 'operator')
   operatorOptions = { storePath, journalDir: tempDir, env: { [ADMIN_TOKEN_ENV_VAR]: token } }

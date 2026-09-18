@@ -27,7 +27,7 @@ import {
 } from './connect-harness.js'
 
 /**
- * `mcp-journal connect` (M3 Task 12). Two properties carry most of this file:
+ * `mcpcut connect` (M3 Task 12). Two properties carry most of this file:
  *
  *  1. **Nothing happens before authentication.** Every refusal test asserts
  *     not just the exit code and message, but that no journal file was
@@ -48,7 +48,7 @@ let io: CliCapture
 let stdio: ConnectStdio
 
 beforeEach(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), 'mcp-journal-connect-'))
+  tempDir = await mkdtemp(join(tmpdir(), 'mcpcut-connect-'))
   io = createCliCapture()
   stdio = createConnectStdio()
 })
@@ -679,7 +679,7 @@ describe('connect: the policy source is not agent-controlled', () => {
     expect(io.err()).not.toContain('--policy <path>')
   })
 
-  test('$MCP_JOURNAL_POLICY is ignored, with a note, and the journal-dir policy still applies', async () => {
+  test('$MCPCUT_POLICY is ignored, with a note, and the journal-dir policy still applies', async () => {
     await addPolicyServer()
     await writeJournalPolicy(DENY_ECHO_POLICY)
     const envPolicy = join(tempDir, 'env-policy.json')
@@ -697,22 +697,22 @@ describe('connect: the policy source is not agent-controlled', () => {
         env: {
           MCP_AGENT_TOKEN: token,
           PATH: process.env['PATH'] ?? '',
-          MCP_JOURNAL_POLICY: envPolicy,
+          MCPCUT_POLICY: envPolicy,
         },
       },
     })
 
     expect(denied).toBe(true)
-    expect(io.err()).toContain('ignoring $MCP_JOURNAL_POLICY')
+    expect(io.err()).toContain('ignoring $MCPCUT_POLICY')
     expect(io.err()).toContain(`policy: loaded from ${join(tempDir, 'policy.json')}`)
   })
 
-  test('a project-level <cwd>/.mcp-journal/policy.json is ignored, with a note', async () => {
+  test('a project-level <cwd>/.mcpcut-project/policy.json is ignored, with a note', async () => {
     await addPolicyServer()
     await writeJournalPolicy(DENY_ECHO_POLICY)
     const projectDir = join(tempDir, 'agent-project')
-    await mkdir(join(projectDir, '.mcp-journal'), { recursive: true })
-    const projectPolicy = join(projectDir, '.mcp-journal', 'policy.json')
+    await mkdir(join(projectDir, '.mcpcut-project'), { recursive: true })
+    const projectPolicy = join(projectDir, '.mcpcut-project', 'policy.json')
     await writeFile(projectPolicy, JSON.stringify(ALLOW_ALL_POLICY), 'utf8')
     const token = await createGrantedAgent({
       journalDir: tempDir,
@@ -750,7 +750,7 @@ describe('connect: vault failure messages', () => {
     )
     expect(
       formatVaultFailure('headers', { status: 'vault-error', failure: { status: 'not-initialized' } }),
-    ).toContain('mcp-journal vault init')
+    ).toContain('mcpcut vault init')
     expect(
       formatVaultFailure('env', {
         status: 'vault-error',
@@ -777,7 +777,7 @@ describe('connect: vault failure messages', () => {
     expect(message.trimEnd()).not.toContain('\n')
     expect(message.trimEnd()).toBe(
       "missing vault secret(s) for the server's headers: crm-token — " +
-        'add each with: mcp-journal vault set <name>',
+        'add each with: mcpcut vault set <name>',
     )
   })
 })

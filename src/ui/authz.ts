@@ -65,7 +65,7 @@ export const ROUTE_TABLE: readonly RouteEntry[] = [
   { method: 'GET', pattern: '/events', minRole: 'viewer', handler: 'events' },
 
   // --- operator: approvals, quarantine, forced server probe ---
-  // The threshold is shared with `mcp-journal approvals approve|deny`: one
+  // The threshold is shared with `mcpcut approvals approve|deny`: one
   // constant, so the CLI can never become a way around this row.
   { method: 'POST', pattern: '/approvals/:id/approve', minRole: APPROVAL_RESOLVE_MIN_ROLE, handler: 'approvalsApprove' },
   { method: 'POST', pattern: '/approvals/:id/deny', minRole: APPROVAL_RESOLVE_MIN_ROLE, handler: 'approvalsDeny' },
@@ -74,7 +74,7 @@ export const ROUTE_TABLE: readonly RouteEntry[] = [
   // approvals queue. The lazy probe a `GET /servers` may start stays `viewer`
   // by owner decision O5 (named in ADR-0008, not a new row here).
   { method: 'POST', pattern: '/servers/refresh', minRole: 'operator', handler: 'serversRefresh' },
-  // The threshold is shared with `mcp-journal quarantine approve|reject`
+  // The threshold is shared with `mcpcut quarantine approve|reject`
   // (owner decision Q17, 2026-09-08): one constant, so the CLI can never
   // become a way around these two rows the way it was until Q17.
   {

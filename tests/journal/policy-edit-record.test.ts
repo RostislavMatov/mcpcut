@@ -51,12 +51,12 @@ import { renderRecordRow } from '../../src/ui/pages/journal-parts.js'
 const AS_OF = '2026-08-25T12:00:00.000Z'
 const FIXED_NOW_MS = Date.parse('2026-08-25T10:00:00.000Z')
 const [HASH_BEFORE, HASH_AFTER] = ['a'.repeat(64), 'b'.repeat(64)]
-const SOURCE_PATH = '/home/op/.mcp-journal/policy.json'
+const SOURCE_PATH = '/home/op/.mcpcut/data/policy.json'
 
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-policy-edit-record-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-policy-edit-record-'))
 })
 
 afterEach(async () => {

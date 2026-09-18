@@ -25,13 +25,13 @@ let journalDir: string
  * The shell's cwd, deliberately NOT the state directory: since 2026-08-26 the
  * command edits the file it would itself load, so cwd decides the
  * project-level candidate. Leaving it at `process.cwd()` would aim the tests
- * at the repository's own `.mcp-journal/policy.json`.
+ * at the repository's own `.mcpcut-project/policy.json`.
  */
 let workDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-policy-set-'))
-  workDir = await mkdtemp(join(tmpdir(), 'mcp-journal-policy-set-cwd-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-policy-set-'))
+  workDir = await mkdtemp(join(tmpdir(), 'mcpcut-policy-set-cwd-'))
 })
 
 afterEach(async () => {
@@ -129,7 +129,7 @@ describe('runPolicySet -- admin attribution', () => {
 
     expect(code).toBe(1)
     expect(io.err()).toContain(`role "${POLICY_SET_MIN_ROLE}"`)
-    expect(io.err()).toContain('mcp-journal admin role bob owner')
+    expect(io.err()).toContain('mcpcut admin role bob owner')
     expect(await readPolicyDocument()).toEqual(MINIMAL_POLICY)
     expect(await editRecords()).toEqual([])
   })
@@ -200,7 +200,7 @@ describe('runPolicySet -- write target and file state', () => {
    */
   test('the nested connect-first file is stated, not refused: the state-dir file is still edited', async () => {
     await writePolicy(MINIMAL_POLICY)
-    const nestedDir = join(journalDir, '.mcp-journal')
+    const nestedDir = join(journalDir, '.mcpcut-project')
     await mkdir(nestedDir, { recursive: true })
     await writeFile(join(nestedDir, 'policy.json'), JSON.stringify(MINIMAL_POLICY), 'utf8')
     const io = fakeIo()
@@ -216,11 +216,11 @@ describe('runPolicySet -- write target and file state', () => {
 
   /**
    * The live install of 2026-08-26: the state dir holds no policy, the plane
-   * enforces `<cwd>/.mcp-journal/policy.json`. The edit must land THERE, and
+   * enforces `<cwd>/.mcpcut-project/policy.json`. The edit must land THERE, and
    * the command must say that `connect` sessions are not covered by it.
    */
   test('edits the project-level file this shell would load, and states that connect has no policy', async () => {
-    const projectDir = join(workDir, '.mcp-journal')
+    const projectDir = join(workDir, '.mcpcut-project')
     await mkdir(projectDir, { recursive: true })
     const projectPath = join(projectDir, 'policy.json')
     await writeFile(projectPath, JSON.stringify(MINIMAL_POLICY), 'utf8')
@@ -241,7 +241,7 @@ describe('runPolicySet -- write target and file state', () => {
     expect(records[0]?.['sourcePath']).toBe(projectPath)
   })
 
-  test('$MCP_JOURNAL_POLICY names the file to edit, as it names the file the entry point loads', async () => {
+  test('$MCPCUT_POLICY names the file to edit, as it names the file the entry point loads', async () => {
     const namedPath = join(workDir, 'named-policy.json')
     await writeFile(namedPath, JSON.stringify(MINIMAL_POLICY), 'utf8')
     const io = fakeIo()
@@ -249,7 +249,7 @@ describe('runPolicySet -- write target and file state', () => {
     const opts = await ownerOpts()
     const code = await runPolicySet(['github', 'create_issue', 'deny'], io, {
       ...opts,
-      env: { ...opts.env, MCP_JOURNAL_POLICY: namedPath },
+      env: { ...opts.env, MCPCUT_POLICY: namedPath },
     })
 
     expect(code).toBe(0)
@@ -262,7 +262,7 @@ describe('runPolicySet -- write target and file state', () => {
 
   test('policy show --entry-point connect makes the same shadowing visible: source is the nested file', async () => {
     await writePolicy(RULED_POLICY)
-    const nestedDir = join(journalDir, '.mcp-journal')
+    const nestedDir = join(journalDir, '.mcpcut-project')
     await mkdir(nestedDir, { recursive: true })
     const nestedPath = join(nestedDir, 'policy.json')
     await writeFile(nestedPath, JSON.stringify(MINIMAL_POLICY), 'utf8')

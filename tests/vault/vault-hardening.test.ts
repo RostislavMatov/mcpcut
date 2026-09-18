@@ -30,7 +30,7 @@ const SECRET_VALUE = `sk-live-${MARKER}-42`
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-vault-hardening-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-vault-hardening-'))
 })
 
 afterEach(async () => {
@@ -363,7 +363,7 @@ describe('rename-based commit', () => {
 
   test('vault.enc swapped wholesale with another vault\'s file → corrupt (foreign key)', async () => {
     await initializedWithSecret()
-    const otherDir = await mkdtemp(join(tmpdir(), 'mcp-journal-vault-other-'))
+    const otherDir = await mkdtemp(join(tmpdir(), 'mcpcut-vault-other-'))
     try {
       const other = createVaultStore({ journalDir: otherDir })
       await other.init()

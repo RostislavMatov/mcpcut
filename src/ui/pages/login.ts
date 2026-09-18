@@ -85,7 +85,7 @@ export function renderLoginPage(options: LoginPageOptions = {}): string {
     </form>
     </div>
     <section class="login-foot">
-      <p class="hint">One personal token per admin, issued with <code>mcp-journal admin add</code>. Lost it? The instance owner rotates it under Admins — there is no email recovery.</p>
+      <p class="hint">One personal token per admin, issued with <code>mcpcut admin add</code>. Lost it? The instance owner rotates it under Admins — there is no email recovery.</p>
       <div class="status"><span class="dot blink"></span><span>ready · ${INSTANCE_LABEL}</span></div>
     </section>
     ${renderDecorLayer()}

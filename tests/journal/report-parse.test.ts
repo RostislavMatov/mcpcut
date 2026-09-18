@@ -32,7 +32,7 @@ const AS_OF = '2026-08-18T12:00:00.000Z'
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-report-parse-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-report-parse-'))
 })
 
 afterEach(async () => {

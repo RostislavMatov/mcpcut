@@ -29,8 +29,8 @@ import { createReadableMessageSource } from './connect-source.js'
 import { prepareUpstream, type PreparedUpstream } from './connect-upstream.js'
 
 /**
- * `mcp-journal connect <server> --agent <name>` — the command an agent's own
- * client config runs (`.mcp.json`: `command: mcp-journal`, `args: [connect,
+ * `mcpcut connect <server> --agent <name>` — the command an agent's own
+ * client config runs (`.mcp.json`: `command: mcpcut`, `args: [connect,
  * <server>, --agent, <name>]`, `env: MCP_AGENT_TOKEN=…`). It authenticates
  * the agent, resolves the server from the registry, opens the upstream
  * (spawned child or HTTP client) and bridges the two through one

@@ -63,7 +63,7 @@ function insertRawDocs(handle: SqliteHandle, sessionId: string, docs: readonly s
 }
 
 beforeEach(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), 'mcp-journal-reader-hardening-'))
+  tempDir = await mkdtemp(join(tmpdir(), 'mcpcut-reader-hardening-'))
 })
 
 afterEach(async () => {

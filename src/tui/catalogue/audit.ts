@@ -78,7 +78,7 @@ const exportReportAction: ActionSpec = {
   minRole: 'viewer',
   command: 'export',
   fields: [
-    textField('out', 'Out', 'directory; default ./mcp-journal-report'),
+    textField('out', 'Out', 'directory; default ./mcpcut-report'),
     optionalSessionField,
   ],
   argv: (values) => [

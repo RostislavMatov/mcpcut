@@ -16,8 +16,8 @@ import { mapPolicyProvider, type PolicyProvider } from '../../src/policy/provide
  * places one may appear and, once a VALID one does, binds to it for good.
  */
 
-const PROJECT_PATH = '/work/.mcp-journal/policy.json'
-const HOME_PATH = '/home/.mcp-journal/policy.json'
+const PROJECT_PATH = '/work/.mcpcut-project/policy.json'
+const HOME_PATH = '/home/.mcpcut-project/policy.json'
 
 const JOURNALING_ONLY = { version: 1, defaultDecision: 'allow', quarantine: { enabled: false } }
 const REQUIRE_APPROVAL = { version: 1, defaultDecision: 'require-approval' }
@@ -58,7 +58,7 @@ function createStand(): Stand {
   const shadowed: PolicyShadowedEvent[] = []
   let statCalls = 0
 
-  const loadOptions: LoadPolicyOptions = { cwd: '/work', env: {}, journalDir: '/home/.mcp-journal' }
+  const loadOptions: LoadPolicyOptions = { cwd: '/work', env: {}, journalDir: '/home/.mcpcut' }
   const statSync = (path: string): PolicyFileVersion => {
     statCalls += 1
     const text = files.get(path)

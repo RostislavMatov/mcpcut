@@ -46,7 +46,7 @@ process.stdin.resume()
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-known-secrets-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-known-secrets-'))
 })
 
 afterEach(async () => {

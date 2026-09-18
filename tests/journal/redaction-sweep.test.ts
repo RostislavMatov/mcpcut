@@ -26,7 +26,7 @@ import { collectPersistedBytes } from '../support/persisted-bytes.js'
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-redaction-sweep-test-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-redaction-sweep-test-'))
 })
 
 afterEach(async () => {

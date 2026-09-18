@@ -145,7 +145,7 @@ async function runSet(
   if (actor === undefined) return 1
   const value = await readSecretInput()
   if (value.length === 0) {
-    io.stderr.write('empty secret value on stdin (pipe the secret in, e.g. `pbpaste | mcp-journal vault set <name>`)\n')
+    io.stderr.write('empty secret value on stdin (pipe the secret in, e.g. `pbpaste | mcpcut vault set <name>`)\n')
     return 1
   }
   const result = await store.setSecret(name, value)
@@ -217,7 +217,7 @@ function reportFailure(
 ): number {
   switch (failure.status) {
     case 'not-initialized':
-      io.stderr.write('vault is not initialized. Run "mcp-journal vault init" first.\n')
+      io.stderr.write('vault is not initialized. Run "mcpcut vault init" first.\n')
       return 1
     case 'corrupt':
       io.stderr.write(`vault is corrupt: ${failure.message}\n`)

@@ -156,7 +156,7 @@ describe('controls', () => {
    */
   test('a file connect does not read: controls stay enabled, the readers line says who is affected', () => {
     const view = loadedView(policyOf({ version: 1 }), {
-      sourcePath: '/work/.mcp-journal/policy.json',
+      sourcePath: '/work/.mcpcut-project/policy.json',
       readers: { kind: 'connect-elsewhere', connectPath: '/state/policy.json', shadowsTarget: false },
     })
     const document = page({ policyView: view })
@@ -209,21 +209,21 @@ describe('sources panel', () => {
   test('states that connect reads the nested file first when it shadows the state-dir file', () => {
     const document = page({
       policyView: loadedView(policyOf({ version: 1 }), {
-        readers: { kind: 'connect-elsewhere', connectPath: '/state/.mcp-journal/policy.json', shadowsTarget: true },
+        readers: { kind: 'connect-elsewhere', connectPath: '/state/.mcpcut-project/policy.json', shadowsTarget: true },
       }),
     })
-    expect(document).toContain('connect reads /state/.mcp-journal/policy.json first — rules here reach ui/wrap/serve only')
+    expect(document).toContain('connect reads /state/.mcpcut-project/policy.json first — rules here reach ui/wrap/serve only')
   })
 
   /** The live install of 2026-08-26: the plane enforces a project file, the state dir holds none. */
   test('states that connect sessions have no policy at all when nothing resolves for them', () => {
     const document = page({
       policyView: loadedView(policyOf({ version: 1 }), {
-        sourcePath: '/work/.mcp-journal/policy.json',
+        sourcePath: '/work/.mcpcut-project/policy.json',
         readers: { kind: 'connect-unset' },
       }),
     })
-    expect(document).toContain('policy · <code>/work/.mcp-journal/policy.json</code>')
+    expect(document).toContain('policy · <code>/work/.mcpcut-project/policy.json</code>')
     expect(document).toContain(
       'ui/wrap/serve read this file; connect sessions have no policy right now (journaling only) — rules here do not reach them',
     )

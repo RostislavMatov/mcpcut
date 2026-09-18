@@ -415,7 +415,7 @@ const SELECT_ALL_DOCS = 'SELECT doc FROM journal_records ORDER BY seq'
 /**
  * Every record's `doc` text across the whole journal, in `seq` order — the
  * global write order M5's hash chain will attest. Exported for
- * `export-cmd.ts`'s whole-journal `mcp-journal export`; not session-scoped,
+ * `export-cmd.ts`'s whole-journal `mcpcut export`; not session-scoped,
  * so it lives here rather than in `db-read-session.ts` (see that module's
  * doc comment). Placed here rather than a new module to keep the streaming
  * primitives beside `iterateSessionDocs`, which it otherwise duplicates

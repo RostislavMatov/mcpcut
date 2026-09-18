@@ -53,7 +53,7 @@ async function readRecords(dir: string): Promise<JournalRecord[]> {
 }
 
 beforeEach(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), 'mcp-journal-sink-failclosed-'))
+  tempDir = await mkdtemp(join(tmpdir(), 'mcpcut-sink-failclosed-'))
 })
 
 afterEach(async () => {

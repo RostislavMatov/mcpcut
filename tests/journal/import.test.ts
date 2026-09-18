@@ -49,7 +49,7 @@ async function assertChainIntact(journalDir: string): Promise<void> {
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-import-test-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-import-test-'))
 })
 
 afterEach(async () => {

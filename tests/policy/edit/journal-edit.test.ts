@@ -15,7 +15,7 @@ import { journalPolicyEdit } from '../../../src/policy/edit/journal-edit.js'
 let dir = ''
 
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), 'mcp-journal-edit-'))
+  dir = await mkdtemp(join(tmpdir(), 'mcpcut-edit-'))
 })
 
 afterEach(async () => {

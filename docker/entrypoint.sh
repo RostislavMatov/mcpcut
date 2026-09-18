@@ -38,7 +38,7 @@ case "${1:-}" in
     # skip `setup` forever while every start died on a config it cannot read.
     if [ ! -s "$CONFIG" ]; then
       cli setup --yes --supervisor external \
-        --data-dir "${MCPCUT_DATA_DIR:-/home/node/.mcp-journal}" \
+        --data-dir "${MCPCUT_DATA_DIR:-/home/node/.mcpcut/data}" \
         --ui-host "${MCPCUT_UI_HOST:-0.0.0.0}" --ui-port "${MCPCUT_UI_PORT:-8091}" \
         --serve-host "${MCPCUT_SERVE_HOST:-0.0.0.0}" --serve-port "${MCPCUT_SERVE_PORT:-8090}" \
         ${MCPCUT_UI_PROBE_HOST:+--ui-probe-host "$MCPCUT_UI_PROBE_HOST"} \

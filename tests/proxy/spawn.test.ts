@@ -80,7 +80,7 @@ describe('spawnServer', () => {
   })
 
   test('inherits process.env as-is for the child', async () => {
-    const envVarName = 'MCP_JOURNAL_TEST_VAR'
+    const envVarName = 'MCPCUT_TEST_VAR'
     process.env[envVarName] = 'proxy-test-value'
 
     try {
@@ -283,7 +283,7 @@ describe('spawnServer env option', () => {
   })
 
   test('a plane process variable outside the env object never reaches the child', async () => {
-    const planeVarName = 'MCP_JOURNAL_PLANE_ONLY_VAR'
+    const planeVarName = 'MCPCUT_PLANE_ONLY_VAR'
     process.env[planeVarName] = 'plane-secret-value'
 
     try {
@@ -296,7 +296,7 @@ describe('spawnServer env option', () => {
   })
 
   test("explicit env: 'inherit' behaves exactly like the default (full process.env)", async () => {
-    const planeVarName = 'MCP_JOURNAL_INHERIT_VAR'
+    const planeVarName = 'MCPCUT_INHERIT_VAR'
     process.env[planeVarName] = 'inherited-value'
 
     try {

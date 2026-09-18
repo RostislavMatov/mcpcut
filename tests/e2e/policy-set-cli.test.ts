@@ -23,7 +23,7 @@ let tempDir: string
 let plane: Plane
 
 beforeEach(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), 'mcp-journal-policy-set-e2e-'))
+  tempDir = await mkdtemp(join(tmpdir(), 'mcpcut-policy-set-e2e-'))
   plane = createPlane(tempDir)
 })
 
@@ -102,10 +102,10 @@ describe('policy set (e2e)', () => {
    * The edit must land there, and the command must say `connect` is uncovered.
    */
   test('with a project-level policy and an empty state dir, the edit lands in the project file', async () => {
-    const workDir = await mkdtemp(join(tmpdir(), 'mcp-journal-policy-set-e2e-cwd-'))
+    const workDir = await mkdtemp(join(tmpdir(), 'mcpcut-policy-set-e2e-cwd-'))
     try {
-      const projectPath = join(workDir, '.mcp-journal', 'policy.json')
-      await mkdir(join(workDir, '.mcp-journal'), { recursive: true })
+      const projectPath = join(workDir, '.mcpcut-project', 'policy.json')
+      await mkdir(join(workDir, '.mcpcut-project'), { recursive: true })
       await writeFile(projectPath, '{"version": 1}\n', 'utf8')
       const token = await mintAdminToken('alice', 'owner')
 

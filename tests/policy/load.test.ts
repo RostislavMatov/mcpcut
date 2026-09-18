@@ -15,9 +15,9 @@ let cwd: string
 let journalDir: string
 
 beforeEach(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), 'mcp-journal-load-test-'))
+  tempDir = await mkdtemp(join(tmpdir(), 'mcpcut-load-test-'))
   cwd = join(tempDir, 'project')
-  journalDir = join(tempDir, 'home', '.mcp-journal')
+  journalDir = join(tempDir, 'home', '.mcpcut', 'data')
   await mkdir(cwd, { recursive: true })
   await mkdir(journalDir, { recursive: true })
 })
@@ -27,7 +27,7 @@ afterEach(async () => {
 })
 
 function projectPolicyPath(): string {
-  return join(cwd, '.mcp-journal', 'policy.json')
+  return join(cwd, '.mcpcut-project', 'policy.json')
 }
 
 function homePolicyPath(): string {
@@ -36,7 +36,7 @@ function homePolicyPath(): string {
 
 async function writeProjectPolicy(contents = VALID_POLICY_JSON): Promise<string> {
   const path = projectPolicyPath()
-  await mkdir(join(cwd, '.mcp-journal'), { recursive: true })
+  await mkdir(join(cwd, '.mcpcut-project'), { recursive: true })
   await writeFile(path, contents, 'utf8')
   return path
 }

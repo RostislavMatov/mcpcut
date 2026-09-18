@@ -18,7 +18,7 @@ import { readJournalRecords } from '../support/journal-rows.js'
  * per session) and the UI's `searchAllSessions`.
  *
  * That is the promise the cutover makes to an operator upgrading from M4:
- * `mcp-journal migrate` restores their journal to exactly the state a fresh
+ * `mcpcut migrate` restores their journal to exactly the state a fresh
  * install would have had, losslessly, with no residue of which carrier the
  * records arrived through. If any pair below diverges, the cutover is wrong —
  * the assertion is not to be relaxed.
@@ -33,7 +33,7 @@ import { readJournalRecords } from '../support/journal-rows.js'
  */
 
 /** `show`'s usage text is irrelevant here; only the happy path is exercised. */
-const USAGE = 'Usage: mcp-journal show <sessionId>\n'
+const USAGE = 'Usage: mcpcut show <sessionId>\n'
 
 /** Base mtime for the legacy files; each file is stamped one second later than the previous. */
 const LEGACY_MTIME_BASE_MS = Date.UTC(2026, 7, 14, 12, 0, 0)
@@ -200,8 +200,8 @@ let freshDir: string
 let migratedDir: string
 
 beforeEach(async () => {
-  freshDir = await mkdtemp(join(tmpdir(), 'mcp-journal-parity-fresh-'))
-  migratedDir = await mkdtemp(join(tmpdir(), 'mcp-journal-parity-legacy-'))
+  freshDir = await mkdtemp(join(tmpdir(), 'mcpcut-parity-fresh-'))
+  migratedDir = await mkdtemp(join(tmpdir(), 'mcpcut-parity-legacy-'))
   await writeFreshJournal(freshDir)
   await writeLegacyJournalAndMigrate(migratedDir)
 })
@@ -240,7 +240,7 @@ async function writeFreshJournal(dir: string): Promise<void> {
   }
 }
 
-/** (B) The upgraded install: the same records as legacy JSONL, then `mcp-journal migrate`. */
+/** (B) The upgraded install: the same records as legacy JSONL, then `mcpcut migrate`. */
 async function writeLegacyJournalAndMigrate(dir: string): Promise<void> {
   for (const [index, fixture] of FIXTURES.entries()) {
     const filePath = join(dir, `${fixture.sessionId}.jsonl`)
@@ -316,7 +316,7 @@ describe('cutover parity: the records themselves', () => {
   })
 })
 
-describe('cutover parity: mcp-journal sessions', () => {
+describe('cutover parity: mcpcut sessions', () => {
   test('prints an identical session table for a fresh and a migrated journal, with no legacy hint', async () => {
     const fresh = await runSessions(freshDir)
     const migrated = await runSessions(migratedDir)
@@ -330,7 +330,7 @@ describe('cutover parity: mcp-journal sessions', () => {
   })
 })
 
-describe('cutover parity: mcp-journal show --json', () => {
+describe('cutover parity: mcpcut show --json', () => {
   test.each(FIXTURES.map((fixture) => fixture.sessionId))(
     'prints identical records for session %s',
     async (sessionId) => {
@@ -345,7 +345,7 @@ describe('cutover parity: mcp-journal show --json', () => {
   )
 })
 
-describe('cutover parity: mcp-journal export', () => {
+describe('cutover parity: mcpcut export', () => {
   test('the whole journal exports identical JSONL, in the same order', async () => {
     const fresh = await runExport(freshDir, [])
     const migrated = await runExport(migratedDir, [])

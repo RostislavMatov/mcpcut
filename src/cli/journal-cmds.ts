@@ -18,7 +18,7 @@ import { formatRecordsJson, formatRecordsReadable, formatSessionsTable } from '.
  * dispatch()).
  *
  * M4.5 wave 5 (task 6) adds the un-imported-legacy-file hint: `sessions`
- * nudges toward `mcp-journal migrate` whenever any exist; `show` only does so
+ * nudges toward `mcpcut migrate` whenever any exist; `show` only does so
  * when the session it was asked for is itself one of them (targeted, not
  * noisy). The probe is best-effort — an unreadable directory degrades to no
  * hint rather than failing the command, which already has its own answer.
@@ -33,7 +33,7 @@ import { formatRecordsJson, formatRecordsReadable, formatSessionsTable } from '.
  * kind cannot make this text stale.
  */
 const SHOW_USAGE =
-  'Usage: mcp-journal show <sessionId> [--method <m>] [--direction <d>] [--kind <k>] [--json]\n' +
+  'Usage: mcpcut show <sessionId> [--method <m>] [--direction <d>] [--kind <k>] [--json]\n' +
   `  --direction  ${JOURNAL_DIRECTIONS.join(' | ')}\n` +
   `  --kind       ${JOURNAL_KINDS.join(' | ')}\n` +
   'See `mcpcut --help` for every command.\n'
@@ -69,7 +69,7 @@ export async function runSessionsCommand(
   if (unimported.length > 0) {
     io.stderr.write(
       `${unimported.length} legacy *.jsonl session file(s) are not imported; ` +
-        'run `mcp-journal migrate` to see them.\n',
+        'run `mcpcut migrate` to see them.\n',
     )
   }
   return 0
@@ -144,7 +144,7 @@ export async function runShowCommand(
   const unimported = await unimportedLegacySessions(journalDir)
   if (unimported.includes(sessionId)) {
     io.stderr.write(
-      `${sessionId} has an un-imported legacy *.jsonl file; run \`mcp-journal migrate\` to see it.\n`,
+      `${sessionId} has an un-imported legacy *.jsonl file; run \`mcpcut migrate\` to see it.\n`,
     )
   }
   return 0
