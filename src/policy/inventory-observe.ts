@@ -174,7 +174,7 @@ export function observeAgainst(
   }
 }
 
-/** The two synchronous lookups a decision needs from the inventory, built together. */
+/** The synchronous lookups a decision needs from the inventory, built together. */
 export interface InventorySnapshots {
   /** See `buildSnapshots`: the authoritative state map behind `stateOf`. */
   readonly states: ReadonlyMap<string, QuarantineState>
@@ -185,6 +185,14 @@ export interface InventorySnapshots {
    * `decide()` treats as "not provably narrower", never as "unchanged".
    */
   readonly deltas: ReadonlyMap<string, SurfaceDelta>
+  /**
+   * The descriptor stored for each tool: the quarantined one (the latest
+   * observation, i.e. what a `tools/list` in this session would have cached)
+   * when there is one, else the approved one. An approval that predates
+   * descriptor storage has none, and the tool is absent from this map. Read by
+   * the gate to classify a call made in a session that never listed tools.
+   */
+  readonly descriptors: ReadonlyMap<string, ToolDescriptor>
 }
 
 /**
@@ -193,7 +201,7 @@ export interface InventorySnapshots {
  * a quarantined tool stays quarantined even after a later `tools/list` omits
  * it (C4). Anything absent from both maps is `unknown`.
  *
- * Both maps are built in ONE pass over one `serverEntry`, and the caller
+ * All maps are built in ONE pass over one `serverEntry`, and the caller
  * assigns them as one value: the surface delta is only ever read alongside the
  * state it belongs to, so a refresh that updated one and not the other would
  * let a decision see a stale direction for a fresh state. Two separate
@@ -203,13 +211,18 @@ export interface InventorySnapshots {
 export function buildSnapshots(serverEntry: ServerInventory): InventorySnapshots {
   const states = new Map<string, QuarantineState>()
   const deltas = new Map<string, SurfaceDelta>()
-  for (const name of Object.keys(serverEntry.approved)) states.set(name, 'known')
+  const descriptors = new Map<string, ToolDescriptor>()
+  for (const [name, record] of Object.entries(serverEntry.approved)) {
+    states.set(name, 'known')
+    if (record.descriptor !== undefined) descriptors.set(name, record.descriptor)
+  }
   for (const [name, record] of Object.entries(serverEntry.quarantined)) {
     states.set(name, record.state)
+    descriptors.set(name, record.descriptor)
     const delta = trustedSurfaceDelta(serverEntry, name, record)
     if (delta !== undefined) deltas.set(name, delta)
   }
-  return { states, deltas }
+  return { states, deltas, descriptors }
 }
 
 /**
@@ -271,7 +284,8 @@ interface SchemaSummary {
  * uncapped descriptor, so bounding here never affects rug-pull detection.
  *
  * If the redacted result still serializes beyond `MAX_STORED_DESCRIPTOR_CHARS`,
- * annotations are dropped, then (last resort) the schema is summarized too.
+ * annotations are slimmed to the class hints, then (last resort) the schema is
+ * summarized too.
  */
 export function redactedDescriptorFor(tool: ToolDescriptor, mode: SchemaStorageMode): StoredDescriptor {
   const capped: ToolDescriptor = {
@@ -288,21 +302,40 @@ export function redactedDescriptorFor(tool: ToolDescriptor, mode: SchemaStorageM
   return boundDescriptor(redacted)
 }
 
-/** Applies the byte caps: schema cap first, then annotation drop, then schema summary. */
+/**
+ * Applies the byte caps: schema cap first, then the annotations are slimmed to
+ * the class hints, then the schema is summarized.
+ *
+ * The hints survive every cap on purpose. The stored descriptor is what a call
+ * is classified from when the session never listed tools, and the server
+ * chooses how large a descriptor is: dropping the annotations wholesale let a
+ * padded `destructiveHint` tool fall back to its name alone (`write`) for
+ * exactly those sessions. Two booleans cost nothing to keep.
+ */
 function boundDescriptor(redacted: ToolDescriptor): StoredDescriptor {
   const bounded = withCappedSchema(redacted)
   if (serializedLength(bounded.descriptor) <= MAX_STORED_DESCRIPTOR_CHARS) return bounded
 
-  const { annotations: _annotations, ...withoutAnnotations } = bounded.descriptor
-  if (
-    serializedLength(withoutAnnotations) <= MAX_STORED_DESCRIPTOR_CHARS ||
-    withoutAnnotations.inputSchema === undefined
-  ) {
-    return { descriptor: withoutAnnotations, schemaTruncated: bounded.schemaTruncated }
+  const { annotations, ...withoutAnnotations } = bounded.descriptor
+  const hints = classHintsOf(annotations)
+  const slimmed: ToolDescriptor = hints === undefined ? withoutAnnotations : { ...withoutAnnotations, annotations: hints }
+  if (serializedLength(slimmed) <= MAX_STORED_DESCRIPTOR_CHARS || slimmed.inputSchema === undefined) {
+    return { descriptor: slimmed, schemaTruncated: bounded.schemaTruncated }
   }
   return {
-    descriptor: { ...withoutAnnotations, inputSchema: schemaSummaryOf(withoutAnnotations.inputSchema) },
+    descriptor: { ...slimmed, inputSchema: schemaSummaryOf(slimmed.inputSchema) },
     schemaTruncated: true,
+  }
+}
+
+/** The two annotations `classifyTool` reads, and nothing else; `undefined` when neither is set. */
+function classHintsOf(annotations: ToolDescriptor['annotations']): ToolDescriptor['annotations'] {
+  if (annotations === undefined) return undefined
+  const { readOnlyHint, destructiveHint } = annotations
+  if (typeof readOnlyHint !== 'boolean' && typeof destructiveHint !== 'boolean') return undefined
+  return {
+    ...(typeof readOnlyHint === 'boolean' ? { readOnlyHint } : {}),
+    ...(typeof destructiveHint === 'boolean' ? { destructiveHint } : {}),
   }
 }
 

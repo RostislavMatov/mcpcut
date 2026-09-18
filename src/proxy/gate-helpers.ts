@@ -267,7 +267,8 @@ export interface GateObserveResult {
  * `observeToolsList` never throws (it reports failure via `failed`);
  * `isCatalogTrusted()` goes false on an observe/load failure, at which point
  * every subsequent `tools/call` must fail closed at the call level.
- * `surfaceDeltaOf` joined the contract in M5 wave 6 (six methods now).
+ * `surfaceDeltaOf` joined the contract in M5 wave 6, `descriptorOf` after the
+ * 2026-09-18 user-journey smoke (seven methods now).
  */
 export interface GateInventory {
   /** Hydrates the in-memory snapshot from the persisted store; call once at session start. */
@@ -283,6 +284,12 @@ export interface GateInventory {
    * reads it as "not provably narrower" and withdraws an explicit `allow`.
    */
   surfaceDeltaOf(toolName: string): SurfaceDelta | undefined
+  /**
+   * Synchronous stored descriptor (latest observed, else approved), or
+   * `undefined`. The catalog falls back to it for a tool this session never
+   * saw listed, so skipping `tools/list` cannot lower a tool's class.
+   */
+  descriptorOf(toolName: string): ToolDescriptor | undefined
   /** True once ≥1 `observeToolsList` has been processed (even if it failed). */
   hasObservedCatalog(): boolean
   /** False if the latest observe returned `failed:true` or `load()` hit a corrupt/unavailable store. */

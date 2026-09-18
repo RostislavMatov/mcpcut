@@ -20,9 +20,10 @@ import {
 
 /**
  * Cap on tool descriptors cached from `tools/list` for classification. A
- * catalog beyond this size degrades to name-only classification, which is
- * the safe direction: an unknown descriptor classifies as `write` (or
- * `destructive` by name heuristic), never as `read`.
+ * tool beyond this size is classified from the descriptor the inventory
+ * stores, and only then from its name alone. Name-only is never `read`, but
+ * it is not "the safe direction" either: a name cannot see `destructiveHint`,
+ * so it can land on `write` where the descriptor says `destructive`.
  */
 const MAX_CACHED_DESCRIPTORS = 5_000
 
@@ -49,7 +50,10 @@ export interface ToolCatalogDeps {
 }
 
 export interface ToolCatalog {
-  /** Last descriptor seen for `toolName`, or a name-only stand-in. */
+  /**
+   * The descriptor to classify `toolName` from: the one this session last saw
+   * listed, else the one the inventory stores, else a name-only stand-in.
+   */
   descriptorOf(toolName: string): ToolDescriptor
   /** Observes, quarantines and (optionally) filters one `tools/list` response. */
   handleResponse(msg: ClassifiedMessage): Promise<Verdict>
@@ -190,8 +194,18 @@ export function createToolCatalog(deps: ToolCatalogDeps): ToolCatalog {
     }
   }
 
+  /**
+   * Whether a session asks for `tools/list` at all is the agent's choice, so
+   * it must not be what decides a tool's class: a call in a session that never
+   * listed tools is classified from the inventory's stored descriptor -- the
+   * same annotations a listing would have shown (smoke 2026-09-18, H1).
+   */
+  function descriptorOf(toolName: string): ToolDescriptor {
+    return descriptorsByName.get(toolName) ?? deps.inventory.descriptorOf(toolName) ?? { name: toolName }
+  }
+
   return {
-    descriptorOf: (toolName) => descriptorsByName.get(toolName) ?? { name: toolName },
+    descriptorOf,
     handleResponse,
   }
 }

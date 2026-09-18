@@ -74,6 +74,7 @@ function inventoryWith(delta: SurfaceDelta | undefined): GateInventory {
     observeToolsList: () => Promise.resolve({ known: [], new: [], changed: ['read_file'], failed: false }),
     stateOf: () => 'changed',
     surfaceDeltaOf: () => delta,
+    descriptorOf: () => undefined,
     hasObservedCatalog: () => true,
     isCatalogTrusted: () => true,
   }

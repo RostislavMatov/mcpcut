@@ -167,6 +167,17 @@ All notable changes to this project are documented here. The format follows
 
 ### Security
 
+- **Skipping `tools/list` no longer lowers a tool's class.** A call was
+  classified from the descriptor its own session had seen listed, and from the
+  tool's name alone when the agent never asked for the catalog — so
+  `write_file` was `destructive` (the server's `destructiveHint`) in one
+  session and `write` in another, and under `classDefaults.write: allow` the
+  second one skipped human approval. A session that never listed tools is now
+  classified from the descriptor the inventory stores (the registration probe,
+  `server refresh` or any earlier session put it there); the name decides only
+  for a tool nobody has ever observed. The stored descriptor keeps
+  `readOnlyHint`/`destructiveHint` under every size cap, so a server cannot
+  pad a descriptor until its hints are dropped.
 - **The bootstrap owner token no longer lands in `run/ui.log`.** When `ui`
   starts over a store with no admins (the `setup --yes --no-admin` path), it
   writes the one-time token to `<data dir>/bootstrap-token` — mode 0600,

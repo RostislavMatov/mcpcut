@@ -428,6 +428,14 @@ or a non-ASCII confusable in the name can never be downgraded by
 `readOnlyHint`. For anything that matters, write the rule; don't inherit the
 hint.
 
+A call is classified from the tool's descriptor: the one the session saw in
+its own `tools/list`, or — when the agent never asked for the catalog — the one
+the inventory stored the last time anyone observed that server (the
+registration probe, `server refresh`, an earlier session). Only a tool nobody
+has ever seen listed is classified from its name alone. Skipping `tools/list`
+is the agent's choice, so it must not be a way to turn a `destructive` tool
+into a `write` one.
+
 ### Recipe: `classOverrides` for servers without annotations
 
 Some servers don't send `readOnlyHint`/`destructiveHint` at all —
