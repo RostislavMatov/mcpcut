@@ -667,7 +667,7 @@ mcp-journal connect <server> --agent <name> [--policy <path>] [--fail-closed]
 mcp-journal serve [--port N] [--host H] [--policy <path>] [--fail-closed] [--allowed-origin URL]
 mcp-journal server add <name> --transport stdio|http ...
 mcp-journal server list | show <name> | remove <name> [--prune-grants]
-                                                  # add/remove are ungated; MCP_ADMIN_TOKEN only names who did it
+                                                  # add/remove need MCP_ADMIN_TOKEN (owner); list and show do not
 mcp-journal vault init | set <name> | list | remove <name> | rekey
                                                   # set/remove/rekey need MCP_ADMIN_TOKEN (owner); init and list do not
 mcp-journal agent create <name> | list | revoke <name>
@@ -980,17 +980,20 @@ produces exactly the hashes it produced before groups existed.
 Removing a group that still has members is refused, and the refusal lists them.
 `mcp-journal server remove <name>` cascades: the server is dropped from every
 personal grant and every group grant, and the cascade is journaled
-(`removed server "x"; cascaded: 2 agent grants, 1 groups`). Without an admin
-token the removal still happens, and the record says the change was
-unattributed.
+(`removed server "x"; cascaded: 2 agent grants, 1 groups`).
 
-`mcp-journal server add` is recorded the same way, and on the same terms: with
-`MCP_ADMIN_TOKEN` set to a personal token the `access-edit` record and the
-`[audit] server add by …` line name that admin; without one both say
-`unattributed` and the registration still goes ahead. Neither command is gated
-by a role. That is worth knowing before you script either: registering a server
-is what decides which process the plane may launch, and the registration probe
-runs that process once, immediately.
+`server add` and `server remove` (with or without `--prune-grants`) are
+**owner-only**, like the `/servers` write routes of the admin UI: they need
+`MCP_ADMIN_TOKEN` set to an owner's personal token, and the `access-edit`
+record and the `[audit] server add|remove by …` line name that admin. Without a
+token, with one that matches no admin, or with a lower role the command refuses
+— `Refusing to change the server registry: …` — before it validates, writes or
+probes anything. That matters because registering a server is what decides
+which process the plane may launch, and the registration probe runs that
+process once, immediately. `server list` and `server show` need no token;
+`server refresh` needs `operator`. Registering or editing a server from the
+browser leaves the same `access-edit` record (`server.add`, `server.update`)
+under the signed-in admin's name.
 
 Removing a name the registry does **not** hold changes nothing: it exits 1 with
 `unknown server "x"`, plus a hint when grants are still pointing at that name —

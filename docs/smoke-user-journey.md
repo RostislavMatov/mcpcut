@@ -156,7 +156,7 @@
 | 6 | `prune` и `show` на ошибку аргумента печатают свой короткий синопсис + «See `mcpcut --help`» |
 | 7 | Предупреждение SQLite подавляется точечно (тип + текст), остальные предупреждения проходят; загрузка `node:sqlite` сдвинута через `createRequire`; `run/*.log` чисты; поправка в ADR-0006 |
 | 8 | `approvals list`: `agent_waits=42s expires_in=4m55s`, после таймаута — `agent_waits=elapsed(retry-only)`; `--json` без изменений |
-| 9 | `server add` пишет `access-edit` (`server.add`) и строку `[audit]` с именем админа, без токена — `unattributed` с предупреждением; гейта нет (решение владельца) |
+| 9 | `server add` пишет `access-edit` (`server.add`) и строку `[audit]` с именем админа, без токена — `unattributed` с предупреждением; гейта нет (решение владельца) — **заменено тем же днём: owner-гейт, см. «Решения владельца по хвостам» ниже** |
 | 10 | Смена раздела консоли очищает панель (кроме `token-hold` и идущей команды); в ADR-0012 обратного решения не было |
 | 11 | `serve`: `no-grant` → 403 (ADR-0002 закрепляет 400 только за мисматчем моделей сессий) |
 | 12 | Очередь одобрений дашборда оседает на месте (`data-live-settle` + два `data-live-text`-счётчика); панель журнала и полоса серверов по-прежнему свежеют только перезагрузкой — прежний бэклог |
@@ -176,4 +176,29 @@
 | тот же вызов в **той же** сессии | удержан: `approvals list` → `tool=delete_customer class=destructive agent_waits=55s expires_in=4m55s` |
 
 Ревью M1 (`ecc:typescript-reviewer` + `ecc:security-reviewer`): CRITICAL нет; единственная существенная находка (HIGH у TS, MEDIUM у security — одна и та же) закрыта в волне: `mapPolicyProvider` копировал `sourcePath` в момент обёртки, а обе точки входа оборачивают провайдер до гейта (`--fail-closed`), так что после подхвата обёртка навсегда называла бы `<no policy file>`. На решения и `policyHash` не влияло (они идут через `current()`), только на диагностику; поле стало геттером-сквозняком, регрессионный тест в `reload-await.test.ts` (12). Дубль `safely()` вынесен в `reload-fs.ts`. Проверено ревью и найдено чистым: класс доверия ADR-0005 (required-кандидат не может ждаться — его отсутствие на старте это ошибка, а не `disabled`), направление (подхват не расширяет), гонки (`bound` ставится один раз, синхронно), `policyHash` корректно двигается в момент подхвата. Оставлено владельцу: у файла политики нет предела размера (пробел существовал и в обычной перезагрузке; непринятый битый файл перечитывается каждые 250 мс; кандидаты пишет только оператор). Полный прогон после M1: **308 файлов / 6703 теста**, lint чист.
+
+## Решения владельца по хвостам (2026-09-18) и их закрытие
+
+| # | Вопрос | Решение | Итог |
+|---|---|---|---|
+| 1 | Роль для CLI `server add` / `server remove` | **нужна** — `owner`, паритет с маршрутами `/servers` веб-UI | закрыто: общий гейт `requireAccessOwner`, отказ до валидации, записи и пробы; `--prune-grants` под тем же гейтом; `list`/`show` без токена. ADR-0010 «Решение владельца 2026-09-18», R1–R2 |
+| 2 | Веб-`server add` не пишет `access-edit` | **должен писать** | закрыто: `server.add` из браузера с актором сессии и предупреждением H4 при потерянной записи; сверх решения — та же дыра у `POST /servers/edit`, закрыта новым действием `server.update` (R3–R4) |
+| 3 | Предел размера файла политики | **нет** | не делается, из открытых вычеркнуто |
+| 4 | Посессионный `catalogObserved` (родственник H1) | **никак** | не меняется и не документируется, из открытых вычеркнуто |
+
+Живой повтор (свежий стенд в скретче, `dist/cli.js`, Chromium headless):
+
+| Шаг | Факт |
+|---|---|
+| `server add` без токена | `Refusing to change the server registry: no admin token…`, `server list` → `(no servers registered)` |
+| `server add` токеном `operator` | `…role "owner" is required, the same rule the admin UI applies to the /servers routes` + подсказка `admin role olga owner` |
+| `server add` токеном `owner` | `added server "probe"`, `[audit] server add by alice (owner): "probe"`, `probe: alive — 109ms` |
+| `server remove` без токена | отказ, сервер остаётся в `server list` |
+| браузер: вход → `/servers?add=1` → интерстишел → Register it | `/servers`, сервер в списке |
+| браузер: `/servers?edit=web-srv` → Save → Save it | `/servers` |
+| `show plane_access` | три записи: `server.add` (`via: cli`, alice), `server.add` (`via: ui`, alice), `server.update` (`via: ui`, alice) |
+
+Ревью (`ecc:security-reviewer` + `ecc:typescript-reviewer`): CRITICAL/HIGH нет; обхода гейта нет (единственные вызовы `cascadeServerRemoval`/`reportServerAdd` — из `server-cmd.ts`, консоль идёт через тот же `dispatch`, entrypoint контейнера `server add` не зовёт); записи несут только `{ actor, action, server }`. Полный прогон: **310 файлов / 6732 теста**, coverage 97.14 %, lint чист.
+
+Наблюдение по пути (не проверено до конца, не вызвано изменениями): при высоте окна 720 px кнопка `Save`/`Register` модалки сервера оказывается на y≈758 — ниже окна, Playwright не смог докрутить до неё; при 800 px кликается. Прокручивается ли модалка на низких экранах — в ROADMAP.
 
