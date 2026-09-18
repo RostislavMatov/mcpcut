@@ -57,9 +57,15 @@ export type AccessEditAction =
   // Registering a server (user-journey smoke 2026-09-18, UX-9). Its mirror
   // image has been recorded since M5.5 п.2, while the command that decides
   // WHICH process the plane may launch — and, through the registration probe,
-  // runs it once — left no record at all. Attribution is best-effort here too:
-  // no token means "nobody named", not a refusal.
+  // runs it once — left no record at all. Since owner decision 2026-09-18 the
+  // CLI `server add|remove` REQUIRE an owner `MCP_ADMIN_TOKEN`, so the actor
+  // is a named owner on both surfaces: no token is a refusal, not a record
+  // with nobody named.
   | 'server.add'
+  // Editing a registration (owner decision 2026-09-18): re-pointing a stdio
+  // command is the same remote-code-execution power as registering one, so it
+  // earns the same record. The web UI is the only surface with an edit today.
+  | 'server.update'
   | 'server.remove'
   // Personal grants (owner decision T1, 2026-09-01): the same category as
   // group edits, so the journal answers "who changed this agent's matrix".
@@ -99,12 +105,13 @@ export type AccessEditAction =
 
 /**
  * WHO made the change: the authenticated admin, their role at the time, and
- * the surface. Both name and role are `null` on the three paths where there
- * is genuinely nobody to name — an unattributed CLI `server remove` (no admin
- * token in the environment), the bootstrap `admin add` on an empty store
- * (nobody holds a token yet), and `admin rotate --recover` (the way back in
+ * the surface. Both name and role are `null` on the two paths where there is
+ * genuinely nobody to name — the bootstrap `admin add` on an empty store
+ * (nobody holds a token yet) and `admin rotate --recover` (the way back in
  * when the last owner lost theirs). "Nobody named" is a fact about that
- * shell, kept verbatim rather than faked into a name.
+ * shell, kept verbatim rather than faked into a name. Journals written before
+ * 2026-09-18 also carry it on CLI `server add|remove`, which ran without a
+ * token until the owner gate; a reader must keep accepting those records.
  */
 export interface AccessEditActor {
   readonly adminName: string | null
