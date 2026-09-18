@@ -40,7 +40,7 @@ let approvalsDir: string
 let errors: unknown[]
 
 beforeEach(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), 'mcp-journal-gate-test-'))
+  tempDir = await mkdtemp(join(tmpdir(), 'mcpcut-gate-test-'))
   approvalsDir = join(tempDir, 'approvals')
   sink = createJournalSink(SESSION_ID, { dir: tempDir })
   queue = createApprovalQueue({ baseDir: approvalsDir })
@@ -527,7 +527,7 @@ describe('createPolicyGate: deny', () => {
     const answer = parseWritten(written[0]!)
     expect(answer.error.code).toBe(ERROR_CODE_QUARANTINED)
     expect(answer.error.message.toLowerCase()).toContain('quarantine')
-    expect(answer.error.message).not.toContain('mcp-journal')
+    expect(answer.error.message).not.toContain('mcpcut')
     const decisions = await readDecisions()
     expect(decisions[0]!.decision).toMatchObject({ outcome: 'quarantined', rule: 'quarantine' })
   })
@@ -624,7 +624,7 @@ describe('createPolicyGate: require-approval', () => {
     const answer = parseWritten(written[0]!)
     expect(answer.id).toBe(3)
     expect(answer.error.message.toLowerCase()).toContain('human')
-    expect(answer.error.message).not.toContain('mcp-journal')
+    expect(answer.error.message).not.toContain('mcpcut')
     expect(answer.error.message).not.toContain(pending.approvalId)
     expect(answer.error.data.approvalId).toBe(pending.approvalId)
     expect((await readDecisions())[1]!.decision?.outcome).toBe('timeout')

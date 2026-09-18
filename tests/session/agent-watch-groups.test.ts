@@ -33,7 +33,7 @@ let watches: AgentWatch[]
 let errors: unknown[]
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-watch-groups-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-watch-groups-'))
   agents = createAgentsStore({ journalDir })
   groups = createGroupsStore({ journalDir })
   watches = []

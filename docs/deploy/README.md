@@ -98,9 +98,9 @@ To stop and unload: `launchctl bootout gui/$UID/com.mcpcut.ui` (and the same
 for `serve`). `RunAtLoad` starts them at login; `KeepAlive` with
 `SuccessfulExit=false` restarts them only after a failure, the counterpart of
 systemd's `Restart=on-failure`. The plists send both streams to
-`~/.mcp-journal/run/<service>.log`, so `mcpcut logs` works; that directory is
+`~/.mcpcut/data/run/<service>.log`, so `mcpcut logs` works; that directory is
 created by `mcpcut setup` — if it is missing, `mkdir -m 0700
-~/.mcp-journal/run` before loading.
+~/.mcpcut/data/run` before loading.
 
 ## Checking
 

@@ -22,7 +22,7 @@ import { resolvePolicySource, type PolicySourceCandidate } from '../source.js'
  *
  * Since an edit can now land in a file `connect` does not read, the target
  * carries a computed statement of WHO reads it. `connect` (agent-launched)
- * reads `<journalDir>/.mcp-journal/policy.json` and then
+ * reads `<journalDir>/.mcpcut-project/policy.json` and then
  * `<journalDir>/policy.json`, and nothing else; every operator-launched entry
  * reads the four-source order. That statement is displayed — never a refusal:
  * an edit always reaches the entries that loaded the file it changes.
@@ -144,7 +144,7 @@ function samePath(left: string, right: string): boolean {
 
 /**
  * The first candidate that entry point would actually load. A source the
- * operator named explicitly (`--policy`, `$MCP_JOURNAL_POLICY`) is that file
+ * operator named explicitly (`--policy`, `$MCPCUT_POLICY`) is that file
  * whether or not it exists: the entry point loads that path or fails, and
  * never falls through. A probe that throws counts as "not there" — the walk
  * then reaches the plane's own state directory, the safest place to land.

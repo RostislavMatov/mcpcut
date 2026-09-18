@@ -25,6 +25,12 @@
     <string>ui</string>
   </array>
 
+  <!-- Same working directory `mcpcut start` gives the services: the data
+       directory. launchd would otherwise run the job in `/`, and the
+       project-level policy candidate is looked up relative to it. -->
+  <key>WorkingDirectory</key>
+  <string>/Users/you/.mcpcut/data</string>
+
   <!-- The bind and the TLS/allowlist flags come from this config. -->
   <key>EnvironmentVariables</key>
   <dict>
@@ -45,11 +51,11 @@
 
   <!-- Both streams into the same file the service manager would have used,
        so `mcpcut logs ui` reads it. `mcpcut setup` creates <data dir>/run/;
-       if it is missing, `mkdir -m 0700 ~/.mcp-journal/run` first. -->
+       if it is missing, `mkdir -m 0700 ~/.mcpcut/data/run` first. -->
   <key>StandardOutPath</key>
-  <string>/Users/you/.mcp-journal/run/ui.log</string>
+  <string>/Users/you/.mcpcut/data/run/ui.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/you/.mcp-journal/run/ui.log</string>
+  <string>/Users/you/.mcpcut/data/run/ui.log</string>
 
   <!-- 0o077 in decimal: plists have no octal. Files the process creates are
        owner-only, like the data directory. -->

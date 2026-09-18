@@ -129,7 +129,7 @@ export async function createJournalDir(policy: unknown = DEFAULT_POLICY): Promis
   journalDir: string
   policyPath: string
 }> {
-  const journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-serve-test-'))
+  const journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-serve-test-'))
   const policyPath = join(journalDir, 'policy.json')
   await writeFile(policyPath, typeof policy === 'string' ? policy : JSON.stringify(policy), 'utf8')
   onDispose(() => rm(journalDir, { recursive: true, force: true }))

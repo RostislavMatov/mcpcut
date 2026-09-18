@@ -47,7 +47,7 @@ export async function bootstrapAdmin(
   } catch (error: unknown) {
     io.stderr.write(
       `ui: cannot write the bootstrap token file: ${readableMessage(error)} — ` +
-        `the "${minted.admin.name}" admin exists; run "mcp-journal admin rotate ${minted.admin.name}" ` +
+        `the "${minted.admin.name}" admin exists; run "mcpcut admin rotate ${minted.admin.name}" ` +
         'for a new token\n',
     )
     return false

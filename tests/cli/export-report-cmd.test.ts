@@ -25,7 +25,7 @@ import { createJournalSink } from '../../src/journal/sink.js'
 import { loadSigningPublicKey, publicKeyFingerprint } from '../../src/journal/signing.js'
 
 /**
- * `mcp-journal export --report [--session <id>] [--out <dir>]` (M5 wave 5,
+ * `mcpcut export --report [--session <id>] [--out <dir>]` (M5 wave 5,
  * task 5.1, part B). Companion to `tests/cli/export-cmd.test.ts` (plain
  * `export`, untouched) and `tests/journal/report.test.ts` (the format core
  * this command builds on).
@@ -35,8 +35,8 @@ let journalDir: string
 let outDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-export-report-cmd-journal-'))
-  const outParent = await mkdtemp(join(tmpdir(), 'mcp-journal-export-report-cmd-out-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-export-report-cmd-journal-'))
+  const outParent = await mkdtemp(join(tmpdir(), 'mcpcut-export-report-cmd-out-'))
   outDir = join(outParent, 'report')
 })
 
@@ -276,9 +276,9 @@ describe('export --report: file modes', () => {
 })
 
 describe('export --report: default --out', () => {
-  test('defaults to mcp-journal-report under the process cwd', async () => {
+  test('defaults to mcpcut-report under the process cwd', async () => {
     await writeRecordsViaSink('session-a', [recordOf('session-a', '01AAAAAAAAAAAAAAAAAAAAAAA0', 'ping')])
-    const cwdReport = join(process.cwd(), 'mcp-journal-report')
+    const cwdReport = join(process.cwd(), 'mcpcut-report')
     await rm(cwdReport, { recursive: true, force: true })
     const io = fakeIo()
 
@@ -369,7 +369,7 @@ describe('export --report: a failed export leaves nothing of its own behind (P2)
     expect(exitCode).toBe(1)
     expect(io.out()).not.toContain('Report written to')
     expect(io.err()).toMatch(/seq 1/)
-    expect(io.err()).toMatch(/mcp-journal verify/)
+    expect(io.err()).toMatch(/mcpcut verify/)
     expect(await existsAt(outDir)).toBe(false)
   })
 

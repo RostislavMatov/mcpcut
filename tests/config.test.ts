@@ -1,3 +1,4 @@
+import { join } from 'node:path'
 import { describe, expect, test } from 'vitest'
 import {
   JOURNAL_DIR,
@@ -16,10 +17,10 @@ import {
 
 describe('config', () => {
   test('journal dir points into the user home directory', () => {
-    expect(JOURNAL_DIR).toContain('.mcp-journal')
+    expect(JOURNAL_DIR).toContain(join('.mcpcut', 'data'))
   })
 
-  test('with no install config the data directory comes from the historical default', () => {
+  test('with no install config the data directory comes from the default', () => {
     expect(JOURNAL_DIR_RESOLUTION.source).toBe('default')
     expect(JOURNAL_DIR_RESOLUTION.dataDir).toBe(JOURNAL_DIR)
     expect(JOURNAL_DIR_RESOLUTION.problem).toBeUndefined()

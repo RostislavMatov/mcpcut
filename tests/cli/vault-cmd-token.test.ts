@@ -30,7 +30,7 @@ import { readJournalChainRows, readJournalRecords } from '../support/journal-row
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-vault-token-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-vault-token-'))
 })
 
 afterEach(async () => {

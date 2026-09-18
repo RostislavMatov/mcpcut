@@ -24,7 +24,7 @@ async function open(...args: Parameters<typeof openSqlite>): Promise<SqliteHandl
 }
 
 beforeEach(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), 'mcp-journal-sqlite-test-'))
+  tempDir = await mkdtemp(join(tmpdir(), 'mcpcut-sqlite-test-'))
   dbPath = join(tempDir, 'nested', 'state.db')
 })
 

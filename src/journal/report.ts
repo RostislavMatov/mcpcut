@@ -36,7 +36,7 @@ export { ReportExportError, type ReportRecordSink } from './report-stream.js'
  * keeps the export streaming: a multi-gigabyte journal is walked one row at
  * a time (`report-stream.ts`), never materialized.
  *
- * `doc` is emitted verbatim, exactly as `mcp-journal export` already does
+ * `doc` is emitted verbatim, exactly as `mcpcut export` already does
  * (`export-cmd.ts`) and exactly as `chain.ts` hashes it. Re-serializing it --
  * even through `canonicalJson` -- would break BOTH the chain re-fold (the
  * chain hashes stored bytes, not a reinterpretation of them) and the promise

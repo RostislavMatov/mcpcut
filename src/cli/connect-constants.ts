@@ -3,7 +3,7 @@ import { POLICY_ENV_VAR, POLICY_FILE_NAME } from '../policy/constants.js'
 import { DIAGNOSTIC_PREFIX } from '../upstream/constants.js'
 
 /**
- * Constants and operator-facing messages for `mcp-journal connect` (M3
+ * Constants and operator-facing messages for `mcpcut connect` (M3
  * Task 12). Per-area constants rule (`src/policy/constants.ts` precedent):
  * these are connect's own and do not belong in `src/config.ts`.
  *
@@ -48,7 +48,7 @@ export const MAX_LISTED_SERVERS = 20
 export const POLICY_SOURCE_DESCRIPTION = `<journal-dir>/${POLICY_FILE_NAME}`
 
 export const CONNECT_USAGE = `Usage:
-  mcp-journal connect <server> --agent <name> [--fail-closed]
+  mcpcut connect <server> --agent <name> [--fail-closed]
                                          Bridge a registered MCP server to this agent,
                                          enforcing its grants and journaling all traffic.
                                          The agent token comes from ${AGENT_TOKEN_ENV_VAR};
@@ -107,7 +107,7 @@ export function missingTokenMessage(): string {
 export function noGrantMessage(agentName: string, serverName: string): string {
   return (
     `agent "${agentName}" has no grant for server "${serverName}".\n` +
-    `Grant it with: mcp-journal agent grant ${agentName} ${serverName} --tools "<patterns>"\n`
+    `Grant it with: mcpcut agent grant ${agentName} ${serverName} --tools "<patterns>"\n`
   )
 }
 

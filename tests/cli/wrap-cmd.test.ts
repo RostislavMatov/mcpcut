@@ -6,7 +6,7 @@ import { runWrapCommand } from '../../src/cli/wrap-cmd.js'
 import { writeCorruptDatabase, writeUnopenableDatabase } from '../support/corrupt-db.js'
 
 /**
- * `mcp-journal wrap`'s startup gate. Routing and policy resolution for this
+ * `mcpcut wrap`'s startup gate. Routing and policy resolution for this
  * command are covered by `tests/cli/dispatch.test.ts`; what lives here is the
  * M4.5 wave-5 preflight, which must refuse a damaged database BEFORE the
  * wrapped server is spawned — a wrap that spawned first would run a whole
@@ -16,7 +16,7 @@ import { writeCorruptDatabase, writeUnopenableDatabase } from '../support/corrup
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-wrap-cmd-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-wrap-cmd-'))
 })
 
 afterEach(async () => {

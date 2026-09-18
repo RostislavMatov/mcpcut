@@ -58,7 +58,7 @@ let plane: Plane
 let ui: UiTestHarness | null = null
 
 beforeEach(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), 'mcp-journal-m55-p1-'))
+  tempDir = await mkdtemp(join(tmpdir(), 'mcpcut-m55-p1-'))
   plane = createPlane(tempDir)
 })
 

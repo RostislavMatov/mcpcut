@@ -60,7 +60,7 @@ const USAGE = `Usage:
   approvals approve <id> [--reason TEXT]   Approve a pending request (needs ${ADMIN_TOKEN_ENV_VAR})
   approvals deny <id> [--reason TEXT]      Deny a pending request (needs ${ADMIN_TOKEN_ENV_VAR})
 
-${ADMIN_TOKEN_ENV_VAR} is your personal admin token ("mcp-journal admin add").
+${ADMIN_TOKEN_ENV_VAR} is your personal admin token ("mcpcut admin add").
 It records WHICH admin resolved a request; listing needs no token.
 `
 
@@ -77,7 +77,7 @@ const CLI_ACTOR_PREFIX = 'cli:'
 const MISSING_TOKEN_MESSAGE =
   `Refusing to resolve: no admin token. Set ${ADMIN_TOKEN_ENV_VAR} to your personal admin token so ` +
   `the resolution records which admin decided it.\n` +
-  `Get one with: mcp-journal admin add <name> --role operator   (existing admin: mcp-journal admin rotate <name>)\n`
+  `Get one with: mcpcut admin add <name> --role operator   (existing admin: mcpcut admin rotate <name>)\n`
 
 /**
  * A token was supplied and matched no ACTIVE admin. Deliberately says nothing
@@ -90,7 +90,7 @@ const MISSING_TOKEN_MESSAGE =
 const UNKNOWN_TOKEN_MESSAGE =
   `Refusing to resolve: ${ADMIN_TOKEN_ENV_VAR} does not match any active admin — it may have been ` +
   `rotated, or the admin removed.\n` +
-  `Check "mcp-journal admin list", then: mcp-journal admin rotate <name>\n`
+  `Check "mcpcut admin list", then: mcpcut admin rotate <name>\n`
 
 /**
  * A real, active admin whose role is below the resolve threshold. Names the
@@ -100,7 +100,7 @@ const UNKNOWN_TOKEN_MESSAGE =
 const INSUFFICIENT_ROLE_MESSAGE =
   `Refusing to resolve: this admin token's role may not resolve approvals ` +
   `(role "${APPROVAL_RESOLVE_MIN_ROLE}" or higher is required, the same rule the admin UI applies).\n` +
-  `An owner can change it with: mcp-journal admin role <name> ${APPROVAL_RESOLVE_MIN_ROLE}\n`
+  `An owner can change it with: mcpcut admin role <name> ${APPROVAL_RESOLVE_MIN_ROLE}\n`
 
 /**
  * The admin store could not be read at all, so no token can be resolved to a
@@ -112,7 +112,7 @@ function storeUnreadableMessage(detail: string): string {
   return (
     `Refusing to resolve: the admin store could not be read, so this resolution could not be ` +
     `attributed to a human.\n${formatReadableField(detail)}\n` +
-    `Check the file named above, then: mcp-journal admin list\n`
+    `Check the file named above, then: mcpcut admin list\n`
   )
 }
 

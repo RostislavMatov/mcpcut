@@ -7,7 +7,7 @@ import { createJournalSink } from '../../src/journal/sink.js'
 import type { JournalRecord } from '../../src/journal/record.js'
 
 /**
- * Behavior of `mcp-journal export`: streams `journal.db`'s records as JSONL
+ * Behavior of `mcpcut export`: streams `journal.db`'s records as JSONL
  * to stdout, in `seq` (global write) order. Routing (`dispatch` wiring
  * `export` to this module) is covered separately in `tests/cli/dispatch.test.ts`.
  */
@@ -15,7 +15,7 @@ import type { JournalRecord } from '../../src/journal/record.js'
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-export-cmd-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-export-cmd-'))
 })
 
 afterEach(async () => {
@@ -207,7 +207,7 @@ describe('export: legacy hint', () => {
 
     expect(exitCode).toBe(0)
     expect(io.out()).toContain('session-a')
-    expect(io.err()).toContain('mcp-journal migrate')
+    expect(io.err()).toContain('mcpcut migrate')
   })
 
   test('no legacy files: no hint on stderr', async () => {

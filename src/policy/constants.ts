@@ -252,7 +252,7 @@ export const POLICY_HASH_PREVIEW_CHARS = 8
 export const POLICY_FILE_NAME = 'policy.json'
 
 /** Environment variable that can point at an explicit policy file path. */
-export const POLICY_ENV_VAR = 'MCP_JOURNAL_POLICY'
+export const POLICY_ENV_VAR = 'MCPCUT_POLICY'
 
 /**
  * Max serialized (JSON) length of a stored `inputSchema` copy (M4, reversing

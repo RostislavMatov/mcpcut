@@ -116,7 +116,7 @@ function parsePendingApprovals(jsonOutput: string): Array<Record<string, unknown
 // -- 1 + 5: deny, and tools/list filtering (with quarantine as a side effect) ----------
 
 describe('runWrap: deny blocks a call, and tools/list hides only the denied tool', () => {
-  const journalDir = useJournalDir('mcp-journal-policy-deny-list-')
+  const journalDir = useJournalDir('mcpcut-policy-deny-list-')
   const policy = policyOf({
     defaultDecision: 'allow',
     servers: { [SERVER_NAME]: { tools: { risky_tool: 'deny' } } },
@@ -207,7 +207,7 @@ describe('runWrap: deny blocks a call, and tools/list hides only the denied tool
 // -- 2 + 8: allow relay + untouched-stream byte identity -----------------------------
 
 describe('runWrap: an allowed session is relayed byte-for-byte, including odd framing', () => {
-  const journalDir = useJournalDir('mcp-journal-policy-identity-')
+  const journalDir = useJournalDir('mcpcut-policy-identity-')
   // Nothing here is ever gated: allow-all, and quarantine off so a fresh
   // tool is never held for review either.
   const policy = policyOf({ defaultDecision: 'allow', quarantine: { enabled: false } })
@@ -280,7 +280,7 @@ describe('runWrap: an allowed session is relayed byte-for-byte, including odd fr
 // -- 3: require-approval, approved through the real approvals CLI --------------------
 
 describe('runWrap: require-approval forwards the call once the real CLI approves it', () => {
-  const journalDir = useJournalDir('mcp-journal-policy-approve-cli-')
+  const journalDir = useJournalDir('mcpcut-policy-approve-cli-')
   const policy = policyOf({
     defaultDecision: 'allow',
     approval: { timeoutMs: 20_000 },
@@ -344,7 +344,7 @@ describe('runWrap: require-approval forwards the call once the real CLI approves
 // -- 4: timeout, then a late CLI approval turns into a grant for the retry -----------
 
 describe('runWrap: a late CLI approval after a timeout grants the identical retry', () => {
-  const journalDir = useJournalDir('mcp-journal-policy-late-grant-')
+  const journalDir = useJournalDir('mcpcut-policy-late-grant-')
   // Short enough that the wait reliably times out inside the test's own budget.
   const policy = policyOf({
     defaultDecision: 'allow',
@@ -395,7 +395,7 @@ describe('runWrap: a late CLI approval after a timeout grants the identical retr
     expect((timedOut?.error as { data: { approvalId: string } }).data.approvalId).toBe(firstApprovalId)
     const message = (timedOut?.error as { message: string }).message
     expect(message).not.toContain(firstApprovalId)
-    expect(message).not.toContain('mcp-journal')
+    expect(message).not.toContain('mcpcut')
   })
 
   test('the retry is forwarded and answered, without a second pending approval', () => {
@@ -422,8 +422,8 @@ describe('runWrap: a late CLI approval after a timeout grants the identical retr
 // -- 6: quarantine blocks a new tool; approval via the real CLI unblocks the next session --
 
 describe('runWrap: a quarantined tool is blocked, then unblocked in a later session', () => {
-  const firstJournalDir = useJournalDir('mcp-journal-policy-quarantine-1-')
-  const secondJournalDir = useJournalDir('mcp-journal-policy-quarantine-2-')
+  const firstJournalDir = useJournalDir('mcpcut-policy-quarantine-1-')
+  const secondJournalDir = useJournalDir('mcpcut-policy-quarantine-2-')
   const policy = policyOf({
     defaultDecision: 'allow',
     quarantine: { enabled: true, onQuarantined: 'deny' },
@@ -495,7 +495,7 @@ describe('runWrap: a quarantined tool is blocked, then unblocked in a later sess
 // -- 7: fail-closed sourced from the policy file itself, not the --fail-closed flag --
 
 describe('runWrap: policy-driven fail-closed journaling', () => {
-  const journalDir = useJournalDir('mcp-journal-policy-failclosed-')
+  const journalDir = useJournalDir('mcpcut-policy-failclosed-')
 
   test('a journal that cannot be written kills the child and exits with the journal-failure code', async () => {
     const harness = createClientHarness()

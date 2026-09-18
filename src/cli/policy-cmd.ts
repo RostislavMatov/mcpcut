@@ -113,7 +113,7 @@ function formatErrorLines(result: Extract<PolicyLoadResult, { status: 'error' }>
 /**
  * Explains the 4 locations `loadPolicy` checks, in resolution order, for the
  * "no policy file found" case. Only reachable via default resolution (no
- * `--policy` flag, no `$MCP_JOURNAL_POLICY`): both named sources are
+ * `--policy` flag, no `$MCPCUT_POLICY`): both named sources are
  * "required" in `loadPolicy` and resolve to `status: 'error'` instead of
  * `'disabled'` when missing, so items 1 and 2 below are always "not given" /
  * "not set" whenever this message is shown.
@@ -132,8 +132,8 @@ function formatSearchedLocations(
   const homePath = resolve(cwd, join(journalDir, POLICY_FILE_NAME))
 
   // The project-level candidate is resolved against the CURRENT DIRECTORY, so
-  // running from inside `~/.mcp-journal` legitimately produces
-  // `~/.mcp-journal/.mcp-journal/policy.json`. That looked like a path bug in
+  // running from inside `~/.mcpcut/data` legitimately produces
+  // `~/.mcpcut/data/.mcpcut-project/policy.json`. That looked like a path bug in
   // the manual M4 smoke because the lines were unlabelled; label them, and
   // print one line when the two candidates are the same file.
   const locations =

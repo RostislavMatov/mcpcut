@@ -12,8 +12,8 @@ import { type Policy, parsePolicy } from './schema.js'
  * M2 plan's "Принятые решения" table.
  *
  *   1. `opts.explicitPath` (`--policy <path>` on the CLI)
- *   2. `$MCP_JOURNAL_POLICY` (`opts.env[POLICY_ENV_VAR]`)
- *   3. `<opts.cwd>/.mcp-journal/policy.json` (project-level)
+ *   2. `$MCPCUT_POLICY` (`opts.env[POLICY_ENV_VAR]`)
+ *   3. `<opts.cwd>/.mcpcut-project/policy.json` (project-level)
  *   4. `<opts.journalDir>/policy.json` (home-level, defaults to `JOURNAL_DIR`)
  *
  * A source the operator named explicitly (1 or 2) must exist: a missing file
@@ -52,7 +52,7 @@ export type PolicyLoadResult =
  * Exported so `cli/policy-cmd.ts` can describe the same resolution order to
  * the operator without duplicating the literal.
  */
-export const PROJECT_POLICY_SUBDIR = '.mcp-journal'
+export const PROJECT_POLICY_SUBDIR = '.mcpcut-project'
 
 /** One resolved candidate path to try reading, in resolution order. */
 interface PolicyCandidate {
@@ -160,7 +160,7 @@ function resolveCandidates(args: {
 }
 
 /**
- * `MCP_JOURNAL_POLICY` is operator-controlled, not attacker-controlled, so
+ * `MCPCUT_POLICY` is operator-controlled, not attacker-controlled, so
  * full sandboxing is out of scope (see M2 plan). It must still not be able
  * to crash the proxy: a null byte reaches `fs` as `ERR_INVALID_ARG_VALUE`,
  * and an empty value would otherwise silently resolve to `opts.cwd` itself

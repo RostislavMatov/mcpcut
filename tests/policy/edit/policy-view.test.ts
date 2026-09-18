@@ -12,10 +12,10 @@ import { parsePolicy, type Policy } from '../../../src/policy/schema.js'
  * "source" field any more — the file shown is the file edited.
  */
 
-const JOURNAL_DIR = '/state/mcp-journal'
+const JOURNAL_DIR = '/state/mcpcut'
 const WORK_DIR = '/work/project'
 const FLAT = join(JOURNAL_DIR, 'policy.json')
-const PROJECT = join(WORK_DIR, '.mcp-journal', 'policy.json')
+const PROJECT = join(WORK_DIR, '.mcpcut-project', 'policy.json')
 
 function policyOf(raw: unknown): Policy {
   const parsed = parsePolicy(raw)
@@ -85,13 +85,13 @@ describe('readPolicyView', () => {
 
   test('the target resolver is given this process\'s journalDir, env and cwd', async () => {
     const seen: unknown[] = []
-    await readPolicyView({ journalDir: JOURNAL_DIR, env: { MCP_JOURNAL_POLICY: '/etc/p.json' }, cwd: WORK_DIR }, deps({
+    await readPolicyView({ journalDir: JOURNAL_DIR, env: { MCPCUT_POLICY: '/etc/p.json' }, cwd: WORK_DIR }, deps({
       resolveTarget: async (args) => {
         seen.push(args)
         return { path: FLAT, readers: { kind: 'every-entry-point' } }
       },
     }))
 
-    expect(seen).toEqual([{ journalDir: JOURNAL_DIR, env: { MCP_JOURNAL_POLICY: '/etc/p.json' }, cwd: WORK_DIR }])
+    expect(seen).toEqual([{ journalDir: JOURNAL_DIR, env: { MCPCUT_POLICY: '/etc/p.json' }, cwd: WORK_DIR }])
   })
 })

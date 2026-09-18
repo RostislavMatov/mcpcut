@@ -30,9 +30,9 @@ let cwd: string
 let journalDir: string
 
 beforeEach(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), 'mcp-journal-source-test-'))
+  tempDir = await mkdtemp(join(tmpdir(), 'mcpcut-source-test-'))
   cwd = join(tempDir, 'agent-project')
-  journalDir = join(tempDir, 'home', '.mcp-journal')
+  journalDir = join(tempDir, 'home', '.mcpcut', 'data')
   await mkdir(cwd, { recursive: true })
   await mkdir(journalDir, { recursive: true })
 })
@@ -52,8 +52,8 @@ function captureNotes(): PolicySourceNotes & { lines: () => string[] } {
 }
 
 async function writeProjectPolicy(contents = VALID_POLICY_JSON): Promise<string> {
-  const path = join(cwd, '.mcp-journal', 'policy.json')
-  await mkdir(join(cwd, '.mcp-journal'), { recursive: true })
+  const path = join(cwd, '.mcpcut-project', 'policy.json')
+  await mkdir(join(cwd, '.mcpcut-project'), { recursive: true })
   await writeFile(path, contents, 'utf8')
   return path
 }
@@ -158,13 +158,13 @@ describe('resolvePolicySource: connect (agent-launched)', () => {
     expect(resolution.status).toBe('resolved')
     if (resolution.status !== 'resolved') return
     expect(resolution.candidates.map((candidate) => candidate.path)).toEqual([
-      join(journalDir, '.mcp-journal', 'policy.json'),
+      join(journalDir, '.mcpcut-project', 'policy.json'),
       join(journalDir, 'policy.json'),
     ])
     expect(resolution.candidates.every((candidate) => candidate.required)).toBe(false)
   })
 
-  test('a set $MCP_JOURNAL_POLICY produces exactly one note line', async () => {
+  test('a set $MCPCUT_POLICY produces exactly one note line', async () => {
     const notes = captureNotes()
 
     const resolution = await resolvePolicySource({
@@ -298,7 +298,7 @@ describe('resolvePolicySource: operator-launched entry points keep the load.ts o
     expect(result.status === 'loaded' && result.sourcePath).toBe(explicitPath)
   })
 
-  test.each(OPERATOR_ENTRY_POINTS)('%s: $MCP_JOURNAL_POLICY is honored', async (entryPoint) => {
+  test.each(OPERATOR_ENTRY_POINTS)('%s: $MCPCUT_POLICY is honored', async (entryPoint) => {
     const envPath = await writeEnvPolicy()
     await writeProjectPolicy()
     await writeStatePolicy()

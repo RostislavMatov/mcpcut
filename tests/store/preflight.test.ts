@@ -22,7 +22,7 @@ import { writeCorruptDatabase, writeUnopenableDatabase } from '../support/corrup
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-preflight-test-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-preflight-test-'))
 })
 
 afterEach(async () => {

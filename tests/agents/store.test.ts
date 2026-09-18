@@ -19,7 +19,7 @@ const FIXED_NOW = new Date('2026-08-05T12:00:00.000Z')
 const LATER = new Date('2026-08-05T13:00:00.000Z')
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-agents-store-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-agents-store-'))
   store = createAgentsStore({ journalDir, clock: () => FIXED_NOW })
 })
 

@@ -89,7 +89,7 @@ async function runSession(args: RunArgs): Promise<SessionResult> {
 let journalDir: string
 
 beforeAll(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-wrap-agent-m3-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-wrap-agent-m3-'))
 })
 
 afterAll(async () => {

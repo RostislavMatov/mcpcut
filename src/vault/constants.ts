@@ -34,7 +34,7 @@ export const VAULT_TAG_LENGTH_BYTES = 16
  * AAD prefix; the envelope's `v` is appended so a ciphertext cannot be
  * re-wrapped under a different format version.
  */
-export const VAULT_AAD_PREFIX = 'mcp-journal-vault:v'
+export const VAULT_AAD_PREFIX = 'mcpcut-vault:v'
 
 /**
  * Secret names double as JSON keys and CLI arguments; the same shape as

@@ -111,7 +111,7 @@ export async function runServiceCommand(
 }
 
 /**
- * Builds the manager this install describes: `MCP_JOURNAL_DIR` above
+ * Builds the manager this install describes: `MCPCUT_DATA_DIR` above
  * `config.dataDir` for the directory, and `config.supervisor` — alone — for
  * who owns the processes.
  *

@@ -10,7 +10,7 @@ import { createJournalSink } from '../../src/journal/sink.js'
 import { loadSigningPrivateKey, verifyChainHeadAnchorSignature } from '../../src/journal/signing.js'
 
 /**
- * `mcp-journal verify --sign` (M5 wave 4, task 4.3): signs the current chain
+ * `mcpcut verify --sign` (M5 wave 4, task 4.3): signs the current chain
  * HEAD, not every record. Companion to `tests/cli/verify-cmd.test.ts` (the
  * unsigned walk) and `tests/journal/signing.test.ts` (the crypto primitives
  * in isolation).
@@ -19,7 +19,7 @@ import { loadSigningPrivateKey, verifyChainHeadAnchorSignature } from '../../src
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-verify-sign-cmd-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-verify-sign-cmd-'))
 })
 
 afterEach(async () => {

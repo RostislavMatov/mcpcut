@@ -38,7 +38,7 @@ import {
 } from './serve-harness.js'
 
 /**
- * `mcp-journal serve` (M3 Task 13): the HTTP front wired to real registry /
+ * `mcpcut serve` (M3 Task 13): the HTTP front wired to real registry /
  * agents / vault stores in a temp journal dir, driven with real HTTP requests
  * against an ephemeral port.
  *
@@ -74,7 +74,7 @@ describe('runServe: argument parsing and startup', () => {
 
     expect(code).toBe(1)
     expect(listened).toBe(false)
-    expect(io.errText()).toContain('mcp-journal serve')
+    expect(io.errText()).toContain('mcpcut serve')
     expect(io.outText()).toBe('')
   })
 
@@ -266,7 +266,7 @@ describe('runServe: HTTP agent bridged to a stdio server', () => {
     const echoed = (await response.json()) as Record<string, string>
 
     expect(echoed['DECLARED_VALUE']).toBe('declared')
-    expect(echoed['MCP_JOURNAL_SERVE_MARKER']).toBeUndefined()
+    expect(echoed['MCPCUT_SERVE_MARKER']).toBeUndefined()
     expect(Object.keys(echoed)).not.toContain('npm_config_registry')
   })
 

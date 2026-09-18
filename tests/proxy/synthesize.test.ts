@@ -126,7 +126,7 @@ describe('approvalTimeoutError', () => {
     expect(message).toContain('send_email')
     expect(message.toLowerCase()).toContain('human')
     expect(message.toLowerCase()).toContain('retry')
-    expect(message).not.toContain('mcp-journal')
+    expect(message).not.toContain('mcpcut')
     expect(message).not.toContain('appr-42')
   })
 
@@ -176,7 +176,7 @@ describe('quarantinedError', () => {
 
     expect(message.toLowerCase()).toContain('quarantine')
     expect(message.toLowerCase()).toContain('human')
-    expect(message).not.toContain('mcp-journal')
+    expect(message).not.toContain('mcpcut')
   })
 
   test('data carries the machine-readable reason, tool name, and server name', () => {
@@ -229,7 +229,7 @@ describe('agent-facing safety invariant: no self-approval command', () => {
     const bytes = builder('req-x', placeholderInfo)
     const message = errorOf(bytes)['message'] as string
 
-    expect(message).not.toContain('mcp-journal')
+    expect(message).not.toContain('mcpcut')
     expect(message.toLowerCase()).not.toContain('approvals approve')
     expect(message.toLowerCase()).not.toContain('quarantine approve')
     expect(message).not.toMatch(/`[^`]*`/)

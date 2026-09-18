@@ -110,7 +110,7 @@ export class SigningKeyExistsError extends Error {
             'this looks like a PREVIOUS "keygen" run that wrote the private half and then failed ' +
             'partway (e.g. disk full) before writing the public half, not a deliberate rotation. ' +
             'If you are certain no anchor was ever signed with this private key, remove it and ' +
-            'run "mcp-journal keygen" again; if in doubt, inspect it first rather than deleting it.'
+            'run "mcpcut keygen" again; if in doubt, inspect it first rather than deleting it.'
         : `refusing to overwrite the existing signing key material at "${existingPath}" -- ` +
             'this would silently invalidate every anchor this installation has ever signed. ' +
             'Remove it deliberately first if rotation is really what is intended.',

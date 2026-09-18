@@ -67,7 +67,7 @@ export function looksLikeSecretLiteral(key: string, value: string): boolean {
 function secretLiteralMessage(key: string): string {
   return (
     `value for "${key}" looks like a secret literal; secrets must not live in the registry. ` +
-    `Put the value in the vault (mcp-journal vault set <name>) and reference it as ${VAULT_REF_PREFIX}<name>`
+    `Put the value in the vault (mcpcut vault set <name>) and reference it as ${VAULT_REF_PREFIX}<name>`
   )
 }
 

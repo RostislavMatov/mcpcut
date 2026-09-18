@@ -158,7 +158,7 @@ async function benchSqlite(dir, synchronous, withChain) {
 }
 
 async function runLegacyMode() {
-  const dir = await mkdtemp(join(tmpdir(), 'mcp-journal-bench-'))
+  const dir = await mkdtemp(join(tmpdir(), 'mcpcut-bench-'))
   try {
     console.log(`journal bench: ${RECORDS} records, ${SESSIONS} session(s), batch ${BATCH}, node ${process.version}\n`)
     await benchJsonlSink(dir)
@@ -189,7 +189,7 @@ async function benchRealSink(dir) {
 }
 
 async function runSinkMode() {
-  const dir = await mkdtemp(join(tmpdir(), 'mcp-journal-bench-sink-'))
+  const dir = await mkdtemp(join(tmpdir(), 'mcpcut-bench-sink-'))
   try {
     console.log(`sink bench: ${RECORDS} records, ${SESSIONS} session(s), node ${process.version}\n`)
     await benchRealSink(dir)
@@ -302,7 +302,7 @@ async function measureSearchAllSessions(dir) {
 }
 
 async function runSearchMode() {
-  const dir = await mkdtemp(join(tmpdir(), 'mcp-journal-bench-search-'))
+  const dir = await mkdtemp(join(tmpdir(), 'mcpcut-bench-search-'))
   try {
     console.log(`search bench: ${SEARCH_ROWS} rows across ${SEARCH_SESSION_COUNT} sessions, node ${process.version}\n`)
     const handle = await generateSearchRows(dir, SEARCH_ROWS)

@@ -90,7 +90,7 @@ export interface PolicySetDeps {
 export interface PolicySetOptions {
   /** Journal directory: holds the admin store, `journal.db` and the last policy candidate. Defaults to `JOURNAL_DIR`. */
   readonly journalDir?: string
-  /** Environment to read `MCP_ADMIN_TOKEN` and `$MCP_JOURNAL_POLICY` from. Defaults to `process.env`. */
+  /** Environment to read `MCP_ADMIN_TOKEN` and `$MCPCUT_POLICY` from. Defaults to `process.env`. */
   readonly env?: NodeJS.ProcessEnv
   /** Working directory the command was started in — decides the project-level policy candidate. Defaults to `process.cwd()`. */
   readonly cwd?: string

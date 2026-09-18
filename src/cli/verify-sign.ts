@@ -85,7 +85,7 @@ export async function attemptSignChainHead(
       ok: false,
       message:
         'No signing key present; the report will be unsigned. ' +
-        'Generate one first with: mcp-journal keygen\n',
+        'Generate one first with: mcpcut keygen\n',
     }
   }
 

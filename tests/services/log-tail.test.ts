@@ -18,7 +18,7 @@ import { readLogTail } from '../../src/services/log-tail.js'
 let dir: string
 
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), 'mcp-journal-log-tail-'))
+  dir = await mkdtemp(join(tmpdir(), 'mcpcut-log-tail-'))
 })
 
 afterEach(async () => {

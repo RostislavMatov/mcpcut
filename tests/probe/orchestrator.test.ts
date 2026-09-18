@@ -51,7 +51,7 @@ let journalDir: string
 let nowMs: number
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-orchestrator-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-orchestrator-'))
   nowMs = T0
 })
 

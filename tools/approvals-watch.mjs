@@ -14,8 +14,8 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { createApprovalQueue } from '<path-to-mcpcut>/dist/policy/approvals/queue.js'
 
-const PENDING_DIR = join(homedir(), '.mcp-journal', 'approvals', 'pending')
-const queue = createApprovalQueue() // default baseDir: ~/.mcp-journal/approvals
+const PENDING_DIR = join(homedir(), '.mcpcut', 'approvals', 'pending')
+const queue = createApprovalQueue() // default baseDir: ~/.mcpcut/data/approvals
 const POLL_INTERVAL_MS = 2000
 const NODE_BIN = '/opt/homebrew/bin/node'
 const CLI_JS = '<path-to-mcpcut>/dist/cli.js'
@@ -116,7 +116,7 @@ async function scan() {
     notify(
       'MCP: нужна санкция',
       `${server}/${tool} · ${toolClass}`,
-      `mcp-journal approvals approve ${id}`,
+      `mcpcut approvals approve ${id}`,
     )
     askAndResolve(id, server, tool, toolClass)
   }

@@ -10,7 +10,7 @@ let journalDir: string
 let ownerToken: string | undefined
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-vault-cmd-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-vault-cmd-'))
   ownerToken = undefined
 })
 

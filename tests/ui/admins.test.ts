@@ -289,7 +289,7 @@ describe('store failures are classified, not flattened to 400 (T-2)', () => {
   }
 
   test('an unrecognized store error is a detail-free 500, not a 400 echoing it', async () => {
-    const secretish = 'ENOENT: /home/alice/.mcp-journal/admins.json.lock held by pid 4242'
+    const secretish = 'ENOENT: /home/alice/.mcpcut/data/admins.json.lock held by pid 4242'
     const failing = createAdminsHandlers({ adminStore: brokenStore(new Error(secretish)) })
 
     for (const result of [

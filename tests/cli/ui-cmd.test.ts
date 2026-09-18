@@ -16,10 +16,10 @@ import { DEFAULT_UI_HOST, DEFAULT_UI_PORT } from '../../src/ui/constants.js'
 import { UI_PORT_ENV_VAR } from '../../src/setup/constants.js'
 
 /**
- * `mcp-journal ui` (M4 Task 16): the admin UI's process entry point, driven
+ * `mcpcut ui` (M4 Task 16): the admin UI's process entry point, driven
  * exactly like `serve` — flags → stores → server → listen → wait → graceful
  * shutdown, with `onListening` as the test seam and a temp journal dir so the
- * real `~/.mcp-journal` is never touched.
+ * real `~/.mcpcut/data` is never touched.
  *
  * The daemon discipline is asserted throughout: stdout stays byte-empty for a
  * whole run, and every diagnostic — the bind warning, the listening line and
@@ -77,7 +77,7 @@ async function waitUntil(predicate: () => boolean, what: string): Promise<void> 
 }
 
 async function makeJournalDir(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), 'mcp-journal-ui-cmd-'))
+  const dir = await mkdtemp(join(tmpdir(), 'mcpcut-ui-cmd-'))
   onDispose(() => rm(dir, { recursive: true, force: true }))
   return dir
 }
@@ -365,7 +365,7 @@ describe('runUi: flag parsing and startup', () => {
   test('the documented defaults are the UI constants', () => {
     expect(DEFAULT_UI_PORT).toBe(8091)
     expect(DEFAULT_UI_HOST).toBe('127.0.0.1')
-    expect(UI_USAGE).toContain('mcp-journal ui')
+    expect(UI_USAGE).toContain('mcpcut ui')
   })
 
   test('an unknown flag fails with usage on stderr before anything is bound', async () => {
@@ -382,7 +382,7 @@ describe('runUi: flag parsing and startup', () => {
 
     expect(code).toBe(1)
     expect(listened).toBe(false)
-    expect(io.errText()).toContain('mcp-journal ui')
+    expect(io.errText()).toContain('mcpcut ui')
     expect(io.outText()).toBe('')
   })
 
@@ -393,7 +393,7 @@ describe('runUi: flag parsing and startup', () => {
     const code = await dispatch(['ui', '--nope'], io, { ui: { journalDir: await makeJournalDir() } })
 
     expect(code).toBe(1)
-    expect(io.errText()).toContain('mcp-journal ui')
+    expect(io.errText()).toContain('mcpcut ui')
     expect(io.outText()).toBe('')
   })
 

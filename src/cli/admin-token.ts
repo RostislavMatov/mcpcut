@@ -84,7 +84,7 @@ function missingTokenMessage(minRole: Role, wording: AdminRefusalWording): strin
   return (
     `Refusing to ${wording.action}: no admin token. Set ${ADMIN_TOKEN_ENV_VAR} to your personal admin token ` +
     `(role "${minRole}") ${wording.purpose ?? `so the ${wording.noun} records which admin made it`}.\n` +
-    `Get one with: mcp-journal admin add <name> --role ${minRole}   (existing admin: mcp-journal admin rotate <name>)\n`
+    `Get one with: mcpcut admin add <name> --role ${minRole}   (existing admin: mcpcut admin rotate <name>)\n`
   )
 }
 
@@ -92,7 +92,7 @@ function unknownTokenMessage(wording: AdminRefusalWording): string {
   return (
     `Refusing to ${wording.action}: ${ADMIN_TOKEN_ENV_VAR} does not match any active admin — it may have been ` +
     `rotated, or the admin removed.\n` +
-    `Check "mcp-journal admin list", then: mcp-journal admin rotate <name>\n`
+    `Check "mcpcut admin list", then: mcpcut admin rotate <name>\n`
   )
 }
 
@@ -100,7 +100,7 @@ function unreadableStoreMessage(detail: string, wording: AdminRefusalWording): s
   return (
     `Refusing to ${wording.action}: the admin store could not be read, so the ${wording.noun} could not be ` +
     `attributed to a human.\n${formatReadableField(detail)}\n` +
-    `Check the file named above, then: mcp-journal admin list\n`
+    `Check the file named above, then: mcpcut admin list\n`
   )
 }
 
@@ -113,7 +113,7 @@ function insufficientRoleMessage(
   return (
     `Refusing to ${wording.action}: this admin token's role ${wording.verb} ` +
     `(role "${minRole}" is required${detail}).\n` +
-    `An owner can change it with: mcp-journal admin role ${formatReadableField(adminName)} ${minRole}\n`
+    `An owner can change it with: mcpcut admin role ${formatReadableField(adminName)} ${minRole}\n`
   )
 }
 

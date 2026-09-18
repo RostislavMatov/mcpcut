@@ -28,7 +28,7 @@ const FAKE_NODE_MODE = 0o755
 
 const SETUP_ARGV =
   '/app/dist/cli.js setup --yes --supervisor external ' +
-  '--data-dir /home/node/.mcp-journal ' +
+  '--data-dir /home/node/.mcpcut/data ' +
   '--ui-host 0.0.0.0 --ui-port 8091 ' +
   '--serve-host 0.0.0.0 --serve-port 8090 ' +
   '--admin owner'

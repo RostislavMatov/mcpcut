@@ -38,8 +38,8 @@ let cwd: string
 let journalDir: string
 
 beforeEach(async () => {
-  cwd = await mkdtemp(join(tmpdir(), 'mcp-journal-policy-show-prov-cwd-'))
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-policy-show-prov-home-'))
+  cwd = await mkdtemp(join(tmpdir(), 'mcpcut-policy-show-prov-cwd-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-policy-show-prov-home-'))
 })
 
 afterEach(async () => {

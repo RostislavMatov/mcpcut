@@ -1,7 +1,7 @@
 import type { McpMessage, MessageSource } from '../transport/message.js'
 
 /**
- * Message-source helpers for `mcp-journal connect` (M3 Task 12).
+ * Message-source helpers for `mcpcut connect` (M3 Task 12).
  *
  * The Readable → `MessageSource` adapter moved to
  * `src/upstream/readable-source.ts` with the upstream extraction (M5.5,

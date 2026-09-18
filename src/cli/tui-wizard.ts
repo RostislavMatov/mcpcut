@@ -21,8 +21,8 @@ import type { UiCliWritable } from './ui-constants.js'
  * Two answers live here, and neither belongs in the console. The first is what
  * the form says before an operator touches it: the config that exists (or the
  * defaults for an install that has none), with the data directory resolved the
- * way EVERY command resolves it — `MCP_JOURNAL_DIR` above the config above
- * `~/.mcp-journal` — and the `setup` flags laid over the result through the
+ * way EVERY command resolves it — `MCPCUT_DATA_DIR` above the config above
+ * `~/.mcpcut/data` — and the `setup` flags laid over the result through the
  * same overlay `setup --yes` uses. One ranking, one overlay, so the wizard can
  * never open on a directory some other command would disagree about.
  *
@@ -138,7 +138,7 @@ export interface RunWizardDeps {
  *
  * The restart is not a flourish. A data directory is resolved ONCE, when the
  * process starts (ADR-0012 §4), so a console opened in THIS process would keep
- * serving the old `~/.mcp-journal` in every command whose seams do not carry a
+ * serving the directory it started with in every command whose seams do not carry a
  * `journalDir` — the install the wizard just wrote would be invisible to the
  * screen that was supposed to show it. A new process resolves the config the
  * wizard wrote and has no stale answer to carry.

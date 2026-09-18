@@ -425,7 +425,7 @@ describe('the pending badge reports the queue, not the page (smoke LOW-3)', () =
 
   /** Title the shipped script would set for a page rendered from `input`. */
   function badgedTitle(input: Parameters<typeof renderApprovalsPage>[0]): string {
-    const documentStub = { title: 'Approvals · mcp-journal' }
+    const documentStub = { title: 'Approvals · mcpcut' }
     loadSyncPendingBadge(documentStub)(scopeOf(renderApprovalsPage(input)))
     return documentStub.title
   }
@@ -444,16 +444,16 @@ describe('the pending badge reports the queue, not the page (smoke LOW-3)', () =
       truncated: true,
     })
 
-    expect(title).toBe('(520) Approvals · mcp-journal')
+    expect(title).toBe('(520) Approvals · mcpcut')
   })
 
   test('an untruncated read badges the plain pending count', () => {
     expect(badgedTitle({ cards: CARDS(3), csrfToken: SESSION.csrfToken })).toBe(
-      '(3) Approvals · mcp-journal',
+      '(3) Approvals · mcpcut',
     )
     // A total that merely equals what is shown is not a truncation.
     expect(badgedTitle({ cards: CARDS(3), csrfToken: SESSION.csrfToken, totalPending: 3 })).toBe(
-      '(3) Approvals · mcp-journal',
+      '(3) Approvals · mcpcut',
     )
   })
 
@@ -468,20 +468,20 @@ describe('the pending badge reports the queue, not the page (smoke LOW-3)', () =
     // explicit `truncated` flag, never re-derives it from the two numbers.
     expect(
       badgedTitle({ cards: CARDS(2), csrfToken: SESSION.csrfToken, totalPending: 520 }),
-    ).toBe('(2) Approvals · mcp-journal')
+    ).toBe('(2) Approvals · mcpcut')
   })
 
   test('an empty queue leaves the title unbadged', () => {
-    expect(badgedTitle({ cards: [], csrfToken: SESSION.csrfToken })).toBe('Approvals · mcp-journal')
+    expect(badgedTitle({ cards: [], csrfToken: SESSION.csrfToken })).toBe('Approvals · mcpcut')
     expect(badgedTitle({ cards: [], csrfToken: SESSION.csrfToken, totalPending: 0 })).toBe(
-      'Approvals · mcp-journal',
+      'Approvals · mcpcut',
     )
   })
 
   test('the badge is replaced, not stacked, when a refresh re-runs it', () => {
     // `swapRegion` calls the badge sync on every SSE refresh; the leading
     // "(n) " it strips must still match the badge it writes.
-    const documentStub = { title: 'Approvals · mcp-journal' }
+    const documentStub = { title: 'Approvals · mcpcut' }
     const sync = loadSyncPendingBadge(documentStub)
     const truncated = scopeOf(
       renderApprovalsPage({
@@ -493,10 +493,10 @@ describe('the pending badge reports the queue, not the page (smoke LOW-3)', () =
     )
     sync(truncated)
     sync(truncated)
-    expect(documentStub.title).toBe('(520) Approvals · mcp-journal')
+    expect(documentStub.title).toBe('(520) Approvals · mcpcut')
 
     sync(scopeOf(renderApprovalsPage({ cards: CARDS(1), csrfToken: SESSION.csrfToken })))
-    expect(documentStub.title).toBe('(1) Approvals · mcp-journal')
+    expect(documentStub.title).toBe('(1) Approvals · mcpcut')
   })
 
   test('the truncated total rides on the same node the script already reads', () => {

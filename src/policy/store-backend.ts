@@ -281,7 +281,7 @@ async function openStateDb(dbPath: string): Promise<CachedStateDb> {
 
 /**
  * The one place a storage failure is classified for callers (used by
- * `store.ts` and `store-migrate.ts`, so `serve` and `mcp-journal migrate`
+ * `store.ts` and `store-migrate.ts`, so `serve` and `mcpcut migrate`
  * can never drift into reporting the same condition differently): a
  * contended writer — wherever it surfaced, including wrapped inside an
  * open failure — is `StoreLockError`; an open failure is corruption;

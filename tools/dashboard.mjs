@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Local M2 dogfood dashboard: reads ~/.mcp-journal (session journals, tool
+// Local M2 dogfood dashboard: reads ~/.mcpcut/data (session journals, tool
 // inventory, approvals queue) plus the project policy and renders one fully
 // static dashboard.html next to the repo root. No server, no client JS.
 //
@@ -9,9 +9,9 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const JOURNAL_DIR = join(homedir(), '.mcp-journal')
+const JOURNAL_DIR = join(homedir(), '.mcpcut')
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
-const POLICY_PATH = join(REPO_ROOT, '.mcp-journal', 'policy.json')
+const POLICY_PATH = join(REPO_ROOT, '.mcpcut', 'policy.json')
 const OUT_PATH = join(REPO_ROOT, 'dashboard.html')
 const RECENT_DECISIONS_LIMIT = 40
 const RESOLVED_APPROVALS_LIMIT = 20
@@ -332,7 +332,7 @@ footer code { font-size: 11.5px; }
   <header>
     <div class="eyebrow">MCP Control Plane · M2 dogfood</div>
     <h1>Журнал, политики и одобрения — статический снапшот</h1>
-    <div class="sub">Снят ${esc(fmtTs(data.generatedAt))} из <code>~/.mcp-journal</code>. Пересобрать: <code>node tools/dashboard.mjs</code>. Живой Admin UI — milestone 4.</div>
+    <div class="sub">Снят ${esc(fmtTs(data.generatedAt))} из <code>~/.mcpcut/data</code>. Пересобрать: <code>node tools/dashboard.mjs</code>. Живой Admin UI — milestone 4.</div>
     <div class="mode">enforcement включён: <code>&nbsp;${esc(p.defaultDecision ?? 'require-approval')}</code>&nbsp;по умолчанию, read → allow</div>
   </header>
 
@@ -380,7 +380,7 @@ ${inventoryHtml}
   </section>
 
   <footer>
-    Источники: <code>~/.mcp-journal/*.jsonl</code> · <code>tool-inventory.json</code> · <code>approvals/</code> · политика <code>${esc(data.policySource)}</code>.
+    Источники: <code>~/.mcpcut/data/*.jsonl</code> · <code>tool-inventory.json</code> · <code>approvals/</code> · политика <code>${esc(data.policySource)}</code>.
     Секреты редактируются до записи в журнал — на этой странице их нет по построению.
   </footer>
 </div>

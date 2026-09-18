@@ -300,7 +300,7 @@ describe('wirePolicyRelay stream lifecycle', () => {
     return { handle, clientStdin, clientStdout, errors, relay }
   }
 
-  const journalDir = useJournalDir('mcp-journal-wire-policy-')
+  const journalDir = useJournalDir('mcpcut-wire-policy-')
 
   test('ends the child stdin once the client stdin ends, as splice does in mode A', async () => {
     const session = wireFakeSession(journalDir())
@@ -354,7 +354,7 @@ describe('wirePolicyRelay stream lifecycle', () => {
 })
 
 describe('runWrap relays an untouched session identically in both modes', () => {
-  const journalDir = useJournalDir('mcp-journal-wrap-identity-')
+  const journalDir = useJournalDir('mcpcut-wrap-identity-')
   // Nothing here is ever gated: allow-all, and quarantine off so the
   // tools/call after tools/list is not held for review.
   const policy = policyOf({ defaultDecision: 'allow', quarantine: { enabled: false } })
@@ -409,7 +409,7 @@ describe('runWrap relays an untouched session identically in both modes', () => 
 })
 
 describe('runWrap blocks a denied tools/call', () => {
-  const journalDir = useJournalDir('mcp-journal-wrap-deny-')
+  const journalDir = useJournalDir('mcpcut-wrap-deny-')
   const policy = policyOf({
     defaultDecision: 'allow',
     servers: { [SERVER_NAME]: { tools: { echo: 'deny' } } },
@@ -455,7 +455,7 @@ describe('runWrap blocks a denied tools/call', () => {
 })
 
 describe('runWrap blocks an id-less tools/call notification (C2/N1)', () => {
-  const journalDir = useJournalDir('mcp-journal-wrap-idless-')
+  const journalDir = useJournalDir('mcpcut-wrap-idless-')
   const policy = policyOf({ defaultDecision: 'deny' })
   let session: SessionResult
 
@@ -486,7 +486,7 @@ describe('runWrap blocks an id-less tools/call notification (C2/N1)', () => {
 })
 
 describe('runWrap quarantines a tool it has never seen approved', () => {
-  const journalDir = useJournalDir('mcp-journal-wrap-quarantine-')
+  const journalDir = useJournalDir('mcpcut-wrap-quarantine-')
   const policy = policyOf({
     defaultDecision: 'allow',
     quarantine: { enabled: true, onQuarantined: 'deny' },
@@ -531,7 +531,7 @@ describe('runWrap quarantines a tool it has never seen approved', () => {
 })
 
 describe('runWrap fail-closed journaling', () => {
-  const journalDir = useJournalDir('mcp-journal-wrap-failclosed-')
+  const journalDir = useJournalDir('mcpcut-wrap-failclosed-')
   let failed: { exitCode: number; stderrText: string }
 
   beforeAll(async () => {
@@ -575,7 +575,7 @@ describe('runWrap fail-closed journaling', () => {
 })
 
 describe('runWrap mode B trailing output', () => {
-  const journalDir = useJournalDir('mcp-journal-wrap-tail-')
+  const journalDir = useJournalDir('mcpcut-wrap-tail-')
 
   test('delivers a final line the server wrote without a trailing newline before dying', async () => {
     const harness = createClientHarness()
@@ -592,7 +592,7 @@ describe('runWrap mode B trailing output', () => {
 })
 
 describe('runWrap require-approval flow', () => {
-  const journalDir = useJournalDir('mcp-journal-wrap-approval-')
+  const journalDir = useJournalDir('mcpcut-wrap-approval-')
   const policy = policyOf({
     defaultDecision: 'allow',
     approval: { timeoutMs: TEST_APPROVAL_TIMEOUT_MS },

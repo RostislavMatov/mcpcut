@@ -21,7 +21,7 @@ const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/
 let tempDir: string
 
 beforeEach(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), 'mcp-journal-provenance-test-'))
+  tempDir = await mkdtemp(join(tmpdir(), 'mcpcut-provenance-test-'))
 })
 
 afterEach(async () => {

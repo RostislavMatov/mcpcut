@@ -14,7 +14,7 @@ import { startUiHarness, type UiTestHarness } from './harness.js'
  * `POST /logout` existed and worked from the first day of M4, but no page ever
  * rendered a control that reached it: the browser smoke found
  * `Array.from(document.forms)` empty on `/`. A session could therefore only end
- * by idle timeout (60 min), absolute TTL (8 h) or `mcp-journal admin rotate` —
+ * by idle timeout (60 min), absolute TTL (8 h) or `mcpcut admin rotate` —
  * exactly the wrong answer on a shared workstation, which is the deployment the
  * control plane is built for.
  *

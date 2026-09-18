@@ -8,7 +8,7 @@ import type { AdminRefusalWording } from './admin-token.js'
 import { adminOf, recordHostOp, resolveHostOpActor } from './host-op-write.js'
 
 /**
- * `mcp-journal backup <destDir>` — an online SQLite backup of every database
+ * `mcpcut backup <destDir>` — an online SQLite backup of every database
  * the journal directory actually has (`state.db`, `journal.db`) into
  * `destDir`, one file per database, via `backupSqlite` (`store/sqlite.ts`).
  *
@@ -51,7 +51,7 @@ export interface BackupCommandOptions {
   readonly env?: NodeJS.ProcessEnv
 }
 
-const USAGE = 'Usage: mcp-journal backup <destDir>\n'
+const USAGE = 'Usage: mcpcut backup <destDir>\n'
 
 /** Every database a journal directory can hold, each with the shared open its own PRAGMA profile requires. */
 const DATABASES: ReadonlyArray<{

@@ -20,7 +20,7 @@ import type { SqliteHandle } from '../store/sqlite.js'
 
 /**
  * Bulk, explicit import of legacy `*.jsonl` journal files into `journal.db`
- * (M4.5 wave 4). Driven by `mcp-journal migrate` (`src/cli/migrate-cmd.ts`),
+ * (M4.5 wave 4). Driven by `mcpcut migrate` (`src/cli/migrate-cmd.ts`),
  * never by a read: wave 3 chose LAZY import for the approvals queue because a
  * legacy file there is at most a few kilobytes, but a journal file can run to
  * gigabytes, and an unbounded import as the side effect of a UI page load or

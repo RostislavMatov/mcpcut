@@ -33,7 +33,7 @@ const NOW_MS = Date.parse('2026-06-01T00:00:00.000Z')
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-prune-token-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-prune-token-'))
 })
 
 afterEach(async () => {

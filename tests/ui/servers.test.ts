@@ -338,7 +338,7 @@ describe('serversAdd', () => {
     expect(res.status).toBe(400)
     const body = String(res.body)
     expect(body).toContain('looks like a secret literal')
-    expect(body).toContain('mcp-journal vault set')
+    expect(body).toContain('mcpcut vault set')
     // The rejected value must not survive anywhere in the response, not even
     // as a "helpfully" re-filled form field.
     expect(body).not.toContain(SECRET_LITERAL)

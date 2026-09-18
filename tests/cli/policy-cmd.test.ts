@@ -11,8 +11,8 @@ let cwd: string
 let journalDir: string
 
 beforeEach(async () => {
-  cwd = await mkdtemp(join(tmpdir(), 'mcp-journal-policy-cmd-cwd-'))
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-policy-cmd-home-'))
+  cwd = await mkdtemp(join(tmpdir(), 'mcpcut-policy-cmd-cwd-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-policy-cmd-home-'))
 })
 
 afterEach(async () => {
@@ -122,8 +122,8 @@ describe('runPolicyValidate', () => {
     expect(exitCode).toBe(1)
     const err = io.err()
     expect(err).toContain('--policy')
-    expect(err).toContain('MCP_JOURNAL_POLICY')
-    expect(err).toContain(join(cwd, '.mcp-journal', 'policy.json'))
+    expect(err).toContain('MCPCUT_POLICY')
+    expect(err).toContain(join(cwd, '.mcpcut-project', 'policy.json'))
     expect(err).toContain(join(journalDir, 'policy.json'))
   })
 
@@ -234,7 +234,7 @@ describe('runPolicyShow', () => {
 
   test('the searched-locations list labels each candidate and never repeats a path', async () => {
     // Manual M4 smoke, finding 4: run from inside the journal directory and the
-    // list read `…/.mcp-journal/.mcp-journal/policy.json`. That path was
+    // list read `…/.mcpcut/.mcpcut-project/policy.json`. That path was
     // correct — the project-level candidate is resolved against the cwd — but
     // the output gave an operator no way to tell which line was which, so it
     // read as a bug. Label the two, and collapse them when they coincide.
@@ -255,7 +255,7 @@ describe('runPolicyShow', () => {
     await runPolicyShow([], io, { cwd, journalDir, env: {} })
 
     const err = io.err()
-    expect(err).toContain(join(cwd, '.mcp-journal', 'policy.json'))
+    expect(err).toContain(join(cwd, '.mcpcut-project', 'policy.json'))
     expect(err).toContain(join(journalDir, 'policy.json'))
   })
 
@@ -291,8 +291,8 @@ describe('runPolicyShow', () => {
   })
 
   test('project-level policy file is picked up via default resolution (cwd)', async () => {
-    await mkdir(join(cwd, '.mcp-journal'), { recursive: true })
-    await writePolicyFile(join(cwd, '.mcp-journal'), VALID_POLICY)
+    await mkdir(join(cwd, '.mcpcut-project'), { recursive: true })
+    await writePolicyFile(join(cwd, '.mcpcut-project'), VALID_POLICY)
     const io = fakeIo()
 
     const exitCode = await runPolicyShow([], io, { cwd, journalDir, env: {} })
@@ -309,14 +309,14 @@ describe('runPolicyShow', () => {
  * which is why every test here asserts a path, not a description.
  */
 describe('runPolicyShow --entry-point', () => {
-  /** Project policy, state-directory policy and `$MCP_JOURNAL_POLICY` all present at once. */
+  /** Project policy, state-directory policy and `$MCPCUT_POLICY` all present at once. */
   async function writeAllThreeSources(): Promise<{
     projectPath: string
     statePath: string
     envPath: string
   }> {
-    await mkdir(join(cwd, '.mcp-journal'), { recursive: true })
-    const projectPath = await writePolicyFile(join(cwd, '.mcp-journal'), {
+    await mkdir(join(cwd, '.mcpcut-project'), { recursive: true })
+    const projectPath = await writePolicyFile(join(cwd, '.mcpcut-project'), {
       version: 1,
       servers: { 'project-server': {} },
     })
@@ -345,7 +345,7 @@ describe('runPolicyShow --entry-point', () => {
     const exitCode = await runPolicyShow(['--entry-point', 'connect'], io, {
       cwd,
       journalDir,
-      env: { MCP_JOURNAL_POLICY: envPath },
+      env: { MCPCUT_POLICY: envPath },
     })
 
     expect(exitCode).toBe(0)
@@ -364,14 +364,14 @@ describe('runPolicyShow --entry-point', () => {
     await runPolicyShow(['--entry-point', 'connect'], showIo, {
       cwd,
       journalDir,
-      env: { MCP_JOURNAL_POLICY: envPath },
+      env: { MCPCUT_POLICY: envPath },
     })
     // The same resolution, driven through the entry point itself: its stderr
     // line is the only place a connect session names the file it loaded.
     const outcome = await resolveConnectPolicy({
       io: connectIo,
       journalDir,
-      env: { MCP_JOURNAL_POLICY: envPath },
+      env: { MCPCUT_POLICY: envPath },
       cwd,
     })
 
@@ -433,13 +433,13 @@ describe('runPolicyShow --entry-point', () => {
     await runPolicyShow(['--entry-point', 'connect'], io, {
       cwd,
       journalDir,
-      env: { MCP_JOURNAL_POLICY: envPath },
+      env: { MCPCUT_POLICY: envPath },
     })
 
     const noteLines = io.err().split('\n').filter((line) => line.includes('ignoring'))
     expect(noteLines).toHaveLength(2)
-    expect(io.err()).toContain('$MCP_JOURNAL_POLICY')
-    expect(io.err()).toContain(join(cwd, '.mcp-journal', 'policy.json'))
+    expect(io.err()).toContain('$MCPCUT_POLICY')
+    expect(io.err()).toContain(join(cwd, '.mcpcut-project', 'policy.json'))
   })
 
   test('connect: --policy is refused, with the operator location in the message', async () => {
@@ -481,7 +481,7 @@ describe('runPolicyShow --entry-point', () => {
     const err = io.err()
     expect(err).toContain('no policy file found')
     expect(err).toContain(join(journalDir, 'policy.json'))
-    expect(err).not.toContain(join(cwd, '.mcp-journal', 'policy.json'))
+    expect(err).not.toContain(join(cwd, '.mcpcut-project', 'policy.json'))
   })
 
   test('an unknown entry point is a usage error, not a silent default', async () => {
@@ -620,8 +620,8 @@ describe('runPolicyShow --entry-point serve: the install config', () => {
 
 describe('runPolicyShow without --entry-point', () => {
   test('names the operator-launched view it represents', async () => {
-    await mkdir(join(cwd, '.mcp-journal'), { recursive: true })
-    await writePolicyFile(join(cwd, '.mcp-journal'), VALID_POLICY)
+    await mkdir(join(cwd, '.mcpcut-project'), { recursive: true })
+    await writePolicyFile(join(cwd, '.mcpcut-project'), VALID_POLICY)
     const io = fakeIo()
 
     const exitCode = await runPolicyShow([], io, { cwd, journalDir, env: {} })
@@ -633,8 +633,8 @@ describe('runPolicyShow without --entry-point', () => {
   })
 
   test('points at --entry-point so the other views are reachable', async () => {
-    await mkdir(join(cwd, '.mcp-journal'), { recursive: true })
-    await writePolicyFile(join(cwd, '.mcp-journal'), VALID_POLICY)
+    await mkdir(join(cwd, '.mcpcut-project'), { recursive: true })
+    await writePolicyFile(join(cwd, '.mcpcut-project'), VALID_POLICY)
     const io = fakeIo()
 
     await runPolicyShow([], io, { cwd, journalDir, env: {} })
@@ -643,8 +643,8 @@ describe('runPolicyShow without --entry-point', () => {
   })
 
   test('keeps the existing readable fields, source line included', async () => {
-    await mkdir(join(cwd, '.mcp-journal'), { recursive: true })
-    const projectPath = await writePolicyFile(join(cwd, '.mcp-journal'), VALID_POLICY)
+    await mkdir(join(cwd, '.mcpcut-project'), { recursive: true })
+    const projectPath = await writePolicyFile(join(cwd, '.mcpcut-project'), VALID_POLICY)
     const io = fakeIo()
 
     await runPolicyShow([], io, { cwd, journalDir, env: {} })
@@ -663,8 +663,8 @@ describe('runPolicyShow without --entry-point', () => {
    * was named" -- so existing consumers keying on it are unaffected.
    */
   test('--json labels the same view without touching existing fields', async () => {
-    await mkdir(join(cwd, '.mcp-journal'), { recursive: true })
-    const projectPath = await writePolicyFile(join(cwd, '.mcp-journal'), VALID_POLICY)
+    await mkdir(join(cwd, '.mcpcut-project'), { recursive: true })
+    const projectPath = await writePolicyFile(join(cwd, '.mcpcut-project'), VALID_POLICY)
     const io = fakeIo()
 
     const exitCode = await runPolicyShow(['--json'], io, { cwd, journalDir, env: {} })
@@ -678,8 +678,8 @@ describe('runPolicyShow without --entry-point', () => {
   })
 
   test('--json stays a single parseable line (no hint text leaking into stdout)', async () => {
-    await mkdir(join(cwd, '.mcp-journal'), { recursive: true })
-    await writePolicyFile(join(cwd, '.mcp-journal'), VALID_POLICY)
+    await mkdir(join(cwd, '.mcpcut-project'), { recursive: true })
+    await writePolicyFile(join(cwd, '.mcpcut-project'), VALID_POLICY)
     const io = fakeIo()
 
     await runPolicyShow(['--json'], io, { cwd, journalDir, env: {} })

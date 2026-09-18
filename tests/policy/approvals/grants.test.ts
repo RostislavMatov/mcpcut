@@ -62,7 +62,7 @@ describe('checkRecentApproval', () => {
   let baseDir: string
 
   beforeEach(async () => {
-    journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-approvals-grants-test-'))
+    journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-approvals-grants-test-'))
     baseDir = join(journalDir, 'approvals')
   })
 

@@ -4,7 +4,7 @@ import { numberOf, textOf } from './db-row.js'
 import { latestPruneMarker } from './prune.js'
 
 /**
- * `mcp-journal verify`'s reusable core (M5 wave 3, task 3.3): walks
+ * `mcpcut verify`'s reusable core (M5 wave 3, task 3.3): walks
  * `journal_records` in `seq` order, re-derives every stored `record_hash`
  * from `linkHashOf(prevHash, doc)`, and reports the first point at which the
  * recomputed chain and the stored one disagree. Pure of CLI concerns --

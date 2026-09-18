@@ -185,7 +185,7 @@ async function main(): Promise<number> {
 }
 
 /**
- * Only runs `main()` when this file is executed directly (the `mcp-journal`
+ * Only runs `main()` when this file is executed directly (the `mcpcut`
  * binary), not when it is imported as a module -- `tests/cli/dispatch.test.ts`
  * imports `dispatch()` directly and must not trigger a second, argv-driven
  * dispatch as a side effect of that import.

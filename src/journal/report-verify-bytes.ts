@@ -214,7 +214,7 @@ function overlongVerdict(tally: RecordStreamTally, subject: string): Verdict | n
       `records.jsonl carries a line of at least ${tally.overlongLineBytes} bytes, past this verifier's ` +
       `${MAX_RECORD_LINE_BYTES}-byte limit for a single record. ${subject} needs the file's line ` +
       'structure and cannot be established. The digest above still covers the bytes; a file shaped like ' +
-      'this did not come from "mcp-journal export --report".',
+      'this did not come from "mcpcut export --report".',
   }
 }
 
@@ -245,6 +245,6 @@ function notRecomputableReason(manifest: ReportManifest): string {
   return (
     `NOT CHECKED -- the chain is not re-derivable from this export: ${why}. The digest, line count and ` +
     'signature checks still apply; re-deriving the chain needs a whole-journal export, or a check run ' +
-    'against the journal itself (mcp-journal verify).'
+    'against the journal itself (mcpcut verify).'
   )
 }

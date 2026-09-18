@@ -1,4 +1,4 @@
-# mcp-journal
+# mcpcut
 
 [![CI](https://img.shields.io/badge/CI-GitHub%20Actions-informational)](.github/workflows/ci.yml) [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
@@ -11,7 +11,7 @@ When enforcement is enabled, every observed `tools/call` is classified before
 forwarding. Without a policy file, the proxy is journaling-only and forwards
 everything unmodified.
 
-The same binary also answers to `mcpcut`: a first-run wizard that writes the
+`mcpcut` is also how the plane is installed and run: a first-run wizard that writes the
 install config and mints the first admin, `ui` and `serve` as detached services
 that survive the terminal, and a terminal console that works the whole plane
 without a browser — see [First run](#first-run-mcpcut), [Services](#services)
@@ -41,7 +41,7 @@ other text about the project may claim more than it does.
 | whole-product security audit | passed 2026-09-02, **internal** | `docs/security-audit-2026-09.md` — 0 CRITICAL, 4 HIGH fixed in the same wave; no independent pass has been done (ADR-0011), reports via `SECURITY.md` |
 
 The journal is a persistent, append-oriented, secret-redacted SQLite database
-(`journal.db`; JSONL is the export format — `mcp-journal export` — and the
+(`journal.db`; JSONL is the export format — `mcpcut export` — and the
 format legacy pre-M4.5 installs used on disk before `migrate`). Since M5 every
 record is linked into a sha256 hash chain, the chain head can be signed with
 this installation's Ed25519 key, and an exported report verifies offline
@@ -71,16 +71,17 @@ npm install
 npm run build
 ```
 
-This produces `dist/cli.js` (the `mcp-journal` and `mcpcut` binaries, per
-`package.json`'s `bin` field — one file under two names, with identical
-behaviour). `npm link` puts both on your `PATH`; without it, `node dist/cli.js`
-in place of either name does the same thing.
+This produces `dist/cli.js` (the `mcpcut` binary, per `package.json`'s `bin`
+field). `npm link` puts it on your `PATH`; without it, `node dist/cli.js` in
+place of `mcpcut` does the same thing. Rerun `npm link` after a build that
+changes the `bin` field: npm creates the `PATH` entries at link time only.
 
 ## First run (`mcpcut`)
 
-`mcpcut` is the operator's name for the CLI. Everything the sections below
-describe is also reachable as `mcp-journal …`; the examples say `mcpcut`
-because that is what the messages of the setup and service commands say.
+Everything an install owns lives under one directory, `~/.mcpcut`: the install
+config (`config.json`) and, unless you choose another place, the data directory
+(`data/` — both databases, the vault key, the signing key, `policy.json`, and
+the services' pid records and logs under `data/run/`).
 
 ### The wizard, or `setup --yes`
 
@@ -117,12 +118,12 @@ back). `--start` starts both services once the install is prepared;
 points at another file. It holds the data directory, the `ui` and `serve`
 binds with their TLS/allowlist/policy options, and `supervisor`. Every value
 resolves at process start with the priority **flag > environment variable >
-config > default**: `MCP_JOURNAL_DIR` (an absolute path) outranks the config's
+config > default**: `MCPCUT_DATA_DIR` (an absolute path) outranks the config's
 `dataDir`, `MCPCUT_UI_HOST`/`MCPCUT_UI_PORT` and
 `MCPCUT_SERVE_HOST`/`MCPCUT_SERVE_PORT` outrank the binds, and a flag on the
 command line outranks both. `supervisor` has no environment override — it is a
 question for a human at install time. With no config and no variables, the
-defaults are what they always were: `$HOME/.mcp-journal`, `127.0.0.1:8091` for
+defaults are `$HOME/.mcpcut/data`, `127.0.0.1:8091` for
 `ui`, `127.0.0.1:8090` for `serve`.
 
 A config that cannot be read or does not validate **refuses** every command
@@ -199,7 +200,7 @@ databases before it listens). Their pid records and logs live in
 directory and every file in it must be owner-only (`0700`/`0600`, your uid):
 a start refuses otherwise, and `setup` reports the same condition as the
 `run dir` row of its check report. Whoever can write a pid file chooses which
-pid the next `stop` signals. The daemons get `MCP_JOURNAL_DIR` set to the
+pid the next `stop` signals. The daemons get `MCPCUT_DATA_DIR` set to the
 manager's data directory and never inherit `MCP_ADMIN_TOKEN` or
 `MCP_AGENT_TOKEN` from your shell.
 
@@ -243,7 +244,7 @@ file open and would keep writing into a moved inode:
 
 ```
 mcpcut stop ui
-mv ~/.mcp-journal/run/ui.log ~/.mcp-journal/run/ui.log.1
+mv ~/.mcpcut/data/run/ui.log ~/.mcpcut/data/run/ui.log.1
 mcpcut start ui               # opens a fresh ui.log
 ```
 
@@ -263,12 +264,12 @@ examples to adapt (paths, node binary), not something `mcpcut` installs.
 `docker compose up -d` builds one image and runs two containers, `ui` and
 `serve`, one per long-running process. There is no database container: the
 store is `node:sqlite`, so `state.db` and `journal.db` are files, and both
-containers mount the **same** named volume `mcp-data` at
-`/home/node/.mcp-journal` — two writers of the same files, which is what the
+containers mount the **same** named volume `mcpcut` at
+`/home/node/.mcpcut` (the data is in its `data/`) — two writers of the same files, which is what the
 code assumes (WAL, the exclusive policy lock, the `statSync` hot reload). That
 holds because a named volume is one filesystem on one host; it would not hold
-across machines. The install config lives on a second volume, `mcp-config`
-(`/home/node/.mcpcut`), so it survives `docker compose down` and an image
+across machines. The install config lives on the same volume
+(`/home/node/.mcpcut/config.json`), so it survives `docker compose down` and an image
 rebuild, and a second start skips setup instead of repeating it. `connect`,
 the stdio proxy, has no container: the agent's own client spawns it.
 
@@ -281,10 +282,10 @@ change the install. `0.0.0.0` inside the container is the only way a
 published port reaches it; the ports are published to host loopback only
 (`127.0.0.1:8091`, `127.0.0.1:8090`), and `Host` screening still admits only
 localhost names, so reach the console at `http://localhost:8091`. **Do not set
-`MCP_JOURNAL_DIR`** in the container's environment: it outranks the config for
+`MCPCUT_DATA_DIR`** in the container's environment: it outranks the config for
 every command, `setup` refuses the run as a data-directory conflict, and under
 `set -eu` with `restart: unless-stopped` the container crash-loops. Do not
-bind-mount a checkout over `/app` either: a `.mcp-journal/policy.json` in it
+bind-mount a checkout over `/app` either: a `.mcpcut-project/policy.json` in it
 would shadow the volume's policy (ADR-0005).
 
 The entrypoint always passes `--admin`, never `--no-admin`, so the
@@ -330,7 +331,7 @@ docker compose restart
 
 A rerun without the flags keeps the value already in the config. There is no
 flag that clears it: remove the `probeHost` key from the config file by hand
-(`/home/node/.mcpcut/config.json` on the `mcp-config` volume;
+(`/home/node/.mcpcut/config.json` on the `mcpcut` volume;
 `~/.mcpcut/config.json` outside Docker).
 
 Inside compose `mcpcut status` warns that `ui` and `serve` bind `0.0.0.0`
@@ -345,16 +346,16 @@ Run the real MCP server as a child process, journaling the traffic the proxy
 observes while forwarding it unmodified:
 
 ```
-mcp-journal wrap -- <cmd> [args...]
+mcpcut wrap -- <cmd> [args...]
 ```
 
-Everything after `--` is the real server's command line. `mcp-journal` exits
+Everything after `--` is the real server's command line. `mcpcut` exits
 with the wrapped server's exit code.
 
 ### List sessions
 
 ```
-mcp-journal sessions
+mcpcut sessions
 ```
 
 Prints a table of every journaled session: session id, first/last message
@@ -363,7 +364,7 @@ timestamp, and message count.
 ### Show a session's journal
 
 ```
-mcp-journal show <sessionId> [--method X] [--direction Y] [--json]
+mcpcut show <sessionId> [--method X] [--direction Y] [--json]
 ```
 
 Prints one session's journal records, optionally filtered by JSON-RPC
@@ -373,10 +374,10 @@ truncated payload); pass `--json` to print the raw JSONL instead.
 
 ## Policies
 
-Without a policy file, `mcp-journal` behaves exactly like the plain journaling
+Without a policy file, `mcpcut` behaves exactly like the plain journaling
 proxy above (mode A): every message is forwarded unmodified, only journaled.
-Dropping a `policy.json` in `./.mcp-journal/policy.json` (project) or
-`~/.mcp-journal/policy.json` (home) turns on enforcement (mode B): every
+Dropping a `policy.json` in `./.mcpcut-project/policy.json` (project) or
+`~/.mcpcut/data/policy.json` (home) turns on enforcement (mode B): every
 `tools/call` is matched against the policy before it reaches the server, and
 `tools/list` results are filtered to what the agent is actually allowed to
 call. Running proxies re-read the policy file when it changes (checked
@@ -400,8 +401,8 @@ and `wrap` without a policy is a different mode altogether (no gate is built),
 so a `wrap` run still needs a restart to come under a new policy.
 
 Resolution order (first found wins, **no merging** across sources):
-`--policy <path>` → `$MCP_JOURNAL_POLICY` → `./.mcp-journal/policy.json` →
-`~/.mcp-journal/policy.json`. A broken or explicitly-named-but-missing policy
+`--policy <path>` → `$MCPCUT_POLICY` → `./.mcpcut-project/policy.json` →
+`~/.mcpcut/data/policy.json`. A broken or explicitly-named-but-missing policy
 file is a hard error: the proxy refuses to start rather than silently
 degrading to allow-all.
 
@@ -491,26 +492,26 @@ own claims (which is exactly why `readOnlyHint` alone isn't enough).
 Validate a policy file and inspect the effective (defaults-applied) policy:
 
 ```
-mcp-journal policy validate [path]
-mcp-journal policy show [--server <name>] [--json]
+mcpcut policy validate [path]
+mcpcut policy show [--server <name>] [--json]
 ```
 
 ### Approval scenario
 
 A `require-approval` tool call does not reach the server immediately:
 
-1. The agent calls a gated tool. `mcp-journal` enqueues an approval request
+1. The agent calls a gated tool. `mcpcut` enqueues an approval request
    and the call blocks (client-side) until it is resolved or times out
    (60s default).
 2. An operator reviews and resolves it in another terminal:
    ```
-   mcp-journal approvals list
+   mcpcut approvals list
    export MCP_ADMIN_TOKEN=<your personal admin token>
-   mcp-journal approvals approve <id> [--reason TEXT]
-   mcp-journal approvals deny <id> [--reason TEXT]
+   mcpcut approvals approve <id> [--reason TEXT]
+   mcpcut approvals deny <id> [--reason TEXT]
    ```
    `approve` and `deny` require `MCP_ADMIN_TOKEN` — the personal token
-   `mcp-journal admin add` printed — and the admin behind it must hold the
+   `mcpcut admin add` printed — and the admin behind it must hold the
    `operator` or `owner` role, the same minimum the admin UI enforces on the
    same action. The resolution is then stored as `cli:<adminName>`, so the
    journal answers *who* approved a call and not only *that* someone did.
@@ -548,16 +549,16 @@ A `require-approval` tool call does not reach the server immediately:
 
 The first time a server advertises a tool (or advertises one whose schema —
 including its description — has changed since it was last approved),
-`mcp-journal` puts it in quarantine instead of trusting it automatically.
+`mcpcut` puts it in quarantine instead of trusting it automatically.
 Quarantined tools are blocked (`require-approval`/`deny` per
 `quarantine.onQuarantined`) until an operator reviews and approves them:
 
 ```
-mcp-journal quarantine list [--server <name>]
-mcp-journal quarantine show <server> <tool>
-mcp-journal quarantine approve <server> <tool>                 # needs MCP_ADMIN_TOKEN (operator)
-mcp-journal quarantine approve --all --server <name>           # needs MCP_ADMIN_TOKEN (operator)
-mcp-journal quarantine reject <server> <tool>                  # needs MCP_ADMIN_TOKEN (operator)
+mcpcut quarantine list [--server <name>]
+mcpcut quarantine show <server> <tool>
+mcpcut quarantine approve <server> <tool>                      # needs MCP_ADMIN_TOKEN (operator)
+mcpcut quarantine approve --all --server <name>                # needs MCP_ADMIN_TOKEN (operator)
+mcpcut quarantine reject <server> <tool>                       # needs MCP_ADMIN_TOKEN (operator)
 ```
 
 Releasing a tool from quarantine widens what every agent granted that server
@@ -630,15 +631,15 @@ By default, a journal write failure is logged but does not stop traffic
 (fail-open, matching M1). Passing `--fail-closed` (or setting
 `journal.failClosed: true` in the policy) makes an unrecoverable journal
 write failure stop the session instead: no further traffic is forwarded, the
-wrapped server is killed, and `mcp-journal` exits with code `3`. The
+wrapped server is killed, and `mcpcut` exits with code `3`. The
 rationale: "no audit record, no action" — an enforcement proxy without a
 journal it can trust is not enforcing anything.
 
-This is an **opt-in mode, not the default**. If you are running mcp-journal
+This is an **opt-in mode, not the default**. If you are running mcpcut
 for evidence rather than for convenience, turn it on explicitly:
 
 ```
-mcp-journal wrap --fail-closed -- <cmd> [args...]
+mcpcut wrap --fail-closed -- <cmd> [args...]
 ```
 
 or persist it in the policy file:
@@ -662,57 +663,54 @@ shared.
 ### CLI command reference
 
 ```
-mcp-journal wrap [--server <name>] [--policy <path>] [--no-policy] [--fail-closed] -- <cmd> [args...]
-mcp-journal connect <server> --agent <name> [--policy <path>] [--fail-closed]
-mcp-journal serve [--port N] [--host H] [--policy <path>] [--fail-closed] [--allowed-origin URL]
-mcp-journal server add <name> --transport stdio|http ...
-mcp-journal server list | show <name> | remove <name> [--prune-grants]
+mcpcut wrap [--server <name>] [--policy <path>] [--no-policy] [--fail-closed] -- <cmd> [args...]
+mcpcut connect <server> --agent <name> [--policy <path>] [--fail-closed]
+mcpcut serve [--port N] [--host H] [--policy <path>] [--fail-closed] [--allowed-origin URL]
+mcpcut server add <name> --transport stdio|http ...
+mcpcut server list | show <name> | remove <name> [--prune-grants]
                                                   # add/remove need MCP_ADMIN_TOKEN (owner); list and show do not
-mcp-journal vault init | set <name> | list | remove <name> | rekey
+mcpcut vault init | set <name> | list | remove <name> | rekey
                                                   # set/remove/rekey need MCP_ADMIN_TOKEN (owner); init and list do not
-mcp-journal agent create <name> | list | revoke <name>
-mcp-journal agent grant <agent> <server> [--tools a,b,prefix*] | ungrant <agent> <server>
+mcpcut agent create <name> | list | revoke <name>
+mcpcut agent grant <agent> <server> [--tools a,b,prefix*] | ungrant <agent> <server>
                                                   # every agent mutation needs MCP_ADMIN_TOKEN (owner); list does not
-mcp-journal group create <name> | remove <name> | list | show <name>
-mcp-journal group grant <group> <server> --tools a,b,prefix*|* [--resources ...|*] [--prompts ...|*]
-mcp-journal group ungrant <group> <server>
-mcp-journal group join <group> <agent> | leave <group> <agent>   # mutations need MCP_ADMIN_TOKEN (owner)
-mcp-journal sessions
-mcp-journal show <sessionId> [--method X] [--direction Y] [--kind Z] [--json]
-mcp-journal policy validate [path]
-mcp-journal policy show [--server <name>] [--json] [--policy <path>]
-mcp-journal quarantine list [--server <name>] [--json]
-mcp-journal quarantine show <server> <tool>
-mcp-journal quarantine approve <server> <tool> | --all --server <name>   # needs MCP_ADMIN_TOKEN (operator)
-mcp-journal quarantine reject <server> <tool>                            # needs MCP_ADMIN_TOKEN (operator)
-mcp-journal approvals list [--json]
-mcp-journal approvals approve <id> [--reason TEXT]   # needs MCP_ADMIN_TOKEN
-mcp-journal approvals deny <id> [--reason TEXT]      # needs MCP_ADMIN_TOKEN
-mcp-journal admin add <name> --role owner|operator|viewer            # needs MCP_ADMIN_TOKEN (owner) once an admin exists
-mcp-journal admin list | remove <name> | rotate <name> [--recover] | role <name> owner|operator|viewer
-mcp-journal ui [--port 8091] [--host 127.0.0.1] [--behind-tls]
-               [--allowed-host <host[:port]>]... [--allowed-origin <origin>]... [--trusted-proxy-header <name>]
-mcp-journal migrate
-mcp-journal export [--session <id>]
-mcp-journal export --report [--session <id>] [--out <dir>]
-mcp-journal backup <destDir>
-mcp-journal keygen
-mcp-journal verify [--session <id>] [--sign]
-mcp-journal verify --report <dir> [--pub <path>] [--require-signature]
-mcp-journal prune --older-than <duration> [--yes]    # --yes needs MCP_ADMIN_TOKEN (owner)
-mcp-journal setup                                     # interactive setup on a terminal: the same questions as the flags below
-mcp-journal setup --yes [--data-dir <dir>] [--ui-host H] [--ui-port N] [--serve-host H] [--serve-port N]
-                  [--behind-tls|--no-behind-tls] [--admin <name>|--no-admin] [--supervisor mcpcut|external]
-                  [--ui-probe-host H] [--serve-probe-host H] [--start] [--force]
+mcpcut group create <name> | remove <name> | list | show <name>
+mcpcut group grant <group> <server> --tools a,b,prefix*|* [--resources ...|*] [--prompts ...|*]
+mcpcut group ungrant <group> <server>
+mcpcut group join <group> <agent> | leave <group> <agent>        # mutations need MCP_ADMIN_TOKEN (owner)
+mcpcut sessions
+mcpcut show <sessionId> [--method X] [--direction Y] [--kind Z] [--json]
+mcpcut policy validate [path]
+mcpcut policy show [--server <name>] [--json] [--policy <path>]
+mcpcut quarantine list [--server <name>] [--json]
+mcpcut quarantine show <server> <tool>
+mcpcut quarantine approve <server> <tool> | --all --server <name>        # needs MCP_ADMIN_TOKEN (operator)
+mcpcut quarantine reject <server> <tool>                                 # needs MCP_ADMIN_TOKEN (operator)
+mcpcut approvals list [--json]
+mcpcut approvals approve <id> [--reason TEXT]        # needs MCP_ADMIN_TOKEN
+mcpcut approvals deny <id> [--reason TEXT]           # needs MCP_ADMIN_TOKEN
+mcpcut admin add <name> --role owner|operator|viewer                 # needs MCP_ADMIN_TOKEN (owner) once an admin exists
+mcpcut admin list | remove <name> | rotate <name> [--recover] | role <name> owner|operator|viewer
+mcpcut ui [--port 8091] [--host 127.0.0.1] [--behind-tls]
+          [--allowed-host <host[:port]>]... [--allowed-origin <origin>]... [--trusted-proxy-header <name>]
+mcpcut migrate
+mcpcut export [--session <id>]
+mcpcut export --report [--session <id>] [--out <dir>]
+mcpcut backup <destDir>
+mcpcut keygen
+mcpcut verify [--session <id>] [--sign]
+mcpcut verify --report <dir> [--pub <path>] [--require-signature]
+mcpcut prune --older-than <duration> [--yes]         # --yes needs MCP_ADMIN_TOKEN (owner)
+mcpcut setup                                          # interactive setup on a terminal: the same questions as the flags below
+mcpcut setup --yes [--data-dir <dir>] [--ui-host H] [--ui-port N] [--serve-host H] [--serve-port N]
+             [--behind-tls|--no-behind-tls] [--admin <name>|--no-admin] [--supervisor mcpcut|external]
+             [--ui-probe-host H] [--serve-probe-host H] [--start] [--force]
                                                       # write the install config, prepare the data directory, mint the first owner
-mcp-journal start|stop [ui|serve]                     # start/stop the services as detached daemons (pid + log in <data dir>/run)
-mcp-journal status [--json]                           # running = pid alive AND answering on its port
-mcp-journal logs <ui|serve> [--lines N]               # tail of a service log (default 50 lines)
-mcp-journal tui                                       # the interactive console (a bare `mcpcut` on a terminal does the same)
+mcpcut start|stop [ui|serve]                          # start/stop the services as detached daemons (pid + log in <data dir>/run)
+mcpcut status [--json]                                # running = pid alive AND answering on its port
+mcpcut logs <ui|serve> [--lines N]                    # tail of a service log (default 50 lines)
+mcpcut tui                                            # the interactive console (a bare `mcpcut` on a terminal does the same)
 ```
-
-`mcpcut` is a second `bin` name for the same file: every line above works as
-`mcpcut …` too.
 
 `serve`, `ui`, `connect` and `wrap` — the four long-lived entry points — run
 `PRAGMA integrity_check` on `state.db` and `journal.db` before binding a port
@@ -736,7 +734,7 @@ command turns up corruption.
 ### Known limitation: trust boundary of the wrapped process
 
 The wrapped MCP server runs as a child process under the *same OS user* as
-`mcp-journal` itself. It could, in principle, write directly to the journal,
+`mcpcut` itself. It could, in principle, write directly to the journal,
 approval queue, or quarantine store files on disk — nothing currently stops
 a malicious or compromised server from tampering with its own audit trail or
 self-approving a quarantined tool. The journal is an **append-oriented**
@@ -786,19 +784,19 @@ other mode — a control plane that knows your MCP servers *by name*, keeps
 their credentials encrypted, issues one identity per agent, and can cut an
 agent off with a single command.
 
-Its state lives in `~/.mcp-journal/`:
+Its state lives in `~/.mcpcut/data/`:
 
 | File | Holds | Changed by |
 |---|---|---|
-| `state.db` | Control-plane state, one document/table per store: server registry, agent identities & grant matrix, server groups, admin accounts, tool inventory (quarantine baselines), approvals queue. Supersedes the legacy `registry.json`/`agents.json`/`admins.json`/`tool-inventory.json`/`approvals/` files below (M4.5, ADR-0006) | `mcp-journal server/agent/group/admin/quarantine/approvals ...` |
-| `journal.db` | The journal (`journal_records` table), plus a marker of which legacy `*.jsonl` files have been imported | the proxy; `mcp-journal migrate` |
+| `state.db` | Control-plane state, one document/table per store: server registry, agent identities & grant matrix, server groups, admin accounts, tool inventory (quarantine baselines), approvals queue. Supersedes the legacy `registry.json`/`agents.json`/`admins.json`/`tool-inventory.json`/`approvals/` files below (M4.5, ADR-0006) | `mcpcut server/agent/group/admin/quarantine/approvals ...` |
+| `journal.db` | The journal (`journal_records` table), plus a marker of which legacy `*.jsonl` files have been imported | the proxy; `mcpcut migrate` |
 | `registry.json`, `agents.json`, `admins.json`, `tool-inventory.json`, `approvals/` | Legacy pre-M4.5 files — read once into `state.db` (by `migrate`, or lazily on first touch), then left untouched as a cold backup | — (historical; no longer written) |
-| `vault.enc`, `vault.key` | Secrets encrypted with AES-256-GCM, plus the master key | `mcp-journal vault ...` |
-| `policy.json` | Allow / deny / require-approval rules | **you**, by hand; per-tool rules also from the admin UI (Servers card) and `mcp-journal policy set` |
-| `<sessionId>.jsonl` | Legacy journal (pre-M4.5), read only via `mcp-journal migrate`; the proxy no longer writes this format | — (historical; no longer written) |
+| `vault.enc`, `vault.key` | Secrets encrypted with AES-256-GCM, plus the master key | `mcpcut vault ...` |
+| `policy.json` | Allow / deny / require-approval rules | **you**, by hand; per-tool rules also from the admin UI (Servers card) and `mcpcut policy set` |
+| `<sessionId>.jsonl` | Legacy journal (pre-M4.5), read only via `mcpcut migrate`; the proxy no longer writes this format | — (historical; no longer written) |
 
 `policy.json` stays a plain file on purpose, and it stays hand-editable. The
-admin UI (Servers card) and `mcp-journal policy set` are just two more writers
+admin UI (Servers card) and `mcpcut policy set` are just two more writers
 of the same file: they set one tool's rule (`allow` / `deny` /
 `require-approval`, or clear it), validate the result before writing, write
 atomically, refuse if the file changed on disk since the page was rendered, and
@@ -821,15 +819,15 @@ than a syntax error — so they are CLI-managed.
 The whole sequence, from an empty plane to a working, journaled tool call:
 
 ```
-mcp-journal admin add alice --role owner  # the first admin needs no token; prints yours ONCE
+mcpcut admin add alice --role owner       # the first admin needs no token; prints yours ONCE
 export MCP_ADMIN_TOKEN=<that token>
-mcp-journal vault init
-mcp-journal server add github --transport stdio \
+mcpcut vault init
+mcpcut server add github --transport stdio \
   --command "npx" --args "-y,@modelcontextprotocol/server-github" \
   --env GITHUB_PERSONAL_ACCESS_TOKEN=vault:github-pat
-mcp-journal vault set github-pat        # value comes from stdin
-mcp-journal agent create research-bot   # prints the token ONCE
-mcp-journal agent grant research-bot github --tools "get_*,list_*,search_*"
+mcpcut vault set github-pat             # value comes from stdin
+mcpcut agent create research-bot        # prints the token ONCE
+mcpcut agent grant research-bot github --tools "get_*,list_*,search_*"
 ```
 
 Step by step:
@@ -885,7 +883,7 @@ Then point the agent's own client config at `connect`:
 {
   "mcpServers": {
     "github": {
-      "command": "mcp-journal",
+      "command": "mcpcut",
       "args": ["connect", "github", "--agent", "research-bot"],
       "env": { "MCP_AGENT_TOKEN": "<the token agent create printed>" }
     }
@@ -915,9 +913,9 @@ the journal and, on the wire, a JSON-RPC error saying so. What opens them is an
 owner running:
 
 ```
-mcp-journal agent grant research-bot github --tools "*" \
+mcpcut agent grant research-bot github --tools "*" \
   --resources "file:///project/*" --prompts "review-*"
-mcp-journal group grant analytics postgres --tools "*" --resources "*"
+mcpcut group grant analytics postgres --tools "*" --resources "*"
 ```
 
 A resource pattern is an exact URI or a URI prefix with one trailing `*`
@@ -938,11 +936,11 @@ It exists so a typical set of servers ("analytics" = postgres + clickhouse +
 grafana) is described once instead of being repeated for every agent:
 
 ```
-mcp-journal group create analytics
-mcp-journal group grant analytics clickhouse --tools "query,describe_*"
-mcp-journal group grant analytics postgres --tools "*"
-mcp-journal group join analytics research-bot
-mcp-journal group show analytics
+mcpcut group create analytics
+mcpcut group grant analytics clickhouse --tools "query,describe_*"
+mcpcut group grant analytics postgres --tools "*"
+mcpcut group join analytics research-bot
+mcpcut group show analytics
 ```
 
 `create`, `remove`, `grant`, `ungrant`, `join` and `leave` need a personal
@@ -978,7 +976,7 @@ permissions allowed this" stays reproducible. An installation with no groups
 produces exactly the hashes it produced before groups existed.
 
 Removing a group that still has members is refused, and the refusal lists them.
-`mcp-journal server remove <name>` cascades: the server is dropped from every
+`mcpcut server remove <name>` cascades: the server is dropped from every
 personal grant and every group grant, and the cascade is journaled
 (`removed server "x"; cascaded: 2 agent grants, 1 groups`).
 
@@ -1004,14 +1002,14 @@ flag is simply redundant, since the cascade runs anyway.
 ### Revoking access
 
 ```
-mcp-journal agent revoke research-bot
+mcpcut agent revoke research-bot
 ```
 
 One command (with `MCP_ADMIN_TOKEN`, role `owner`), and the agent's token is
 dead: new connections are refused immediately, and sessions that are already
 live end on their next poll of `agents.json` (≤ 5 s) with an `agent-revoked`
 decision record in the journal.
-To narrow rather than cut off, use `mcp-journal agent ungrant <agent> <server>`
+To narrow rather than cut off, use `mcpcut agent ungrant <agent> <server>`
 — but note that for an agent in a group this WIDENS access rather than
 narrowing it (the group's grant comes back; the command warns when it does).
 
@@ -1020,7 +1018,7 @@ narrowing it (the group's grant comes back; the command warns when it does).
 Agents that speak streamable HTTP instead of stdio connect through the front:
 
 ```
-mcp-journal serve --port 8090
+mcpcut serve --port 8090
 # agent endpoint: http://127.0.0.1:8090/agents/research-bot/servers/github
 # authentication: Authorization: Bearer <the agent's token>
 ```
@@ -1069,7 +1067,7 @@ listening on loopback. `serve` has no TLS of its own.
 mode `0600`, sitting in the same directory under the same OS user.
 
 It **does** protect against secrets leaking through the paths they usually
-leak through: a backup or dotfile-sync of `~/.mcp-journal`, a config file
+leak through: a backup or dotfile-sync of `~/.mcpcut/data`, a config file
 committed to a repository, a shell history or `ps` listing (values never pass
 through `argv`), and the journal itself (values are resolved in memory only,
 on their way into a server's environment or request headers — the CLI has no
@@ -1079,27 +1077,27 @@ It does **not** protect against a compromised host. A key next to its
 ciphertext, readable by the same user, is exactly as strong as that user
 account: anything running as you can decrypt the vault. This is the same
 trust boundary as the wrapped-process limitation noted above, and it is
-stated here rather than glossed over. Rotate with `mcp-journal vault rekey`
+stated here rather than glossed over. Rotate with `mcpcut vault rekey`
 (re-encrypts every secret under a fresh key). Full threat model and the
 reasoning behind the choice: `docs/adr/0003-vault-crypto.md`.
 
 ## Admin UI
 
-`mcp-journal approvals`/`quarantine`/`agent`/`server`/`vault` are all you need
+`mcpcut approvals`/`quarantine`/`agent`/`server`/`vault` are all you need
 in a terminal. The admin UI is the same state — the same file-backed stores —
 behind a browser, for the moment that matters most: a `require-approval` call
 is blocking an agent right now, and someone has to look at it and decide
 before the agent's own timeout runs out. It is a second front onto the
 control plane's stores, not a second source of truth; a resolution made in
-the UI and a resolution made with `mcp-journal approvals approve` race the
+the UI and a resolution made with `mcpcut approvals approve` race the
 same way (first one wins, the other gets a clear "already resolved").
 
 ### Starting it
 
 ```
-mcp-journal ui [--port 8091] [--host 127.0.0.1] [--behind-tls]
-               [--allowed-host <host[:port]>]... [--allowed-origin <origin>]...
-               [--trusted-proxy-header <name>]
+mcpcut ui [--port 8091] [--host 127.0.0.1] [--behind-tls]
+          [--allowed-host <host[:port]>]... [--allowed-origin <origin>]...
+          [--trusted-proxy-header <name>]
 ```
 
 `--behind-tls` marks the session cookie `Secure` (use it when a reverse proxy
@@ -1115,7 +1113,7 @@ which reads as "`--behind-tls` is broken" when it is in fact the DNS-rebinding
 defence doing its job. Name the public host explicitly:
 
 ```
-mcp-journal ui --port 8092 --behind-tls --allowed-host 127.0.0.1:8443
+mcpcut ui --port 8092 --behind-tls --allowed-host 127.0.0.1:8443
 ```
 
 `--trusted-proxy-header <name>` (e.g. `x-forwarded-for`) keys the `/login` rate
@@ -1137,7 +1135,7 @@ in your terminal ([First run](#the-first-owner)). Only `setup --yes --no-admin`
 — or a `ui` started by hand over an empty store — leaves it to `ui`.
 
 In that case, if the admin store in `<data dir>/state.db` holds no admins yet,
-`mcp-journal ui` creates one `owner` account (named `owner`), writes its
+`mcpcut ui` creates one `owner` account (named `owner`), writes its
 plaintext token to **`<data dir>/bootstrap-token`** (mode `0600`, created
 exclusively, inside the `0700` data directory) and prints the sign-in URL and
 that path — never the token — to stderr, once. Nothing goes to stdout, and
@@ -1145,8 +1143,8 @@ nothing belongs in browser history:
 
 ```
 [ui] no admins found: created "owner" with role owner
-[ui] its one-time token is in /home/you/.mcp-journal/bootstrap-token (mode 0600); sign in at http://127.0.0.1:8091/login as "owner"
-[ui] the file is deleted after the first sign-in. Rotate the token later with: mcp-journal admin rotate owner
+[ui] its one-time token is in /home/you/.mcpcut/data/bootstrap-token (mode 0600); sign in at http://127.0.0.1:8091/login as "owner"
+[ui] the file is deleted after the first sign-in. Rotate the token later with: mcpcut admin rotate owner
 ```
 
 The file exists because `ui` as a service has no terminal: its stderr is
@@ -1160,8 +1158,8 @@ the file it refuses to start and says so — the account already exists, so
 `admin rotate owner --recover` is the way to a token you can use.
 
 Read the file before you sign in; there is no second copy. Rotate the token
-with `mcp-journal admin rotate owner` (with your token in `MCP_ADMIN_TOKEN`),
-or — if that token is the one you lost — `mcp-journal admin rotate owner
+with `mcpcut admin rotate owner` (with your token in `MCP_ADMIN_TOKEN`),
+or — if that token is the one you lost — `mcpcut admin rotate owner
 --recover`, which needs none and leaves a journal record marked `recovery: true`.
 
 ### Admins and roles
@@ -1191,12 +1189,12 @@ Manage accounts from the CLI:
 ```
 export MCP_ADMIN_TOKEN=<your personal owner token>          # every admin command below needs it,
                                                              # except the very first `admin add` on an empty plane
-mcp-journal admin add <name> --role owner|operator|viewer   # prints the token ONCE
-mcp-journal admin list                                       # names, roles, dates — never token hashes
-mcp-journal admin rotate <name>                               # new token; old one dies immediately
-mcp-journal admin rotate <name> --recover                     # the same without a token: for an owner who lost theirs
-mcp-journal admin remove <name>
-mcp-journal admin role <name> <role>
+mcpcut admin add <name> --role owner|operator|viewer        # prints the token ONCE
+mcpcut admin list                                            # names, roles, dates — never token hashes
+mcpcut admin rotate <name>                                    # new token; old one dies immediately
+mcpcut admin rotate <name> --recover                          # the same without a token: for an owner who lost theirs
+mcpcut admin remove <name>
+mcpcut admin role <name> <role>
 ```
 
 Every `add`, `rotate`, `role` and `remove` — from the CLI, the web UI or the
@@ -1288,7 +1286,7 @@ above).
 
 M4.5 moved control-plane state and the journal off plain files and onto two
 SQLite databases, `state.db` and `journal.db` (`docs/adr/0006-storage-sqlite.md`).
-Upgrading an existing `~/.mcp-journal/` install is **mandatory**, not
+Upgrading an existing `~/.mcpcut/data/` install is **mandatory**, not
 optional — a smoke test on the M4.5 branch found that a process still running
 on the old code cannot see (or resolve) work created by a process running the
 new code, because they read different storage. Do this in order:
@@ -1300,7 +1298,7 @@ new code, because they read different storage. Do this in order:
    migrate, and those writes will not be picked up by the new storage.
 2. **Run the migration**:
    ```
-   mcp-journal migrate
+   mcpcut migrate
    ```
    This imports `agents.json`, `admins.json`, `registry.json`,
    `tool-inventory.json`, the `approvals/` queue, and every `*.jsonl` journal
@@ -1320,8 +1318,8 @@ new code, because they read different storage. Do this in order:
 4. **Update external tooling.** Anything that read `approvals/pending/` or
    `<sessionId>.jsonl` directly off disk — a watcher, a cron job, a
    dashboard — now sees a stale, frozen snapshot: the plane no longer writes
-   those files. Point it at the CLI (`mcp-journal approvals list --json`,
-   `mcp-journal export`) or the admin UI instead.
+   those files. Point it at the CLI (`mcpcut approvals list --json`,
+   `mcpcut export`) or the admin UI instead.
 
 Nothing is deleted. The legacy `agents.json`, `admins.json`, `registry.json`,
 `tool-inventory.json`, `approvals/`, and `*.jsonl` files stay on disk exactly
@@ -1331,7 +1329,7 @@ un-imported legacy journal file only becomes visible again by running
 stderr:
 
 ```
-1 legacy *.jsonl session file(s) are not imported; run `mcp-journal migrate` to see them.
+1 legacy *.jsonl session file(s) are not imported; run `mcpcut migrate` to see them.
 ```
 
 A fresh install (no pre-M4.5 files at all) needs none of this — `state.db`
@@ -1340,7 +1338,7 @@ and `journal.db` are created on first write, same as the old files were.
 ## Backup & restore
 
 ```
-mcp-journal backup <destDir>
+mcpcut backup <destDir>
 ```
 
 Copies `state.db` and `journal.db` (whichever exist) into `<destDir>` using
@@ -1351,11 +1349,11 @@ snapshot — pick a fresh directory (or timestamp it) per backup.
 **Do not copy `state.db` on its own with `cp`.** Both databases run in WAL
 mode: recent commits can still be sitting in a `-wal` sidecar file rather
 than in `state.db` itself, so a plain file copy can miss data that a client
-reading through SQLite would see. `mcp-journal backup` folds the sidecar in
+reading through SQLite would see. `mcpcut backup` folds the sidecar in
 for you; that is the whole reason it exists instead of "copy the directory
 and hope."
 
-The rest of `~/.mcp-journal/` is ordinary files and copies fine with `cp`,
+The rest of `~/.mcpcut/data/` is ordinary files and copies fine with `cp`,
 `rsync`, or your usual backup tool: `vault.enc` and `vault.key` (copy both
 together — one is useless without the other), `policy.json`, and any legacy
 `*.jsonl`/`*.json` files left over from before an M4.5 upgrade.
@@ -1368,7 +1366,7 @@ databases are intact before anything else touches them.
 
 ## Audit reports
 
-`mcp-journal export --report` writes a self-contained snapshot of the
+`mcpcut export --report` writes a self-contained snapshot of the
 journal's decision history that a third party can check **offline** — with
 nothing but the export directory and a public key, no access to this
 installation, no database. This is the report format `journal/report.ts`
@@ -1377,8 +1375,8 @@ implements (`docs/adr/0007-evidentiary-journal.md`).
 ### Producing and handing over a report
 
 ```
-mcp-journal keygen
-mcp-journal export --report [--session <id>] [--out <dir>]
+mcpcut keygen
+mcpcut export --report [--session <id>] [--out <dir>]
 ```
 
 1. **`keygen`** generates this installation's Ed25519 signing key, once. It
@@ -1391,7 +1389,7 @@ mcp-journal export --report [--session <id>] [--out <dir>]
    and writes the manifest, summary and (if a key exists) the signature
    alongside them. `--session <id>` narrows the export to one session;
    omitted, it covers the whole journal. `--out` defaults to
-   `./mcp-journal-report` under the current directory and must be an empty
+   `./mcpcut-report` under the current directory and must be an empty
    or nonexistent directory — it refuses to write into one that already has
    files in it, rather than risk a half-overwritten export.
 
@@ -1411,7 +1409,7 @@ The private key never leaves this host and is never part of the handoff.
 ### Checking a report offline
 
 ```
-mcp-journal verify --report <dir> [--pub <path>] [--require-signature]
+mcpcut verify --report <dir> [--pub <path>] [--require-signature]
 ```
 
 `--pub` defaults to `<journal dir>/signing.pub`, which only matters if you're
@@ -1523,7 +1521,7 @@ indistinguishable from an untouched one. The only thing that makes that
 detectable is an anchor recorded **somewhere this host cannot also rewrite**.
 
 ```
-mcp-journal verify --sign
+mcpcut verify --sign
 ```
 
 This is a separate command from `export --report` — it signs the journal's
@@ -1560,11 +1558,11 @@ consistent as exported" — never "was never rewritten."
   since; the report will still, correctly, show the decision made under it.
   Current authority is resolved elsewhere — the report is built to compose
   with that resolution, not replace it. (Full wording: `report.json`'s
-  `contract` field and the `mcp-journal verify --report` output both carry
+  `contract` field and the `mcpcut verify --report` output both carry
   it verbatim.)
 - **A report holds journal content, and inherits the journal's
   confidentiality.** The export directory is created at mode `0700` and
-  every file in it at `0600` — same as the rest of `~/.mcp-journal/`. Tool
+  every file in it at `0600` — same as the rest of `~/.mcpcut/data/`. Tool
   arguments and server responses land in `records.jsonl` exactly as the
   journal held them: secrets are redacted at write time, but personal or
   otherwise sensitive data is not (see "redaction is not anonymization,"
@@ -1578,8 +1576,8 @@ period, no timer, and no configuration that enables one — the only thing that
 removes a record is an operator running:
 
 ```
-mcp-journal prune --older-than <duration>          # says what it would delete
-mcp-journal prune --older-than <duration> --yes    # actually deletes it
+mcpcut prune --older-than <duration>               # says what it would delete
+mcpcut prune --older-than <duration> --yes         # actually deletes it
 ```
 
 The deleting form requires `MCP_ADMIN_TOKEN` — the personal token of an admin
@@ -1640,14 +1638,14 @@ against what the journal claims afterwards. Take one before you prune.
 
 ## Wiring into `.mcp.json`
 
-Wrap a real server by replacing its `command`/`args` with `mcp-journal wrap --`
+Wrap a real server by replacing its `command`/`args` with `mcpcut wrap --`
 followed by the original command:
 
 ```json
 {
   "mcpServers": {
     "some-server": {
-      "command": "mcp-journal",
+      "command": "mcpcut",
       "args": ["wrap", "--", "npx", "-y", "@some/mcp-server"]
     }
   }

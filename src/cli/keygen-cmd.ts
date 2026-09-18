@@ -8,7 +8,7 @@ import type { AdminRefusalWording } from './admin-token.js'
 import { adminOf, recordHostOp, resolveHostOpActor } from './host-op-write.js'
 
 /**
- * `mcp-journal keygen` (M5 wave 4, task 4.2): generates this installation's
+ * `mcpcut keygen` (M5 wave 4, task 4.2): generates this installation's
  * Ed25519 signing key. Mirrors `admin add`'s shape (`admin-cmd.ts`): a
  * secret is minted, and the ONE thing that ever reaches stdout is the public
  * half -- the private key is written straight to disk and never echoed
@@ -47,7 +47,7 @@ export interface KeygenCommandOptions {
 }
 
 const USAGE =
-  'Usage: mcp-journal keygen\n' +
+  'Usage: mcpcut keygen\n' +
   'Generates this installation\'s Ed25519 signing key (used by "verify --sign").\n' +
   'Refuses to run if a key already exists -- overwriting it would invalidate every\n' +
   'anchor this installation has ever signed. There is no --force: deliberate key\n' +

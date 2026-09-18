@@ -25,7 +25,7 @@ import { createJournalSink } from '../../src/journal/sink.js'
 let tempDir: string
 
 beforeEach(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), 'mcp-journal-index-cache-test-'))
+  tempDir = await mkdtemp(join(tmpdir(), 'mcpcut-index-cache-test-'))
 })
 
 afterEach(async () => {

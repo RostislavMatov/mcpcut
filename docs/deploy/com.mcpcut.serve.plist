@@ -20,6 +20,12 @@
     <string>serve</string>
   </array>
 
+  <!-- Same working directory `mcpcut start` gives the services: the data
+       directory. launchd would otherwise run the job in `/`, and the
+       project-level policy candidate is looked up relative to it. -->
+  <key>WorkingDirectory</key>
+  <string>/Users/you/.mcpcut/data</string>
+
   <!-- The bind, the policy path and fail-closed come from this config
        (`serve.host`, `serve.port`, `serve.policy`, `serve.failClosed`). -->
   <key>EnvironmentVariables</key>
@@ -38,9 +44,9 @@
   </dict>
 
   <key>StandardOutPath</key>
-  <string>/Users/you/.mcp-journal/run/serve.log</string>
+  <string>/Users/you/.mcpcut/data/run/serve.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/you/.mcp-journal/run/serve.log</string>
+  <string>/Users/you/.mcpcut/data/run/serve.log</string>
 
   <key>Umask</key>
   <integer>63</integer>

@@ -81,7 +81,7 @@ export interface UiCompositionDeps {
    * Environment and working directory the operator-launched sources panel
    * resolves against (what `serve`/`wrap` started from here would load).
    * Default to the process's own; injectable so tests never read the real
-   * `$MCP_JOURNAL_POLICY`.
+   * `$MCPCUT_POLICY`.
    */
   readonly env?: NodeJS.ProcessEnv
   readonly cwd?: string

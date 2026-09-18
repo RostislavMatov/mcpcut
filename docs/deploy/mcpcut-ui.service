@@ -19,6 +19,10 @@ Type=simple
 # elsewhere (nvm, volta, /opt), replace `/usr/bin/env node` with its absolute
 # path.
 ExecStart=/usr/bin/env node %h/mcp-control-plane/dist/cli.js ui
+# The working directory is the data directory, as under `mcpcut start`: the
+# project-level policy candidate is `<cwd>/.mcpcut-project/policy.json`, and a
+# user unit without this line would run in %h and look for it there.
+WorkingDirectory=%h/.mcpcut/data
 Environment=MCPCUT_CONFIG=%h/.mcpcut/config.json
 # The bind (host, port, --behind-tls, allowed hosts) comes from that config;
 # a flag on the ExecStart line would outrank it, so keep the line bare.
@@ -34,8 +38,8 @@ UMask=0077
 # stdout/stderr go to the user journal: `journalctl --user -u mcpcut-ui`.
 # `mcpcut logs ui` reads only <data dir>/run/ui.log, which this unit does not
 # write; to have both, add
-#   StandardOutput=append:%h/.mcp-journal/run/ui.log
-#   StandardError=append:%h/.mcp-journal/run/ui.log
+#   StandardOutput=append:%h/.mcpcut/run/ui.log
+#   StandardError=append:%h/.mcpcut/run/ui.log
 # after creating that directory with mode 0700.
 
 [Install]

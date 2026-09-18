@@ -12,9 +12,9 @@ import { loadInstallConfigSync, type InstallConfigLoad } from './load.js'
  * Where this process keeps its data (phase 1, task 4) — the one question
  * `src/config.ts` answers at import, for every command in the process.
  *
- * The ranking is `MCP_JOURNAL_DIR` > the install config's `dataDir` >
- * `~/.mcp-journal`, so an install that never ran `setup` and exports nothing
- * lands on exactly the path it has always used. Per-command flags rank above
+ * The ranking is `MCPCUT_DATA_DIR` > the install config's `dataDir` >
+ * `~/.mcpcut/data`, so an install that never ran `setup` and exports nothing
+ * still keeps its data under the install directory. Per-command flags rank above
  * all three, but they are each command's own business, not this module's.
  *
  * A config that cannot be read is NOT a fatal event here: it is returned as
@@ -39,13 +39,13 @@ export interface DataDirResolution {
   /**
    * Which input the first problem is about, so the refusal can point at the
    * thing that is actually broken: an unusable config file is fixed one way,
-   * a malformed `MCP_JOURNAL_DIR` another. Absent when there is no problem.
+   * a malformed `MCPCUT_DATA_DIR` another. Absent when there is no problem.
    */
   readonly problemSource?: 'env' | 'config'
 }
 
 export interface ResolveDataDirOptions {
-  /** Environment carrying `MCP_JOURNAL_DIR`/`MCPCUT_CONFIG`. Defaults to `process.env`. */
+  /** Environment carrying `MCPCUT_DATA_DIR`/`MCPCUT_CONFIG`. Defaults to `process.env`. */
   readonly env?: NodeJS.ProcessEnv
   /** Home directory the default path is built from. Defaults to `homedir()`. */
   readonly home?: string

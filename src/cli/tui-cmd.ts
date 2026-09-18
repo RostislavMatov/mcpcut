@@ -38,8 +38,9 @@ import type { UiCliIo } from './ui-constants.js'
  * `mcpcut setup` without `--yes` whether or not a config exists (there it is
  * an edit of the install that is already there). An explicit `mcpcut tui` is a
  * deliberate request for the console and opens over the default data
- * directory, which is what an install that inherited a journal without ever
- * running `setup` has always used.
+ * directory, `~/.mcpcut/data`, when no config says otherwise. Nothing looks for
+ * a store anywhere else: an older one is reached by pointing `dataDir` or
+ * `MCPCUT_DATA_DIR` at it (ADR-0013).
  *
  * The io shape is `UiCliIo` — declared structurally, like every other command
  * module, so nothing here imports the dispatcher that routes it. The

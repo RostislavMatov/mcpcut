@@ -18,6 +18,10 @@ After=network.target
 Type=simple
 # See mcpcut-ui.service for the notes on %h and on the node binary.
 ExecStart=/usr/bin/env node %h/mcp-control-plane/dist/cli.js serve
+# The working directory is the data directory, as under `mcpcut start`: the
+# project-level policy candidate is `<cwd>/.mcpcut-project/policy.json`, and a
+# user unit without this line would run in %h and look for it there.
+WorkingDirectory=%h/.mcpcut/data
 Environment=MCPCUT_CONFIG=%h/.mcpcut/config.json
 # The bind, the policy path and --fail-closed come from that config
 # (`serve.host`, `serve.port`, `serve.policy`, `serve.failClosed`); keep the

@@ -30,7 +30,7 @@ const RECORD: JournalRecord = {
 let tempDir: string
 
 beforeEach(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), 'mcp-journal-sink-mkdir-'))
+  tempDir = await mkdtemp(join(tmpdir(), 'mcpcut-sink-mkdir-'))
   vi.mocked(mkdir).mockClear()
 })
 

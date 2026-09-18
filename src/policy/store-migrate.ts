@@ -11,7 +11,7 @@ import {
 
 /**
  * The explicit-command counterpart of `createJsonStore`'s lazy import, used
- * by `mcp-journal migrate` (`src/cli/migrate-cmd.ts`) to report on every
+ * by `mcpcut migrate` (`src/cli/migrate-cmd.ts`) to report on every
  * store up front, without requiring an operator to touch each one through
  * its own CLI surface first.
  *

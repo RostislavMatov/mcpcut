@@ -16,7 +16,7 @@ let journalDir: string
 let ownerToken: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-agent-cmd-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-agent-cmd-'))
   ownerToken = (await createAdminStore({ journalDir }).createAdmin('alice', 'owner')).token
 })
 

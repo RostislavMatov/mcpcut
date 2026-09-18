@@ -675,7 +675,7 @@ describe('detachedSpawnOptions', () => {
       '/data',
     )
 
-    expect(options.env).toEqual({ PATH: '/usr/bin', MCP_JOURNAL_DIR: '/data' })
+    expect(options.env).toEqual({ PATH: '/usr/bin', MCPCUT_DATA_DIR: '/data' })
   })
 
   test('binds the daemon to the data dir it was started for, overriding the ambient one', () => {
@@ -684,13 +684,13 @@ describe('detachedSpawnOptions', () => {
     // and the daemon serving another.
     const options = detachedSpawnOptions(
       7,
-      { MCPCUT_CONFIG: '/home/op/.mcpcut/config.json', MCP_JOURNAL_DIR: '/var/lib/elsewhere' },
+      { MCPCUT_CONFIG: '/home/op/.mcpcut/config.json', MCPCUT_DATA_DIR: '/var/lib/elsewhere' },
       '/data',
     )
 
     expect(options.env).toEqual({
       MCPCUT_CONFIG: '/home/op/.mcpcut/config.json',
-      MCP_JOURNAL_DIR: '/data',
+      MCPCUT_DATA_DIR: '/data',
     })
   })
 

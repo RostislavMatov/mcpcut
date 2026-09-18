@@ -20,7 +20,7 @@ let journalDir: string
 let ownerToken: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-agent-grants-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-agent-grants-'))
   ownerToken = (await createAdminStore({ journalDir }).createAdmin('alice', 'owner')).token
   // Every case here grants `github`, and `agent grant` refuses a server the
   // registry does not hold (owner decision S1, 2026-09-03): registered once,

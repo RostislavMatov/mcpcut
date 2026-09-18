@@ -25,7 +25,7 @@ import { readJournalChainRows } from '../support/journal-rows.js'
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-db-test-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-db-test-'))
 })
 
 afterEach(async () => {
@@ -132,7 +132,7 @@ describe('openJournalDbShared: per-process cache', () => {
   })
 
   test('two different paths get two distinct handles', async () => {
-    const otherDir = await mkdtemp(join(tmpdir(), 'mcp-journal-db-test-other-'))
+    const otherDir = await mkdtemp(join(tmpdir(), 'mcpcut-db-test-other-'))
     try {
       const a = await openJournalDbShared(journalDbPathFor(journalDir))
       const b = await openJournalDbShared(journalDbPathFor(otherDir))
@@ -384,7 +384,7 @@ describe('insertRecordRows: hash chain', () => {
     // copy below is a complete, self-contained database.
     handle.db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
 
-    const migratedDir = await mkdtemp(join(tmpdir(), 'mcp-journal-db-test-migrated-'))
+    const migratedDir = await mkdtemp(join(tmpdir(), 'mcpcut-db-test-migrated-'))
     try {
       await copyFile(dbPath, journalDbPathFor(migratedDir))
 

@@ -176,12 +176,12 @@ describe('composeUi: the rule handler writes the resolved policy file with CAS',
   /**
    * Correction 2026-08-26: the edit follows the load order instead of a
    * hard-wired path. With the process cwd on the state dir, the nested
-   * `.mcp-journal/policy.json` is what BOTH this process and `connect` load —
+   * `.mcpcut-project/policy.json` is what BOTH this process and `connect` load —
    * so that is the file the edit lands in, and the flat one is left alone.
    */
   test('the file the process itself loaded is the file edited, not a hard-wired one', async () => {
-    const nestedPath = join(dir, '.mcp-journal', POLICY_FILE_NAME)
-    await mkdir(join(dir, '.mcp-journal'), { recursive: true })
+    const nestedPath = join(dir, '.mcpcut-project', POLICY_FILE_NAME)
+    await mkdir(join(dir, '.mcpcut-project'), { recursive: true })
     await writeFile(nestedPath, '{"version":1}\n', 'utf8')
     const nestedHash = await hashOf(nestedPath)
 
@@ -206,8 +206,8 @@ describe('composeUi: the rule handler writes the resolved policy file with CAS',
   test('a project-level policy with an empty state dir: editable, and the card states connect is uncovered', async () => {
     const stateDir = await tempDir('mcp-ui-wiring-policy-state-')
     const workDir = await tempDir('mcp-ui-wiring-policy-cwd-')
-    const projectPath = join(workDir, '.mcp-journal', POLICY_FILE_NAME)
-    await mkdir(join(workDir, '.mcp-journal'), { recursive: true })
+    const projectPath = join(workDir, '.mcpcut-project', POLICY_FILE_NAME)
+    await mkdir(join(workDir, '.mcpcut-project'), { recursive: true })
     await writeFile(projectPath, '{"version":1}\n', 'utf8')
     await writeFile(
       join(stateDir, INVENTORY_FILE_NAME),

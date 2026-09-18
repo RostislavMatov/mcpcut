@@ -12,118 +12,118 @@ import {
  * print a usage of their own when they refuse, and two hand-written copies of
  * the same table had already drifted apart once (`tests/cli/usage.test.ts`).
  */
-export const USAGE = `Usage: (mcpcut and mcp-journal are the same binary -- either name runs every command below)
-  mcp-journal wrap [--server <name>] [--policy <path>] [--no-policy] [--fail-closed] -- <cmd> [args...]
+export const USAGE = `Usage:
+  mcpcut wrap [--server <name>] [--policy <path>] [--no-policy] [--fail-closed] -- <cmd> [args...]
                                          Run a wrapped MCP server ad hoc, journaling all traffic
-  mcp-journal connect <server> --agent <name> [--policy <path>] [--fail-closed]
+  mcpcut connect <server> --agent <name> [--policy <path>] [--fail-closed]
                                          Connect an agent to a registry server (token via MCP_AGENT_TOKEN)
-  mcp-journal serve [--port N] [--host H] [--policy <path>] [--fail-closed]
+  mcpcut serve [--port N] [--host H] [--policy <path>] [--fail-closed]
                                          Run the HTTP front for remote agents (default 127.0.0.1:8090)
-  mcp-journal ui [--port N] [--host H] [--behind-tls] [--allowed-host <h>]
+  mcpcut ui [--port N] [--host H] [--behind-tls] [--allowed-host <h>]
                                          Run the local admin UI (default 127.0.0.1:8091)
 ${SETUP_SYNOPSIS_LINES.join('\n')}
 ${SERVICE_SYNOPSIS_LINES.join('\n')}
 ${TUI_SYNOPSIS_LINES.join('\n')}
-  mcp-journal admin add <name> --role owner|operator|viewer
+  mcpcut admin add <name> --role owner|operator|viewer
                                          Create a named admin (prints its token once)
-  mcp-journal admin list|remove <name>|rotate <name>|role <name> <role>
+  mcpcut admin list|remove <name>|rotate <name>|role <name> <role>
                                          Inspect or edit admin identities (owner token via
                                          MCP_ADMIN_TOKEN; the FIRST admin of an empty store needs
                                          none, and every change is journaled under its author)
-  mcp-journal admin rotate <name> --recover
+  mcpcut admin rotate <name> --recover
                                          Break glass: mint a fresh token with NO admin token, when
                                          the last owner lost theirs (recorded as unattributed)
-  mcp-journal server add <name> --transport stdio|http ...
+  mcpcut server add <name> --transport stdio|http ...
                                          Register an MCP server (see server add --help);
                                          probes it once right after registration
                                          (MCP_ADMIN_TOKEN, role owner)
-  mcp-journal server list|show <name>|remove <name> [--prune-grants]
+  mcpcut server list|show <name>|remove <name> [--prune-grants]
                                          Inspect or edit the server registry; list and show
                                          print liveness + latency, probing stale servers.
                                          remove needs MCP_ADMIN_TOKEN, role owner.
                                          remove of an UNKNOWN name is refused; --prune-grants
                                          prunes grants left dangling behind such a name
-  mcp-journal server refresh <name>     Force a probe of one server, re-shooting tools/list
+  mcpcut server refresh <name>          Force a probe of one server, re-shooting tools/list
                                          (personal admin token via MCP_ADMIN_TOKEN, role
                                          operator or owner; exit 0 alive / 1 otherwise)
-  mcp-journal vault init|set <name>|list|remove <name>|rekey
+  mcpcut vault init|set <name>|list|remove <name>|rekey
                                          Manage the encrypted secrets vault (set reads stdin)
-  mcp-journal agent create <name>       Create an agent identity (prints its token once;
+  mcpcut agent create <name>            Create an agent identity (prints its token once;
                                          owner token via MCP_ADMIN_TOKEN, like every agent change)
-  mcp-journal agent grant <agent> <server> [--tools a,b,prefix*]
+  mcpcut agent grant <agent> <server> [--tools a,b,prefix*]
                                          Grant a server (optionally specific tools) to an agent
-  mcp-journal agent ungrant <agent> <server> | revoke <name> | list
+  mcpcut agent ungrant <agent> <server> | revoke <name> | list
                                          Edit or inspect agent identities and grants (create,
                                          grant, ungrant and revoke need an owner token in
                                          MCP_ADMIN_TOKEN; list needs none)
-  mcp-journal group create <name>|remove <name>|list|show <name>
+  mcpcut group create <name>|remove <name>|list|show <name>
                                          Manage server groups: a group carries per-server grants
                                          and the agents that inherit them (owner token via
                                          MCP_ADMIN_TOKEN; list and show need none)
-  mcp-journal group grant <group> <server> --tools a,b,prefix*|* [--resources ...|*] [--prompts ...|*]
+  mcpcut group grant <group> <server> --tools a,b,prefix*|* [--resources ...|*] [--prompts ...|*]
                                          Grant a server to a group; --tools is REQUIRED here
                                          (it lands on every member at once), resources/prompts
                                          stay denied unless named; ungrant removes it
-  mcp-journal group ungrant <group> <server>
+  mcpcut group ungrant <group> <server>
                                          Remove the group's grant for a server
-  mcp-journal group join <group> <agent> | leave <group> <agent>
+  mcpcut group join <group> <agent> | leave <group> <agent>
                                          Add or remove a member; a personal grant for the same
                                          server overrides the group's
-  mcp-journal sessions                  List journaled sessions
-  mcp-journal show <sessionId> [--method X] [--direction Y] [--kind Z] [--json]
+  mcpcut sessions                       List journaled sessions
+  mcpcut show <sessionId> [--method X] [--direction Y] [--kind Z] [--json]
                                          Print one session's journal records
-  mcp-journal policy validate [path]    Validate the resolved (or given) policy file
-  mcp-journal policy show [--server <name>] [--json] [--policy <path>]
-                          [--entry-point <name>]
+  mcpcut policy validate [path]         Validate the resolved (or given) policy file
+  mcpcut policy show [--server <name>] [--json] [--policy <path>]
+                     [--entry-point <name>]
                                          Print the effective policy (defaults applied);
                                          --entry-point resolves the source the way that
                                          entry point does
-  mcp-journal policy set <server> <tool> allow|require-approval|deny|clear [--json]
+  mcpcut policy set <server> <tool> allow|require-approval|deny|clear [--json]
                                          Write (or clear) one exact per-tool rule in
                                          <journal dir>/policy.json (owner token via
                                          MCP_ADMIN_TOKEN); running proxies reload rules
-  mcp-journal quarantine list [--server <name>] [--json]
+  mcpcut quarantine list [--server <name>] [--json]
                                          List quarantined tools
-  mcp-journal quarantine show <server> <tool>
+  mcpcut quarantine show <server> <tool>
                                          Show the structural inputSchema diff of a quarantined tool
-  mcp-journal quarantine approve <server> <tool> | --all --server <name>
+  mcpcut quarantine approve <server> <tool> | --all --server <name>
                                          Approve quarantined tool(s) (personal admin token via
                                          MCP_ADMIN_TOKEN, role operator or owner; the release
                                          records which admin made it)
-  mcp-journal quarantine reject <server> <tool>
+  mcpcut quarantine reject <server> <tool>
                                          Reject (discard) a quarantined tool (same token, same
                                          record)
-  mcp-journal approvals list [--json]   List pending approval requests (no token needed)
-  mcp-journal approvals approve <id> [--reason TEXT]
+  mcpcut approvals list [--json]        List pending approval requests (no token needed)
+  mcpcut approvals approve <id> [--reason TEXT]
                                          Approve a pending request (personal admin token via
                                          MCP_ADMIN_TOKEN, role operator or owner; the
                                          resolution records which admin decided it)
-  mcp-journal approvals deny <id> [--reason TEXT]
+  mcpcut approvals deny <id> [--reason TEXT]
                                          Deny a pending request (same token, same record)
-  mcp-journal migrate                    Import legacy *.json state into state.db
-  mcp-journal export [--session <id>]   Export journal records as JSONL to stdout
-  mcp-journal export --report [--session <id>] [--out <dir>]
+  mcpcut migrate                         Import legacy *.json state into state.db
+  mcpcut export [--session <id>]        Export journal records as JSONL to stdout
+  mcpcut export --report [--session <id>] [--out <dir>]
                                          Write an evidentiary report directory (report.json,
                                          records.jsonl, summary.md, signature.json if a signing
-                                         key exists); --out defaults to ./mcp-journal-report
-  mcp-journal backup <destDir>          Back up state.db and journal.db into <destDir>
-  mcp-journal verify [--session <id>] [--sign]
+                                         key exists); --out defaults to ./mcpcut-report
+  mcpcut backup <destDir>               Back up state.db and journal.db into <destDir>
+  mcpcut verify [--session <id>] [--sign]
                                          Recompute the record hash chain and report where it
                                          stays consistent (exit 0 ok, 1 could not run, 2 broken);
                                          --sign additionally signs the current chain head
-  mcp-journal verify --report <dir> [--pub <path>] [--require-signature]
+  mcpcut verify --report <dir> [--pub <path>] [--require-signature]
                                          Offline-check an exported report directory (no database
                                          opened); --pub defaults to <journal dir>/signing.pub;
                                          --require-signature fails an unsigned or unattributable
                                          export (same exit codes: 0 ok, 1 could not run, 2 failed)
-  mcp-journal prune --older-than <dur> [--yes]
+  mcpcut prune --older-than <dur> [--yes]
                                          Delete journal records older than <dur> (e.g. 90d, 36h) and
                                          record a retention marker the chain continues from; prints
                                          what it would delete unless --yes is given. No automatic
                                          retention exists -- this is the only thing that deletes.
                                          --yes needs an admin token via MCP_ADMIN_TOKEN (role
                                          owner); the dry run does not
-  mcp-journal keygen                     Generate this installation's Ed25519 signing key
+  mcpcut keygen                          Generate this installation's Ed25519 signing key
                                          (prints the public key once; needed for "verify --sign")
-  mcp-journal --help                    Show this message
+  mcpcut --help                         Show this message
 `

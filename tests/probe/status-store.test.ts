@@ -29,7 +29,7 @@ const REGISTRATION: ProbeInitiator = { trigger: 'registration' }
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-status-store-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-status-store-'))
 })
 
 afterEach(async () => {

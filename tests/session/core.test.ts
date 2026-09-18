@@ -38,7 +38,7 @@ let queue: ApprovalQueue
 let errors: unknown[]
 
 beforeEach(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), 'mcp-journal-session-core-test-'))
+  tempDir = await mkdtemp(join(tmpdir(), 'mcpcut-session-core-test-'))
   approvalsDir = join(tempDir, 'approvals')
   queue = createApprovalQueue({ baseDir: approvalsDir })
   errors = []

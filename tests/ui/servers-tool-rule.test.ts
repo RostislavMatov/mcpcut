@@ -23,7 +23,7 @@ import type { UiRequestContext, UiResult } from '../../src/ui/routes.js'
  */
 
 const FLAT = '/state/policy.json'
-const NESTED = '/state/.mcp-journal/policy.json'
+const NESTED = '/state/.mcpcut-project/policy.json'
 const OWNER = { adminName: 'alice', role: 'owner' as const, csrfToken: 'csrf' }
 const OPERATOR = { adminName: 'bob', role: 'operator' as const, csrfToken: 'csrf' }
 

@@ -13,7 +13,7 @@ import { requestOf } from '../../src/tui/update-form.js'
 import { readJournalRecords } from '../support/journal-rows.js'
 
 /**
- * `mcp-journal admin add|list|remove|rotate|role` (M4 Task 16): the CLI half of
+ * `mcpcut admin add|list|remove|rotate|role` (M4 Task 16): the CLI half of
  * named admin identities.
  *
  * The load-bearing guarantee these tests exist for is the one-time token: a
@@ -28,7 +28,7 @@ import { readJournalRecords } from '../support/journal-rows.js'
  * token yet) and `admin rotate --recover` (the way back in when the last
  * owner lost theirs). Both are recorded with an unattributed actor.
  *
- * Everything runs against a temp journal dir — the real `~/.mcp-journal` is
+ * Everything runs against a temp journal dir — the real `~/.mcpcut/data` is
  * never touched.
  */
 
@@ -40,7 +40,7 @@ let journalDir: string
 let ownerToken: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-admin-cmd-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-admin-cmd-'))
   ownerToken = ''
 })
 

@@ -8,10 +8,10 @@ import { INVENTORY_FILE_NAME } from '../../src/policy/inventory.js'
 /**
  * Shared harness for tests that drive the COMPOSED admin UI over a real socket
  * (M4 Task 18). It boots the production entry point — `runUi()`, the same
- * function `mcp-journal ui` runs — against a caller-owned temp journal
+ * function `mcpcut ui` runs — against a caller-owned temp journal
  * directory, so every store, the approvals queue, the tool inventory and the
  * journal are the real ones, wired the real way, and nothing touches
- * `~/.mcp-journal`.
+ * `~/.mcpcut/data`.
  *
  * Three properties this harness exists to provide:
  *

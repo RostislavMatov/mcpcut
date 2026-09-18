@@ -111,7 +111,7 @@ export function vaultRefused(status: string): string {
  * The refusal for a run whose environment and whose config disagree about the
  * data directory (TS-H3 / SEC-M5).
  *
- * `setup` can neither honour `MCP_JOURNAL_DIR` nor ignore it. Honouring it
+ * `setup` can neither honour `MCPCUT_DATA_DIR` nor ignore it. Honouring it
  * would write a `dataDir` the operator did not ask for; ignoring it would
  * prepare one directory while every later command — this CLI, the daemons,
  * the `ui` that mints the first owner — uses the other. So it says so and

@@ -56,7 +56,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 let dir: string
 
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), 'mcp-journal-vault-files-'))
+  dir = await mkdtemp(join(tmpdir(), 'mcpcut-vault-files-'))
   events.length = 0
 })
 

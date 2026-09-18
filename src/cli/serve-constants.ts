@@ -1,5 +1,5 @@
 /**
- * Constants for `mcp-journal serve` (M3 Task 13): CLI defaults, the session
+ * Constants for `mcpcut serve` (M3 Task 13): CLI defaults, the session
  * factory's refusal codes, and the stateless header-mismatch error body.
  *
  * Per-area constants rule (`src/policy/constants.ts` precedent): these are
@@ -40,8 +40,8 @@ export const DEFAULT_SERVE_HOST = '127.0.0.1'
 export const MAX_TCP_PORT = 65_535
 
 export const SERVE_USAGE = `Usage:
-  mcp-journal serve [--port ${DEFAULT_SERVE_PORT}] [--host ${DEFAULT_SERVE_HOST}] [--policy <path>] [--fail-closed]
-                    [--allowed-origin <origin>]... [--allowed-host <host[:port]>]...
+  mcpcut serve [--port ${DEFAULT_SERVE_PORT}] [--host ${DEFAULT_SERVE_HOST}] [--policy <path>] [--fail-closed]
+               [--allowed-origin <origin>]... [--allowed-host <host[:port]>]...
                                          Run the control plane's HTTP front for HTTP agents
 `
 

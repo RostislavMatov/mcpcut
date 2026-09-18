@@ -25,7 +25,7 @@ let store: GroupsStore
 const FIXED_NOW = new Date('2026-08-31T12:00:00.000Z')
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-groups-store-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-groups-store-'))
   store = createGroupsStore({ journalDir, clock: () => FIXED_NOW })
 })
 

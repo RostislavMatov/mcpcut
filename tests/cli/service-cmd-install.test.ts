@@ -42,7 +42,7 @@ function fakeIo(): {
 /**
  * Which data directory the four verbs act on (TS-H3 / SEC-M5).
  *
- * Everything else in the plane ranks `MCP_JOURNAL_DIR` above the config file;
+ * Everything else in the plane ranks `MCPCUT_DATA_DIR` above the config file;
  * these commands used to read `config.dataDir` alone. An operator with the
  * variable exported would then have `setup` prepare one directory while the
  * daemons served another — and the `ui` that came up in the second one would
@@ -68,7 +68,7 @@ describe('the data directory the services are managed in', () => {
     await writeFile(join(dir, RUN_DIR_NAME, 'ui.log'), `${line}\n`, 'utf8')
   }
 
-  test('MCP_JOURNAL_DIR outranks the config, as it does everywhere else', async () => {
+  test('MCPCUT_DATA_DIR outranks the config, as it does everywhere else', async () => {
     await writeUiLog(configDir, 'from the config directory')
     await writeUiLog(envDir, 'from the environment directory')
     const io = fakeIo()

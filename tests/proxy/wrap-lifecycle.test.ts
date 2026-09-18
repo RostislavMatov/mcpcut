@@ -46,7 +46,7 @@ describe('runWrap lifecycle', () => {
   let journalDir: string
 
   beforeEach(async () => {
-    journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-lifecycle-test-'))
+    journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-lifecycle-test-'))
   })
 
   afterEach(async () => {

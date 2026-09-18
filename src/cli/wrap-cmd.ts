@@ -41,7 +41,7 @@ export interface WrapCommandOptions {
 const DEFAULT_IO: WrapCliIo = { stderr: process.stderr }
 
 const WRAP_USAGE = `Usage:
-  mcp-journal wrap [--server <name>] [--policy <path>] [--no-policy] [--fail-closed] -- <cmd> [args...]
+  mcpcut wrap [--server <name>] [--policy <path>] [--no-policy] [--fail-closed] -- <cmd> [args...]
                                          Run a wrapped MCP server, journaling all traffic
 `
 

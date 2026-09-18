@@ -32,7 +32,7 @@ import { createServeHooks } from './serve-hooks.js'
 import { createServeSessionFactory } from './serve-runtime.js'
 
 /**
- * `mcp-journal serve` (M3 Task 13): the control plane's HTTP front for HTTP
+ * `mcpcut serve` (M3 Task 13): the control plane's HTTP front for HTTP
  * agents — many sessions in one process, each one a full `session/core.ts`
  * session over an upstream taken from the registry (stdio spawn per session,
  * or an HTTP upstream client).

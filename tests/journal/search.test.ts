@@ -22,7 +22,7 @@ import { createJournalSink } from '../../src/journal/sink.js'
 let tempDir: string
 
 beforeEach(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), 'mcp-journal-search-test-'))
+  tempDir = await mkdtemp(join(tmpdir(), 'mcpcut-search-test-'))
 })
 
 afterEach(async () => {
@@ -112,7 +112,7 @@ describe('searchSession — the database front door', () => {
 
   /**
    * The cutover: a legacy `*.jsonl` is no longer a carrier. It stays on disk
-   * as a cold backup and is readable again only after `mcp-journal migrate`.
+   * as a cold backup and is readable again only after `mcpcut migrate`.
    */
   test('returns an empty page for an un-imported legacy session file', async () => {
     await writeRecords('legacy', [record({ rpcId: 1 }), record({ rpcId: 2 })])

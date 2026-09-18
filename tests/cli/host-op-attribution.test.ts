@@ -31,7 +31,7 @@ import { readJournalRecords } from '../support/journal-rows.js'
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-host-op-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-host-op-'))
 })
 
 afterEach(async () => {

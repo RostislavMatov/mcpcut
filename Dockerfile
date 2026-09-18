@@ -38,12 +38,13 @@ COPY docker/entrypoint.sh ./docker/entrypoint.sh
 # places it: on the first start of `ui` or `serve` the entrypoint writes
 # `~/.mcpcut/config.json` from the `MCPCUT_*` environment (`setup --yes
 # --supervisor external`), and from then on the config is what src/config.ts
-# reads. Both directories are created here with the runtime user's ownership
-# and the owner-only mode the code expects (JOURNAL_DIR_MODE 0o700), so Docker
-# seeds a fresh named volume mounted on either of them with both.
-RUN mkdir -p /home/node/.mcp-journal /home/node/.mcpcut \
+# reads. The install directory and the data directory inside it are created
+# here with the runtime user's ownership and the owner-only mode the code
+# expects (JOURNAL_DIR_MODE 0o700), so Docker seeds a fresh named volume
+# mounted on `~/.mcpcut` with both.
+RUN mkdir -p /home/node/.mcpcut/data \
  && chown -R node:node /home/node \
- && chmod 700 /home/node/.mcp-journal /home/node/.mcpcut \
+ && chmod 700 /home/node/.mcpcut /home/node/.mcpcut/data \
  && chmod +x /app/docker/entrypoint.sh /app/dist/cli.js \
  && ln -s /app/dist/cli.js /usr/local/bin/mcpcut
 

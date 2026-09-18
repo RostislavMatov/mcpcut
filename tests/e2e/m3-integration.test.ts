@@ -66,7 +66,7 @@ let tempDir: string
 let plane: Plane
 
 beforeEach(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), 'mcp-journal-e2e-'))
+  tempDir = await mkdtemp(join(tmpdir(), 'mcpcut-e2e-'))
   plane = createPlane(tempDir)
 })
 

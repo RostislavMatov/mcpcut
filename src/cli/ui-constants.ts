@@ -3,7 +3,7 @@ import { DEFAULT_UI_HOST, DEFAULT_UI_PORT } from '../ui/constants.js'
 
 /**
  * Constants for the two CLI entry points into the admin surface —
- * `mcp-journal ui` (`ui-cmd.ts`) and `mcp-journal admin ...` (`admin-cmd.ts`).
+ * `mcpcut ui` (`ui-cmd.ts`) and `mcpcut admin ...` (`admin-cmd.ts`).
  *
  * Per the per-area convention (`serve-constants.ts` precedent) these live with
  * the commands, not in `src/config.ts`. The bind defaults are NOT redeclared
@@ -56,9 +56,9 @@ export const TOKEN_STDOUT_REDIRECT_WARNING =
   "Do not redirect this command's stdout: doing so would persist the token above to disk.\n"
 
 export const UI_USAGE = `Usage:
-  mcp-journal ui [--port ${DEFAULT_UI_PORT}] [--host ${DEFAULT_UI_HOST}] [--behind-tls]
-                 [--allowed-host <host[:port]>]... [--allowed-origin <origin>]...
-                 [--trusted-proxy-header <name>]
+  mcpcut ui [--port ${DEFAULT_UI_PORT}] [--host ${DEFAULT_UI_HOST}] [--behind-tls]
+            [--allowed-host <host[:port]>]... [--allowed-origin <origin>]...
+            [--trusted-proxy-header <name>]
                                          Run the local admin UI (approvals queue, quarantine,
                                          servers, agents, journal). Bind loopback and terminate
                                          TLS in front of it; --behind-tls marks cookies Secure.
@@ -108,6 +108,6 @@ export function bootstrapNotice(host: string, port: number, name: string, tokenP
     `[ui] its one-time token is in ${tokenPath} (mode 0600); ` +
     `sign in at http://${host}:${port}/login as "${name}"\n` +
     `[ui] the file is deleted after the first sign-in. ` +
-    `Rotate the token later with: mcp-journal admin rotate ${name}\n`
+    `Rotate the token later with: mcpcut admin rotate ${name}\n`
   )
 }

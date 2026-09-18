@@ -51,7 +51,7 @@ function pemBodyLine(pem: string): string {
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcp-journal-signing-key-sweep-test-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-signing-key-sweep-test-'))
 })
 
 afterEach(async () => {
@@ -65,7 +65,7 @@ describe('journal redaction sweep: the signing private key never reaches journal
     // the point is that this REAL key material, however it got there, must
     // never survive the pipeline, not that this specific installation's key
     // is somehow special-cased.
-    const keyDir = await mkdtemp(join(tmpdir(), 'mcp-journal-signing-key-sweep-keydir-'))
+    const keyDir = await mkdtemp(join(tmpdir(), 'mcpcut-signing-key-sweep-keydir-'))
     try {
       const generated = await generateAndWriteSigningKeyPair(keyDir)
       const privateKey = await loadSigningPrivateKey(keyDir)

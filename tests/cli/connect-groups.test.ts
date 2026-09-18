@@ -38,7 +38,7 @@ let io: CliCapture
 let stdio: ConnectStdio
 
 beforeEach(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), 'mcp-journal-connect-groups-'))
+  tempDir = await mkdtemp(join(tmpdir(), 'mcpcut-connect-groups-'))
   io = createCliCapture()
   stdio = createConnectStdio()
 })

@@ -80,7 +80,7 @@ function markImported(handle: SqliteHandle, sessionId: string): void {
 }
 
 beforeEach(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), 'mcp-journal-reader-test-'))
+  tempDir = await mkdtemp(join(tmpdir(), 'mcpcut-reader-test-'))
 })
 
 afterEach(async () => {
@@ -134,7 +134,7 @@ describe('listSessions', () => {
   /**
    * The cutover, stated as a behavior: an un-imported `*.jsonl` is not a
    * carrier any more. It stays on disk as a cold backup and becomes visible
-   * again only through `mcp-journal migrate`.
+   * again only through `mcpcut migrate`.
    */
   test('does not list an un-imported legacy *.jsonl session', async () => {
     await writeDbSession('imported', [record({ ts: '2026-08-04T00:00:00.000Z' })])

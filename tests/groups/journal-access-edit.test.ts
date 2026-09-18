@@ -20,7 +20,7 @@ import { readSessionWithStats } from '../../src/journal/reader.js'
 let dir = ''
 
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), 'mcp-journal-access-edit-'))
+  dir = await mkdtemp(join(tmpdir(), 'mcpcut-access-edit-'))
 })
 
 afterEach(async () => {

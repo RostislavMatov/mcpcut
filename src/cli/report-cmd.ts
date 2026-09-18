@@ -18,7 +18,7 @@ import type { ExportCliIo } from './export-cmd.js'
 import { prepareReportOutDir, type PreparedOutDir } from './report-out-dir.js'
 
 /**
- * `mcp-journal export --report` (M5 wave 5, task 5.1, part B): the
+ * `mcpcut export --report` (M5 wave 5, task 5.1, part B): the
  * filesystem half of the evidentiary report. `journal/report.ts` owns what
  * the format IS (streamed to a `ReportRecordSink`, digested as it goes);
  * this module owns argv-adjacent concerns the format core is deliberately
@@ -50,7 +50,7 @@ const EXIT_OK = 0
 const EXIT_ERROR = 1
 
 /** Default `--out` target: relative to the process CWD, not `JOURNAL_DIR` -- a report is a deliverable an operator hands to someone else, not journal state. */
-const DEFAULT_REPORT_DIR_NAME = 'mcp-journal-report'
+const DEFAULT_REPORT_DIR_NAME = 'mcpcut-report'
 
 export interface ExportReportCommandOptions {
   readonly journalDir: string
@@ -255,7 +255,7 @@ async function signIfKeyPresent(
   if (!keyLookup.present) {
     io.stderr.write(
       'No signing key present; writing an UNSIGNED report. ' +
-        'Generate one first with: mcp-journal keygen\n',
+        'Generate one first with: mcpcut keygen\n',
     )
     return { manifest, signature: null }
   }
@@ -326,7 +326,7 @@ function chainWarningLines(manifest: ReportManifest): readonly string[] {
     `!! WARNING: the hash chain did NOT verify at export time -- a break ${where}.\n`,
     '!! This report is still a faithful export of what the journal holds, and report.json\n',
     '!! records the break, but the records are NOT provably unbroken. Investigate before\n',
-    '!! handing this to an auditor: mcp-journal verify\n',
+    '!! handing this to an auditor: mcpcut verify\n',
     '\n',
   ]
 }
