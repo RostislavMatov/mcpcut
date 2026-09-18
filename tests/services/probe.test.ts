@@ -24,6 +24,27 @@ const FAST_TIMEOUT_MS = 500
 /** One past the last TCP port: the socket layer refuses it before dialling. */
 const OUT_OF_RANGE_PORT = 70_000
 
+/**
+ * How long a leak check waits for the count to come back down. The probe owns
+ * only its own end of the connection: the server's accepted socket closes a
+ * tick or two later, and under a loaded suite that lag once failed the check
+ * that this file is actually about. Waiting for the count to settle keeps the
+ * assertion about a leak, not about scheduling.
+ */
+const SETTLE_TIMEOUT_MS = 2_000
+const SETTLE_POLL_MS = 10
+
+/** Fails unless the active-resource count drops back to `before` within the deadline. */
+async function expectResourcesSettled(before: number): Promise<void> {
+  const deadline = Date.now() + SETTLE_TIMEOUT_MS
+  let after = process.getActiveResourcesInfo().length
+  while (after > before && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, SETTLE_POLL_MS))
+    after = process.getActiveResourcesInfo().length
+  }
+  expect(after).toBeLessThanOrEqual(before)
+}
+
 const cleanups: Array<() => Promise<void>> = []
 
 afterEach(async () => {
@@ -200,7 +221,7 @@ describe('probeUi through the UI Host screen (Q32)', () => {
 
     expect(await probeUi('127.0.0.1', port, PROBE_TIMEOUT_MS)).toBe(true)
 
-    expect(process.getActiveResourcesInfo().length).toBeLessThanOrEqual(before)
+    await expectResourcesSettled(before)
   })
 
   test('is false, not a rejection, when the host name does not resolve', async () => {
@@ -218,7 +239,7 @@ describe('probeUi through the UI Host screen (Q32)', () => {
 
     await expect(probeUi('127.0.0.1', port, FAST_TIMEOUT_MS)).resolves.toBe(false)
 
-    expect(process.getActiveResourcesInfo().length).toBeLessThanOrEqual(before)
+    await expectResourcesSettled(before)
   })
 })
 
@@ -240,7 +261,7 @@ describe('probeServe', () => {
 
     await expect(probeServe('127.0.0.1', port, FAST_TIMEOUT_MS)).resolves.toBe(false)
 
-    expect(process.getActiveResourcesInfo().length).toBeLessThanOrEqual(before)
+    await expectResourcesSettled(before)
   })
 
   test('leaves no socket behind after a successful probe', async () => {
@@ -251,7 +272,7 @@ describe('probeServe', () => {
 
     // The probe must destroy its socket and clear its timer, or `mcpcut
     // status` in a poll loop would leak a handle per call.
-    expect(process.getActiveResourcesInfo().length).toBeLessThanOrEqual(before)
+    await expectResourcesSettled(before)
   })
 })
 
