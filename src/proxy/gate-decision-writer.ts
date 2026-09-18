@@ -16,10 +16,18 @@ import type { GateSink } from './gate-helpers.js'
 /**
  * The provenance pair as of one instant: the rules a call was DECIDED under.
  * Frozen, so it cannot drift while a deferred call waits for an operator.
+ *
+ * `agentName` rides along: it is not a fingerprint and does not move during a
+ * session, but it is evidence of the same kind -- WHO the rules were applied
+ * to -- and it has to reach every record for the same reason `policyHash`
+ * does. Before the 2026-09-18 user-journey smoke it was stamped only where a
+ * pending approval was assembled, so an agent's allowed and denied calls named
+ * nobody.
  */
 export interface ProvenanceSnapshot {
   readonly policyHash: string
   readonly grantsHash?: string
+  readonly agentName?: string
 }
 
 /**
@@ -52,6 +60,12 @@ export interface DecisionProvenance {
  */
 export interface GrantsFingerprintSource {
   readonly grantsHash: () => string
+  /**
+   * Journal-facing identity of the agent the scope belongs to. Optional only
+   * so a double that is about fingerprints alone stays one function; the
+   * production scope (`GateAgentScope`) always carries it.
+   */
+  readonly agentName?: string
 }
 
 /**
@@ -90,6 +104,7 @@ export function createDecisionProvenance(
       Object.freeze({
         policyHash: currentPolicyHash(),
         ...(agentScope !== undefined ? { grantsHash: agentScope.grantsHash() } : {}),
+        ...(agentScope?.agentName !== undefined ? { agentName: agentScope.agentName } : {}),
       }),
   })
 }
@@ -124,15 +139,22 @@ export interface DecisionWriterDeps {
  * would still let a runtime-carried one survive when the snapshot has none —
  * so the key is dropped explicitly first. That is what makes `grantsHash` as
  * unforgeable by a draft as `policyHash` already is.
+ *
+ * `agentName` gets the same treatment, for the same reason: it is dropped
+ * from the draft and taken from `captured` alone, so a record names an agent
+ * iff the session's scope does. The pending-approval draft still carries one
+ * (the same name, from the same scope); that it agrees is a convention across
+ * two files, and evidence should not rest on a convention.
  */
 function stampProvenance(draft: DecisionInfoDraft, captured: ProvenanceSnapshot): DecisionInfo {
-  const { grantsHash: _draftGrantsHash, ...withoutGrantsHash } = draft as DecisionInfoDraft & {
+  const { grantsHash: _draftGrantsHash, agentName: _draftAgentName, ...unstamped } = draft as DecisionInfoDraft & {
     readonly grantsHash?: unknown
   }
   return {
-    ...withoutGrantsHash,
+    ...unstamped,
     policyHash: captured.policyHash,
     ...(captured.grantsHash !== undefined ? { grantsHash: captured.grantsHash } : {}),
+    ...(captured.agentName !== undefined ? { agentName: captured.agentName } : {}),
   }
 }
 
