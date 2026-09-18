@@ -125,6 +125,62 @@ const ADD_GITHUB = [
   '--env', 'GITHUB_PERSONAL_ACCESS_TOKEN=vault:github-pat',
 ]
 
+/**
+ * `server add` attribution (user-journey smoke 2026-09-18, UX-9).
+ *
+ * Registering a server is the command that decides which process the plane may
+ * launch, and — since O8 — it EXECUTES that process once through the
+ * registration probe. It left no journal record at all, so a registry an
+ * auditor reads could not answer "who put this here", while its mirror image
+ * `server remove` had answered "who took it away" since M5.5 п.2. No role gate
+ * is added here (that is the owner's call): the attribution is best-effort,
+ * exactly as `server remove`'s is.
+ */
+describe('server add: who registered it', () => {
+  test('a valid token attributes the record and the audit line to that admin', async () => {
+    const env = await adminEnv('alice', 'owner')
+    const io = fakeIo()
+
+    const exitCode = await runServerAdd(ADD_GITHUB, io, opts({ env }))
+
+    expect(exitCode).toBe(0)
+    expect(io.err()).toContain('[audit] server add by alice (owner): "github"')
+    const records = await accessEditRecords()
+    expect(records).toHaveLength(1)
+    expect(records[0]?.payload).toEqual({
+      actor: { adminName: 'alice', role: 'owner', via: 'cli' },
+      action: 'server.add',
+      server: 'github',
+    })
+  })
+
+  test('without a token the record is unattributed and stderr says so, in the words `remove` uses', async () => {
+    const io = fakeIo()
+
+    const exitCode = await runServerAdd(ADD_GITHUB, io, opts())
+
+    expect(exitCode).toBe(0)
+    expect(io.err()).toContain('not attributed')
+    expect(io.err()).toContain('MCP_ADMIN_TOKEN')
+    expect(io.err()).toContain('[audit] server add by unattributed: "github"')
+    const records = await accessEditRecords()
+    expect(records[0]?.payload).toMatchObject({
+      actor: { adminName: null, role: null, via: 'cli' },
+      action: 'server.add',
+      server: 'github',
+    })
+  })
+
+  test('a registration that was REFUSED leaves no record: nothing changed', async () => {
+    const io = fakeIo()
+
+    const exitCode = await runServerAdd(['bad name', '--transport', 'stdio', '--command', 'node'], io, opts())
+
+    expect(exitCode).toBe(1)
+    await expect(accessEditRecords()).resolves.toEqual([])
+  })
+})
+
 describe('server add', () => {
   test('adds a stdio server with args and env; record lands in registry.json', async () => {
     const io = fakeIo()

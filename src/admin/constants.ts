@@ -82,3 +82,18 @@ export function isAdminRole(value: unknown): value is AdminRole {
 
 /** Max admins in one store file (same DoS-bounding rationale as MAX_AGENTS). */
 export const MAX_ADMINS = 200
+
+/**
+ * What a person is told when their token resolves to no admin — on EVERY
+ * surface that asks for one: the console's sign-in screen and, since the
+ * user-journey smoke (2026-09-18, UX-1), the web `/login` page, which until
+ * then answered a browser with a bare `{"error":"unauthorized"}`.
+ *
+ * Deliberately the same sentence for a token that never existed, one that was
+ * rotated and one whose admin was removed: naming which would turn the screen
+ * into an oracle for no gain to the person reading it. It lives here, beside
+ * the admin identities, because two surfaces saying this differently is how one
+ * of them ends up saying more than it should.
+ */
+export const UNKNOWN_TOKEN_NOTICE =
+  'Token not recognised: it may have been rotated, or the admin removed.'

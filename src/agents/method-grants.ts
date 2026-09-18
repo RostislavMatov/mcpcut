@@ -75,12 +75,23 @@ export const AGENT_METHOD_LIST_FILTERED_RULE_PREFIX = 'agent: grant-filtered'
 export const AGENT_METHOD_MALFORMED_RULE_PREFIX = 'agent: malformed method params'
 
 /**
+ * WHY a frame fell back to the fail-closed denial. Two facts, not one — and
+ * telling them apart is the whole of UX-4 (user-journey smoke 2026-09-18):
+ *
+ *  - `no-grant`: the method is in the vocabulary below, and granting
+ *    `resources`/`prompts` on this server would admit it. A person can fix it.
+ *  - `outside-vocabulary`: no grant can describe the method at all, so it is
+ *    denied for every agent however it is granted. Nobody can fix it here.
+ */
+export type MethodFallbackReason = 'no-grant' | 'outside-vocabulary'
+
+/**
  * Outcome of deciding one grant-managed frame. `fallback` instructs the
- * router to produce the EXACT M3 non-grantable denial (same rule, same
- * decision record) — the mechanism behind "default = M3 byte for byte".
+ * router to produce the fail-closed denial, and its `reason` picks which of
+ * the two above is recorded and reported.
  */
 export type MethodGrantOutcome =
-  | { readonly action: 'fallback' }
+  | { readonly action: 'fallback'; readonly reason: MethodFallbackReason }
   | {
       readonly action: 'deny'
       readonly rule: string
@@ -117,23 +128,39 @@ const GRANT_MANAGED_METHODS: Readonly<Record<string, MethodSpec>> = {
   'completion/complete': { toolClass: 'read', check: 'completion' },
 }
 
-const FALLBACK: MethodGrantOutcome = Object.freeze({ action: 'fallback' as const })
+/** "Grant it and this works." */
+const FALLBACK: MethodGrantOutcome = Object.freeze({
+  action: 'fallback' as const,
+  reason: 'no-grant' as const,
+})
+
+/** "No grant reaches this method, on any server, for any agent." */
+const OUTSIDE_VOCABULARY: MethodGrantOutcome = Object.freeze({
+  action: 'fallback' as const,
+  reason: 'outside-vocabulary' as const,
+})
 
 /**
  * Decides one grant-managed frame from its method and raw JSON line. Pure:
  * no I/O, never throws (unreadable params on a checked method deny with the
- * malformed rule; anything not enumerated falls back to the M3 denial).
+ * malformed rule; anything not enumerated falls back to the fail-closed
+ * denial).
+ *
+ * The vocabulary is checked BEFORE the grants: whether a method can be granted
+ * at all is a property of the method, not of who is asking, and an agent
+ * carrying no method grants must still be told the honest reason for
+ * `resources/templates/list`.
  */
 export function decideMethodGrant(
   method: string,
   raw: string,
   grants: AgentMethodGrants | undefined,
 ): MethodGrantOutcome {
-  if (grants === undefined) return FALLBACK
   const spec = Object.hasOwn(GRANT_MANAGED_METHODS, method)
     ? GRANT_MANAGED_METHODS[method]
     : undefined
-  if (spec === undefined) return FALLBACK
+  if (spec === undefined) return OUTSIDE_VOCABULARY
+  if (grants === undefined) return FALLBACK
 
   switch (spec.check) {
     case 'resource-uri':

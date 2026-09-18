@@ -207,7 +207,38 @@ export const AGENT_NON_GRANTABLE_METHODS: readonly string[] = [
   'completion/complete',
 ]
 
-/** Prefix of the `rule` recorded for a method denied by `AGENT_NON_GRANTABLE_METHODS`. */
+/**
+ * Prefix of the `rule` recorded for a method that no grant can describe at all:
+ * inside one of the families above, but outside the enumerated vocabulary in
+ * `src/agents/method-grants.ts` (e.g. `resources/templates/list`). Denied for
+ * every agent whatever it was granted — a method a later spec revision adds
+ * must be refused by default, never admitted by an existing wildcard.
+ *
+ * It is deliberately a PREFIX OF the pre-2026-09 text (below), so a reader that
+ * matches this constant with `startsWith` recognizes records written under
+ * either name.
+ */
+export const AGENT_METHOD_UNGRANTABLE_RULE_PREFIX = 'agent: method not grantable'
+
+/**
+ * Prefix of the `rule` recorded when a method IS in the grant vocabulary but
+ * this agent's grant for this server does not reach it — the agent simply has
+ * no `resources`/`prompts` grant there.
+ *
+ * Split from the constant above by the user-journey smoke (2026-09-18, UX-4):
+ * one text covered both cases and said `not grantable in M3`, which stopped
+ * being true in M4 when `agent grant --resources/--prompts` arrived. An
+ * operator reading the journal could not tell "nobody may ever call this" from
+ * "grant it and they may".
+ */
+export const AGENT_METHOD_NOT_GRANTED_RULE_PREFIX = 'agent: no resources/prompts grant'
+
+/**
+ * The pre-2026-09 `rule` prefix, which covered BOTH cases above. Nothing writes
+ * it any more; it is kept because journals, exported reports and chain
+ * verifications of older installations still carry it, and anything reading
+ * them back must still recognize it by name rather than by guesswork.
+ */
 export const AGENT_NON_GRANTABLE_RULE_PREFIX = 'agent: method not grantable in M3'
 
 /** Default file name looked up in the project/home policy directories. */

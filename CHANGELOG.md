@@ -165,6 +165,65 @@ All notable changes to this project are documented here. The format follows
   unmarked. Each tab label carries a one-column mark and tabs are separated by
   one space, so the tab bar is one column wider than before for the same tabs.
 
+- **A refused web sign-in is a page again, not a JSON blob.** `POST /login`
+  answered a browser with a bare `{"error":"unauthorized"}`, leaving nothing to
+  press but the back button. It now re-renders `/login` with the error the
+  console has always shown — *Token not recognised: it may have been rotated,
+  or the admin removed.* — and keeps the 401, the byte-identical answer for an
+  unknown, rotated and revoked token, and the JSON body for non-browser
+  callers. A refusal for rate limiting or a full session pool says so the same
+  way, still as a 429.
+- **Signing in takes about a second, not five and a half.** The login page's
+  animation held the POST for its whole 5.5-second choreography on every
+  sign-in, error or not; it is now played into a one-second budget.
+  `prefers-reduced-motion: reduce` skips it entirely, as before.
+- **`serve` answers `403`, not `400`, to an authenticated agent with no grant**
+  for the server it addressed. The body is unchanged (`{"error":"no-grant"}`),
+  and every other refusal keeps its status: 404 for a server the registry does
+  not hold, 401 without a usable token, 400 for the session-model mismatch and
+  the vault refusals — those are statements about the request, this one was
+  about the caller.
+- **A denied `resources/*` / `prompts/*` call says what is actually wrong.**
+  The refusal read `agent: method not grantable in M3`, which stopped being
+  true in M4 when `agent grant --resources/--prompts` arrived. Two rules now
+  replace it: `agent: no resources/prompts grant: <method>` when a grant would
+  open it, and `agent: method not grantable: <method>` for the methods no grant
+  can describe. The JSON-RPC error talks about a *method* instead of opening
+  with `Call to tool "resources/list"`. Journals written before this keep their
+  old text and are still recognised by name.
+- **`mcp-journal server add` is attributed like `server remove`**: with
+  `MCP_ADMIN_TOKEN` set it writes an `access-edit` record (`server.add`) and an
+  `[audit] server add by <name> (<role>)` line; without one both say
+  `unattributed` and the registration still happens. Neither command is gated
+  by a role — worth knowing, since registering a server decides what the plane
+  may launch and the registration probe runs it once.
+- **`approvals list` shows the agent's own deadline**, not only the queue
+  entry's: `agent_waits=42s expires_in=4m55s`, and
+  `agent_waits=elapsed(retry-only)` once the blocked call has given up and an
+  approval would only buy a retry. `--json` is unchanged.
+- **An argument error prints the command, not the whole help table.**
+  `prune --older-than 0s` and `show --kind bogus` answered with all ~110 lines
+  of `mcpcut --help`, scrolling the actual mistake off the screen; each now
+  prints its own synopsis and points at `--help`.
+- **No more `ExperimentalWarning: SQLite …` on every command.** The two stderr
+  lines Node prints for `node:sqlite` headed every invocation and both daemon
+  logs. Exactly that one warning is suppressed; every other warning Node emits
+  still reaches stderr.
+- **The vault-refused probe message reads as one line**: `missing vault
+  secret(s) for the server's headers: crm-token — add each with: mcp-journal
+  vault set <name>`. A newline in it used to surface as `crm-token?Add each…`
+  in `server add|list|show`.
+- **The admin UI offers no control the role cannot use.** Below `operator` the
+  approve/reject buttons on `/quarantine` are gone (the schema diff and the
+  `surfaceDelta` verdict stay fully visible). Server-side checks are unchanged.
+- **Approve/deny on the dashboard settles in place** instead of reloading the
+  whole page, the way `/quarantine` already did; the "N held" count and the
+  Held tile follow the swap.
+- **The console's output pane belongs to its section.** Switching tabs shows
+  the new section's introduction instead of leaving the previous section's
+  command on screen. A one-time token still on the pane is never dropped, and
+  navigation cannot happen while a command is running.
+
 ### Security
 
 - **Skipping `tools/list` no longer lowers a tool's class.** A call was

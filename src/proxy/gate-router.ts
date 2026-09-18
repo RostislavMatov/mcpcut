@@ -1,7 +1,9 @@
+import type { MethodFallbackReason } from '../agents/method-grants.js'
 import type { DecisionInfoDraft } from '../journal/record.js'
 import {
+  AGENT_METHOD_NOT_GRANTED_RULE_PREFIX,
+  AGENT_METHOD_UNGRANTABLE_RULE_PREFIX,
   AGENT_NON_GRANTABLE_METHODS,
-  AGENT_NON_GRANTABLE_RULE_PREFIX,
 } from '../policy/constants.js'
 import {
   classify,
@@ -14,7 +16,7 @@ import { TOOLS_CALL_METHOD, isToolsListRequest, parseToolCall, type ParsedToolCa
 import type { McpMessage } from '../transport/message.js'
 import { createMethodGrantRouter, type MethodFrame } from './gate-method-router.js'
 import type { Verdict } from './pipeline.js'
-import type { SynthesizableId } from './synthesize.js'
+import { methodNotGrantableError, methodNotGrantedError, type SynthesizableId } from './synthesize.js'
 import type { ToolCatalog } from './tool-catalog.js'
 import { filterToolsListResult } from './tools-filter.js'
 import {
@@ -153,24 +155,36 @@ export function createGateRouter(deps: GateRouterDeps): GateRouter {
   }
 
   /**
-   * Fail-closed denial of a method an agent's grant matrix cannot describe
-   * (`resources/*`, `prompts/*`, `completion/complete`). Only ever reached
+   * Fail-closed denial of a non-tool method (`resources/*`, `prompts/*`,
+   * `completion/complete`) the agent's grants do not reach. Only ever reached
    * with an `isGrantedToAgent` present, i.e. on an authenticated agent
    * session. Same shape as every other local denial: journal the decision,
-   * make it durable when fail-closed, answer the client with the policy-denied
-   * error, drop the frame. An id-less (notification-shaped) one has no return
-   * address and is dropped after journaling, exactly like an id-less
-   * `tools/call` (C2/N1).
+   * make it durable when fail-closed, answer the client, drop the frame. An
+   * id-less (notification-shaped) one has no return address and is dropped
+   * after journaling, exactly like an id-less `tools/call` (C2/N1).
+   *
+   * `reason` decides BOTH the recorded rule and the answer's prose: "you were
+   * not granted this" and "this can never be granted" are different facts, and
+   * one text for both was stale the moment M4 made resources grantable
+   * (user-journey smoke 2026-09-18, UX-4). The answer comes from
+   * `synthesize.ts`'s method builders rather than `denialBytesFor`, whose
+   * sentence is about a TOOL.
    */
-  async function denyNonGrantableMethod(msg: MethodFrame): Promise<Verdict> {
-    const rule = `${AGENT_NON_GRANTABLE_RULE_PREFIX}: ${msg.method}`
+  async function denyNonGrantableMethod(
+    msg: MethodFrame,
+    reason: MethodFallbackReason,
+  ): Promise<Verdict> {
+    const granted = reason === 'no-grant'
+    const prefix = granted
+      ? AGENT_METHOD_NOT_GRANTED_RULE_PREFIX
+      : AGENT_METHOD_UNGRANTABLE_RULE_PREFIX
+    const rule = `${prefix}: ${msg.method}`
     try {
       writeDecision(nonGrantableMethodDecision(serverName, rule, msg.method))
       await settleJournal()
       if (msg.kind === 'request') {
-        await answerLocally(msg.id, (sid) =>
-          denialBytesFor(sid, { toolName: msg.method, serverName, rule }),
-        )
+        const build = granted ? methodNotGrantedError : methodNotGrantableError
+        await answerLocally(msg.id, (sid) => build(sid, { method: msg.method, serverName, rule }))
       }
     } catch (error: unknown) {
       onError(error)
@@ -183,8 +197,8 @@ export function createGateRouter(deps: GateRouterDeps): GateRouter {
    * decides `resources/*`/`prompts/*`/`completion/complete` frames against the
    * agent's grant dictionary and grant-filters tracked list responses. Handed
    * `denyNonGrantableMethod` as its fallback, so everything the grants do not
-   * cover — including every frame when `methodGrants` is absent — produces
-   * the M3 denial byte for byte.
+   * cover — including every frame when `methodGrants` is absent — produces the
+   * one fail-closed denial, with the reason the decision carries.
    */
   const methodRouter = createMethodGrantRouter({
     serverName,
@@ -351,11 +365,11 @@ export function createGateRouter(deps: GateRouterDeps): GateRouter {
 }
 
 /**
- * `DecisionInfo` for a method denied because an agent's grant matrix cannot
- * describe it. `toolName` carries the METHOD — there is no tool involved, and
- * an auditor reading the journal needs to see what was actually refused. The
- * most alarming class/state values are stamped on it, like every other
- * fail-closed refusal (`unsafeClientFrameDecision`).
+ * `DecisionInfo` for a non-tool method an agent's grants did not reach.
+ * `toolName` carries the METHOD — there is no tool involved, and an auditor
+ * reading the journal needs to see what was actually refused. The most
+ * alarming class/state values are stamped on it, like every other fail-closed
+ * refusal (`unsafeClientFrameDecision`).
  */
 function nonGrantableMethodDecision(serverName: string, rule: string, method: string): DecisionInfoDraft {
   return {

@@ -3,11 +3,13 @@ import {
   decideMethodGrant,
   filterMethodListResult,
   listItemPredicate,
+  type MethodFallbackReason,
   type MethodGrantOutcome,
   type MethodListKind,
 } from '../agents/method-grants.js'
 import type { DecisionInfoDraft } from '../journal/record.js'
 import type { Verdict } from './pipeline.js'
+import { methodDeniedError } from './synthesize.js'
 import {
   DROP,
   FORWARD,
@@ -88,8 +90,12 @@ export interface MethodGrantRouterDeps {
     build: (id: string | number) => Buffer,
   ) => Promise<void>
   readonly onError: (error: unknown) => void
-  /** Produces the EXACT M3 non-grantable denial (rule text and all). */
-  readonly denyFallback: (frame: MethodFrame) => Promise<Verdict>
+  /**
+   * Produces the fail-closed denial (rule text and all) for a frame no grant
+   * reached. `reason` distinguishes "not granted to this agent" from "not
+   * grantable at all" — the router owns both texts.
+   */
+  readonly denyFallback: (frame: MethodFrame, reason: MethodFallbackReason) => Promise<Verdict>
 }
 
 export interface MethodGrantRouter {
@@ -120,15 +126,15 @@ export function createMethodGrantRouter(deps: MethodGrantRouterDeps): MethodGran
 
   /**
    * `fallback` — no grants object, no matching grant vocabulary, or a method
-   * outside the enumerated set — reproduces the M3 denial byte for byte. A
-   * granted frame is journaled (allow, class read/write per the plan) and
-   * forwarded; a granted LIST request additionally tracks its id. NO policy
-   * rules run for these methods — grants decide, the journal records (policy
-   * for non-tool methods is M5 backlog).
+   * outside the enumerated set — takes the router's fail-closed denial, with
+   * the reason the decision carried. A granted frame is journaled (allow, class
+   * read/write per the plan) and forwarded; a granted LIST request additionally
+   * tracks its id. NO policy rules run for these methods — grants decide, the
+   * journal records (policy for non-tool methods is M5 backlog).
    */
   async function gateFrame(frame: MethodFrame): Promise<Verdict> {
     const outcome = decideMethodGrant(frame.method, frame.raw, methodGrants)
-    if (outcome.action === 'fallback') return deps.denyFallback(frame)
+    if (outcome.action === 'fallback') return deps.denyFallback(frame, outcome.reason)
     if (outcome.action === 'deny') return denyFrame(frame, outcome)
 
     // The ALLOW path is as fail-closed as the deny path (review H1): a journal
@@ -161,7 +167,12 @@ export function createMethodGrantRouter(deps: MethodGrantRouterDeps): MethodGran
     return DROP
   }
 
-  /** Same shape as every other local denial: journal, settle, answer (requests only), drop. */
+  /**
+   * Same shape as every other local denial: journal, settle, answer (requests
+   * only), drop. The answer is the METHOD builder, not `denialBytesFor`, whose
+   * sentence opens with `Call to tool "…"` — for `resources/read` that sends the
+   * reader hunting for a tool that does not exist (user-journey smoke UX-4).
+   */
   async function denyFrame(
     frame: MethodFrame,
     outcome: Extract<MethodGrantOutcome, { action: 'deny' }>,
@@ -171,7 +182,7 @@ export function createMethodGrantRouter(deps: MethodGrantRouterDeps): MethodGran
       await settleJournal()
       if (frame.kind === 'request') {
         await answerLocally(frame.id, (sid) =>
-          denialBytesFor(sid, { toolName: frame.method, serverName, rule: outcome.rule }),
+          methodDeniedError(sid, { method: frame.method, serverName, rule: outcome.rule }),
         )
       }
     } catch (error: unknown) {

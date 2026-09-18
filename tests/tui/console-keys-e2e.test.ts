@@ -96,7 +96,11 @@ describe('keys pressed during a run', () => {
     fake.type(APPROVALS_KEY)
     fake.type(TAB)
 
-    await waitForFinishedRun(app, 'admin list')
+    // Landing on Journal is itself proof the run answered: keys are replayed
+    // only once it has. The finished pane is NOT waited for — since UX-10 the
+    // replayed Tab clears it on its way out of Admins, so waiting for
+    // `$ mcpcut admin list` to sit on screen would be waiting for a frame the
+    // console no longer draws.
     await waitForScreen(
       fake,
       (screen) => actionTitlesIn(screen).join('\n') === journalTitles().join('\n'),
@@ -105,6 +109,8 @@ describe('keys pressed during a run', () => {
 
     expect(tabsLineOf(fake)).toContain(`${JOURNAL_INDEX + 1} Journal`)
     expect(app.argvCalls().filter((argv) => argv.join(' ') === 'admin list')).toHaveLength(1)
+    // The new section opens on its own introduction, not on the Admins output.
+    expect(fake.screen()).not.toContain('admin list')
   })
 
   test('are dropped when the answer holds a one-time token', async () => {

@@ -1,6 +1,7 @@
 import { parseArgs } from 'node:util'
 import { formatReadableField } from '../journal/format.js'
 import { ADD_USAGE, buildCandidate, parseAddArgs } from './server-add-args.js'
+import { reportServerAdd } from './server-attribution.js'
 import { warnAboutExistingGrants } from './server-grant-refs.js'
 import { formatPolicyErrors } from '../policy/load.js'
 import { parseServerRecord, type ServerRecord } from '../registry/schema.js'
@@ -118,6 +119,10 @@ export async function runServerAdd(
     return 1
   }
   io.stdout.write(`added server "${result.record.name}" (${result.record.transport})\n`)
+  // Past this point the registry write has LANDED: nothing may turn the
+  // command into a failure. Who registered it is recorded first, before the
+  // probe below actually RUNS the command that was just registered (UX-9).
+  await reportServerAdd(result.record.name, io, opts)
   // M3a: the name may still be granted by agents or groups from an earlier
   // registration, which would silently hand them access to this new server.
   await warnAboutExistingGrants(result.record.name, io, opts)

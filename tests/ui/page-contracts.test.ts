@@ -48,6 +48,14 @@ const JS_SOURCE = APP_JS.body.toString('utf8')
 
 const SESSION: UiSession = { adminName: 'alice', role: 'owner', csrfToken: 'csrf-token-value' }
 
+/**
+ * The quarantine page renders its approve/reject forms only for a session that
+ * may use them (UX-5), so every contract below that inspects those forms has to
+ * render the page as such a session — the same reason the agents page's drawer
+ * contracts pass an owner.
+ */
+const QUARANTINE_ADMIN = { name: SESSION.adminName, role: SESSION.role }
+
 const APPROVAL_CARD: ApprovalCardView = {
   approvalId: '01J0000000000000000000000A',
   agentName: 'research-bot',
@@ -135,16 +143,16 @@ function allPages(): ReadonlyArray<{ readonly name: string; readonly html: strin
     { name: 'servers-rules', html: renderServersPage(serversWithRules()) },
     {
       name: 'approvals',
-      html: renderApprovalsPage({ cards: [APPROVAL_CARD], csrfToken: SESSION.csrfToken }),
+      html: renderApprovalsPage({ cards: [APPROVAL_CARD], csrfToken: SESSION.csrfToken, currentAdmin: QUARANTINE_ADMIN }),
     },
     { name: 'approvals-empty', html: renderApprovalsPage({ cards: [], csrfToken: SESSION.csrfToken }) },
     {
       name: 'quarantine',
-      html: renderQuarantinePage({ cards: [QUARANTINE_CARD], csrfToken: SESSION.csrfToken }),
+      html: renderQuarantinePage({ cards: [QUARANTINE_CARD], csrfToken: SESSION.csrfToken, currentAdmin: QUARANTINE_ADMIN }),
     },
     {
       name: 'quarantine-empty',
-      html: renderQuarantinePage({ cards: [], csrfToken: SESSION.csrfToken }),
+      html: renderQuarantinePage({ cards: [], csrfToken: SESSION.csrfToken, currentAdmin: QUARANTINE_ADMIN }),
     },
     {
       name: 'servers',
@@ -235,7 +243,7 @@ describe('data-action values are real POST routes (HIGH-1)', () => {
   })
 
   test('the approvals card wires approve and deny to their own id-scoped routes', () => {
-    const document = renderApprovalsPage({ cards: [APPROVAL_CARD], csrfToken: SESSION.csrfToken })
+    const document = renderApprovalsPage({ cards: [APPROVAL_CARD], csrfToken: SESSION.csrfToken, currentAdmin: QUARANTINE_ADMIN })
     const actions = attributeValues(document, 'data-action')
     expect(actions).toEqual([
       `/approvals/${APPROVAL_CARD.approvalId}/approve`,
@@ -244,7 +252,7 @@ describe('data-action values are real POST routes (HIGH-1)', () => {
   })
 
   test('the quarantine card wires approve and reject to the quarantine routes', () => {
-    const document = renderQuarantinePage({ cards: [QUARANTINE_CARD], csrfToken: SESSION.csrfToken })
+    const document = renderQuarantinePage({ cards: [QUARANTINE_CARD], csrfToken: SESSION.csrfToken, currentAdmin: QUARANTINE_ADMIN })
     expect(attributeValues(document, 'data-action')).toEqual([
       '/quarantine/approve',
       '/quarantine/reject',
@@ -284,7 +292,7 @@ describe('live-region attributes match what APP_JS consumes (M-3)', () => {
   })
 
   test('the approvals page exposes a live region, its source and a pending count', () => {
-    const document = renderApprovalsPage({ cards: [APPROVAL_CARD], csrfToken: SESSION.csrfToken })
+    const document = renderApprovalsPage({ cards: [APPROVAL_CARD], csrfToken: SESSION.csrfToken, currentAdmin: QUARANTINE_ADMIN })
     const regions = attributeValues(document, 'data-live-region')
     expect(regions).toHaveLength(1)
     expect(attributeValues(document, 'data-live-src')).toEqual(['/'])
@@ -297,7 +305,7 @@ describe('live-region attributes match what APP_JS consumes (M-3)', () => {
   })
 
   test('the quarantine page exposes a live region and its own source', () => {
-    const document = renderQuarantinePage({ cards: [QUARANTINE_CARD], csrfToken: SESSION.csrfToken })
+    const document = renderQuarantinePage({ cards: [QUARANTINE_CARD], csrfToken: SESSION.csrfToken, currentAdmin: QUARANTINE_ADMIN })
     expect(attributeValues(document, 'data-live-region')).toHaveLength(1)
     expect(attributeValues(document, 'data-live-src')).toEqual(['/quarantine'])
   })
@@ -353,7 +361,7 @@ describe('live-region attributes match what APP_JS consumes (M-3)', () => {
   test('a live region can be found again in its own refetched document', () => {
     // `swapRegion` looks the region up by an EXACT attribute-value match in the
     // response fetched from `data-live-src`; both sides are this same render.
-    const document = renderApprovalsPage({ cards: [APPROVAL_CARD], csrfToken: SESSION.csrfToken })
+    const document = renderApprovalsPage({ cards: [APPROVAL_CARD], csrfToken: SESSION.csrfToken, currentAdmin: QUARANTINE_ADMIN })
     const region = attributeValues(document, 'data-live-region')[0] ?? ''
     expect(document).toContain(`data-live-region="${region}"`)
     expect(region).not.toContain('"')
@@ -540,20 +548,20 @@ describe('scripted forms post their hidden fields (quarantine approve/reject)', 
   }
 
   test('the quarantine approve form serialises server and tool into the JSON body', () => {
-    const document = renderQuarantinePage({ cards: [QUARANTINE_CARD], csrfToken: SESSION.csrfToken })
+    const document = renderQuarantinePage({ cards: [QUARANTINE_CARD], csrfToken: SESSION.csrfToken, currentAdmin: QUARANTINE_ADMIN })
     const payload = loadFormPayload()(formStubOf(document, '/quarantine/approve'))
     expect(payload).not.toBeNull()
     expect(JSON.parse(payload ?? '{}')).toEqual({ server: 'github', tool: 'create_issue' })
   })
 
   test('the csrf field stays out of the body — it rides in the header', () => {
-    const document = renderQuarantinePage({ cards: [QUARANTINE_CARD], csrfToken: SESSION.csrfToken })
+    const document = renderQuarantinePage({ cards: [QUARANTINE_CARD], csrfToken: SESSION.csrfToken, currentAdmin: QUARANTINE_ADMIN })
     const payload = loadFormPayload()(formStubOf(document, '/quarantine/reject'))
     expect(payload).not.toContain(SESSION.csrfToken)
   })
 
   test('an approval form (identity in the URL) keeps posting no body', () => {
-    const document = renderApprovalsPage({ cards: [APPROVAL_CARD], csrfToken: SESSION.csrfToken })
+    const document = renderApprovalsPage({ cards: [APPROVAL_CARD], csrfToken: SESSION.csrfToken, currentAdmin: QUARANTINE_ADMIN })
     const payload = loadFormPayload()(formStubOf(document, `/approvals/${APPROVAL_CARD.approvalId}/approve`))
     expect(payload).toBeNull()
   })
@@ -863,9 +871,77 @@ describe('scripted actions settle by refreshing an opted-in live region', () => 
     expect(document).toMatch(/<span class="meta num" data-live-text="nav-meta">1 held<\/span>/)
   })
 
-  test('the approval queue region does NOT opt in — the dashboard around it is not live', () => {
-    const document = renderApprovalsPage({ cards: [APPROVAL_CARD], csrfToken: SESSION.csrfToken })
-    expect(document).toContain('data-live-region="approval-pending approval-resolved"')
-    expect(document).not.toContain('data-live-settle')
+  /**
+   * The dashboard queue settles in place too (user-journey smoke 2026-09-18,
+   * UX-12): approve/deny used to reload the whole page, while the quarantine
+   * list — the same mechanism, the same kind of action — did not.
+   *
+   * What makes it safe is that an SSE `approval-resolved` event ALREADY swaps
+   * exactly this region and nothing else, so the panels outside it (the journal
+   * table, the call detail, the servers strip) have never been refreshed by
+   * another operator's decision either. Opting in makes one's own decision
+   * behave like everybody else's; the two counts that DO describe the queue
+   * follow along as `data-live-text`.
+   */
+  test('the approval queue region opts in, and both queue counts outside it are live-text nodes', () => {
+    const document = renderApprovalsPage({ cards: [APPROVAL_CARD], csrfToken: SESSION.csrfToken, currentAdmin: QUARANTINE_ADMIN })
+
+    expect(document).toMatch(
+      /<section[^>]*data-live-region="approval-pending approval-resolved"[^>]*data-live-settle/,
+    )
+    expect(document).toMatch(/data-live-text="queue-held">1 held</)
+    expect(document).toMatch(/data-live-text="tile-held">1</)
+  })
+})
+
+/**
+ * The two pages whose mutating controls live inside a live region, and so
+ * cannot be tucked into a role-gated drawer the way `/agents` and `/groups` do
+ * it. Both used to offer them to a `viewer`, who then read a bare 403 (the
+ * browser leg of the user-journey smoke, 2026-09-18, UX-5 — the dashboard half
+ * the smoke itself had missed).
+ */
+describe('a page offers no control the role cannot use', () => {
+  const VIEWER = { name: 'val', role: 'viewer' }
+  const OPERATOR = { name: 'op', role: 'operator' }
+
+  test('the dashboard queue hides Approve/Deny and the bulk control below operator', () => {
+    const document = renderApprovalsPage({
+      cards: [APPROVAL_CARD],
+      csrfToken: SESSION.csrfToken,
+      currentAdmin: VIEWER,
+    })
+
+    expect(document).not.toContain('/approve"')
+    expect(document).not.toContain('/deny"')
+    expect(document).not.toContain('data-bulk-approve')
+    // The queue is still readable: the point of a viewer's dashboard.
+    expect(document).toContain(APPROVAL_CARD.toolName)
+    expect(document).toContain('1 held')
+  })
+
+  test('an operator keeps every control on both pages', () => {
+    const dashboard = renderApprovalsPage({
+      cards: [APPROVAL_CARD],
+      csrfToken: SESSION.csrfToken,
+      currentAdmin: OPERATOR,
+    })
+    const quarantine = renderQuarantinePage({
+      cards: [QUARANTINE_CARD],
+      csrfToken: SESSION.csrfToken,
+      currentAdmin: OPERATOR,
+    })
+
+    expect(dashboard).toContain(`/approvals/${APPROVAL_CARD.approvalId}/approve`)
+    expect(dashboard).toContain(`/approvals/${APPROVAL_CARD.approvalId}/deny`)
+    expect(quarantine).toContain('action="/quarantine/approve"')
+  })
+
+  test('a page rendered with no session at all offers nothing: fail closed in the display too', () => {
+    const dashboard = renderApprovalsPage({ cards: [APPROVAL_CARD], csrfToken: '' })
+    const quarantine = renderQuarantinePage({ cards: [QUARANTINE_CARD], csrfToken: '' })
+
+    expect(dashboard).not.toContain('/approve"')
+    expect(quarantine).not.toContain('/quarantine/approve')
   })
 })

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { SESSION_LOST_NOTICE } from '../../src/tui/constants.js'
+import { ONE_TIME_TOKEN_MARKER, SESSION_LOST_NOTICE } from '../../src/tui/constants.js'
 import type { RunRequest } from '../../src/tui/model.js'
 import type { RunResult } from '../../src/tui/output.js'
 import type { ServiceSummary } from '../../src/tui/services-summary.js'
@@ -104,6 +104,45 @@ describe('update: moving between sections', () => {
 
   test('a section switch requests nothing of the runtime', () => {
     expect(update(mainModel(), char('2')).effects).toEqual([])
+  })
+
+  /**
+   * The pane belongs to the section that filled it (user-journey smoke
+   * 2026-09-18, UX-10): on the Journal tab the operator still read
+   * `$ mcpcut approvals list` from the Approvals tab until they ran something.
+   * Leaving is the operator's own act — unlike the background poll of ADR-0012
+   * §21, which must never take an error off the screen by itself.
+   */
+  test.each([
+    ['Tab', key('tab')],
+    ['a digit', char('4')],
+  ])("%s drops the previous section's output and shows the new section's intro", (_name, msg) => {
+    const model = mainModel({ sectionIndex: APPROVALS_TAB, output: panelOf(3) })
+
+    const screen = mainOf(update(model, msg).model)
+
+    expect(screen.output).toBeUndefined()
+    expect(screen.pane.kind).toBe('actions')
+  })
+
+  test('a digit that names no section leaves the output exactly where it was', () => {
+    const model = mainModel({ sectionIndex: APPROVALS_TAB, output: panelOf(3) })
+
+    const step = update(model, char('0'))
+
+    expect(step.model).toBe(model)
+  })
+
+  test('an output holding an unsaved one-time token survives a section switch', () => {
+    // Navigation is one of the keys the token-hold pane ignores (ADR-0012 §22),
+    // so this can only be reached by a pane that is not holding — but the guard
+    // is stated here too: losing a token to a keystroke is unrecoverable.
+    const held = panelOf(1, { stdout: `${ONE_TIME_TOKEN_MARKER}\nmcpa_secret`, mintsToken: true })
+    const model = mainModel({ sectionIndex: APPROVALS_TAB, output: held })
+
+    const screen = mainOf(update(model, key('tab')).model)
+
+    expect(screen.output).toBe(held)
   })
 })
 

@@ -44,15 +44,29 @@ const ALL_FAMILY_METHODS = [
   'completion/complete',
 ] as const
 
-describe('decideMethodGrant: no grants = M3 fallback for every method', () => {
+/**
+ * Methods no grant can describe at all. Every OTHER family method is in the
+ * vocabulary, so a grant would admit it — the two carry different `reason`s
+ * because the honest answer to "can this be fixed?" differs (UX-4).
+ */
+const OUTSIDE_VOCABULARY_METHODS: readonly string[] = ['resources/templates/list']
+
+function fallbackFor(method: string): { action: 'fallback'; reason: string } {
+  return {
+    action: 'fallback',
+    reason: OUTSIDE_VOCABULARY_METHODS.includes(method) ? 'outside-vocabulary' : 'no-grant',
+  }
+}
+
+describe('decideMethodGrant: no grants = fail-closed fallback for every method', () => {
   test.each(ALL_FAMILY_METHODS)('%s falls back without a methodGrants object', (method) => {
-    expect(decideMethodGrant(method, rawOf(method, {}), undefined)).toEqual({ action: 'fallback' })
+    expect(decideMethodGrant(method, rawOf(method, {}), undefined)).toEqual(fallbackFor(method))
   })
 
   test.each(ALL_FAMILY_METHODS)('%s falls back when only tools are granted', (method) => {
     const grants = grantsOf({ tools: '*' } as Partial<AgentGrant>)
 
-    expect(decideMethodGrant(method, rawOf(method, {}), grants)).toEqual({ action: 'fallback' })
+    expect(decideMethodGrant(method, rawOf(method, {}), grants)).toEqual(fallbackFor(method))
   })
 })
 
@@ -108,7 +122,7 @@ describe('decideMethodGrant: resources/read', () => {
 
     expect(
       decideMethodGrant('resources/read', rawOf('resources/read', { uri: 'file:///x' }), empty),
-    ).toEqual({ action: 'fallback' })
+    ).toEqual({ action: 'fallback', reason: 'no-grant' })
   })
 })
 
@@ -159,7 +173,7 @@ describe('decideMethodGrant: list methods', () => {
   test('resources/list without a resources grant falls back to M3', () => {
     expect(
       decideMethodGrant('resources/list', rawOf('resources/list'), grantsOf({ prompts: '*' })),
-    ).toEqual({ action: 'fallback' })
+    ).toEqual({ action: 'fallback', reason: 'no-grant' })
   })
 })
 
@@ -222,7 +236,7 @@ describe('decideMethodGrant: completion/complete dispatches on params.ref (revie
       grantsOf({ resources: '*' }),
     )
 
-    expect(outcome).toEqual({ action: 'fallback' })
+    expect(outcome).toEqual({ action: 'fallback', reason: 'no-grant' })
   })
 
   test('a ref/resource inside the resources grant forwards', () => {
@@ -256,7 +270,7 @@ describe('decideMethodGrant: completion/complete dispatches on params.ref (revie
       grantsOf({ prompts: '*' }),
     )
 
-    expect(outcome).toEqual({ action: 'fallback' })
+    expect(outcome).toEqual({ action: 'fallback', reason: 'no-grant' })
   })
 
   test.each<[label: string, params: unknown]>([
@@ -282,17 +296,26 @@ describe('decideMethodGrant: completion/complete dispatches on params.ref (revie
   test('falls back to M3 with neither grant, before the ref is even read', () => {
     expect(
       decideMethodGrant('completion/complete', rawOf('completion/complete', {}), grantsOf({})),
-    ).toEqual({ action: 'fallback' })
+    ).toEqual({ action: 'fallback', reason: 'no-grant' })
   })
 })
 
-describe('decideMethodGrant: methods outside the enumerated vocabulary stay M3-denied', () => {
-  test('resources/templates/list falls back even with wildcard grants', () => {
+describe('decideMethodGrant: methods outside the enumerated vocabulary stay fail-closed', () => {
+  test('resources/templates/list falls back even with wildcard grants, and says why', () => {
     const grants = grantsOf({ resources: '*', prompts: '*' })
 
     expect(
       decideMethodGrant('resources/templates/list', rawOf('resources/templates/list'), grants),
-    ).toEqual({ action: 'fallback' })
+    ).toEqual({ action: 'fallback', reason: 'outside-vocabulary' })
+  })
+
+  test('the reason is a property of the METHOD, not of who asks: no grants, same answer', () => {
+    // Before UX-4 the grants object was checked first, so an agent with no
+    // method grants was told "you were not granted this" about a method nobody
+    // can ever be granted.
+    expect(
+      decideMethodGrant('resources/templates/list', rawOf('resources/templates/list'), undefined),
+    ).toEqual({ action: 'fallback', reason: 'outside-vocabulary' })
   })
 })
 

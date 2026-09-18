@@ -208,19 +208,43 @@ function isChar(key: KeyEvent, char: string): boolean {
   return key.kind === 'char' && key.char === char
 }
 
+/**
+ * What a section switch does to the pane: it CLEARS it, so the new section
+ * opens on its own introduction exactly as it does on first entry.
+ *
+ * The output belongs to the section that filled it, and carrying it across made
+ * the Journal tab show `$ mcpcut approvals list` until something was run there
+ * (user-journey smoke 2026-09-18, UX-10). This is not the case ADR-0012 §21
+ * protects: there the operator must not lose an error to a BACKGROUND poll,
+ * whereas leaving a tab is their own act.
+ *
+ * Two things are never dropped. A one-time token that nobody has said they
+ * saved stays (navigation cannot reach here while the `token-hold` pane is up —
+ * ADR-0012 §22 — and this is the second half of the same rule); and a run in
+ * flight cannot be navigated away from at all, since keys are queued while
+ * `busy` is set (`update-keys.ts`).
+ */
+function withSection(model: Model, screen: MainScreen, sectionIndex: number): Step {
+  const keepOutput = needsTokenHold(screen.output) || screen.busy !== undefined
+  return withMain(model, screen, {
+    sectionIndex,
+    actionIndex: 0,
+    ...(keepOutput ? {} : { output: undefined }),
+  })
+}
+
 /** Moves to the next or previous section, wrapping; the action cursor resets. */
 function movedSection(model: Model, screen: MainScreen, step: number): Step {
   const count = screen.sections.length
   if (count === 0) return noEffects(model)
 
-  const sectionIndex = (screen.sectionIndex + step + count) % count
-  return withMain(model, screen, { sectionIndex, actionIndex: 0 })
+  return withSection(model, screen, (screen.sectionIndex + step + count) % count)
 }
 
 function jumpedSection(model: Model, screen: MainScreen, sectionIndex: number): Step {
   if (sectionIndex >= screen.sections.length) return noEffects(model)
 
-  return withMain(model, screen, { sectionIndex, actionIndex: 0 })
+  return withSection(model, screen, sectionIndex)
 }
 
 /** Moves the action cursor, stopping at both ends rather than wrapping. */

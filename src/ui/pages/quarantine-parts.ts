@@ -110,8 +110,28 @@ function renderActionForm(
   </form>`
 }
 
+/**
+ * What stands where the controls would, below `operator`. A viewer still reads
+ * the whole review — the diff is the point of the page — but is not handed two
+ * buttons the route answers with a 403 (user-journey smoke 2026-09-18, UX-5;
+ * the rule `pages/agents.ts` already follows for its owner-only drawers).
+ */
+function renderReadOnlyNote(): Html {
+  return html`<p class="actions muted small">Releasing a tool needs the operator role.</p>`
+}
+
 /** One quarantined tool as a card; `data-server`/`data-tool` are the row identity. */
-export function renderQuarantineCard(card: QuarantineCardView, csrfToken: string): Html {
+export function renderQuarantineCard(
+  card: QuarantineCardView,
+  csrfToken: string,
+  canResolve: boolean,
+): Html {
+  const actions = canResolve
+    ? html`<div class="actions">
+      ${renderActionForm(card, 'approve', 'Approve', csrfToken, 'approve')}
+      ${renderActionForm(card, 'reject', 'Reject', csrfToken, 'secondary')}
+    </div>`
+    : renderReadOnlyNote()
   return html`<article class="quarantine-card qr-card row-in" data-server="${card.serverName}" data-tool="${card.toolName}">
     <div class="qr-head">
       <span class="qr-tool pixel ellipsis"><span class="server">${card.serverName}</span>/<span class="tool-name">${renderToolName(card.toolName)}</span></span>
@@ -121,9 +141,6 @@ export function renderQuarantineCard(card: QuarantineCardView, csrfToken: string
     </div>
     ${renderDescription(card)}
     ${renderChanges(card)}
-    <div class="actions">
-      ${renderActionForm(card, 'approve', 'Approve', csrfToken, 'approve')}
-      ${renderActionForm(card, 'reject', 'Reject', csrfToken, 'secondary')}
-    </div>
+    ${actions}
   </article>`
 }

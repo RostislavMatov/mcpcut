@@ -393,10 +393,16 @@ describe('node:sqlite is reached through the store adapter alone', () => {
     expect(offenders).toEqual([])
   })
 
-  test('the adapter itself does import the driver, so the rule is not vacuous', () => {
+  test('the adapter itself does name the driver, so the rule is not vacuous', () => {
     const source = readFileSync(join(PROJECT_ROOT, SQLITE_ADAPTER), 'utf8')
 
-    expect(importSpecifiersOf(source).filter(isSqliteDriverSpecifier)).toEqual(['node:sqlite'])
+    // More than one reference since UX-7: the adapter takes its TYPES from a
+    // (erased) `import type` and its VALUES from `createRequire`, so that the
+    // driver is loaded when this module evaluates rather than when the entry's
+    // graph links — see the comment there. Both still name `node:sqlite`, and
+    // this file is still the only one that does.
+    const named = new Set(importSpecifiersOf(source).filter(isSqliteDriverSpecifier))
+    expect([...named]).toEqual(['node:sqlite'])
   })
 
   test('the covered set is the whole of src minus the adapter', () => {

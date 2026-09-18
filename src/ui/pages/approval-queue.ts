@@ -1,8 +1,10 @@
+import { APPROVAL_RESOLVE_MIN_ROLE } from '../../admin/authz.js'
 import type { ToolClass } from '../../policy/schema.js'
 import type { PendingApproval } from '../../policy/approvals/queue.js'
 import { renderToolName } from '../display-name.js'
 import { html, join, type Html } from '../html.js'
 import type { CurrentAdmin } from './layout.js'
+import { roleAllows } from './role-gate.js'
 
 /**
  * The approval queue (M4 Task 12) — the region where the milestone gate is
@@ -112,13 +114,32 @@ function renderActionForm(
   </form>`
 }
 
-function renderCard(card: ApprovalCardView, csrfToken: string): Html {
+/**
+ * What stands where the controls would, below `operator`. A viewer still reads
+ * the whole queue — who is waiting, for what, and on which clock — but is not
+ * handed two buttons the route answers with a 403 (UX-5).
+ */
+function renderReadOnlyNote(): Html {
+  return html`<p class="actions muted small">Resolving an approval needs the operator role.</p>`
+}
+
+/** The approve/deny pair plus the bulk opt-in; only an `operator` sees them. */
+function renderCardActions(card: ApprovalCardView, csrfToken: string): Html {
   const batchControl = eligibleForBatch(card)
     ? html`<label class="bulk-select check"
         ><input type="checkbox" data-bulk-approve value="${card.approvalId}" /> include in bulk
         approve</label
       >`
     : html``
+  return html`<div class="actions">
+      ${renderActionForm(card, 'approve', 'Approve', csrfToken, 'approve')}
+      ${renderActionForm(card, 'deny', 'Deny', csrfToken, 'secondary deny')}
+    </div>
+    ${batchControl}`
+}
+
+function renderCard(card: ApprovalCardView, csrfToken: string, canResolve: boolean): Html {
+  const tail = canResolve ? renderCardActions(card, csrfToken) : renderReadOnlyNote()
   return html`<article class="approval-card row-in" data-approval-id="${card.approvalId}" data-tool-class="${card.toolClass}">
     <div class="approval-head">
       <span class="tool ellipsis"><span class="server">${card.serverName}</span>/<span class="tool-name">${renderToolName(card.toolName)}</span></span>
@@ -130,11 +151,7 @@ function renderCard(card: ApprovalCardView, csrfToken: string): Html {
       ${renderWaitLine(card)}
       <span class="grant-remaining">Grant window: <span class="num">${card.grantRemainingSec}s</span> left</span>
     </div>
-    <div class="actions">
-      ${renderActionForm(card, 'approve', 'Approve', csrfToken, 'approve')}
-      ${renderActionForm(card, 'deny', 'Deny', csrfToken, 'secondary deny')}
-    </div>
-    ${batchControl}
+    ${tail}
   </article>`
 }
 
@@ -223,16 +240,27 @@ function renderPendingTotalAttribute(input: ApprovalsPageInput): Html {
  * the node `assets/app-js.ts` re-fetches and swaps on `approval-pending` /
  * `approval-resolved`, so its `data-live-region` value and `data-live-src`
  * must stay exactly what the script looks up.
+ *
+ * `data-live-settle` means an approve/deny from inside settles by re-fetching
+ * this region instead of reloading the page (user-journey smoke UX-12). It is
+ * honest about what it covers rather than a claim that the whole dashboard is
+ * live: an SSE `approval-resolved` from ANOTHER operator has always swapped
+ * exactly this region and nothing else, so the journal table, the call detail
+ * and the servers strip were never kept current by a resolution in the first
+ * place. What does describe the queue — the panel-head "N held" and the Held
+ * tile — is marked `data-live-text` and follows every swap.
  */
 export function renderQueueRegion(input: ApprovalsPageInput): Html {
+  const canResolve = roleAllows(input.currentAdmin, APPROVAL_RESOLVE_MIN_ROLE)
   const body =
     input.cards.length === 0
       ? html`<p class="empty">No pending approvals.</p>`
-      : html`<div class="queue-cards">${join(input.cards.map((card) => renderCard(card, input.csrfToken)))}</div>`
+      : html`<div class="queue-cards">${join(input.cards.map((card) => renderCard(card, input.csrfToken, canResolve)))}</div>`
   return html`<section
     class="approvals"
     data-live-region="${APPROVALS_LIVE_TOPICS}"
     data-live-src="${APPROVALS_LIVE_SRC}"
+    data-live-settle
   >
     <p class="pending-count label" data-pending-count="${input.cards.length}"${renderPendingTotalAttribute(input)}>
       ${renderPendingCount(input)}

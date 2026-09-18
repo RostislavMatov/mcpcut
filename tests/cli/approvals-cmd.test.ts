@@ -719,3 +719,68 @@ describe('runApprovals: unknown/missing subcommand', () => {
     expect(io.err()).toContain('Usage')
   })
 })
+
+/**
+ * The two clocks of one pending request (user-journey smoke 2026-09-18, UX-8).
+ * `expires_in` is the GRANT window — how long a fresh approval stays usable —
+ * and until this wave it was the only one the text view printed, so an
+ * operator reading `expires_in=4m55s` had no way to see that the agent behind
+ * the call gives up after 60 s. The web dashboard has shown both clocks since
+ * M4 (`ui/pages/approval-queue.ts`); the CLI (and, through it, the console's
+ * Approvals tab, which runs this very command) now says the same thing.
+ */
+describe('runApprovals: list shows the agent wait beside the grant window', () => {
+  test('a request whose agent is still waiting prints both clocks', async () => {
+    const nowMs = Date.UTC(2026, 0, 1)
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
+    await queue.enqueue(baseRequest({ timeoutMs: 300_000, waitTimeoutMs: 60_000 }))
+    const io = fakeIo()
+
+    const exitCode = await runApprovals(['list'], io, { baseDir, clock: () => nowMs })
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain('agent_waits=1m0s')
+    expect(io.out()).toContain('expires_in=5m0s')
+  })
+
+  test('once the agent wait has passed the line says an approval only buys a retry', async () => {
+    let nowMs = Date.UTC(2026, 0, 1)
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
+    await queue.enqueue(baseRequest({ timeoutMs: 300_000, waitTimeoutMs: 60_000 }))
+    nowMs += 90_000
+    const io = fakeIo()
+
+    const exitCode = await runApprovals(['list'], io, { baseDir, clock: () => nowMs })
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain('agent_waits=elapsed(retry-only)')
+    // The grant window is still open: the entry is not expired.
+    expect(io.out()).toContain('expires_in=3m30s')
+  })
+
+  test('a request enqueued without a wait window says so rather than guessing', async () => {
+    const nowMs = Date.UTC(2026, 0, 1)
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
+    await queue.enqueue(baseRequest({ timeoutMs: 60_000 }))
+    const io = fakeIo()
+
+    const exitCode = await runApprovals(['list'], io, { baseDir, clock: () => nowMs })
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain('agent_waits=unknown')
+  })
+
+  test('--json keeps its exact shape: the new column is text-view only', async () => {
+    const nowMs = Date.UTC(2026, 0, 1)
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
+    await queue.enqueue(baseRequest({ timeoutMs: 300_000, waitTimeoutMs: 60_000 }))
+    const io = fakeIo()
+
+    const exitCode = await runApprovals(['list', '--json'], io, { baseDir, clock: () => nowMs })
+
+    expect(exitCode).toBe(0)
+    const entry = JSON.parse(io.out()).approvals[0]
+    expect(Object.keys(entry)).not.toContain('agentWaits')
+    expect(entry.waitExpiresAt).toBe(new Date(nowMs + 60_000).toISOString())
+  })
+})

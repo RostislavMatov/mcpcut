@@ -193,6 +193,9 @@ describe('console end to end: onboarding an installation', () => {
     const actor = { adminName: OWNER_NAME, role: 'owner', via: 'cli' }
     const records = await accessRecords(journalDir)
     expect(records.map((record) => record['action'])).toEqual([
+      // `server.add` since UX-9: registering a server names whoever did it, the
+      // way removing one has since M5.5 п.2.
+      'server.add',
       'agent.create',
       'agent.grant',
       'group.create',

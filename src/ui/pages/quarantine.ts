@@ -1,9 +1,11 @@
+import { QUARANTINE_RESOLVE_MIN_ROLE } from '../../admin/authz.js'
 import type { InventoryStoreData, ServerInventory } from '../../policy/inventory-store.js'
 import { diffToolSchemas, type SchemaChange, type SurfaceDelta } from '../../policy/schema-diff.js'
 import type { ToolDescriptor } from '../../protocol/mcp.js'
 import { html, join, type Html } from '../html.js'
 import { renderLayout, type CurrentAdmin } from './layout.js'
 import { renderQuarantineCard } from './quarantine-parts.js'
+import { roleAllows } from './role-gate.js'
 
 /**
  * Quarantine review page (M4 Task 12; McpCut front 2026-08-22). Instead of
@@ -77,6 +79,11 @@ export interface QuarantinePageInput {
   readonly currentAdmin?: CurrentAdmin
 }
 
+/** Whether this session may RELEASE a tool — the same threshold `ROUTE_TABLE` pins the POSTs to. */
+function canResolveQuarantine(admin: CurrentAdmin | undefined): boolean {
+  return roleAllows(admin, QUARANTINE_RESOLVE_MIN_ROLE)
+}
+
 /** The SSE topic that must re-render this list (see `assets/app-js.ts`). */
 const QUARANTINE_LIVE_TOPICS = 'quarantine-changed'
 
@@ -92,10 +99,11 @@ const QUARANTINE_LIVE_SRC = '/quarantine'
  * `data-live-text` and follow along.
  */
 function renderLiveRegion(input: QuarantinePageInput): Html {
+  const canResolve = canResolveQuarantine(input.currentAdmin)
   const body =
     input.cards.length === 0
       ? html`<p class="empty">No quarantined tools.</p>`
-      : html`<div class="qr-cards">${join(input.cards.map((card) => renderQuarantineCard(card, input.csrfToken)))}</div>`
+      : html`<div class="qr-cards">${join(input.cards.map((card) => renderQuarantineCard(card, input.csrfToken, canResolve)))}</div>`
   return html`<section
     class="quarantine"
     data-live-region="${QUARANTINE_LIVE_TOPICS}"

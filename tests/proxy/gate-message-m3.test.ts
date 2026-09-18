@@ -419,7 +419,18 @@ describe('message-level gate: methods outside the grant vocabulary (agent sessio
       const answer = JSON.parse(harness.answered[0]!.bytes.toString('utf8'))
       expect(answer.id).toBe(11)
       expect(answer.error.code).toBe(ERROR_CODE_POLICY_DENIED)
-      expect(String(answer.error.data.rule)).toBe(`agent: method not grantable in M3: ${method}`)
+      // Two rules, not one (user-journey smoke UX-4): `resources/templates/list`
+      // can never be granted; every other method here simply was not.
+      const expected =
+        method === 'resources/templates/list'
+          ? `agent: method not grantable: ${method}`
+          : `agent: no resources/prompts grant: ${method}`
+      expect(String(answer.error.data.rule)).toBe(expected)
+      // The refused thing is a METHOD; the sentence must not send the reader
+      // looking for a tool by that name.
+      expect(String(answer.error.message)).toContain(`Method "${method}"`)
+      expect(String(answer.error.message)).not.toContain('Call to tool')
+      expect(answer.error.data.method).toBe(method)
     },
   )
 
@@ -439,7 +450,7 @@ describe('message-level gate: methods outside the grant vocabulary (agent sessio
     expect(decisions).toHaveLength(1)
     expect(decisions[0]?.decision).toMatchObject({
       outcome: 'deny',
-      rule: 'agent: method not grantable in M3: resources/read',
+      rule: 'agent: no resources/prompts grant: resources/read',
       toolName: 'resources/read',
       serverName: SERVER_NAME,
     })
@@ -652,11 +663,11 @@ describe('message-level gate: method grants open the M3-denied methods (M4)', ()
     const answer = JSON.parse(harness.answered[0]!.bytes.toString('utf8'))
     expect(answer.id).toBe(43)
     expect(answer.error.code).toBe(ERROR_CODE_POLICY_DENIED)
-    expect(String(answer.error.data.rule)).toBe('agent: method not grantable in M3: resources/read')
+    expect(String(answer.error.data.rule)).toBe('agent: no resources/prompts grant: resources/read')
     const decisions = await harness.decisions()
     expect(decisions[0]?.decision).toMatchObject({
       outcome: 'deny',
-      rule: 'agent: method not grantable in M3: resources/read',
+      rule: 'agent: no resources/prompts grant: resources/read',
       toolName: 'resources/read',
       toolClass: 'destructive',
     })
@@ -671,7 +682,7 @@ describe('message-level gate: method grants open the M3-denied methods (M4)', ()
     await harness.gate.gateClientMessage(requestOf(44, 'resources/read', { uri: 'file:///x' }))
 
     const answer = JSON.parse(harness.answered[0]!.bytes.toString('utf8'))
-    expect(String(answer.error.data.rule)).toBe('agent: method not grantable in M3: resources/read')
+    expect(String(answer.error.data.rule)).toBe('agent: no resources/prompts grant: resources/read')
   })
 
   test("a '*' resources grant admits any URI", async () => {
@@ -837,7 +848,7 @@ describe('message-level gate: method grants open the M3-denied methods (M4)', ()
     )
     const answer = JSON.parse(withNeither.answered[0]!.bytes.toString('utf8'))
     expect(String(answer.error.data.rule)).toBe(
-      'agent: method not grantable in M3: completion/complete',
+      'agent: no resources/prompts grant: completion/complete',
     )
   })
 
@@ -860,7 +871,7 @@ describe('message-level gate: method grants open the M3-denied methods (M4)', ()
     })
   })
 
-  test('a method outside the enumerated vocabulary stays M3-denied even with wildcard grants', async () => {
+  test('a method outside the enumerated vocabulary stays denied even with wildcard grants', async () => {
     const harness = createMessageHarness({
       agentScope: methodScopeOf({ resources: '*', prompts: '*' }),
       sessionId: `${SESSION_ID}-mg-templates`,
@@ -873,8 +884,59 @@ describe('message-level gate: method grants open the M3-denied methods (M4)', ()
     expect(verdict).toEqual({ action: 'drop' })
     const answer = JSON.parse(harness.answered[0]!.bytes.toString('utf8'))
     expect(String(answer.error.data.rule)).toBe(
-      'agent: method not grantable in M3: resources/templates/list',
+      'agent: method not grantable: resources/templates/list',
     )
+  })
+
+  /**
+   * UX-4 (user-journey smoke 2026-09-18). Both wordings were one text saying
+   * `agent: method not grantable in M3`, which stopped being true in M4: since
+   * then `agent grant --resources/--prompts` DOES open these methods. The two
+   * refusals must now read as the different facts they are — one a person can
+   * fix by granting, the other nobody can fix at all.
+   */
+  test('the two refusals read differently: "you were not granted this" vs "this can never be granted"', async () => {
+    const notGranted = createMessageHarness({
+      agentScope: methodScopeOf({ prompts: ['greet*'] }),
+      sessionId: `${SESSION_ID}-mg-wording-nogrant`,
+    })
+    const notGrantable = createMessageHarness({
+      agentScope: methodScopeOf({ resources: '*', prompts: '*' }),
+      sessionId: `${SESSION_ID}-mg-wording-never`,
+    })
+
+    await notGranted.gate.gateClientMessage(requestOf(61, 'resources/list', {}))
+    await notGrantable.gate.gateClientMessage(requestOf(62, 'resources/templates/list', {}))
+
+    const ungrantedError = JSON.parse(notGranted.answered[0]!.bytes.toString('utf8')).error
+    expect(String(ungrantedError.message)).toContain('Method "resources/list"')
+    expect(String(ungrantedError.message)).toContain('no resources/prompts grant for server')
+    expect(String(ungrantedError.message)).toContain(SERVER_NAME)
+    expect(ungrantedError.data.reason).toBe('agent_no_method_grant')
+    // Never a ready-to-run remediation command in the channel the gated party
+    // reads (the rule `approvalTimeoutError` states); the owner's `agent grant`
+    // form lives in the README.
+    expect(String(ungrantedError.message)).not.toContain('agent grant')
+
+    const ungrantableError = JSON.parse(notGrantable.answered[0]!.bytes.toString('utf8')).error
+    expect(String(ungrantableError.message)).toContain('no way to express a grant')
+    expect(ungrantableError.data.reason).toBe('method_not_grantable')
+  })
+
+  test('a denial of a granted vocabulary but ungranted subject also talks about a method, not a tool', async () => {
+    const harness = createMessageHarness({
+      agentScope: methodScopeOf({ resources: ['file:///project/*'] }),
+      sessionId: `${SESSION_ID}-mg-subject-wording`,
+    })
+
+    await harness.gate.gateClientMessage(
+      requestOf(63, 'resources/read', { uri: 'file:///etc/passwd' }),
+    )
+
+    const error = JSON.parse(harness.answered[0]!.bytes.toString('utf8')).error
+    expect(String(error.message)).toContain('Method "resources/read"')
+    expect(String(error.message)).not.toContain('Call to tool')
+    expect(String(error.data.rule)).toBe('agent: no resources grant for file:///etc/passwd')
   })
 })
 

@@ -189,10 +189,40 @@ describe('maxSessions is a real cap', () => {
       maxSessions: 1,
     })
 
-    expect((await manager.handlePost(CTX, {}, Buffer.from(INITIALIZE_BODY))).status).toBe(400)
-    expect((await manager.handlePost(CTX, {}, Buffer.from(INITIALIZE_BODY))).status).toBe(400)
+    expect((await manager.handlePost(CTX, {}, Buffer.from(INITIALIZE_BODY))).status).toBe(403)
+    expect((await manager.handlePost(CTX, {}, Buffer.from(INITIALIZE_BODY))).status).toBe(403)
     expect(manager.activeSessionCount()).toBe(0)
     await manager.close()
+  })
+
+  /**
+   * An authenticated agent asking for a server it was not granted is refused
+   * for WHO it is, not for what it sent — the definition of 403 (user-journey
+   * smoke 2026-09-18, UX-11). It answered 400 only because "anything that is
+   * not `unknown-server`" was the catch-all; ADR-0002 pins 400 for the
+   * session-model mismatch, which IS about the request, and that one stays.
+   */
+  test('a no-grant refusal is 403, while a malformed-request refusal stays 400', async () => {
+    const noGrant = createSessionManager({
+      openSession: createFakeSessionFactory({ refuseWith: 'no-grant' }).openSession,
+      detectInitialize: testDetectInitialize,
+      expectsResponse: testExpectsResponse,
+    })
+    const mismatch = createSessionManager({
+      openSession: createFakeSessionFactory({ refuseWith: 'protocol-mismatch: ...' }).openSession,
+      detectInitialize: testDetectInitialize,
+      expectsResponse: testExpectsResponse,
+    })
+
+    const refusedGrant = await noGrant.handlePost(CTX, {}, Buffer.from(INITIALIZE_BODY))
+    const refusedShape = await mismatch.handlePost(CTX, {}, Buffer.from(INITIALIZE_BODY))
+
+    expect(refusedGrant.status).toBe(403)
+    expect(bodyText(refusedGrant)).toBe('{"error":"no-grant"}')
+    expect(refusedShape.status).toBe(400)
+    expect(bodyText(refusedShape)).toBe('{"error":"protocol-mismatch"}')
+    await noGrant.close()
+    await mismatch.close()
   })
 
   test('the cap is applied before any semantic hook runs, so a refused POST leaves no model note', async () => {

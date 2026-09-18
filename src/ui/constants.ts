@@ -310,6 +310,22 @@ export const HTTP_STATUS_SERVICE_UNAVAILABLE = 503
 export const CONTENT_TYPE_JSON = 'application/json; charset=utf-8'
 export const CONTENT_TYPE_HTML = 'text/html; charset=utf-8'
 
+/**
+ * The media type looked for in an `Accept` header to tell a browser navigation
+ * from a script or an API client (`login-flow.ts`). Derived from the content
+ * type above so the two cannot drift apart.
+ */
+export const HTML_MEDIA_TYPE = CONTENT_TYPE_HTML.split(';')[0] ?? 'text/html'
+
+/**
+ * What a person is told when the login is refused for rate limiting or a full
+ * session pool rather than for the token. Like `UNKNOWN_TOKEN_NOTICE`, one
+ * sentence for both causes: the 429s are byte-identical on purpose, and the
+ * page must not become the oracle the JSON body refuses to be.
+ */
+export const TOO_MANY_ATTEMPTS_NOTICE =
+  'Too many sign-in attempts, or the plane is holding all the sessions it will hold. Wait a minute and try again.'
+
 /** Byte-identical for a missing, malformed, unknown or revoked credential. */
 export const BODY_UNAUTHORIZED = Buffer.from('{"error":"unauthorized"}', 'utf8')
 export const BODY_FORBIDDEN = Buffer.from('{"error":"forbidden"}', 'utf8')

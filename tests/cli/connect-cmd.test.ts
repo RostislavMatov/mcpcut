@@ -758,6 +758,28 @@ describe('connect: vault failure messages', () => {
       }),
     ).toContain('tag mismatch')
   })
+
+  /**
+   * The message is also the probe's one-line `message` (`probe/engine.ts`
+   * trims it and the status store keeps it), and every terminal-facing view
+   * sanitizes control characters into `?`. An interior newline therefore read
+   * as `crm-token?Add each with: …` in `server add|list|show` (user-journey
+   * smoke 2026-09-18, UX-3). Fixing it HERE rather than weakening the
+   * sanitizer: one line is the honest shape for a fact that also travels as a
+   * field.
+   */
+  test('the missing-secrets message is one line, so a one-line view reads it whole', () => {
+    const message = formatVaultFailure('headers', {
+      status: 'missing-secrets',
+      missing: ['crm-token'],
+    })
+
+    expect(message.trimEnd()).not.toContain('\n')
+    expect(message.trimEnd()).toBe(
+      "missing vault secret(s) for the server's headers: crm-token — " +
+        'add each with: mcp-journal vault set <name>',
+    )
+  })
 })
 
 // ---------------------------------------------------------------------------

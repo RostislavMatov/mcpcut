@@ -430,7 +430,9 @@ describe('runServe: refusals leak nothing about the plane', () => {
 
     const response = await fixture.post(INITIALIZE_BODY)
 
-    expect(response.status).toBe(400)
+    // 403, not 400 (user-journey smoke UX-11): the agent authenticated and its
+    // request was well formed; what it lacks is authorization.
+    expect(response.status).toBe(403)
     expect(await response.json()).toEqual({ error: REFUSAL_NO_GRANT })
     expect(fixture.io.outText()).toBe('')
   })

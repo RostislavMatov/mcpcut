@@ -503,6 +503,20 @@ A `require-approval` tool call does not reach the server immediately:
    `approvals list` needs no token: reading the queue is not an authorization
    event.
 
+   Each pending line carries **two clocks**, and they mean different things:
+
+   ```
+   01K5…  server=github tool=create_issue class=write agent_waits=42s expires_in=4m55s args={…}
+   ```
+
+   `agent_waits` is how long the blocked call is still there to be unblocked;
+   `expires_in` is how long a fresh approval stays usable. Once the first runs
+   out the line says `agent_waits=elapsed(retry-only)`: approving then still
+   mints the grant, but the agent has already given up and has to call again
+   for it to be used. `agent_waits=unknown` means the request recorded no wait
+   window. Nothing about `--json` changed — both deadlines have been on
+   `expiresAt` / `waitExpiresAt` there since M4.
+
    **What this does and does not buy.** It buys **attribution**, not an access
    barrier. A process running as the same user can read your environment
    anyway — that is this tool's stated threat model — so the token does not
@@ -639,6 +653,7 @@ mcp-journal connect <server> --agent <name> [--policy <path>] [--fail-closed]
 mcp-journal serve [--port N] [--host H] [--policy <path>] [--fail-closed] [--allowed-origin URL]
 mcp-journal server add <name> --transport stdio|http ...
 mcp-journal server list | show <name> | remove <name> [--prune-grants]
+                                                  # add/remove are ungated; MCP_ADMIN_TOKEN only names who did it
 mcp-journal vault init | set <name> | list | remove <name> | rekey
                                                   # set/remove/rekey need MCP_ADMIN_TOKEN (owner); init and list do not
 mcp-journal agent create <name> | list | revoke <name>
@@ -876,6 +891,32 @@ Policies compose on top of grants, they do not replace them: a granted tool
 still goes through classification, quarantine, deny rules and approvals
 exactly as described above. Deny always wins.
 
+#### Resources and prompts are granted too
+
+Tools are not the whole MCP surface. `resources/read|list|subscribe|unsubscribe`,
+`prompts/get|list` and `completion/complete` are governed by their own grant
+fields, and an agent that has none of them cannot reach any of those methods —
+its call is refused with `agent: no resources/prompts grant: resources/list` in
+the journal and, on the wire, a JSON-RPC error saying so. What opens them is an
+owner running:
+
+```
+mcp-journal agent grant research-bot github --tools "*" \
+  --resources "file:///project/*" --prompts "review-*"
+mcp-journal group grant analytics postgres --tools "*" --resources "*"
+```
+
+A resource pattern is an exact URI or a URI prefix with one trailing `*`
+(prefixes bind on path-segment boundaries, so `file:///project*` does not reach
+`file:///projects-private/`); `'*'` on the field means "everything". Listings
+are filtered down to what the grant covers, the same way `tools/list` is.
+
+A handful of methods stay refused whatever is granted — anything outside the
+list above, e.g. `resources/templates/list`. Those are recorded as
+`agent: method not grantable: <method>`, and no grant changes them: a method a
+later revision of the spec adds has to be admitted deliberately, never by an
+existing wildcard.
+
 ### Server groups
 
 A group is a named set of per-server grants plus the agents that inherit them.
@@ -929,6 +970,14 @@ personal grant and every group grant, and the cascade is journaled
 token the removal still happens, and the record says the change was
 unattributed.
 
+`mcp-journal server add` is recorded the same way, and on the same terms: with
+`MCP_ADMIN_TOKEN` set to a personal token the `access-edit` record and the
+`[audit] server add by …` line name that admin; without one both say
+`unattributed` and the registration still goes ahead. Neither command is gated
+by a role. That is worth knowing before you script either: registering a server
+is what decides which process the plane may launch, and the registration probe
+runs that process once, immediately.
+
 Removing a name the registry does **not** hold changes nothing: it exits 1 with
 `unknown server "x"`, plus a hint when grants are still pointing at that name —
 `dangling grants: 2 agent grants, 1 groups — prune with: server remove
@@ -962,6 +1011,18 @@ mcp-journal serve --port 8090
 One endpoint per (agent, server) pair — the plane does not aggregate several
 servers behind one URL, so tool names and request ids stay exactly as the
 server produced them.
+
+The refusals an agent can get while opening a session, and what each one means:
+
+| Status | Body | What it says |
+|---|---|---|
+| 401 | `{"error":"unauthorized"}` | no bearer token, or one that resolves to no live agent |
+| 403 | `{"error":"no-grant"}` | authenticated, but this agent has no grant for this server |
+| 404 | `{"error":"not-found"}` | the endpoint names a server the registry does not hold |
+| 400 | `{"error":"protocol-mismatch"}` etc. | something about the REQUEST: a session-model mismatch (see below), an unresolvable vault reference |
+
+None of them names anything the agent did not already send: the plane's registry
+contents and its reasons go to its own stderr, never into a response body.
 
 Both MCP session models are supported, downstream (agent → plane) and
 upstream (plane → server):
@@ -1099,6 +1160,14 @@ are exactly three roles, fixed (no custom/scoped roles in this release):
 | `owner` | everything, including managing other admins, the server registry, the vault, and the permission surface itself: the agent grant matrix (create/grant/ungrant/revoke) and groups |
 | `operator` | approvals (approve/deny), quarantine (approve/reject), forced server probe — decisions *inside* the granted surface |
 | `viewer` | read-only: journal, approvals queue, registry, grant matrix — no POST action succeeds for this role, anywhere |
+
+The UI does not offer a control the role cannot use: below `operator` the
+approve/deny buttons on the dashboard queue and the approve/reject buttons on
+`/quarantine` are not rendered at all (the review itself — the schema diff, the
+`surfaceDelta` verdict — is fully visible), the owner-only drawers on `/agents`
+and `/groups` are absent, and `Vault`/`Admins` are missing from the navigation.
+The check is still the server's: hiding a form is an ergonomic choice, and
+`ROUTE_TABLE` refuses the route whether or not anything on a page pointed at it.
 
 Manage accounts from the CLI:
 

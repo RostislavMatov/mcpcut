@@ -54,6 +54,12 @@ export type AccessEditAction =
   | 'group.ungrant'
   | 'group.join'
   | 'group.leave'
+  // Registering a server (user-journey smoke 2026-09-18, UX-9). Its mirror
+  // image has been recorded since M5.5 п.2, while the command that decides
+  // WHICH process the plane may launch — and, through the registration probe,
+  // runs it once — left no record at all. Attribution is best-effort here too:
+  // no token means "nobody named", not a refusal.
+  | 'server.add'
   | 'server.remove'
   // Personal grants (owner decision T1, 2026-09-01): the same category as
   // group edits, so the journal answers "who changed this agent's matrix".

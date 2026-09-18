@@ -24,6 +24,20 @@ import { formatRecordsJson, formatRecordsReadable, formatSessionsTable } from '.
  * hint rather than failing the command, which already has its own answer.
  */
 
+/**
+ * `show`'s own synopsis. It used to be handed the whole `cli/usage.ts` table
+ * and print it on every argument error, which pushed the list of allowed
+ * `--kind`/`--direction` values — the one thing the operator needed to read —
+ * off the top of the terminal (user-journey smoke 2026-09-18, UX-6). The
+ * allowed values are spliced in from the reader's own vocabulary, so a new
+ * kind cannot make this text stale.
+ */
+const SHOW_USAGE =
+  'Usage: mcp-journal show <sessionId> [--method <m>] [--direction <d>] [--kind <k>] [--json]\n' +
+  `  --direction  ${JOURNAL_DIRECTIONS.join(' | ')}\n` +
+  `  --kind       ${JOURNAL_KINDS.join(' | ')}\n` +
+  'See `mcpcut --help` for every command.\n'
+
 /** Minimal writable-stream shape these commands need. */
 export interface JournalCliWritable {
   write(chunk: string): unknown
@@ -40,10 +54,9 @@ export async function runJournalCommandGroup(
   rest: readonly string[],
   io: JournalCliIo,
   journalDir: string | undefined,
-  usage: string,
 ): Promise<number> {
   if (command === 'sessions') return runSessionsCommand(io, journalDir)
-  return runShowCommand(rest, io, journalDir, usage)
+  return runShowCommand(rest, io, journalDir)
 }
 
 export async function runSessionsCommand(
@@ -85,7 +98,6 @@ export async function runShowCommand(
   showArgs: readonly string[],
   io: JournalCliIo,
   journalDir: string | undefined,
-  usage: string,
 ): Promise<number> {
   const { values, positionals } = parseArgs({
     args: [...showArgs],
@@ -100,21 +112,21 @@ export async function runShowCommand(
 
   const sessionId = positionals[0]
   if (sessionId === undefined) {
-    io.stderr.write(`Missing <sessionId> in show command.\n\n${usage}`)
+    io.stderr.write(`Missing <sessionId> in show command.\n\n${SHOW_USAGE}`)
     return 1
   }
 
   const direction = values.direction
   if (direction !== undefined && !isValidJournalDirection(direction)) {
     io.stderr.write(
-      `Invalid --direction "${direction}". Allowed values: ${JOURNAL_DIRECTIONS.join(', ')}\n\n${usage}`,
+      `Invalid --direction "${direction}". Allowed values: ${JOURNAL_DIRECTIONS.join(', ')}\n\n${SHOW_USAGE}`,
     )
     return 1
   }
 
   const kind = values.kind
   if (kind !== undefined && !isValidJournalKind(kind)) {
-    io.stderr.write(`Invalid --kind "${kind}". Allowed values: ${JOURNAL_KINDS.join(', ')}\n\n${usage}`)
+    io.stderr.write(`Invalid --kind "${kind}". Allowed values: ${JOURNAL_KINDS.join(', ')}\n\n${SHOW_USAGE}`)
     return 1
   }
 
