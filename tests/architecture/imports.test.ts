@@ -929,3 +929,87 @@ describe('tui/constants.ts imports the model as types only', () => {
     expect(modelImportsOf("import { Msg } from './modelling.js'\n")).toEqual([])
   })
 })
+
+// ---------------------------------------------------------------------------
+// The agent pool core (`src/pool/**`, ADR-0015) is traffic semantics, not an
+// operator surface. It is the mirror image of the rule above: where the UI,
+// the installer and the console must never touch traffic, the pool must never
+// touch an operator surface. It gets to import `protocol/**` and `policy/**`
+// — deciding what an agent may address IS its job, and that is exactly why
+// `src/pool` is not in TRANSPORT_DIRS — but a pool module that reached into
+// the console, the CLI or the web UI would turn a pure, IO-free semantic layer
+// into a second place where operator decisions are made. `isUiSpecifier`
+// already guards `src/ui/**` across the whole of `src/`; this rule adds the
+// other two surfaces, and is likewise derived from the directory so a module
+// added later is covered the moment it lands.
+// ---------------------------------------------------------------------------
+
+/** The pool core, recursively. */
+const POOL_DIRS: readonly string[] = ['src/pool']
+
+function poolFiles(): string[] {
+  return collectTransportFiles(PROJECT_ROOT, POOL_DIRS, new Set())
+}
+
+/** True for a specifier that reaches into the terminal console. */
+function isTuiSpecifier(specifier: string): boolean {
+  return /(?:^|\/)tui\//.test(specifier)
+}
+
+/** True for a specifier that reaches a CLI command module or the dispatcher. */
+function isCliSpecifier(specifier: string): boolean {
+  return /(?:^|\/)cli\//.test(specifier) || /(?:^|\/)cli(?:\.js)?$/.test(specifier)
+}
+
+describe('the agent pool core is traffic semantics, not an operator surface (ADR-0015)', () => {
+  test.each(poolFiles())('%s imports no ui/tui/cli module', (relativePath) => {
+    const source = readFileSync(join(PROJECT_ROOT, relativePath), 'utf8')
+
+    const forbidden = importSpecifiersOf(source).filter(
+      (specifier) =>
+        isUiSpecifier(specifier) || isTuiSpecifier(specifier) || isCliSpecifier(specifier),
+    )
+
+    expect(forbidden).toEqual([])
+  })
+
+  test('the directory exists and contributes files, so the rule is not vacuous', () => {
+    const files = poolFiles()
+
+    expect(files.length, 'src/pool contributes no .ts file').toBeGreaterThan(0)
+    for (const expected of [
+      'src/pool/constants.ts',
+      'src/pool/name-codec.ts',
+      'src/pool/merge-lists.ts',
+      'src/pool/route-request.ts',
+      'src/pool/initialize.ts',
+      'src/pool/route-table.ts',
+      'src/pool/correlator.ts',
+    ]) {
+      expect(files).toContain(expected)
+    }
+  })
+
+  test('the two new matchers catch what they are named for, and nothing else', () => {
+    // Guards the guards, as every rule above does.
+    expect(isTuiSpecifier('../tui/model.js')).toBe(true)
+    expect(isTuiSpecifier('../tui/remote/saved.js')).toBe(true)
+    expect(isCliSpecifier('../cli/dispatch-types.js')).toBe(true)
+    expect(isCliSpecifier('../cli.js')).toBe(true)
+    // …and that the semantic neighbours the pool DOES depend on stay allowed.
+    expect(isTuiSpecifier('../agents/effective.js')).toBe(false)
+    expect(isCliSpecifier('../protocol/classify.js')).toBe(false)
+    expect(isCliSpecifier('../registry/constants.js')).toBe(false)
+    expect(isUiSpecifier('../proxy/synthesize.js')).toBe(false)
+  })
+
+  test('the pool really does reach the semantic modules this rule deliberately permits', () => {
+    // Without this the rule could pass on a pool that imported nothing at all.
+    const codec = importSpecifiersOf(
+      readFileSync(join(PROJECT_ROOT, 'src/pool/name-codec.ts'), 'utf8'),
+    )
+
+    expect(codec).toContain('../registry/constants.js')
+  })
+})
+

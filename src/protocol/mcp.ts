@@ -26,6 +26,9 @@ import type { ClassifiedMessage, JsonRpcId } from './classify.js'
 export const TOOLS_CALL_METHOD = 'tools/call'
 /** Same rule for `tools/list` (the probe engine and inventory both need it). */
 export const TOOLS_LIST_METHOD = 'tools/list'
+/** Same rule for the two prompt methods the agent pool merges and routes (ADR-0015). */
+export const PROMPTS_LIST_METHOD = 'prompts/list'
+export const PROMPTS_GET_METHOD = 'prompts/get'
 
 /** A single tool as reported by a server's `tools/list` response. */
 export interface ToolDescriptor {
@@ -215,6 +218,29 @@ function toToolJson(tool: ToolDescriptor): Record<string, unknown> {
 /** The MCP handshake method that marks the sessionful (≤ 2025-11-25) model. */
 export const INITIALIZE_METHOD = 'initialize'
 
+/** The notification a client sends once it has accepted an `initialize` result. */
+export const INITIALIZED_NOTIFICATION = 'notifications/initialized'
+/** Server-initiated "my catalog changed" notifications, one per list kind. */
+export const TOOLS_LIST_CHANGED_NOTIFICATION = 'notifications/tools/list_changed'
+export const PROMPTS_LIST_CHANGED_NOTIFICATION = 'notifications/prompts/list_changed'
+
+/**
+ * Sessionful revisions the plane can answer `initialize` for ITSELF, oldest
+ * first, so the tail is "latest supported" (ADR-0015 §4: at a pool address the
+ * plane is the server, and ADR-0002 §4's "forward, never substitute" does not
+ * apply). 2026-07-28 is deliberately absent: that revision removed the
+ * handshake entirely, so it cannot be negotiated through one — a stateless
+ * agent is a second-wave concern (PE3), not a version in this list.
+ */
+export const SESSIONFUL_PROTOCOL_VERSIONS = ['2025-03-26', '2025-06-18', '2025-11-25'] as const
+
+/**
+ * The newest revision of that list, named here so callers neither index it by
+ * `length - 1` (which TypeScript cannot narrow, forcing a bare `!`) nor hold a
+ * second copy of the literal that could drift from the list above.
+ */
+export const LATEST_SESSIONFUL_PROTOCOL_VERSION = '2025-11-25'
+
 /**
  * Methods whose stateless per-message headers carry an `Mcp-Name` mirror,
  * mapped to the `params` field the spec mirrors it from (SEP-2243:
@@ -223,7 +249,7 @@ export const INITIALIZE_METHOD = 'initialize'
  */
 const MCP_NAME_PARAM_BY_METHOD: Readonly<Record<string, 'name' | 'uri'>> = {
   [TOOLS_CALL_METHOD]: 'name',
-  'prompts/get': 'name',
+  [PROMPTS_GET_METHOD]: 'name',
   'resources/read': 'uri',
 }
 
