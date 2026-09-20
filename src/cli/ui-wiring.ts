@@ -1,6 +1,6 @@
 import type { AgentsStore } from '../agents/store.js'
-import { bootstrapTokenPathFor, consumeBootstrapTokenFile } from '../admin/bootstrap-file.js'
-import type { AdminStore } from '../admin/store.js'
+import { setupCodePathFor } from '../admin/setup-code-file.js'
+import type { AdminRecord, AdminStore } from '../admin/store.js'
 import { createGroupsStore } from '../groups/store.js'
 import { journalAccessEdit, type JournalAccessEditOutcome } from '../groups/journal-access-edit.js'
 import type { AccessEditInfo } from '../journal/record.js'
@@ -37,6 +37,7 @@ import {
   type ServerStatusPort,
 } from '../ui/handlers/servers-status.js'
 import type { UiHandlers } from '../ui/routes.js'
+import { removeCodeFile } from './ui-first-run.js'
 import { composeProbeChain } from './probe-wiring.js'
 import type { UiCliWritable } from './ui-constants.js'
 
@@ -97,10 +98,18 @@ export interface UiComposition {
   /** Waits for every in-flight server probe to settle; starts nothing new. */
   closeProbes(): Promise<void>
   /**
-   * Removes the bootstrap token file after a successful web sign-in (phase 6,
-   * F6); a file that will not unlink is a stderr line, never a failed login.
+   * Removes a leftover setup code file after a successful web sign-in (phase
+   * 6, F6); a file that will not unlink is a stderr line, never a failed login.
    */
   afterSignIn(): Promise<void>
+  /**
+   * What follows the first owner's creation on `/setup`: the `access-edit`
+   * record (`admin.add`, authored by nobody — the actor shape the CLI's
+   * bootstrap `admin add` already uses), the stderr attribution line and the
+   * removal of the spent code file. Answers whether the record landed; it may
+   * also throw — `setup-flow.ts` contains that and treats it as a drop.
+   */
+  afterOwnerCreated(admin: AdminRecord): Promise<{ readonly written: boolean }>
 }
 
 /**
@@ -381,11 +390,21 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
     queue,
     quarantineSignature: () => quarantineSignatureOf(deps.inventoryStorePath),
     closeProbes: probes.close,
-    afterSignIn: async () => {
-      const outcome = await consumeBootstrapTokenFile(bootstrapTokenPathFor(deps.journalDir))
-      if (outcome.kind === 'failed') {
-        deps.stderr.write(`[ui] bootstrap token file: ${formatReadableField(outcome.message)}\n`)
-      }
+    // A sign-in means an admin exists, so a code file still lying there is
+    // a leftover of a first run that a shell finished instead.
+    afterSignIn: () => removeCodeFile(setupCodePathFor(deps.journalDir), deps),
+    afterOwnerCreated: async (admin: AdminRecord) => {
+      deps.stderr.write(`[ui] first-run setup admin.add ${formatReadableField(admin.name)}\n`)
+      await removeCodeFile(setupCodePathFor(deps.journalDir), deps)
+      // The drop verdict goes back unwidened: the token page hangs its
+      // warning on it, as every other mutation's success page does (F1).
+      const { written } = await writeAccessEdit({
+        actor: { adminName: null, role: null, via: 'ui' },
+        action: 'admin.add',
+        admin: admin.name,
+        targetRole: admin.role,
+      })
+      return { written }
     },
   })
 }

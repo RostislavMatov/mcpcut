@@ -52,6 +52,15 @@ body.page-login main { width: 100%; max-width: none; align-items: center; gap: 2
 .login-footer a:hover { color: var(--fg); }
 @media (max-width: 720px) { .login-footer { grid-template-columns: 1fr; } }
 
+/* --- First run (/setup): same column, a wider foot and a spaced token reveal - */
+.login-foot.setup-foot .hint { max-width: 46ch; }
+.login-foot.setup-foot .hint code { white-space: nowrap; }
+.login-form input:disabled { color: var(--fg-dim); border-style: dashed; cursor: not-allowed; }
+.login-form.token-reveal { display: flex; flex-direction: column; gap: 16px; }
+.login-form.token-reveal .token, .login-form.token-reveal .callout, .login-form.token-reveal .label { margin: 0; }
+.login-form.token-reveal .token { white-space: pre-wrap; overflow-wrap: anywhere; }
+.login-form.token-reveal .notice-warning { margin: 0; font-weight: 700; color: var(--fg); font-size: 12px; line-height: 1.6; }
+
 /* --- Auth screen controls ------------------------------------------------- */
 .login-field-hd { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .login-field-hd .ghost { font-size: 11px; }

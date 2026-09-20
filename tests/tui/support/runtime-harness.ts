@@ -103,6 +103,8 @@ export interface StartOptions {
   readonly token?: TokenCell
   /** Where an action that leaves the console puts the argv to reopen with. */
   readonly reopen?: ReopenCell
+  /** The `disconnect` effect's seam (2026-09-20): forgets a saved remote address. */
+  readonly forgetRemote?: () => Promise<void>
 }
 
 /** The console's own environment: distinctive, so a seam carrying it is recognisable. */
@@ -116,6 +118,7 @@ export function depsOf(
   style: Style = plainStyle,
   token: TokenCell = createTokenCell(),
   reopen?: ReopenCell,
+  forgetRemote?: () => Promise<void>,
 ): ConsoleDeps {
   const dir = journalDirOf()
   return {
@@ -127,8 +130,14 @@ export function depsOf(
       dispatchOptions: { admin: { journalDir: dir } },
       env: CONSOLE_ENV,
       journalDir: dir,
+      // Wired here exactly as production wires it (`tui-cmd.ts`'s
+      // `consoleDepsOf`): a warning an effect writes (the setup code file, a
+      // failed `forgetRemote`) belongs on the SAME stderr a test reads back
+      // with `errText()`.
+      stderr,
       token,
       ...(reopen === undefined ? {} : { reopen }),
+      ...(forgetRemote === undefined ? {} : { forgetRemote }),
     },
     processEvents,
     signals: DEFAULT_TUI_SIGNALS,
@@ -155,6 +164,7 @@ export function startConsole(options: StartOptions = {}): Harness {
       options.style ?? plainStyle,
       options.token ?? createTokenCell(),
       options.reopen,
+      options.forgetRemote,
     ),
     ...(options.initial !== undefined ? { initial: options.initial } : {}),
   })

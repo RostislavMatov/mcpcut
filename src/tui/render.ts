@@ -3,6 +3,8 @@ import { blankRows } from './layout.js'
 import type { Model } from './model.js'
 import { renderMain } from './render-main.js'
 import { renderSignIn } from './render-signin.js'
+import { renderFirstOwner } from './render-first-owner.js'
+import { renderWelcome } from './render-welcome.js'
 import { renderWizard } from './render-wizard.js'
 
 /**
@@ -38,8 +40,12 @@ function screenLines(model: Model, style: Style): readonly string[] {
       return renderSignIn(screen, model.size, style, model.install)
     case 'wizard':
       return renderWizard(screen, model.size, style)
+    case 'first-owner':
+      return renderFirstOwner(screen, model.size, style, model.install)
+    case 'welcome':
+      return renderWelcome(screen, model.size, style)
     case 'main':
-      return renderMain(screen, model.size, style)
+      return renderMain(screen, model.size, style, model.install)
   }
 }
 

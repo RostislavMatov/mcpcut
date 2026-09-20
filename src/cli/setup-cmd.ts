@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { errnoCodeOf } from '../errno.js'
 import { createServiceManager, type ServiceManager, type ServiceManagerDeps } from '../services/manager.js'
 import { checkBindExposure, checkPortFree } from '../setup/bind-checks.js'
+import { checkPublicUrl } from '../setup/public-url.js'
 import {
   checkDataDir,
   checkDatabases,
@@ -40,8 +41,8 @@ import type { UiCliIo } from './ui-constants.js'
  * data directory (the first check has to prove it is writable) and nothing
  * else — no config, no vault, no signing key, no admin. And the owner is
  * minted BEFORE the first `ui` start (owner decision C6), so its one-time
- * token reaches a human on stdout instead of the daemon log the `ui` bootstrap
- * would have put it in.
+ * token reaches a human on stdout and the first `ui` start has no first run
+ * left to offer on `/setup`.
  *
  * Without `--yes` this command is the INTERACTIVE setup: on a terminal it
  * opens the first-run wizard, which asks the same questions the flags answer
@@ -135,7 +136,7 @@ async function runPreparedSetup(
     ...(opts.now !== undefined ? { now: opts.now } : {}),
     ...opts.managerDeps,
   })
-  if (!(await reportChecks(io, config, manager))) return 1
+  if (!(await reportChecks(io, config, manager, args))) return 1
 
   await writeInstallConfig(context.configPath, config)
   io.stdout.write(configWritten(context.configPath))
@@ -245,8 +246,9 @@ async function reportChecks(
   io: UiCliIo,
   config: InstallConfig,
   manager: ServiceManager,
+  args: SetupArgs,
 ): Promise<boolean> {
-  for (const check of checksOf(config, manager)) {
+  for (const check of checksOf(config, manager, args)) {
     const result = await check()
     io.stdout.write(`${formatCheck(result)}\n`)
     if (result.level === 'fail') return false
@@ -258,7 +260,9 @@ async function reportChecks(
 function checksOf(
   config: InstallConfig,
   manager: ServiceManager,
+  args: SetupArgs,
 ): ReadonlyArray<() => Promise<CheckResult>> {
+  const { uiPublicUrl, servePublicUrl } = args
   return [
     () => checkDataDir(config.dataDir),
     // Right after the directory it lives in, and before anything is written:
@@ -273,6 +277,10 @@ function checksOf(
     // `serve` has no TLS-termination flag of its own: agent bearer tokens
     // travel in clear on that front whatever sits in front of it.
     async () => checkBindExposure('serve', config.serve.host, false),
+    // Last, and only for an address given in THIS run: what the install now
+    // answers to, and what plain http to a public address costs.
+    ...(uiPublicUrl !== undefined ? [async () => checkPublicUrl('ui', uiPublicUrl, config.ui.allowedHosts)] : []),
+    ...(servePublicUrl !== undefined ? [async () => checkPublicUrl('serve', servePublicUrl, config.serve.allowedHosts)] : []),
   ]
 }
 

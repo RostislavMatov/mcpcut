@@ -282,6 +282,29 @@ export const SESSION_CAPACITY_WARNING =
  */
 export const POST_LOGIN_LOCATION = '/'
 
+/** The sign-in screen: where a caller who is not signed in is sent. */
+export const LOGIN_LOCATION = '/login'
+
+/**
+ * The first-run page (`setup-flow.ts`): where that same caller is sent instead
+ * while the install has no admin — a sign-in screen nobody holds a token for
+ * is a dead end, which is the complaint this page exists to answer.
+ */
+export const SETUP_LOCATION = '/setup'
+
+/**
+ * The one sentence for every refused setup code — absent, empty, malformed or
+ * wrong — so the page is no more of an oracle than the login's.
+ */
+export const SETUP_CODE_REFUSED_NOTICE =
+  'That setup code is not valid. It is in the setup-code file in the data directory of this install.'
+
+/** What the first-run page says once the address has spent its attempts. */
+export const SETUP_TOO_MANY_ATTEMPTS_NOTICE = 'Too many attempts. Wait a minute and try again.'
+
+/** Emitted to the warn sink when the first-run page trips the rate limit. */
+export const SETUP_RATE_LIMIT_WARNING = '[ui] first-run setup rate limit exceeded; refusing further attempts'
+
 // --- HTTP statuses --------------------------------------------------------
 
 /**

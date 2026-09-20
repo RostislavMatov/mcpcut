@@ -9,7 +9,7 @@ import {
 import { keyEventOf, type ReadlineKey } from './keys.js'
 import { initialModel, type Effect, type Model, type Msg, type TerminalSize } from './model.js'
 import { render } from './render.js'
-import { executeEffect, finishWizard, type EffectDeps } from './runtime-effects.js'
+import { executeEffect, finishWizard, forgetRemoteQuietly, type EffectDeps } from './runtime-effects.js'
 import { createSubscriptionTimer } from './runtime-timer.js'
 import {
   attempt,
@@ -273,6 +273,16 @@ export function createLoop(deps: ConsoleDeps): ConsoleLoop {
     if (effect.kind === 'reopen') {
       // Copied: the argv outlives the effect, and the runtime hands it to a
       // caller that will spawn from it.
+      deps.effects.reopen?.set([...effect.argv])
+      finish(EXIT_OK)
+      return
+    }
+    if (effect.kind === 'disconnect') {
+      // Fire-and-forget: `forgetRemoteQuietly` never rejects (its own
+      // failure is a stderr line), and handing the terminal back must not
+      // wait on an unlink the operator has already walked away from — the
+      // same argument `reopen` makes just above.
+      void forgetRemoteQuietly(deps.effects)
       deps.effects.reopen?.set([...effect.argv])
       finish(EXIT_OK)
       return

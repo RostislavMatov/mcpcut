@@ -5,6 +5,7 @@ import { ONE_TIME_TOKEN_MARKER } from '../../../src/tui/constants.js'
 import type { KeyEvent, NamedKey } from '../../../src/tui/keys.js'
 import {
   mainScreenOf,
+  type InstallFacts,
   type Model,
   type Msg,
   type Screen,
@@ -100,15 +101,15 @@ export function typed(model: Model, text: string): Model {
   return [...text].reduce((current, letter) => update(current, char(letter)).model, model)
 }
 
-export function mainScreen(patch: Partial<MainScreen> = {}, role: Role = 'owner'): MainScreen {
-  const screen = mainScreenOf({ ...SESSION, role }, visibleSections(role))
+export function mainScreen(patch: Partial<MainScreen> = {}, role: Role = 'owner', facts?: InstallFacts): MainScreen {
+  const screen = mainScreenOf({ ...SESSION, role }, visibleSections(role, undefined, facts))
   if (screen.kind !== 'main') throw new Error('mainScreenOf must build a main screen')
 
   return { ...screen, ...patch }
 }
 
-export function mainModel(patch: Partial<MainScreen> = {}, role: Role = 'owner'): Model {
-  return { screen: mainScreen(patch, role), size: SIZE }
+export function mainModel(patch: Partial<MainScreen> = {}, role: Role = 'owner', install?: InstallFacts): Model {
+  return { screen: mainScreen(patch, role, install), size: SIZE, ...(install === undefined ? {} : { install }) }
 }
 
 /**

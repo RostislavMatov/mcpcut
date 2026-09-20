@@ -51,7 +51,6 @@ import {
   NARROW_COLUMNS,
   PENDING_KEYS_MAX,
   STACKED_ACTION_ROWS_SHARE,
-  SIGNIN_BOOTSTRAP_PREFIX,
   SIGNIN_SERVICES_DOWN_HINT,
   SIGNIN_SERVICES_EXTERNAL_HINT,
   SIGNIN_SERVICES_PREFIX,
@@ -323,8 +322,7 @@ describe('the words and numbers of phase 6', () => {
     HELP_CLOSE_LINE,
     TOKEN_HOLD_BANNER_SHORT,
     RUNNING_HELP_FOOTER,
-    SIGNIN_BOOTSTRAP_PREFIX,
-    deployWaitingDetail(START_READY_TIMEOUT_MS, 3),
+      deployWaitingDetail(START_READY_TIMEOUT_MS, 3),
   ]
 
   test.each(PHASE_6_STRINGS)('"%s" is at most 80 columns wide and not empty', (line) => {

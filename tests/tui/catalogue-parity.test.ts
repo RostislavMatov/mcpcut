@@ -45,6 +45,16 @@ const EXCLUDED_FROM_CATALOGUE: readonly CommandPair[] = [
  */
 const NOT_YET_COVERED: readonly CommandPair[] = []
 
+/**
+ * Console-only actions with no CLI command behind them at all (2026-09-20):
+ * Home's `disconnect` dispatches nothing — it forgets the saved remote
+ * address and reopens `--connect <address>` (`ActionSpec.disconnectsConsole`,
+ * `catalogue/home.ts`) — so it is exempted from "every action runs a command
+ * the table describes" EXPLICITLY, by name, rather than by loosening that
+ * test's rule for every action.
+ */
+const CONSOLE_ONLY_ACTIONS: readonly CommandPair[] = [{ command: 'disconnect' }]
+
 /** A row of the table: two spaces, a binary name, the command, then the rest. */
 const ROW_PATTERN = new RegExp(`^${ROW_INDENT}(?:mcpcut|mcpcut) (\\S+)(?: (.*))?$`)
 
@@ -226,7 +236,9 @@ describe('every command of the CLI is accounted for', () => {
 
   test('every action of the catalogue runs a command the table describes', () => {
     const described = new Set(keysOf(usagePairs(USAGE)))
-    const undescribed = keysOf(cataloguePairs()).filter((key) => !described.has(key))
+    const undescribed = keysOf(withoutKeys(cataloguePairs(), CONSOLE_ONLY_ACTIONS)).filter(
+      (key) => !described.has(key),
+    )
 
     expect(undescribed).toEqual([])
   })
@@ -236,6 +248,14 @@ describe('every command of the CLI is accounted for', () => {
     const unknown = keysOf(EXCLUDED_FROM_CATALOGUE).filter((key) => !described.has(key))
 
     expect(unknown).toEqual([])
+  })
+
+  test('the console-only exemption names a real gap, not a command the table already covers', () => {
+    // If `disconnect` ever became a real CLI command, this guards against the
+    // exemption quietly hiding that it should be checked like any other.
+    const described = new Set(keysOf(usagePairs(USAGE)))
+
+    expect(keysOf(CONSOLE_ONLY_ACTIONS).some((key) => described.has(key))).toBe(false)
   })
 })
 

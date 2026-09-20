@@ -274,14 +274,15 @@ function noAdminLines(admin: MintedAdmin | undefined): readonly string[] {
 }
 
 /** The one place a token reaches a frame; nothing at all when this run minted none. */
-function tokenLines(
+export function tokenLines(
   admin: MintedAdmin | undefined,
   quitAsked: boolean,
   width: number,
+  savedQuestion: string = WIZARD_TOKEN_QUESTION,
 ): readonly string[] {
   if (admin === undefined) return []
 
-  const question = quitAsked ? QUIT_WITH_TOKEN_QUESTION : WIZARD_TOKEN_QUESTION
+  const question = quitAsked ? QUIT_WITH_TOKEN_QUESTION : savedQuestion
 
   return [
     ...tokenHeadLines(admin, width),

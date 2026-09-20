@@ -5,6 +5,8 @@ import { appendPending } from './update-keys.js'
 import { updateMain } from './update-main.js'
 import { updateSignin } from './update-signin.js'
 import { noEffects, quit, withMain } from './update-step.js'
+import { updateFirstOwner } from './update-first-owner.js'
+import { updateWelcome } from './update-welcome.js'
 import { updateWizard } from './update-wizard.js'
 
 /**
@@ -32,6 +34,10 @@ export function update(model: Model, msg: Msg): Step {
   if (screen.kind === 'signin') return updateSignin(model, screen, msg)
 
   if (screen.kind === 'wizard') return updateWizard(model, screen, msg)
+
+  if (screen.kind === 'first-owner') return updateFirstOwner(model, screen, msg)
+
+  if (screen.kind === 'welcome') return updateWelcome(model, screen, msg)
 
   // A command is running: the keyboard is DEFERRED, not deaf (phase 6, F5).
   // Each key is queued on the screen and replayed, in order, once the run

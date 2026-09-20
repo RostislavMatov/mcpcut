@@ -31,7 +31,7 @@ const SETUP_ARGV =
   '--data-dir /home/node/.mcpcut/data ' +
   '--ui-host 0.0.0.0 --ui-port 8091 ' +
   '--serve-host 0.0.0.0 --serve-port 8090 ' +
-  '--admin owner'
+  '--no-admin'
 
 let workDir: string
 let binDir: string
@@ -168,6 +168,20 @@ describe.skipIf(process.platform === 'win32')('docker/entrypoint.sh', () => {
     expect(loggedArgv()[0]).not.toContain('--serve-probe-host')
   })
 
+  test('MCPCUT_UI_PUBLIC_URL / MCPCUT_SERVE_PUBLIC_URL become the public-url flags, each only when set', () => {
+    runEntrypoint(['ui'], { MCPCUT_UI_PUBLIC_URL: 'http://203.0.113.7:8091' })
+
+    expect(loggedArgv()[0]).toContain('--ui-public-url http://203.0.113.7:8091 ')
+    expect(loggedArgv()[0]).not.toContain('--serve-public-url')
+  })
+
+  test('both public-url variables, and an empty one adds no flag', async () => {
+    runEntrypoint(['ui'], { MCPCUT_UI_PUBLIC_URL: '', MCPCUT_SERVE_PUBLIC_URL: 'https://agents.example.com' })
+
+    expect(loggedArgv()[0]).toContain('--serve-public-url https://agents.example.com ')
+    expect(loggedArgv()[0]).not.toContain('--ui-public-url')
+  })
+
   test('an empty probe-host variable adds no flag', () => {
     runEntrypoint(['ui'], { MCPCUT_UI_PROBE_HOST: '', MCPCUT_SERVE_PROBE_HOST: '' })
 
@@ -184,7 +198,7 @@ describe.skipIf(process.platform === 'win32')('docker/entrypoint.sh', () => {
     expect(stderr).toBe('')
     expect(status).toBe(0)
     expect(loggedArgv()[0]).toBe(
-      SETUP_ARGV.replace(' --admin owner', ' --ui-probe-host ui --serve-probe-host serve --admin owner'),
+      SETUP_ARGV.replace(' --no-admin', ' --ui-probe-host ui --serve-probe-host serve --no-admin'),
     )
   })
 

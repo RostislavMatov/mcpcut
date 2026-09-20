@@ -8,6 +8,7 @@ import {
   ADMINS_TAB,
   AUDIT_PRUNE_ACTION,
   AUDIT_TAB,
+  HOME_TAB,
   JOURNAL_EXPORT_ACTION,
   JOURNAL_TAB,
   NO_SUCH_TAB,
@@ -349,5 +350,50 @@ describe('update: what a run carries besides its argv', () => {
     expect(pane.question).toContain('Delete journal records older than 90d?')
     expect(pane.request.argv).toEqual(['prune', '--older-than', '90d', '--yes'])
     expect(step.effects).toEqual([])
+  })
+})
+
+/**
+ * Home's `disconnect` (2026-09-20, owner request "a way to disconnect"):
+ * visible only on a remote console, dispatches nothing, and ends the console
+ * on `['--connect', <the address it was connected to>]`.
+ */
+describe('update: Home’s disconnect action', () => {
+  const REMOTE: Model['install'] = {
+    supervisor: 'mcpcut',
+    remote: true,
+    remoteAddress: 'https://box.example:8091',
+  }
+
+  test('running it forgets nothing itself but asks the runtime to disconnect, and touches no other pane field', () => {
+    const model = mainModel({ sectionIndex: HOME_TAB, actionIndex: 1 }, 'owner', REMOTE)
+
+    const step = update(model, key('enter'))
+
+    expect(step.effects).toEqual([{ kind: 'disconnect', argv: ['--connect', 'https://box.example:8091'] }])
+    expect(mainOf(step.model).pane).toEqual({ kind: 'actions' })
+    expect(mainOf(step.model).busy).toBeUndefined()
+  })
+
+  test('is not offered at all on a local console', () => {
+    const model = mainModel({ sectionIndex: HOME_TAB }, 'owner')
+
+    const home = mainOf(model).sections[HOME_TAB]
+    expect(home?.actions.map((action) => action.id)).toEqual(['status'])
+  })
+
+  test('is the second action of Home on a remote console', () => {
+    const model = mainModel({ sectionIndex: HOME_TAB }, 'owner', REMOTE)
+
+    const home = mainOf(model).sections[HOME_TAB]
+    expect(home?.actions.map((action) => action.id)).toEqual(['status', 'disconnect'])
+  })
+
+  test('an absent remoteAddress (a wiring fault) reopens on an empty address rather than crashing', () => {
+    const model = mainModel({ sectionIndex: HOME_TAB, actionIndex: 1 }, 'owner', { supervisor: 'mcpcut', remote: true })
+
+    const step = update(model, key('enter'))
+
+    expect(step.effects).toEqual([{ kind: 'disconnect', argv: ['--connect', ''] }])
   })
 })

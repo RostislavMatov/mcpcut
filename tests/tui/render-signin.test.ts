@@ -10,7 +10,6 @@ import {
   SIGNIN_TITLE,
 } from '../../src/tui/constants.js'
 import {
-  SIGNIN_BOOTSTRAP_PREFIX,
   SIGNIN_SERVICES_DOWN_HINT,
   SIGNIN_SERVICES_EXTERNAL_HINT,
   SIGNIN_SERVICES_PREFIX,
@@ -76,7 +75,6 @@ interface SigninPatch {
   readonly services?: readonly ServiceSummary[]
   readonly notice?: string
   readonly busy?: boolean
-  readonly bootstrapTokenPath?: string
 }
 
 function signinModel(patch: SigninPatch = {}, size: TerminalSize = DEFAULT_SIZE): Model {
@@ -216,76 +214,56 @@ describe('render-signin: the services banner of the sign-in screen', () => {
   })
 })
 
-/**
- * The bootstrap token file line (phase 6, F6b): while the one-time owner
- * token is still in its file, the sign-in screen says where. The path is a
- * host fact read once when the console opens, so the line is a property of
- * the screen it was opened with — a screen that follows a lost session
- * (`signedOut`) never carries it, because the sign-in that just ended is the
- * one that consumed the file.
- */
-describe('render-signin: the bootstrap token file line', () => {
-  const TOKEN_PATH = '/srv/mcpcut/bootstrap-token'
+describe('render-signin: the remote address (ADR-0014)', () => {
+  function remoteSigninModel(patch: SigninPatch = {}, insecure = false): Model {
+    return {
+      ...signinModel(patch),
+      install: {
+        supervisor: 'mcpcut',
+        remote: true,
+        remoteAddress: 'https://mcp.example.com',
+        ...(insecure ? { remoteInsecure: true as const } : {}),
+      },
+    }
+  }
 
-  test('names the file while the screen knows of one', () => {
-    const text = joined(render(signinModel({ bootstrapTokenPath: TOKEN_PATH }), plainStyle))
+  test('shows the address so an operator always knows which install this is', () => {
+    const text = joined(render(remoteSigninModel(), plainStyle))
 
-    expect(text).toContain(`${SIGNIN_BOOTSTRAP_PREFIX}${TOKEN_PATH}`)
+    expect(text).toContain('https://mcp.example.com')
   })
 
-  test('says nothing about it when there is none', () => {
+  test('a plain-http-to-non-loopback address carries a standing notice', () => {
+    const text = joined(render(remoteSigninModel({}, true), plainStyle))
+
+    expect(text).toContain('crosses the network in clear')
+  })
+
+  test('a secure remote address carries no such notice', () => {
+    const text = joined(render(remoteSigninModel(), plainStyle))
+
+    expect(text).not.toContain('crosses the network in clear')
+  })
+
+  test('a local console shows no address at all', () => {
     const text = joined(render(signinModel(), plainStyle))
 
-    expect(text).not.toContain(SIGNIN_BOOTSTRAP_PREFIX)
+    expect(text).not.toContain('https://')
   })
 
-  test('sits under the services line, once status has answered', () => {
-    const lines = render(
-      signinModel({ services: RUNNING_SERVICES, bootstrapTokenPath: TOKEN_PATH }),
-      plainStyle,
-    )
-    const servicesRow = lines.findIndex((line) => line.includes(SIGNIN_SERVICES_PREFIX))
-    const bootstrapRow = lines.findIndex((line) => line.includes(SIGNIN_BOOTSTRAP_PREFIX))
-
-    expect(servicesRow).toBeGreaterThanOrEqual(0)
-    expect(bootstrapRow).toBe(servicesRow + 1)
-  })
-
-  test('a long path is cut at the columns rather than widening the frame', () => {
-    const size: TerminalSize = { columns: 40, rows: 10 }
-    const longPath = `/${'x'.repeat(60)}/bootstrap-token`
-
-    const lines = render(signinModel({ bootstrapTokenPath: longPath }, size), plainStyle)
-    const line = lines.find((each) => each.startsWith(SIGNIN_BOOTSTRAP_PREFIX))
-
-    expect(line).toBe(padRight(`${SIGNIN_BOOTSTRAP_PREFIX}${longPath}`, size.columns))
-    expect(lines.every((each) => each.length === size.columns)).toBe(true)
-  })
-
-  test('an escape sequence in the path never reaches the frame', () => {
-    const text = joined(
-      render(signinModel({ bootstrapTokenPath: '/tmp/\x1b[31mred/bootstrap-token' }), plainStyle),
-    )
-
-    expect(text).not.toContain('\x1b[31m')
-    expect(text).toContain(SIGNIN_BOOTSTRAP_PREFIX)
-  })
-
-  test('the screen a lost session returns to does not carry it', () => {
-    const before = signinModel({ bootstrapTokenPath: TOKEN_PATH })
-    const after = signedOut(before.size, 'session lost', before.install)
-
-    expect(joined(render(after, plainStyle))).not.toContain(SIGNIN_BOOTSTRAP_PREFIX)
-  })
-
-  test.each(SIZES)('keeps the frame at exactly $rows × $columns', (size) => {
-    const lines = render(
-      signinModel({ services: DOWN_SERVICES, bootstrapTokenPath: TOKEN_PATH }, size),
-      plainStyle,
-    )
+  test.each(SIZES)('keeps the frame’s shape at $columns x $rows with the address on it', (size) => {
+    const lines = render({ ...remoteSigninModel({}, true), size }, plainStyle)
 
     expect(lines).toHaveLength(size.rows)
     expect(lines.every((line) => line.length === size.columns)).toBe(true)
+  })
+
+  test('the footer names Ctrl-D disconnect only on a remote console (2026-09-20)', () => {
+    const remote = render(remoteSigninModel(), plainStyle)
+    const local = render(signinModel(), plainStyle)
+
+    expect(remote.at(-1)).toContain('Ctrl-D disconnect')
+    expect(local.at(-1)).not.toContain('Ctrl-D')
   })
 })
 

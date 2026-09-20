@@ -1,4 +1,4 @@
-import { bootstrapTokenPathFor } from '../admin/bootstrap-file.js'
+import { setupCodePathFor } from '../admin/setup-code-file.js'
 import { createAdminStore } from '../admin/store.js'
 import { formatReadableField } from '../journal/format.js'
 import {
@@ -86,8 +86,8 @@ export async function prepareSigningKey(io: UiCliIo, dataDir: string): Promise<v
 /**
  * Mints the install's first owner and prints its token once — the whole point
  * of owner decision C6. The admin is created HERE, before any daemon exists,
- * so the token reaches a human on stdout instead of waiting in the bootstrap
- * token file the way the `ui` bootstrap would leave it (phase 6, F6).
+ * so the token reaches a human on stdout and the first `ui` start finds an
+ * admin — without one it would serve the `/setup` first-run page instead.
  *
  * The output is `admin add`'s, line for line (`admin-cmd.ts`'s `runAdd`): one
  * shape for a one-time token across the whole CLI, so the two notices that
@@ -100,7 +100,7 @@ export async function prepareAdmin(
   clock?: () => Date,
 ): Promise<boolean> {
   if (args.noAdmin) {
-    io.stderr.write(noAdminWarning(bootstrapTokenPathFor(dataDir)))
+    io.stderr.write(noAdminWarning(setupCodePathFor(dataDir)))
     return true
   }
 

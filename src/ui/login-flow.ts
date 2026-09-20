@@ -76,7 +76,7 @@ export interface LoginFlowDeps {
   readonly penaltyGate?: PenaltyGate
   /**
    * Runs once a session has been minted, with the admin who signed in (phase
-   * 6, F6: removing the bootstrap token file). It is called AFTER
+   * 6, F6: removing a leftover setup code file). It is called AFTER
    * `sessions.create` and its failure is a stderr line, never a different
    * answer: the sign-in already happened, and the cookie the browser is about
    * to receive must not be withheld because a file on the host would not
@@ -84,6 +84,13 @@ export interface LoginFlowDeps {
    */
   readonly afterSignIn?: (admin: AdminRecord) => Promise<void>
 }
+
+/**
+ * What paying the global-ceiling delay needs. Its own shape since ADR-0014:
+ * the console API's Bearer path (`console-auth.ts`) takes the same credential
+ * `/login` does, so it pays the same delay through this one function.
+ */
+export type GlobalPenaltyDeps = Pick<LoginFlowDeps, 'stderr' | 'sleep' | 'penaltyGate'>
 
 /** Default penalty sleep. */
 function realSleep(ms: number): Promise<void> {
@@ -139,7 +146,7 @@ function refuseLogin(ctx: UiRequestContext, status: number, body: Buffer, error:
  * a held request is a held socket, and the throttle must never cost us more
  * than it costs the flood. Skipping degrades to the pre-penalty behaviour.
  */
-async function payGlobalPenalty(deps: LoginFlowDeps, penaltyMs: number): Promise<void> {
+export async function payGlobalPenalty(deps: GlobalPenaltyDeps, penaltyMs: number): Promise<void> {
   if (penaltyMs <= 0) return
   if (deps.penaltyGate !== undefined && !deps.penaltyGate.acquire()) return
   deps.stderr.write(`${LOGIN_GLOBAL_PENALTY_WARNING}\n`)

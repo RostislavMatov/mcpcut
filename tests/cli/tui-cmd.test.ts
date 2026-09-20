@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
-import { bootstrapTokenPathFor } from '../../src/admin/bootstrap-file.js'
+import { ADMINS_FILE_NAME } from '../../src/admin/constants.js'
 import { createAdminStore } from '../../src/admin/store.js'
 import { dispatchOptionsFor, runTui, type TuiCommandOptions } from '../../src/cli/tui-cmd.js'
 import { TUI_USAGE } from '../../src/cli/operator-usage.js'
@@ -14,8 +14,9 @@ import { SECTIONS, visibleActions, visibleSections } from '../../src/tui/catalog
 import { defaultInstallConfig } from '../../src/setup/defaults.js'
 import type { InstallConfigLoad } from '../../src/setup/load.js'
 import { SIGNIN_TITLE, WIZARD_TITLE_EDIT, WIZARD_TITLE_FIRST_RUN } from '../../src/tui/constants.js'
-import { SIGNIN_BOOTSTRAP_PREFIX } from '../../src/tui/constants-live.js'
+import { FIRST_OWNER_TITLE, WELCOME_TITLE } from '../../src/tui/constants-live.js'
 import type { InstallFacts } from '../../src/tui/model.js'
+import type { FetchLike } from '../../src/tui/remote/client.js'
 import { activeActionIndexIn, actionTitlesIn } from '../tui/support/console-harness-navigate.js'
 import { createFakeTerminal, waitForScreen, type FakeTerminal } from '../tui/support/fake-terminal.js'
 
@@ -65,6 +66,19 @@ function fakeIo(): FakeIo {
     out: () => outChunks.join(''),
     err: () => errChunks.join(''),
   }
+}
+
+function jsonResponse(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+}
+
+/** A fetch double that answers `GET state` only — enough for the welcome screen's probe. */
+function stateOnlyFetch(body: unknown = { api: 1, firstRun: false }): FetchLike {
+  return (async (input: unknown) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/api/console/state') return jsonResponse(200, body)
+    throw new Error(`unexpected call to ${url.pathname}`)
+  }) as FetchLike
 }
 
 /** A dispatcher that answers every command with success and records nothing. */
@@ -147,7 +161,7 @@ describe('runTui: the terminal gate', () => {
 })
 
 describe('runTui: the install config', () => {
-  test('a bare invocation without a config opens the first-run wizard', async () => {
+  test('a bare invocation without a config opens the welcome screen, not the wizard directly', async () => {
     const io = fakeIo()
     const fake = createFakeTerminal()
 
@@ -159,6 +173,30 @@ describe('runTui: the install config', () => {
     })
     await waitForScreen(
       fake,
+      (screen) => screen.includes(WELCOME_TITLE) && screen.includes('Set up a service on this machine'),
+      'the welcome screen',
+    )
+    fake.type('\x03')
+
+    expect(await running).toBe(0)
+    expect(fake.restored()).toBe(true)
+    expect(io.err()).toBe('')
+  })
+
+  test('choosing "set up" on the welcome screen opens the very wizard form the old bare entry did', async () => {
+    const io = fakeIo()
+    const fake = createFakeTerminal()
+
+    const running = runTui([], io, {
+      ...consoleOptions(fake, absentInstall),
+      entry: 'bare',
+      home: '/home/op',
+      cwd: '/w',
+    })
+    await waitForScreen(fake, (screen) => screen.includes(WELCOME_TITLE), 'the welcome screen')
+    fake.type('1')
+    await waitForScreen(
+      fake,
       (screen) => screen.includes(WIZARD_TITLE_FIRST_RUN) && screen.includes('Data dir'),
       'the wizard form',
     )
@@ -167,6 +205,39 @@ describe('runTui: the install config', () => {
     expect(await running).toBe(0)
     expect(fake.restored()).toBe(true)
     expect(io.err()).toBe('')
+  })
+
+  test('choosing "connect" and a successful probe reopens with ["--remote", url]', async () => {
+    const io = fakeIo()
+    const fake = createFakeTerminal()
+    const reopened: string[][] = []
+    const remembered: string[] = []
+
+    const running = runTui([], io, {
+      ...consoleOptions(fake, absentInstall),
+      entry: 'bare',
+      home: '/home/op',
+      cwd: '/w',
+      remoteFetch: stateOnlyFetch(),
+      // A successful connect writes `~/.mcpcut/remote.json` (2026-09-20) —
+      // faked here, like `dispatch`, so this test never touches a real path.
+      rememberRemote: async (url) => void remembered.push(url),
+      reopen: async (argv) => {
+        reopened.push([...argv])
+        return 0
+      },
+    })
+    await waitForScreen(fake, (screen) => screen.includes(WELCOME_TITLE), 'the welcome screen')
+    fake.type('2')
+    await waitForScreen(fake, (screen) => screen.includes('Host:'), 'the connect form')
+    fake.type('box.example')
+    fake.type('\t')
+    fake.type('8091')
+    fake.type('\r')
+
+    expect(await running).toBe(0)
+    expect(reopened).toEqual([['--remote', 'https://box.example:8091']])
+    expect(remembered).toEqual(['https://box.example:8091'])
   })
 
   test('an explicit tui without a config opens over the default data directory', async () => {
@@ -273,6 +344,10 @@ describe('runTui: the setup entry opens the wizard', () => {
         return 0
       },
     })
+    // A bare, absent-install entry opens the welcome screen first; "1" chooses
+    // "set up a service", which swaps straight to the wizard form.
+    await waitForScreen(fake, (screen) => screen.includes(WELCOME_TITLE), 'the welcome screen')
+    fake.type('1')
     await waitForScreen(fake, (screen) => screen.includes('Data dir'), 'the wizard form')
     // Services by external: both starts are somebody else's business, so the
     // ladder is one rung and the final screen arrives without a live manager.
@@ -504,7 +579,7 @@ describe('dispatchOptionsFor: one store for the session check and the admin comm
  * one place a bold title would slip through. The seam still wins when a test
  * passes one, which every other case in this file relies on.
  *
- * The bootstrap token file (F6b): while it exists the sign-in screen names it,
+ * The setup code file (F6b): while it exists the sign-in screen names it,
  * read once from the SAME directory the console's stores use. The dispatcher
  * here is the quiet one — nothing signs in, so the file is never consumed and
  * the question is only whether the first frame knew about it.
@@ -529,6 +604,8 @@ describe('runTui: the style comes from the environment', () => {
 
   beforeEach(async () => {
     journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-tui-cmd-style-'))
+    // An admin, so the console opens on the sign-in screen these frames are about.
+    await createAdminStore({ journalDir }).createAdmin('root', 'owner')
   })
 
   afterEach(async () => {
@@ -567,26 +644,30 @@ describe('runTui: the style comes from the environment', () => {
   })
 })
 
-describe('runTui: the sign-in screen names the bootstrap token file', () => {
+describe('runTui: which screen the console opens on', () => {
   let journalDir: string
 
   beforeEach(async () => {
-    journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-tui-cmd-bootstrap-'))
+    journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-tui-cmd-first-screen-'))
   })
 
   afterEach(async () => {
     await rm(journalDir, { recursive: true, force: true })
   })
 
-  /** The first sign-in frame of a console over `journalDir`, then Ctrl-C. */
-  async function firstSigninFrame(): Promise<string> {
+  /** The first settled frame of a console over `journalDir`, then Ctrl-C. */
+  async function firstFrame(): Promise<string> {
     const fake = createFakeTerminal({ columns: WIDE_COLUMNS })
     const running = runTui([], fakeIo(), {
       ...consoleOptions(fake, okInstall),
       entry: 'explicit',
       journalDir,
     })
-    await waitForScreen(fake, (screen) => screen.includes(SIGNIN_TITLE), 'the sign-in screen')
+    await waitForScreen(
+      fake,
+      (screen) => screen.includes(SIGNIN_TITLE) || screen.includes(FIRST_OWNER_TITLE),
+      'the opening screen',
+    )
     const frame = fake.screen()
     fake.type('\x03')
     expect(await running).toBe(0)
@@ -594,18 +675,28 @@ describe('runTui: the sign-in screen names the bootstrap token file', () => {
     return frame
   }
 
-  test('while the file exists, the first frame says where it is', async () => {
-    const path = bootstrapTokenPathFor(journalDir)
-    await writeFile(path, 'mcpa_not-read-by-this-test\n', 'utf8')
+  test('no admin in the store: the first-owner form, not a sign-in nobody holds a token for', async () => {
+    const frame = await firstFrame()
 
-    const frame = await firstSigninFrame()
-
-    expect(frame).toContain(`${SIGNIN_BOOTSTRAP_PREFIX}${path}`)
+    expect(frame).toContain(FIRST_OWNER_TITLE)
+    expect(frame).not.toContain(SIGNIN_TITLE)
   })
 
-  test('without the file, the line is not there', async () => {
-    const frame = await firstSigninFrame()
+  test('an admin in the store: the sign-in screen', async () => {
+    await createAdminStore({ journalDir }).createAdmin('root', 'owner')
 
-    expect(frame).not.toContain(SIGNIN_BOOTSTRAP_PREFIX)
+    const frame = await firstFrame()
+
+    expect(frame).toContain(SIGNIN_TITLE)
+    expect(frame).not.toContain(FIRST_OWNER_TITLE)
+  })
+
+  test('a store that cannot be read: the sign-in screen — no owner is offered beside unreadable records', async () => {
+    await writeFile(join(journalDir, ADMINS_FILE_NAME), '{ not json', 'utf8')
+
+    const frame = await firstFrame()
+
+    expect(frame).toContain(SIGNIN_TITLE)
+    expect(frame).not.toContain(FIRST_OWNER_TITLE)
   })
 })

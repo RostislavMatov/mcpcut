@@ -127,6 +127,18 @@ export class LastOwnerError extends Error {
   }
 }
 
+/**
+ * Raised when the first-run claim (`createFirstOwner`) finds an active admin
+ * already there. The message names nobody: it is shown to a caller who, by
+ * definition, holds no credential.
+ */
+export class FirstOwnerRefusedError extends Error {
+  constructor() {
+    super('this install already has an admin: the first-run setup is closed')
+    this.name = 'FirstOwnerRefusedError'
+  }
+}
+
 /** Thrown by the injected validator; surfaced wrapped in `StoreCorruptError`. */
 export class AdminsFileInvalidError extends Error {
   constructor(error: z.ZodError) {
@@ -152,6 +164,13 @@ export interface CreatedAdmin {
 export interface AdminStore {
   /** Creates a named admin with a fixed role; rejects a duplicate live name. */
   createAdmin(name: string, role: AdminRole): Promise<CreatedAdmin>
+  /**
+   * The first-run claim: creates an `owner` ONLY while the store holds no
+   * active admin. The emptiness check runs inside the same CAS update as the
+   * write, so two concurrent claims yield one owner and one
+   * `FirstOwnerRefusedError` — a check made outside it would let both through.
+   */
+  createFirstOwner(name: string): Promise<CreatedAdmin>
   /** Mints a fresh token for an existing admin (kills its live sessions). */
   rotateAdmin(name: string): Promise<CreatedAdmin>
   /** Changes an admin's role; refuses to demote the last active owner. */
@@ -233,6 +252,18 @@ export function createAdminStore(opts: AdminStoreOptions = {}): AdminStore {
     return { admin: record, token }
   }
 
+  async function createFirstOwner(name: string): Promise<CreatedAdmin> {
+    assertValidName(name)
+    const { token, hash } = generateToken(ADMIN_TOKEN_PREFIX, ADMIN_TOKEN_RANDOM_BYTES)
+    const record: AdminRecord = { name, role: 'owner', tokenHash: hash, createdAt: clock().toISOString() }
+    await store.update((current) => {
+      const hasActiveAdmin = Object.values(current.admins).some((admin) => admin.revokedAt === undefined)
+      if (hasActiveAdmin) throw new FirstOwnerRefusedError()
+      return withAdmin(current, record)
+    })
+    return { admin: record, token }
+  }
+
   async function rotateAdmin(name: string): Promise<CreatedAdmin> {
     const { token, hash } = generateToken(ADMIN_TOKEN_PREFIX, ADMIN_TOKEN_RANDOM_BYTES)
     const next = await store.update((current) => {
@@ -306,6 +337,7 @@ export function createAdminStore(opts: AdminStoreOptions = {}): AdminStore {
 
   return {
     createAdmin,
+    createFirstOwner,
     rotateAdmin,
     setRole,
     removeAdmin,

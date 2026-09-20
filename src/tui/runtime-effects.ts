@@ -2,7 +2,15 @@ import type { DispatchFn, DispatchOptions } from '../cli/dispatch-types.js'
 import { captureBothIo } from '../setup/capture-io.js'
 import type { ReopenCell, TokenCell, WizardOutcome, WizardOutcomeCell } from './cells.js'
 import { OUTPUT_MAX_CHARS } from './constants.js'
-import type { DeployStepId, Effect, Msg, RunRequest } from './model.js'
+import type {
+  DeployStepId,
+  Effect,
+  FirstOwnerRemoteOutcome,
+  Msg,
+  RemoteProbeOutcome,
+  RunRequest,
+} from './model.js'
+import type { RunResult } from './output.js'
 import {
   FAILED_RUN_EXIT_CODE,
   failedRun,
@@ -107,6 +115,42 @@ export interface EffectDeps extends SessionDeps {
    * is parked on backpressure.
    */
   readonly openStream?: SinkStreamFactory
+  /**
+   * The first-owner screen's `POST setup` (ADR-0014): present only for a
+   * console opened with `--remote`/`MCPCUT_REMOTE`, where an install has no
+   * store this process can write to directly. Absent for a local console,
+   * which mints its first owner with a sessionless `admin add` instead
+   * (`first-owner-run`, `runSessionless`).
+   */
+  readonly remoteSetup?: (code: string, name: string) => Promise<FirstOwnerRemoteOutcome>
+  /**
+   * The welcome screen's "connect" probe (2026-09-19): a thin `GET state`
+   * against the address the operator typed, so a bad host/port is answered
+   * before the console commits to `reopen`-ing over it. Production wires this
+   * to `createRemoteClient({ baseUrl: url }).state()` (`tui-cmd.ts`); absent
+   * only for a caller that never wired it, in which case the probe is refused
+   * like any other unreachable address rather than the runtime crashing.
+   */
+  readonly probeRemote?: (url: string) => Promise<RemoteProbeOutcome>
+  /**
+   * "Remember the last address" (2026-09-20): called with the normalised url
+   * the moment a `connect-probe` succeeds, BEFORE the `connect-probe-result`
+   * message reaches the reducer — so the write has either finished or failed
+   * (a stderr warning) by the time the reducer's `reopen` hands the terminal
+   * away. Absent for `--remote`/`MCPCUT_REMOTE` (the scripted path never
+   * writes this file) and for the local console (there is nothing to
+   * remember). A failure never blocks connecting: the operator is simply
+   * asked again next time (`src/tui/remote/saved.ts`).
+   */
+  readonly rememberRemote?: (url: string) => Promise<void>
+  /**
+   * "A way to disconnect" (2026-09-20): forgets the saved address, if any.
+   * Present only on a console opened over `--remote`/`MCPCUT_REMOTE`/a saved
+   * address — there is nothing to forget on a local console, and Home's
+   * `disconnect` action is withdrawn there (`meetsRequirement`). A failure is
+   * one stderr line and never a reason to stay connected.
+   */
+  readonly forgetRemote?: () => Promise<void>
 }
 
 /** The command whose document fills the services part of the header. */
@@ -144,8 +188,22 @@ export async function executeEffect(effect: Effect, deps: EffectDeps): Promise<M
       return refreshServices(deps)
     case 'wizard-run':
       return runWizardCommand(effect.step, effect.request, deps)
+    case 'first-owner-run':
+      return { kind: 'first-owner-result', result: await runSessionless(effect.request, deps) }
+    case 'first-owner-setup':
+      return { kind: 'first-owner-setup-result', result: await runRemoteSetup(effect.code, effect.name, deps) }
     case 'poll':
       return pollCommand(effect.request, deps)
+    case 'connect-probe':
+      return connectProbe(effect.url, deps)
+    case 'disconnect':
+      // Same shape as `reopen` below: the runtime ends the console in
+      // `enqueue` before this case is ever reached in production, and it is
+      // here only so a direct call (a test, or a future caller) still forgets
+      // the address before handing the terminal away.
+      await forgetRemoteQuietly(deps)
+      deps.reopen?.set([...effect.argv])
+      return undefined
     case 'wizard-finish':
       // The runtime answers this one in `enqueue`; the case is here so the
       // switch stays exhaustive and a direct call still does the right thing.
@@ -165,7 +223,7 @@ export async function executeEffect(effect: Effect, deps: EffectDeps): Promise<M
 
 // Resolving a token, signing in and the freshness check live in
 // `runtime-signin.ts` since phase 6, when the sign-in grew the removal of the
-// bootstrap token file (F6) and this file had no room for it.
+// first-run file (F6) and this file had no room for it.
 
 /** The caller's options with the session token on every seam that carries one. */
 function optionsFor(token: string, deps: EffectDeps): DispatchOptions {
@@ -268,6 +326,16 @@ async function runWizardCommand(
   request: RunRequest,
   deps: EffectDeps,
 ): Promise<Msg> {
+  return { kind: 'wizard-run-result', step, result: await runSessionless(request, deps) }
+}
+
+/**
+ * A command dispatched with no session and no admin token in its environment:
+ * the wizard's ladder, and the first-owner screen's `admin add` — which the
+ * CLI accepts without a token only while the store is empty, so a console
+ * that lost the race to a shell is refused by the command itself.
+ */
+async function runSessionless(request: RunRequest, deps: EffectDeps): Promise<RunResult> {
   const sink = memorySink(OUTPUT_MAX_CHARS)
   const outcome = await dispatchCaptured(
     request.argv,
@@ -275,7 +343,89 @@ async function runWizardCommand(
     withSeamEnv(deps.dispatchOptions, withoutAdminToken(deps.env)),
     deps,
   )
-  return { kind: 'wizard-run-result', step, result: runResultOf(request, sink, outcome) }
+  return runResultOf(request, sink, outcome)
+}
+
+/**
+ * The first-owner screen's remote `POST setup` (ADR-0014). `deps.remoteSetup`
+ * is absent on a local console — a wiring fault, not an operator one, so it
+ * is answered rather than thrown: the effect queue's own discipline is that
+ * no command may take the console down, and a first run is exactly where a
+ * crash would be least explicable. A throw from the call itself (a network
+ * fault the client did not already turn into an outcome) is answered the
+ * same way, on the form, rather than escaping to `runConsole`'s fault path.
+ */
+async function runRemoteSetup(
+  code: string,
+  name: string,
+  deps: EffectDeps,
+): Promise<FirstOwnerRemoteOutcome> {
+  if (deps.remoteSetup === undefined) {
+    return { kind: 'refused', message: 'this console has no remote install to set up' }
+  }
+  try {
+    return await deps.remoteSetup(code, name)
+  } catch (error: unknown) {
+    return { kind: 'refused', message: messageOf(error) }
+  }
+}
+
+/** What the welcome screen's probe answers with when nothing wired `probeRemote` at all. */
+const NO_PROBE_SEAM_MESSAGE = 'this console has no way to reach a remote install'
+
+/** The stderr line's prefix when the saved remote address could not be written or forgotten. */
+const REMEMBER_REMOTE_WARNING_PREFIX = 'warning: could not remember this address for next time: '
+const FORGET_REMOTE_WARNING_PREFIX = 'warning: could not forget the saved remote address: '
+
+/**
+ * The welcome screen's "connect" probe (2026-09-19). Deliberately never
+ * throws past this point: an unreachable host, a DNS failure or a TLS
+ * handshake gone wrong are ordinary reasons to try again with different
+ * answers, not a reason to take the console down (the same discipline
+ * `dispatchCaptured` holds a real command to).
+ *
+ * A SUCCESSFUL probe remembers the address (2026-09-20, "remember the last
+ * address") before the message is returned: `update-welcome.ts`'s `reopen`
+ * follows immediately once the reducer folds this in, so the write must have
+ * already happened — or already failed onto stderr — by then.
+ */
+async function connectProbe(url: string, deps: EffectDeps): Promise<Msg> {
+  if (deps.probeRemote === undefined) {
+    return { kind: 'connect-probe-result', url, result: { ok: false, message: NO_PROBE_SEAM_MESSAGE } }
+  }
+  let result: RemoteProbeOutcome
+  try {
+    result = await deps.probeRemote(url)
+  } catch (error: unknown) {
+    return { kind: 'connect-probe-result', url, result: { ok: false, message: messageOf(error) } }
+  }
+  if (result.ok) await rememberRemoteQuietly(url, deps)
+  return { kind: 'connect-probe-result', url, result }
+}
+
+/** Saves the address, or writes ONE stderr line — never a reason to refuse a connection that works. */
+async function rememberRemoteQuietly(url: string, deps: EffectDeps): Promise<void> {
+  if (deps.rememberRemote === undefined) return
+  try {
+    await deps.rememberRemote(url)
+  } catch (error: unknown) {
+    deps.stderr?.write(`${REMEMBER_REMOTE_WARNING_PREFIX}${messageOf(error)}\n`)
+  }
+}
+
+/**
+ * Forgets the saved address, or writes ONE stderr line — never a reason to
+ * stay connected. Exported so `runtime.ts`'s `enqueue` can fire it before
+ * ending the console on a `disconnect` effect, exactly as it fires
+ * `finishWizard` before a `wizard-finish`.
+ */
+export async function forgetRemoteQuietly(deps: EffectDeps): Promise<void> {
+  if (deps.forgetRemote === undefined) return
+  try {
+    await deps.forgetRemote()
+  } catch (error: unknown) {
+    deps.stderr?.write(`${FORGET_REMOTE_WARNING_PREFIX}${messageOf(error)}\n`)
+  }
 }
 
 /**

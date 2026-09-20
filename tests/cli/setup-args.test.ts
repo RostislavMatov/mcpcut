@@ -275,3 +275,56 @@ describe('SETUP_USAGE', () => {
     expect(SETUP_USAGE.endsWith('\n')).toBe(true)
   })
 })
+
+describe('--ui-public-url / --serve-public-url: one address instead of three flags', () => {
+  const BASE: InstallConfig = defaultInstallConfig('/var/lib/mcpcut')
+
+  function overlaid(argv: readonly string[]): InstallConfig {
+    const parsed = parseSetupArgs(['--yes', ...argv])
+    if (!parsed.ok) throw new Error(parsed.message)
+    return overlaySetupArgs(BASE, parsed.args, '/')
+  }
+
+  test('http by IP: bind opened, Host and Origin allowed, no TLS claimed', () => {
+    const { ui } = overlaid(['--ui-public-url', 'http://203.0.113.7:8091'])
+
+    expect(ui).toMatchObject({
+      host: '0.0.0.0',
+      behindTls: false,
+      allowedHosts: ['203.0.113.7:8091'],
+      allowedOrigins: ['http://203.0.113.7:8091'],
+    })
+  })
+
+  test('https by name: TLS in front is recorded and the bind stays on loopback', () => {
+    const { ui } = overlaid(['--ui-public-url', 'https://mcp.example.com'])
+
+    expect(ui).toMatchObject({ host: '127.0.0.1', behindTls: true, allowedHosts: ['mcp.example.com'] })
+  })
+
+  test('explicit flags win over what the URL would have derived', () => {
+    const { ui } = overlaid(['--ui-public-url', 'https://mcp.example.com', '--no-behind-tls', '--ui-host', '10.0.0.5'])
+
+    expect(ui).toMatchObject({ host: '10.0.0.5', behindTls: false })
+  })
+
+  test('the serve address opens the agent front the same way, without origins', () => {
+    const { serve, ui } = overlaid(['--serve-public-url', 'http://203.0.113.7:8090'])
+
+    expect(serve).toMatchObject({ host: '0.0.0.0', allowedHosts: ['203.0.113.7:8090'] })
+    expect(serve.allowedOrigins).toBeUndefined()
+    expect(ui).toEqual(BASE.ui)
+  })
+
+  test('a malformed address refuses the run before anything is written', () => {
+    const parsed = parseSetupArgs(['--yes', '--ui-public-url', '203.0.113.7:8091'])
+
+    expect(parsed.ok).toBe(false)
+    expect(!parsed.ok && parsed.message).toContain('--ui-public-url')
+  })
+
+  test('the usage names both flags', () => {
+    expect(SETUP_USAGE).toContain('--ui-public-url <url>')
+    expect(SETUP_USAGE).toContain('--serve-public-url <url>')
+  })
+})

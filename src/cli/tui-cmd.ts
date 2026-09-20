@@ -1,19 +1,24 @@
-import { homedir } from 'node:os'
-import { bootstrapTokenPathFor, hasBootstrapTokenFile } from '../admin/bootstrap-file.js'
+import { createAdminStore } from '../admin/store.js'
 import { JOURNAL_DIR } from '../config.js'
 import { styleFor, type Style } from '../tui/ansi.js'
 import { DEFAULT_TUI_SIGNALS, ESCAPE_CODE_TIMEOUT_MS, EXIT_OK } from '../tui/constants.js'
-import { initialModel, installFactsOf, type SigninHostFacts } from '../tui/model.js'
+import { initialModel, installFactsOf } from '../tui/model.js'
+import type { FetchLike } from '../tui/remote/client.js'
+import { savedRemotePathFor, writeSavedRemote } from '../tui/remote/saved.js'
+import { resolveRemoteUrl } from '../tui/remote/url.js'
 import { createReopenCell, createTokenCell, type ReopenCell } from '../tui/runtime-effects.js'
 import { runConsole, type ConsoleDeps, type TuiTerminal } from '../tui/runtime.js'
+import { firstOwnerModel } from '../tui/update-first-owner.js'
 import { describeDataDirProblem, resolveDataDir } from '../setup/data-dir.js'
 import { loadInstallConfigSync, type InstallConfigLoad } from '../setup/load.js'
 import type { DispatchFn, DispatchOptions } from './dispatch-types.js'
 import { TUI_USAGE } from './operator-usage.js'
 import type { SetupArgs } from './setup-args.js'
+import { runRemoteTui } from './tui-remote.js'
 import { defaultTerminal, isInteractiveTerminal } from './tty.js'
 import { TUI_NOT_A_TTY, TUI_NOT_WIRED, TUI_NO_ARGUMENTS } from './tui-constants.js'
-import { defaultReopen, runWizard, wizardPrefillOf, type ReopenFn } from './tui-wizard.js'
+import { defaultReopen, runWizard, type ReopenFn } from './tui-wizard.js'
+import { openBareWelcome, openConnectEntry, prefillOf, probeRemoteOf, remoteTuiOptionsOf } from './tui-welcome.js'
 import type { UiCliIo } from './ui-constants.js'
 
 /**
@@ -34,13 +39,16 @@ import type { UiCliIo } from './ui-constants.js'
  * refusal that names the file.
  *
  * The three entry points differ in exactly one place: which screen opens. A
- * bare `mcpcut` with no config is a first run and opens the WIZARD, as does
- * `mcpcut setup` without `--yes` whether or not a config exists (there it is
- * an edit of the install that is already there). An explicit `mcpcut tui` is a
- * deliberate request for the console and opens over the default data
- * directory, `~/.mcpcut/data`, when no config says otherwise. Nothing looks for
- * a store anywhere else: an older one is reached by pointing `dataDir` or
- * `MCPCUT_DATA_DIR` at it (ADR-0013).
+ * bare `mcpcut` with no config is a first run and opens the WELCOME screen
+ * (2026-09-19) — set up here, or dial a service that already runs somewhere
+ * else — whose "set up" choice is the very wizard screen `mcpcut setup`
+ * without `--yes` opens directly, whether or not a config exists (there it is
+ * an edit of the install that is already there: `mcpcut setup` never sees the
+ * welcome screen at all). An explicit `mcpcut tui` is a deliberate request for
+ * the console and opens over the default data directory, `~/.mcpcut/data`,
+ * when no config says otherwise. Nothing looks for a store anywhere else: an
+ * older one is reached by pointing `dataDir` or `MCPCUT_DATA_DIR` at it
+ * (ADR-0013).
  *
  * The io shape is `UiCliIo` — declared structurally, like every other command
  * module, so nothing here imports the dispatcher that routes it. The
@@ -57,7 +65,13 @@ import type { UiCliIo } from './ui-constants.js'
  * waiting for the child and the child for the grandchild.
  */
 
-export type TuiEntry = 'bare' | 'explicit' | 'setup'
+/**
+ * `'connect'` joined 2026-09-20 (ADR-0014, owner request "fill in another
+ * server"): `mcpcut --connect [url]` opens the welcome screen's "connect"
+ * form directly, regardless of a local install, `MCPCUT_REMOTE` or a saved
+ * address — the one entry that means "ask me for an address right now".
+ */
+export type TuiEntry = 'bare' | 'explicit' | 'setup' | 'connect'
 
 /** Test seams: every process-, environment- and terminal-dependent input. */
 export interface TuiCommandOptions {
@@ -95,6 +109,29 @@ export interface TuiCommandOptions {
   readonly cwd?: string
   /** How the wizard asks for the sign-in screen; the default spawns this build again. */
   readonly reopen?: ReopenFn
+  /**
+   * The `--remote` flag's raw value (ADR-0014), when `cli.ts` parsed one off
+   * argv. `MCPCUT_REMOTE` in `env` above is read the same way whether or not
+   * this is set — the flag wins over the variable (`resolveRemoteUrl`).
+   */
+  readonly remoteFlag?: string
+  /** Test seam for the remote HTTP client; defaults to the global `fetch`. */
+  readonly remoteFetch?: FetchLike
+  /**
+   * `mcpcut --connect [url]`'s raw argument (ADR-0014, 2026-09-20): parsed
+   * the same way `--remote`/`MCPCUT_REMOTE` are (`parseRemoteUrl`), but a bad
+   * one is a NOTICE on the freshly-opened form rather than a refusal —
+   * `--connect` exists to get an operator UNSTUCK. Only meaningful alongside
+   * `entry: 'connect'`.
+   */
+  readonly connectArg?: string
+  /**
+   * "Remember the last address" (2026-09-20): where a successful "connect"
+   * from the welcome form is saved. Defaults to `writeSavedRemote` at
+   * `savedRemotePathFor(env, home)` — a seam so a test never touches a real
+   * `~/.mcpcut/remote.json`.
+   */
+  readonly rememberRemote?: (url: string) => Promise<void>
 }
 
 /**
@@ -123,16 +160,27 @@ export async function runTui(
   }
 
   const env = opts.env ?? process.env
-  const install = opts.install ?? loadInstallConfigSync({ env })
 
-  // Belt and braces: the dispatcher gates a broken config ahead of this
-  // command, so this is the path a caller that skipped it would take. The
-  // words are the dispatcher's own, from the one function that writes them.
-  const configProblem = describeDataDirProblem(resolveDataDir({ env, load: install }))
-  if (configProblem !== undefined) {
-    io.stderr.write(configProblem)
-    return 1
+  // ADR-0014, BEFORE any local install is read: a remote console dials
+  // another host's `ui` and has no data directory of its own to check — the
+  // broken-config gate below, and the wizard past it, are both about an
+  // install this invocation may not even have.
+  //
+  // `--connect` (2026-09-20) is the ONE entry that skips this on purpose: the
+  // owner's own precedence table puts `--remote`/`MCPCUT_REMOTE` ABOVE a bare
+  // launch, but `--connect` is not a bare launch — it is a direct request for
+  // the form, "regardless of a local install, MCPCUT_REMOTE or a saved file"
+  // (point 4). An operator whose shell still exports `MCPCUT_REMOTE` from a
+  // previous session must be able to type `mcpcut --connect` and reach the
+  // form rather than be silently redirected to the address in that variable.
+  if (opts.entry !== 'connect') {
+    const remote = resolveRemoteUrl({ ...(opts.remoteFlag !== undefined ? { flag: opts.remoteFlag } : {}), env })
+    if (remote !== undefined) {
+      return runRemoteTui(remote, io, env, remoteTuiOptionsOf(opts))
+    }
   }
+
+  const install = opts.install ?? loadInstallConfigSync({ env })
 
   const dispatch = opts.dispatch
   // A wiring fault, not an operator one, so it throws rather than printing:
@@ -146,8 +194,29 @@ export async function runTui(
   // ways out share it: one terminal, one way of handing it over.
   const reopen = opts.reopen ?? ((argv: readonly string[]) => defaultReopen(argv, io.stderr))
 
-  if (opts.entry === 'setup' || (opts.entry === 'bare' && install.kind === 'absent')) {
+  // `mcpcut --connect [url]` (ADR-0014, 2026-09-20): ahead of the
+  // broken-config gate below, same reasoning as `--remote` above — the
+  // connect FORM reads no data directory, and it must open even over a
+  // broken local config: that is exactly the operator `--connect` exists to
+  // get unstuck, by dialing somewhere else instead of fixing this machine.
+  if (opts.entry === 'connect') {
+    return await openConnectEntry(opts, env, install, consoleDeps, reopen, reopenCell)
+  }
+
+  // Belt and braces: the dispatcher gates a broken config ahead of this
+  // command, so this is the path a caller that skipped it would take. The
+  // words are the dispatcher's own, from the one function that writes them.
+  const configProblem = describeDataDirProblem(resolveDataDir({ env, load: install }))
+  if (configProblem !== undefined) {
+    io.stderr.write(configProblem)
+    return 1
+  }
+
+  if (opts.entry === 'setup') {
     return await openWizard(opts, env, install, consoleDeps, reopen)
+  }
+  if (opts.entry === 'bare' && install.kind === 'absent') {
+    return await openBareWelcome(opts, io, env, install, consoleDeps, reopen, reopenCell)
   }
 
   return await openConsole(consoleDeps, install, reopenCell, reopen, opts.journalDir ?? JOURNAL_DIR)
@@ -161,15 +230,7 @@ async function openWizard(
   consoleDeps: Omit<ConsoleDeps, 'initial'>,
   reopen: ReopenFn,
 ): Promise<number> {
-  const prefill = wizardPrefillOf({
-    install,
-    env,
-    home: opts.home ?? homedir(),
-    cwd: opts.cwd ?? process.cwd(),
-    ...(opts.setupArgs !== undefined ? { args: opts.setupArgs } : {}),
-  })
-
-  return await runWizard({ console: consoleDeps, prefill, reopen })
+  return await runWizard({ console: consoleDeps, prefill: prefillOf(opts, env, install), reopen })
 }
 
 /**
@@ -187,10 +248,11 @@ async function openConsole(
   reopen: ReopenFn,
   journalDir: string,
 ): Promise<number> {
-  const signin = signinHostFactsOf(journalDir)
+  const isFirstRun = await hasNoAdmins(journalDir)
+  const facts = installFactsOf(install)
   const code = await runConsole({
     ...consoleDeps,
-    initial: (size) => initialModel(size, installFactsOf(install), signin),
+    initial: (size) => (isFirstRun ? firstOwnerModel(size, facts) : initialModel(size, facts)),
   })
   const argv = reopenCell.get()
   if (code !== EXIT_OK || argv === undefined) return code
@@ -199,16 +261,20 @@ async function openConsole(
 }
 
 /**
- * Whether the first owner's one-time token file is still there, read ONCE as
- * the console opens (phase 6, F6b): a host fact like the install config, not
- * something the reducer could learn later. `journalDir` is the directory the
- * console's own stores read — the seam when a caller gave one, the
- * process-wide default otherwise, exactly as `createAdminStore` resolves it —
- * so the screen never points at a file another install owns.
+ * Whether this install has no admin at all, asked ONCE as the console opens:
+ * it only picks the opening screen — the first-owner form instead of a
+ * sign-in nobody holds a token for. The check that guards the creation is
+ * `admin add`'s own, inside the store's update. A store that cannot be read
+ * answers `false`: the sign-in screen already knows how to say `unreadable`,
+ * and offering a new owner beside records nobody could parse is the one
+ * thing a first run must not do (the rule `ui` applies at start).
  */
-function signinHostFactsOf(journalDir: string): SigninHostFacts {
-  const path = bootstrapTokenPathFor(journalDir)
-  return hasBootstrapTokenFile(path) ? { bootstrapTokenPath: path } : {}
+async function hasNoAdmins(journalDir: string): Promise<boolean> {
+  try {
+    return (await createAdminStore({ journalDir }).listAdmins()).length === 0
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -237,6 +303,8 @@ function consoleDepsOf(
       ...(opts.journalDir !== undefined ? { journalDir: opts.journalDir } : {}),
       token: createTokenCell(),
       reopen,
+      probeRemote: probeRemoteOf(opts.remoteFetch),
+      rememberRemote: opts.rememberRemote ?? ((url) => writeSavedRemote(savedRemotePathFor(env, opts.home), url)),
     },
     processEvents: opts.processEvents ?? process,
     signals: opts.signals ?? DEFAULT_TUI_SIGNALS,

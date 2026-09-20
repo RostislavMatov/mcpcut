@@ -48,6 +48,10 @@ export const ROUTE_TABLE: readonly RouteEntry[] = [
   // --- Public surface (no session; `/login` is additionally rate-limited) ---
   { method: 'GET', pattern: '/login', minRole: 'public', handler: 'loginPage' },
   { method: 'POST', pattern: '/login', minRole: 'public', handler: '@login' },
+  // First run (ADR-0004, amendment of 2026-09-19): both rows answer `/login`
+  // unless the install has no admin — `setup-flow.ts` holds the gate.
+  { method: 'GET', pattern: '/setup', minRole: 'public', handler: '@setupPage' },
+  { method: 'POST', pattern: '/setup', minRole: 'public', handler: '@setup' },
   { method: 'GET', pattern: '/assets/*', minRole: 'public', handler: 'assets' },
   // A browser probes this one unprompted; without a route, deny-by-default put
   // a 403 in the console of every page (manual M4 smoke).

@@ -46,7 +46,7 @@ function fakeIo(): {
  * these commands used to read `config.dataDir` alone. An operator with the
  * variable exported would then have `setup` prepare one directory while the
  * daemons served another — and the `ui` that came up in the second one would
- * bootstrap a second owner and print its token into `run/ui.log`.
+ * open a first run of its own (`/setup`, its code file) in the wrong plane.
  */
 describe('the data directory the services are managed in', () => {
   let configDir: string

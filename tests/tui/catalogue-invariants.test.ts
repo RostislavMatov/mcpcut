@@ -133,7 +133,10 @@ function eachAction(): readonly (readonly [SectionSpec, ActionSpec])[] {
 
 describe('every action names the command it runs', () => {
   test('argv starts with the action’s own (command, subcommand)', () => {
-    for (const action of ALL_ACTIONS) {
+    // `disconnectsConsole` actions (Home's `disconnect`) run no command at all
+    // — their `command` names the catalogue-parity exemption, not a real CLI
+    // command, and their `argv` is deliberately `[]` (`catalogue/home.ts`).
+    for (const action of ALL_ACTIONS.filter((each) => each.disconnectsConsole !== true)) {
       // Arrange
       const head =
         action.subcommand === undefined ? [action.command] : [action.command, action.subcommand]

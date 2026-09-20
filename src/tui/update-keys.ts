@@ -72,8 +72,9 @@ function requeued(step: Step, screen: MainScreen, rest: readonly KeyEvent[]): St
 /**
  * An effect after which no key may be fed: `quit` hands the model back as it
  * stands, so the screen alone cannot tell that the console is leaving, and a
- * `reopen` ends the console for a child process the same way.
+ * `reopen` ends the console for a child process the same way — as does
+ * `disconnect`, which is a `reopen` onto the connect form.
  */
 function leavesConsole(effect: Effect): boolean {
-  return effect.kind === 'quit' || effect.kind === 'reopen'
+  return effect.kind === 'quit' || effect.kind === 'reopen' || effect.kind === 'disconnect'
 }

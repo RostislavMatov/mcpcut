@@ -15,7 +15,7 @@ import {
   type TerminalSize,
 } from './model.js'
 import type { ServiceSummary } from './services-summary.js'
-import { noEffects, quit, withScreen } from './update-step.js'
+import { disconnectStep, isDisconnectKey, isRemoteInstall, noEffects, quit, withScreen } from './update-step.js'
 
 /**
  * The sign-in screen (mcpcut phase 2, Task 9).
@@ -77,33 +77,25 @@ function withServices(
     busy: screen.busy,
     ...(screen.notice !== undefined ? { notice: screen.notice } : {}),
     ...(statuses !== undefined ? { services: statuses } : {}),
-    ...bootstrapFactOf(screen),
   }
 }
-
-/** The facts about the HOST a sign-in screen carries, which outlive one attempt to sign in. */
-type CarriedHostFacts = Pick<SigninScreen, 'services' | 'bootstrapTokenPath'>
 
 /**
- * What the daemons are doing and where the bootstrap token file is (phase 6,
- * F6b) are true of the host, not of the token that was just typed: a refused
- * token changes neither, so both ride along through the attempt. Picked by
- * name so an absent field stays absent (`exactOptionalPropertyTypes`).
+ * What the daemons are doing is true of the HOST, not of the token that was
+ * just typed: a refused token does not change it, so it rides along through
+ * the attempt. Picked by name so an absent field stays absent
+ * (`exactOptionalPropertyTypes`).
  */
-function hostFactsOf(screen: SigninScreen): CarriedHostFacts {
-  return {
-    ...(screen.services !== undefined ? { services: screen.services } : {}),
-    ...bootstrapFactOf(screen),
-  }
-}
-
-function bootstrapFactOf(screen: SigninScreen): Pick<SigninScreen, 'bootstrapTokenPath'> {
-  const path = screen.bootstrapTokenPath
-  return path !== undefined ? { bootstrapTokenPath: path } : {}
+function hostFactsOf(screen: SigninScreen): Pick<SigninScreen, 'services'> {
+  return screen.services !== undefined ? { services: screen.services } : {}
 }
 
 function applyKey(model: Model, screen: SigninScreen, key: KeyEvent): Step {
   if (key.kind === 'escape') return quit(model, EXIT_OK)
+  // Remote-only (2026-09-20, owner request "a way to disconnect"), and NOT
+  // while busy: a sign-in already sent must be let alone. Locally this chord
+  // does nothing at all, as it always has (`isRemoteInstall`).
+  if (isDisconnectKey(key) && !screen.busy && isRemoteInstall(model)) return disconnectStep(model)
   // One sign-in at a time: a second Enter while the store is answering would queue a second lookup.
   if (key.kind === 'enter') return screen.busy ? noEffects(model) : submitToken(model, screen)
 

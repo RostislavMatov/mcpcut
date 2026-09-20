@@ -338,8 +338,27 @@ const REOPEN_SECTION: SectionSpec = {
 
 const TEST_SESSION: Session = { adminName: ADMIN_NAME, role: ADMIN_ROLE }
 
+/** An action that forgets a saved address and reopens on `--connect` (`Home`'s `disconnect`). */
+const DISCONNECT_SECTION: SectionSpec = {
+  id: 'home',
+  title: 'Home',
+  minRole: 'viewer',
+  intro: ['an action that disconnects'],
+  actions: [
+    {
+      id: 'disconnect',
+      title: 'disconnect',
+      minRole: 'viewer',
+      command: 'disconnect',
+      fields: [],
+      argv: () => [],
+      disconnectsConsole: true,
+    },
+  ],
+}
+
 /** A main screen over synthetic sections: these tests are about the runtime, not the catalogue. */
-function mainModelOf(sections: readonly SectionSpec[], size: TerminalSize): Model {
+function mainModelOf(sections: readonly SectionSpec[], size: TerminalSize, install?: Model['install']): Model {
   return {
     screen: {
       kind: 'main',
@@ -350,6 +369,7 @@ function mainModelOf(sections: readonly SectionSpec[], size: TerminalSize): Mode
       pane: { kind: 'actions' },
     },
     size,
+    ...(install === undefined ? {} : { install }),
   }
 }
 
@@ -518,6 +538,56 @@ describe('runConsole: an action that leaves the console', () => {
     expect(harness.fake.restored()).toBe(true)
     // Nothing was run from inside the console: the child gets the terminal.
     expect(dispatch.countOf('setup')).toBe(0)
+  })
+})
+
+describe('runConsole: disconnect (2026-09-20)', () => {
+  const REMOTE_INSTALL: Model['install'] = {
+    supervisor: 'mcpcut',
+    remote: true,
+    remoteAddress: 'https://box.example:8091',
+  }
+
+  test('forgets the address, reopens on --connect <address>, and dispatches nothing', async () => {
+    const reopen = createReopenCell()
+    const dispatch = countingDispatch()
+    let forgotten = false
+    const harness = startConsole({
+      dispatch: dispatch.fn,
+      reopen,
+      forgetRemote: async () => void (forgotten = true),
+      token: await sessionCell(),
+      initial: (size) => mainModelOf([DISCONNECT_SECTION], size, REMOTE_INSTALL),
+    })
+    await waitForScreen(harness.fake, (screen) => screen.includes('disconnect'), 'the disconnect action')
+
+    harness.fake.type('\r')
+
+    await expect(harness.exit).resolves.toBe(EXIT_OK)
+    expect(forgotten).toBe(true)
+    expect(reopen.get()).toEqual(['--connect', 'https://box.example:8091'])
+    expect(harness.fake.restored()).toBe(true)
+    expect(dispatch.calls).toEqual([])
+  })
+
+  test('a forgetRemote that fails still disconnects, with a warning on stderr', async () => {
+    const reopen = createReopenCell()
+    const harness = startConsole({
+      dispatch: quietDispatch,
+      reopen,
+      forgetRemote: async () => {
+        throw new Error('EACCES')
+      },
+      token: await sessionCell(),
+      initial: (size) => mainModelOf([DISCONNECT_SECTION], size, REMOTE_INSTALL),
+    })
+    await waitForScreen(harness.fake, (screen) => screen.includes('disconnect'), 'the disconnect action')
+
+    harness.fake.type('\r')
+
+    await expect(harness.exit).resolves.toBe(EXIT_OK)
+    expect(reopen.get()).toEqual(['--connect', 'https://box.example:8091'])
+    await waitForUntilTrue(() => harness.errText().includes('EACCES'))
   })
 })
 

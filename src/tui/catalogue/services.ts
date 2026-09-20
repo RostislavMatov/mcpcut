@@ -34,8 +34,8 @@ import type { ActionSpec, SectionSpec } from './types.js'
  *   the daemon printed — its own diagnostics and every line an external MCP
  *   server made it print (a stderr tail, a refused frame, a tool name) — so a
  *   tail is a read of raw upstream output, not a table of ports, and is not
- *   offered to a viewer (phase 6, F6 rewrote the reason: the bootstrap token
- *   no longer passes through the log at all).
+ *   offered to a viewer (phase 6, F6 rewrote the reason: no first-run
+ *   credential passes through the log at all).
  * - `start` and `stop` are `operator`: they move what agents can reach.
  * - `setup` is `owner`: it rewrites the install config.
  *
@@ -137,6 +137,10 @@ const setupAction: ActionSpec = {
   minRole: 'owner',
   command: 'setup',
   leavesConsole: true,
+  // ADR-0014: this action spawns the wizard as a child ON THIS MACHINE, so a
+  // console driving `--remote` withdraws it rather than configuring the
+  // operator's own laptop under a menu item that reads as the remote install.
+  requires: 'local',
   fields: [],
   argv: () => ['setup'],
   confirm: () => 'Leave the console for the setup screen? It reopens the console when done.',
