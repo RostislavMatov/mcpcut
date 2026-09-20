@@ -6,7 +6,62 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **A bare `mcpcut` on a machine with no install asks what to do**: "Set up a
+  service on this machine" (the first-run wizard, unchanged; `mcpcut setup`
+  still opens it directly) or "Connect to a service on another host" (host,
+  port, protocol; the address is checked before the form is left). Connecting
+  installs nothing locally. The last address connected to from the form is
+  remembered in `~/.mcpcut/remote.json` (0600, the address only — never a
+  token): the next bare `mcpcut` goes straight to that service, or, if it
+  does not answer, to the connect form with the address filled in.
+  **Home ▸ disconnect** and `Ctrl-D` on the remote sign-in screen forget it
+  and open the form for another service; `mcpcut --connect [url]` opens that
+  form from the shell. A machine with a local install still opens its local
+  console. While connected, the header shows `@ host:port`.
+- **A console for a service on another host: `mcpcut --remote <url>`** (or
+  `MCPCUT_REMOTE`). The client needs only the package — no `setup`, no data
+  directory. It talks to four new routes on the admin UI's port,
+  `/api/console/state|whoami|setup|run`: the admin's own token as
+  `Authorization: Bearer` on every request (no cookie, no server-side console
+  session), any request carrying `Origin` refused, the same Host validation
+  and the same brute-force limits as `/login`. `run` executes an allow-listed
+  command inside the `ui` process and streams its output as NDJSON; exports
+  are written on the client. Over a network a role floor applies on top of
+  each command's own gate (`vault`, `keygen`, `backup`, `migrate`, `verify`,
+  `prune`, `start`, `stop`, `logs`, `export --report` — `owner`; streamed
+  `export` and every `policy` form but a bare `policy show` — `operator`);
+  vault writes are refused unless `ui` is behind TLS or the caller is on
+  loopback; the first owner is created with the setup code, as on `/setup`.
+  Plain `http` to a non-loopback host is a loud warning, not a refusal.
+  ADR-0014; README "A console for a service on another host".
+
 ### Changed
+
+- **The Docker image no longer mints an owner, and no token reaches
+  `docker compose logs`.** The entrypoint runs `setup … --no-admin`;
+  `MCPCUT_ADMIN` is gone. Create the first owner with
+  `docker compose exec -it ui mcpcut` (the console asks for a name and shows
+  the token once, no code, no browser), unattended with
+  `docker compose exec ui mcpcut admin add <name> --role owner`, or in a
+  browser on `/setup` with the code from
+  `docker compose exec ui cat /home/node/.mcpcut/data/setup-code`. Until then
+  the published port claims nothing. An existing volume is unaffected: its
+  config and its admins are already there.
+- **The first owner can be created in the browser.** A `ui` start over a store
+  with no admins no longer mints an `owner` by itself. It writes a one-time
+  setup code to `<data dir>/setup-code` (mode 0600; stderr names the path,
+  never the code) and serves a first-run page at `/setup`, to which every page
+  — `/login` included — redirects while the install has no admin. The page
+  takes the code and the **name** you choose, creates the owner, shows its
+  token once and signs you in with one press; after that `/setup` answers with
+  a redirect to `/login`. The code proves its bearer can read the data
+  directory and is dead once any admin exists. `<data dir>/bootstrap-token`
+  is gone, and so is the console's sign-in line that named it. Installs made with `setup` or the
+  wizard already have an owner and never see the page.
+  The creation is journalled as `access-edit` `admin.add` via `ui` with an
+  empty actor (ADR-0004, amendment of 2026-09-19).
 
 - **One name: `mcpcut`.** The working name `mcp-journal` is gone from the
   product (ADR-0013). The package and its only `bin` entry are `mcpcut`; the
@@ -22,6 +77,25 @@ All notable changes to this project are documented here. The format follows
   part of what AES-GCM authenticates.
 
 ### Added
+
+- **`setup --ui-public-url <url>` / `--serve-public-url <url>`**: state the
+  address you will reach the service at (`http://<ip>:8091`,
+  `https://mcp.example.com`) and `setup` derives the rest — the `Host`
+  allow-list entry, for the UI the `Origin` entry, `behindTls` for `https`,
+  and for plain `http` to a public address over a loopback bind, the bind.
+  Until now an install opened by IP answered 403 until `--allowed-host` was
+  found, and then opened pages whose every form was a 403 until
+  `--allowed-origin` was found too. Also the wizard's optional `UI URL` /
+  `Agent URL` fields and Docker's `MCPCUT_UI_PUBLIC_URL` /
+  `MCPCUT_SERVE_PUBLIC_URL`. Plain `http` to a public address is a loud
+  warning in the transcript, not a refusal.
+
+- **The console creates the first owner too.** Opened over an install with no
+  admin, `mcpcut` shows a first-owner screen instead of a sign-in nobody holds
+  a token for: a name, then `admin add <name> --role owner` run without a
+  session (the CLI accepts that only while the store is empty), the token held
+  on screen until `y` — `q` asks first — and a sign-in with it. No setup code
+  is asked: the console runs under the account that owns the data directory.
 
 - **First-run wizard**: a bare `mcpcut` on a terminal with no install config,
   and `mcpcut setup` without `--yes`, open an interactive setup — prefilled data
@@ -161,8 +235,9 @@ All notable changes to this project are documented here. The format follows
   banner (`One-time token on screen: copy it, then press y.`) is used whenever
   the long one would wrap to more than two lines.
 - **`setup --yes --no-admin` warning** now names the file the first `ui`
-  start will write the owner token to (`<data dir>/bootstrap-token`, mode
-  0600, deleted after the first sign-in) instead of `run/ui.log`.
+  start will write (`<data dir>/setup-code`, mode 0600 — the one-time code the
+  `/setup` first-run page asks for, deleted once the owner exists) instead of
+  `run/ui.log`.
 - **`admin add|list|rotate|role|remove` now need a personal admin token** of role
   `owner` in `MCP_ADMIN_TOKEN`, and every mutation writes an `access-edit`
   journal record (`admin.add|rotate|role|remove`) naming the admin who made it —
@@ -283,16 +358,15 @@ All notable changes to this project are documented here. The format follows
   agent (`wrap`) still carry no such key; records written before this change
   are not rewritten.
 
-- **The bootstrap owner token no longer lands in `run/ui.log`.** When `ui`
-  starts over a store with no admins (the `setup --yes --no-admin` path), it
-  writes the one-time token to `<data dir>/bootstrap-token` — mode 0600,
-  created exclusively inside the 0700 data directory — and prints only that
-  path to stderr. The file is deleted by the first successful sign-in of any
-  admin, through the web UI or the console; a failure to delete it is
-  reported and does not change the sign-in's outcome. If the file cannot be
-  written, `ui` refuses to start and points at `admin rotate owner`. Docker
-  is unaffected: the entrypoint passes `--admin`, so `setup` mints the owner
-  and the token goes to the container's stdout as before.
+- **No first-run secret lands in `run/ui.log`.** When `ui` starts over a
+  store with no admins (the `setup --yes --no-admin` path), what it writes —
+  since the first-run page above, a one-time setup code rather than an owner's
+  token — goes to a file, `<data dir>/setup-code`: mode 0600, created
+  exclusively inside the 0700 data directory, with only the path printed to
+  stderr. If the file cannot be written, `ui` refuses to start and points at
+  `admin add <name> --role owner`. Docker is unaffected: the entrypoint passes
+  `--admin`, so `setup` mints the owner and the token goes to the container's
+  stdout as before.
 
 ## [0.1.0] — 2026-09-03
 

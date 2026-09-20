@@ -85,8 +85,35 @@ the services' pid records and logs under `data/run/`).
 
 ### The wizard, or `setup --yes`
 
-A bare `mcpcut` on a terminal that has no install config yet opens the
-first-run wizard: a form prefilled with the data directory, the `ui`/`serve`
+A bare `mcpcut` on a terminal that has no install config yet asks first what
+this machine is for:
+
+```
+No install here yet — what should this console do?
+▸ Set up a service on this machine
+  Connect to a service on another host
+```
+
+**Connect** asks for the host, the port and the protocol (`https` by default;
+a whole `http://1.2.3.4:8091` pasted into Host works too), checks that the
+service answers without leaving the form — an unreachable address stays on the
+form with the reason — and then works as a client of that service; see
+[A console for a service on another host](#a-console-for-a-service-on-another-host---remote).
+Nothing is installed on this machine; the one thing written is the address,
+to `~/.mcpcut/remote.json` (mode 0600, the address only — never a token), so
+the next bare `mcpcut` goes straight to that service's sign-in screen. If the
+saved service does not answer, the connect form opens with the address filled
+in and the reason, instead of dropping you into the shell.
+
+To leave a service and connect to another: **Home ▸ disconnect** in the
+console, or `Ctrl-D` on its sign-in screen. Either forgets the saved address
+and opens the connect form with the old address in the fields, to correct or
+replace. `mcpcut --connect [url]` opens the same form from the shell — also
+on a machine that has a local install, where a bare `mcpcut` keeps opening the
+local console.
+
+**Set up** opens the first-run wizard (`mcpcut setup` goes to it directly): a
+form prefilled with the data directory, the `ui`/`serve`
 binds, the first admin's name and who starts the services, a confirmation if a
 bind is not loopback, then a deployment ladder («Checks and config», «Starting
 ui», «Starting serve» — the waiting step counts `N s of up to 15 s`), the
@@ -137,14 +164,61 @@ data directory would be the worst possible outcome. Fix the file (or point
 `setup` (and the wizard) create the first `owner` admin and show its token
 **once**, the way `admin add` does. If you pass `--no-admin` instead, the
 install is left with no admin and `setup` warns you, naming a file: the first
-`ui` start then creates `owner` itself and writes the token to
-`<data dir>/bootstrap-token` (mode `0600`, created exclusively, inside the
-`0700` data directory) — not into its log. The file is deleted by the first
-successful sign-in of any admin, through the browser or the console, and by
-nothing else; the console's sign-in screen shows `first owner token: <path>`
-for as long as it exists. If you missed it and the file is already gone,
-`mcpcut admin rotate owner --recover` mints a new token without needing the
-old one. Details in [Admin UI › Starting it](#starting-it).
+`ui` start then creates nobody — it serves a **first-run page** at `/setup`
+and writes the one-time *setup code* that page asks for to
+`<data dir>/setup-code` (mode `0600`, created exclusively, inside the `0700`
+data directory) — not into its log. Open the UI, paste the code, choose the
+owner's name, and the page shows that owner's token **once**. The file is
+deleted when the owner is created. The console does the same without a code:
+opened over an install with no admin, `mcpcut` asks for the owner's name
+instead of a token ([The console](#the-console)). If you lose
+the token before signing in, `mcpcut admin rotate <name> --recover` mints a
+new one without needing the old one. Details in
+[Admin UI › Starting it](#starting-it).
+
+### One first run, wherever it is deployed
+
+The first owner is created the same way in every deployment, and none of them
+needs a browser: open the console **on the machine (or in the container) that
+runs the services**. Getting a shell there is the proof of access, so the
+console asks for a name and nothing else.
+
+| Deployment | Create the first owner | What reaches the network before that |
+|---|---|---|
+| On your machine | `mcpcut` | nothing — the UI binds `127.0.0.1` |
+| Docker on your machine | `docker compose exec -it ui mcpcut` | ports published to host loopback only; `/setup` refuses without the code |
+| VPS, with or without Docker | `ssh` in, then the same command as above | whatever you publish — and still nothing to claim: `/setup` refuses without the code, which is a 0600 file on the VPS |
+
+The browser page (`/setup`) is the optional second way and asks for the
+one-time code from `<data dir>/setup-code`; the code is what keeps a published
+port from being an open invitation. Nothing in any of these paths writes a
+token or a code to a log.
+
+**Reaching it by IP (or name) and port.** Tell `setup` the address you will
+type, once — that is the only thing you need to know:
+
+```
+mcpcut setup --yes --ui-public-url http://203.0.113.7:8091 --serve-public-url http://203.0.113.7:8090
+mcpcut setup --yes --ui-public-url https://mcp.example.com          # a TLS proxy in front
+```
+
+From that one value `setup` derives what the HTTP front needs to answer it:
+the `Host` allow-list entry (otherwise every request by IP is a 403 — the
+DNS-rebinding screen admits only localhost names), for the UI the `Origin`
+entry too (otherwise pages open and every form is a 403), `behindTls` for an
+`https://` address, and — only for plain `http://` to a public address, over a
+loopback bind you did not set yourself — the bind (`0.0.0.0`). The port is
+never derived: behind Docker or a proxy the published and the listening port
+differ on purpose. The wizard asks the same two questions (`UI URL`,
+`Agent URL`, both optional), and a rerun over an existing install adds the
+entries and keeps everything else; restart the services afterwards.
+
+Plain `http://` to a public address works, and `setup` says what it costs:
+admin tokens (and, on `serve`, agent keys and every tool call) cross the
+network in clear text. Two ways out, neither of which mcpcut can supply for
+you: TLS in front (then give the `https://` address), or no published port at
+all and `ssh -L 8091:127.0.0.1:8091 you@vps`, then `http://localhost:8091`.
+The console needs none of this: it never uses the network.
 
 ### The console
 
@@ -152,7 +226,16 @@ old one. Details in [Admin UI › Starting it](#starting-it).
 mcpcut tui          # or a bare `mcpcut` on a terminal that has an install config
 ```
 
-Sign in with a personal admin token; the sign-in screen also shows whether
+Over an install that has no admin yet, the console opens on a **first-owner
+screen** instead of the sign-in: type the owner's name, the console runs
+`mcpcut admin add <name> --role owner`, holds the token on screen until you
+press `y` (`q` asks before it lets the token go), and signs you in with it. It
+asks for no setup code, unlike the web page: a console runs under the account
+that owns the data directory, which is the very thing the code proves. The
+creation is journalled exactly as the shell command is — `admin.add` with an
+empty actor.
+
+Otherwise, sign in with a personal admin token; the sign-in screen also shows whether
 the services are up (`services: ui ● … · serve ○ …`, with a hint to start
 them from the Services section — nothing starts on its own). Twelve sections
 — Home, Admins, Servers, Vault, Agents, Groups, Policy, Quarantine, Approvals,
@@ -182,6 +265,64 @@ without those cannot run the console at all); keys pressed while a command is
 running are **queued** (up to 32) and replayed in order once it answers, except
 when the answer is a one-time token — then the queue is dropped so nothing
 can acknowledge the token unread. `Ctrl-C` is never queued: it quits at once.
+
+### A console for a service on another host (`--remote`)
+
+```
+mcpcut --remote https://plane.example.com:8091
+# or: export MCPCUT_REMOTE=https://plane.example.com:8091 && mcpcut
+```
+
+`mcpcut` on your machine working as a **client** of a `ui` service that runs
+somewhere else — a VPS, a container, a colleague's machine. Nothing is opened
+on the server: no terminal, no SSH; the service that already serves the admin
+UI answers HTTP requests, the way it answers a browser. On a machine without
+an install a bare `mcpcut` offers this as "Connect to a service on another
+host" and asks for host and port; the flag and the variable below are the same
+thing for scripts and shell profiles. The client side needs nothing but the
+package (`npm i -g mcpcut`): no `setup`, no data directory, no services. The
+address is the one the admin UI answers on, so whatever makes the web UI
+reachable (`setup --ui-public-url …`) makes the console reachable too. The
+flag and the variable store nothing (only a connect made from the form is
+remembered); the token is typed at the sign-in screen and lives in memory
+only, however you connected. While connected the header names the service:
+`McpCut console · kate (owner) @ plane.example.com:8091`.
+
+Every action still runs the very CLI command it shows you — on the **server**,
+inside the `ui` process, under your admin token (`Authorization: Bearer`, on
+every request; there is no cookie and no server-side console session, so a
+rotated or removed admin stops working on the next request). Output streams
+back; an export is written to a file on **your** machine.
+
+What differs from a local console, because a network is not a shell:
+
+- **A role floor on top of each command's own gate.** `vault *`, `keygen`,
+  `backup`, `migrate`, `verify`, `prune`, `start`, `stop`, `logs` and
+  `export --report` (which writes a directory on the server) need `owner`;
+  a streamed `export` and any `policy` form other than a bare `policy show`
+  need `operator`. Locally these are host operations open to whoever has the
+  shell; over a network that reasoning does not hold (ADR-0014).
+- **An `owner` token over the network is close to a shell on the server**:
+  it can stop services and write backups to a path. That is the owner's
+  decision (RC2), not an accident — protect that token accordingly.
+- **Vault writes need TLS.** `vault set|remove|rekey` run only when `ui` is
+  declared behind TLS (`behindTls`) or the caller is on loopback; over open
+  `http` they are refused with the reason. The secret travels in a body field
+  of its own — never in argv, in the stream, or in the service's stderr.
+- **Plain `http` to a non-loopback host** prints a loud `warning:` before the
+  console opens and a notice on the sign-in screen: the admin token would
+  cross the network in clear. Use `https://`, or tunnel:
+  `ssh -L 8091:127.0.0.1:8091 user@host` and `--remote http://127.0.0.1:8091`.
+- **`Services ▸ setup` is not offered**: the wizard is a local child process
+  and would configure the wrong machine. `tui`, `ui`, `serve`, `wrap`,
+  `connect` and `setup` are not runnable through the API at all.
+- **The first owner needs the setup code.** Over an install with no admin the
+  remote console opens the first-owner screen with a second, masked field:
+  the code from `<data dir>/setup-code` on the server (the same code, and the
+  same server-side flow, as the web `/setup` page). A local console still asks
+  for no code.
+- **No browser is a client of this API**: a request carrying an `Origin`
+  header is refused, and cookies are ignored.
 
 ## Services
 
@@ -276,8 +417,8 @@ the stdio proxy, has no container: the agent's own client spawns it.
 The first start of `ui` runs `setup --yes --supervisor external` from the
 entrypoint, taking its answers from the environment — `MCPCUT_DATA_DIR`,
 `MCPCUT_UI_HOST`/`MCPCUT_UI_PORT` (default `0.0.0.0:8091`),
-`MCPCUT_SERVE_HOST`/`MCPCUT_SERVE_PORT` (default `0.0.0.0:8090`) and
-`MCPCUT_ADMIN` (default `owner`) — set them in an `environment:` block to
+`MCPCUT_SERVE_HOST`/`MCPCUT_SERVE_PORT` (default `0.0.0.0:8090`), and the
+optional `MCPCUT_UI_PUBLIC_URL`/`MCPCUT_SERVE_PUBLIC_URL` — set them in an `environment:` block to
 change the install. `0.0.0.0` inside the container is the only way a
 published port reaches it; the ports are published to host loopback only
 (`127.0.0.1:8091`, `127.0.0.1:8090`), and `Host` screening still admits only
@@ -288,20 +429,39 @@ every command, `setup` refuses the run as a data-directory conflict, and under
 bind-mount a checkout over `/app` either: a `.mcpcut-project/policy.json` in it
 would shadow the volume's policy (ADR-0005).
 
-The entrypoint always passes `--admin`, never `--no-admin`, so the
-bootstrap-token file described under [First run](#the-first-owner) does not
-apply in Docker: `setup` mints the owner and prints the one-time token to the
-container's stdout, where the json-file log keeps it (bounded to three 10 MB
-files):
+The entrypoint passes `--no-admin`: the image creates **no admin**, so no
+token ever reaches `docker compose logs`. You create the first owner yourself,
+and you do not need a browser for it:
 
 ```
-docker compose logs ui                 # the one-time owner token, once
-docker compose exec -it ui mcpcut      # the console, inside the container
-docker compose run --rm ui admin rotate owner   # a missed or leaked token
+docker compose exec -it ui mcpcut      # the console: asks for the owner's name, shows the token once
 ```
 
-Rotate the owner token after the first sign-in: a copy sits in the
-container's log, readable by anyone who can run `docker compose logs`.
+The console sees an install with no admin and opens on its first-owner screen
+([The console](#the-console)); being inside the container is the proof of
+access, so it asks for no code. The other two ways:
+
+```
+docker compose exec ui mcpcut admin add <name> --role owner     # unattended: token on this exec's stdout
+docker compose exec ui cat /home/node/.mcpcut/data/setup-code   # the code the browser's /setup page asks for
+```
+
+**On a VPS**, two things make the UI reachable at `http://<ip>:8091`, and both
+are yours to set: publish the port beyond host loopback (`ports:` in
+`docker-compose.yml` is `127.0.0.1:8091:8091` — drop the `127.0.0.1:`), and
+name the address in `MCPCUT_UI_PUBLIC_URL` (and `MCPCUT_SERVE_PUBLIC_URL` for
+agents) **before the first start**. For a volume that already has a config:
+
+```
+docker compose run --rm ui setup --yes --ui-public-url http://203.0.113.7:8091
+docker compose restart ui
+```
+
+Until someone does one of these the install is closed, not open: reaching the
+published port claims nothing, because `/setup` refuses without the code and
+the code is inside the volume. A lost token:
+`docker compose exec ui mcpcut admin rotate <name> --recover`.
+
 Inside the container the console's Services section shows `status` and
 `logs` only — compose owns the processes, and Home says so instead of
 pointing at `Services ▸ start`. Each container has its own network namespace,
@@ -1129,38 +1289,55 @@ The UI is its own process on its own port — it is not part of `serve`, and
 main M3 scenario (`connect`, stdio) never runs `serve` at all; if the queue
 only had a UI when `serve` was up, that scenario would have no UI ever.
 
-You normally never meet the bootstrap: `mcpcut setup` and the first-run
+You normally never meet the first-run page: `mcpcut setup` and the first-run
 wizard mint the first `owner` before `ui` ever starts and show that token once
 in your terminal ([First run](#the-first-owner)). Only `setup --yes --no-admin`
-— or a `ui` started by hand over an empty store — leaves it to `ui`.
+— or a `ui` started by hand over an empty store — leaves it to the browser.
 
 In that case, if the admin store in `<data dir>/state.db` holds no admins yet,
-`mcpcut ui` creates one `owner` account (named `owner`), writes its
-plaintext token to **`<data dir>/bootstrap-token`** (mode `0600`, created
-exclusively, inside the `0700` data directory) and prints the sign-in URL and
-that path — never the token — to stderr, once. Nothing goes to stdout, and
-nothing belongs in browser history:
+`mcpcut ui` creates **nobody**. It writes a one-time *setup code* to
+**`<data dir>/setup-code`** (mode `0600`, created exclusively, inside the
+`0700` data directory) and prints the first-run URL and that path — never the
+code — to stderr, once. Nothing goes to stdout:
 
 ```
-[ui] no admins found: created "owner" with role owner
-[ui] its one-time token is in /home/you/.mcpcut/data/bootstrap-token (mode 0600); sign in at http://127.0.0.1:8091/login as "owner"
-[ui] the file is deleted after the first sign-in. Rotate the token later with: mcpcut admin rotate owner
+[ui] no admins found: open http://127.0.0.1:8091/setup to create the owner
+[ui] the page asks for the one-time setup code in /home/you/.mcpcut/data/setup-code (mode 0600); the file is deleted once the owner exists
+[ui] no browser? "mcpcut admin add <name> --role owner" in a shell does the same
 ```
 
-The file exists because `ui` as a service has no terminal: its stderr is
-`<data dir>/run/ui.log`, and a token printed there would sit on disk for as
-long as the log does. The file is removed by the **first successful sign-in of
-any admin** — through the browser (`POST /login`) or the console — and by
-nothing else (no timer, no `admin add`); a failure to remove it is reported on
-stderr and does not change the sign-in's outcome. The console's sign-in screen
-shows `first owner token: <path>` while the file exists. If `ui` cannot write
-the file it refuses to start and says so — the account already exists, so
-`admin rotate owner --recover` is the way to a token you can use.
+While the install has no admin, every page of the UI — `/login` included —
+leads to `/setup`. The page asks for the setup code and the **name** of the
+admin to create (the role is fixed: the first admin is the `owner`), creates
+it, and shows its personal token **once**, with a button that signs you in
+with it. After that `/setup` is gone: it answers with a redirect to `/login`,
+and the spent code opens nothing.
 
-Read the file before you sign in; there is no second copy. Rotate the token
-with `mcpcut admin rotate owner` (with your token in `MCP_ADMIN_TOKEN`),
-or — if that token is the one you lost — `mcpcut admin rotate owner
---recover`, which needs none and leaves a journal record marked `recovery: true`.
+Why a code and not an open form: whoever presents it has proved they can read
+the data directory, which is the same thing a shell on this host proves.
+Without it, the first visitor to reach the port — another local process, or
+anyone on the network if you bound beyond loopback — would own the install.
+The code is a file and not a log line because `ui` as a service has no
+terminal: its stderr is `<data dir>/run/ui.log`, and a secret printed there
+would sit on disk for as long as the log does. It is also worth less than the
+owner token an earlier version left in that place: once any admin exists it is
+dead, and a restart over a still-empty store replaces it.
+
+The file is removed when the owner is created, and by the first successful
+sign-in of any admin (browser or console) if a shell finished the first run
+instead; a failure to remove it is reported on stderr and changes nothing
+else. Attempts are rate-limited per address together with `/login`. The
+creation leaves an `access-edit` journal record (`admin.add`, via `ui`) whose
+actor is empty — nobody was signed in, and the record says so. If `ui` cannot
+write the file it refuses to start and tells you to create the owner with
+`mcpcut admin add <name> --role owner`, which needs no token while the store
+is empty.
+
+Save the token before you press the button; there is no second copy. Rotate
+it later with `mcpcut admin rotate <name>` (with your token in
+`MCP_ADMIN_TOKEN`), or — if that token is the one you lost — `mcpcut admin
+rotate <name> --recover`, which needs none and leaves a journal record marked
+`recovery: true`.
 
 ### Admins and roles
 

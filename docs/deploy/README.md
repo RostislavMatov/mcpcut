@@ -41,9 +41,10 @@ for how to feed the file as well).
 
 If you passed `--admin <name>` (or answered the wizard), `setup` printed the
 first owner's token to your terminal once and the services find an admin on
-their first start. If you passed `--no-admin`, the first `ui` start writes the
-bootstrap owner token to `<data dir>/bootstrap-token` (mode `0600`) and the
-file is deleted after the first sign-in — README "Admin UI › Starting it".
+their first start. If you passed `--no-admin`, the first `ui` start creates nobody:
+it serves the first-run page at `/setup` and writes the one-time setup code
+that page asks for to `<data dir>/setup-code` (mode `0600`); the file is
+deleted once the owner exists — README "Admin UI › Starting it".
 
 ## What to adapt
 
