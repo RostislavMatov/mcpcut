@@ -30,6 +30,7 @@ import { DEFAULT_INSTALL_FACTS, type InstallFacts } from '../../src/tui/model.js
  */
 
 const EXTERNAL_FACTS: InstallFacts = { supervisor: 'external' }
+const REMOTE_FACTS: InstallFacts = { supervisor: 'mcpcut', remote: true }
 
 function actionOf(id: string): ActionSpec {
   const action = SERVICES_SECTION.actions.find((each) => each.id === id)
@@ -178,20 +179,34 @@ describe('an install somebody else supervises is offered less', () => {
     expect(meetsRequirement(actionOf('setup'), EXTERNAL_FACTS)).toBe(true)
   })
 
-  test('only start and stop declare the requirement at all', () => {
+  test('disconnect, start, stop and setup are the only actions that declare a requirement', () => {
     const requiring = SECTIONS.flatMap((section) =>
       section.actions
         .filter((action) => action.requires !== undefined)
         .map((action) => `${section.id}/${action.id}`),
     )
 
-    expect(requiring).toEqual(['services/start', 'services/stop'])
+    // Home comes before Services in `SECTIONS` (`catalogue/index.ts`), so its
+    // `disconnect` (`requires: 'remote'`, 2026-09-20) leads the list.
+    expect(requiring).toEqual(['home/disconnect', 'services/start', 'services/stop', 'services/setup'])
   })
 
   test('under an external supervisor start and stop are gone from the tab', () => {
     const services = servicesOf(visibleSections('owner', SECTIONS, EXTERNAL_FACTS))
 
     expect(services.actions.map((action) => action.id)).toEqual(['status', 'logs', 'setup'])
+  })
+
+  test('setup requires a LOCAL console (ADR-0014): it is gone under --remote', () => {
+    expect(meetsRequirement(actionOf('setup'), DEFAULT_INSTALL_FACTS)).toBe(true)
+    expect(meetsRequirement(actionOf('setup'), EXTERNAL_FACTS)).toBe(true)
+    expect(meetsRequirement(actionOf('setup'), REMOTE_FACTS)).toBe(false)
+  })
+
+  test('a remote console keeps status/start/stop/logs but loses setup', () => {
+    const services = servicesOf(visibleSections('owner', SECTIONS, REMOTE_FACTS))
+
+    expect(services.actions.map((action) => action.id)).toEqual(['status', 'start', 'stop', 'logs'])
   })
 
   test('nothing else about the catalogue changes: the other sections are the same objects', () => {
@@ -210,11 +225,20 @@ describe('an install somebody else supervises is offered less', () => {
     }
   })
 
-  test('with no facts the catalogue hands back its own sections, untouched', () => {
+  test('with no facts the catalogue hands back its own sections, Home aside', () => {
+    // Home alone differs even with no facts at all (`DEFAULT_INSTALL_FACTS`):
+    // its `disconnect` (`requires: 'remote'`, 2026-09-20) is filtered on every
+    // non-remote install, so it is never the same object as `HOME_SECTION`.
     const sections = visibleSections('owner')
 
-    expect(sections).toEqual(SECTIONS)
-    for (const [index, section] of sections.entries()) expect(section).toBe(SECTIONS[index])
+    for (const [index, section] of sections.entries()) {
+      if (section.id === 'home') {
+        expect(section.actions.map((action) => action.id)).toEqual(['status'])
+        expect(section).not.toBe(SECTIONS[index])
+      } else {
+        expect(section, section.id).toBe(SECTIONS[index])
+      }
+    }
   })
 })
 

@@ -15,6 +15,7 @@ import { runExportCommand } from './cli/export-cmd.js'
 import { runJournalCommandGroup } from './cli/journal-cmds.js'
 import { runKeygenCommand } from './cli/keygen-cmd.js'
 import { runMigrateCommand } from './cli/migrate-cmd.js'
+import { TUI_USAGE } from './cli/operator-usage.js'
 import { runPolicyShow, runPolicyValidate, type PolicyCliOptions } from './cli/policy-cmd.js'
 import { runPolicySet } from './cli/policy-set-cmd.js'
 import { runQuarantine } from './cli/quarantine-cmd.js'
@@ -75,6 +76,17 @@ function isHelpFlag(command: string | undefined): boolean {
 
 const DEFAULT_IO: CliIo = { stdout: process.stdout, stderr: process.stderr }
 
+/** `mcpcut --remote <url>` (ADR-0014): opens the console against a remote `ui` instead of this host. */
+const REMOTE_FLAG = '--remote'
+
+/**
+ * `mcpcut --connect [url]` (ADR-0014, owner request 2026-09-20): opens the
+ * welcome screen's "connect" form directly, address optional — unlike
+ * `--remote` this never dials anything by itself, so an operator who typed
+ * the wrong host gets a form to fix rather than a shell refusal.
+ */
+const CONNECT_FLAG = '--connect'
+
 export async function dispatch(
   argv: readonly string[],
   io: CliIo = DEFAULT_IO,
@@ -94,6 +106,37 @@ export async function dispatch(
       // the screen, this router owns the wiring, and `setup-cmd.ts` knows
       // neither — it holds a function it was handed.
       wizard: (args) => runTui([], io, { ...opts.tui, dispatch, entry: 'setup', setupArgs: args }),
+    })
+  }
+
+  // `--remote <url>` (ADR-0014) routes ahead of the broken-config gate below,
+  // same reason as `setup`: a remote client dials another host's `ui` and has
+  // no local install to check at all. `runTui` re-parses the URL itself
+  // (`resolveRemoteUrl`) — this only extracts the flag's raw text and, when
+  // there plainly is none, refuses before touching a terminal.
+  if (command === REMOTE_FLAG) {
+    const [url, ...remoteArgs] = rest
+    if (url === undefined || url.startsWith('-')) {
+      io.stderr.write(`${REMOTE_FLAG} needs a URL, e.g. ${REMOTE_FLAG} https://example.com:8091\n\n${TUI_USAGE}`)
+      return 1
+    }
+    return runTui(remoteArgs, io, { ...opts.tui, dispatch, entry: 'explicit', remoteFlag: url })
+  }
+
+  // `--connect [url]` (ADR-0014, 2026-09-20): same reason as `--remote` and
+  // `setup` above — the connect FORM reads no local install, so it routes
+  // ahead of the gate that would otherwise refuse a broken one. The address
+  // is OPTIONAL (unlike `--remote`'s, which must dial something): a value
+  // that looks like another flag is left for `runTui`'s own argument
+  // handling rather than swallowed as a url.
+  if (command === CONNECT_FLAG) {
+    const [maybeUrl, ...connectArgs] = rest
+    const hasUrl = maybeUrl !== undefined && !maybeUrl.startsWith('-')
+    return runTui(hasUrl ? connectArgs : rest, io, {
+      ...opts.tui,
+      dispatch,
+      entry: 'connect',
+      ...(hasUrl ? { connectArg: maybeUrl } : {}),
     })
   }
 
@@ -121,7 +164,11 @@ export async function dispatch(
   if (command === 'wrap') return runWrapCommand(rest, io, opts.wrap)
   if (command === 'connect') return runConnect(rest, io, opts.connect)
   if (command === 'serve') return runServe(rest, io, opts.serve)
-  if (command === 'ui') return runUi(rest, io, opts.ui)
+  // `dispatch` is handed down as a value, exactly as `runTui` receives it
+  // above: the remote console API (ADR-0014) runs a request's command
+  // through this same recursive `dispatch`, and `ui-cmd.ts` must not import
+  // this router itself. A caller's own `opts.ui.dispatch` (tests) wins.
+  if (command === 'ui') return runUi(rest, io, { ...opts.ui, dispatch: opts.ui?.dispatch ?? dispatch })
   if (command === 'start' || command === 'stop' || command === 'status' || command === 'logs') {
     return runServiceCommand(command, rest, io, opts.services)
   }

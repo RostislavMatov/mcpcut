@@ -90,15 +90,22 @@ function narrowedByFacts(section: SectionSpec, facts: InstallFacts): SectionSpec
 }
 
 /**
- * Whether the install is the kind of install an action needs. Only
- * `'own-supervisor'` exists today: under `supervisor: external` compose or
- * systemd owns the two processes and mcpcut merely reports on them (Q16), so
- * `start` and `stop` are not offered at all rather than offered and refused.
+ * Whether the install is the kind of install an action needs. `'own-supervisor'`:
+ * under `supervisor: external` compose or systemd owns the two processes and
+ * mcpcut merely reports on them (Q16), so `start` and `stop` are not offered
+ * at all rather than offered and refused. `'local'` (ADR-0014): an action that
+ * ends the console to run a child ON THIS MACHINE has no business doing that
+ * over `--remote`, where "this machine" is not the install being driven.
+ * `'remote'` (2026-09-20): the mirror image — Home's `disconnect` has nothing
+ * to disconnect from on a local console, so it is withdrawn there instead of
+ * offered and confusing.
  */
 export function meetsRequirement(action: ActionSpec, facts: InstallFacts): boolean {
   if (action.requires === undefined) return true
+  if (action.requires === 'own-supervisor') return facts.supervisor !== EXTERNAL_SUPERVISOR
+  if (action.requires === 'local') return facts.remote !== true
 
-  return action.requires === 'own-supervisor' && facts.supervisor !== EXTERNAL_SUPERVISOR
+  return facts.remote === true
 }
 
 /**

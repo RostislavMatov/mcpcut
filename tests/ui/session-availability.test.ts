@@ -499,7 +499,7 @@ describe('the penalty delay must not sit inside the per-key decision', () => {
 
 // ---------------------------------------------------------------------------
 // The after-sign-in hook (phase 6, F6): the first successful login removes the
-// bootstrap token file. Whatever that hook does or fails to do, the HTTP answer
+// leftover setup code file. Whatever that hook does or fails to do, the HTTP answer
 // is the same bytes — a sign-in must never fail because a file could not be
 // unlinked — and the hook never runs for a login that was refused.
 // ---------------------------------------------------------------------------

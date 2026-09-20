@@ -82,8 +82,8 @@ function mainBase(): MainScreen {
   return screen
 }
 
-function mainModel(patch: MainPatch = {}, size: TerminalSize = DEFAULT_SIZE): Model {
-  return { screen: { ...mainBase(), ...patch }, size }
+function mainModel(patch: MainPatch = {}, size: TerminalSize = DEFAULT_SIZE, install?: Model['install']): Model {
+  return { screen: { ...mainBase(), ...patch }, size, ...(install === undefined ? {} : { install }) }
 }
 
 function typed(form: Form, text: string): Form {
@@ -236,6 +236,41 @@ describe('render: the header of the main screen', () => {
     expect(lines[1]).toContain('1 Home')
     expect(lines[1]).toContain('2 Admins')
     expect(lines[2]).toBe('─'.repeat(DEFAULT_SIZE.columns))
+  })
+
+  test('a remote console (2026-09-20) names host:port, never the scheme', () => {
+    const install: Model['install'] = { supervisor: 'mcpcut', remote: true, remoteAddress: 'https://plane.example.com:8091' }
+
+    const lines = render(mainModel({}, DEFAULT_SIZE, install), plainStyle)
+
+    expect(lines[0]).toContain('alice (owner) @ plane.example.com:8091')
+    expect(lines[0]).not.toContain('https://')
+  })
+
+  test('a default-port address shows no port at all', () => {
+    const install: Model['install'] = { supervisor: 'mcpcut', remote: true, remoteAddress: 'https://plane.example.com' }
+
+    const lines = render(mainModel({}, DEFAULT_SIZE, install), plainStyle)
+
+    expect(lines[0]).toContain('alice (owner) @ plane.example.com')
+    expect(lines[0]).not.toContain('plane.example.com:')
+  })
+
+  test('a local console (install absent, or remote absent) is byte-for-byte the local header', () => {
+    const withoutInstall = render(mainModel(), plainStyle)[0]
+    const withLocalInstall = render(mainModel({}, DEFAULT_SIZE, { supervisor: 'mcpcut' }), plainStyle)[0]
+
+    expect(withoutInstall).not.toContain('@')
+    expect(withLocalInstall).toBe(withoutInstall)
+  })
+
+  test('a narrow terminal still fills its width exactly with the address on it', () => {
+    const install: Model['install'] = { supervisor: 'mcpcut', remote: true, remoteAddress: 'https://plane.example.com:8091' }
+    const size: TerminalSize = { columns: 40, rows: 10 }
+
+    const lines = render(mainModel({}, size, install), plainStyle)
+
+    expect(lines.every((line) => line.length === size.columns)).toBe(true)
   })
 
   test('inverses the active tab only, and leaves its mark outside the inversion', () => {

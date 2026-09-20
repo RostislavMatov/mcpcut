@@ -56,17 +56,19 @@ export function adminsAlreadyExist(count: number): string {
 
 /**
  * The warning `--no-admin` earns. Skipping the owner does not remove the
- * bootstrap — it moves it: the first `ui` start creates `owner` itself and
- * writes the plaintext token to the one-time bootstrap file (0600, phase 6
- * F6), which the first sign-in deletes. Until then that file is a live
- * credential on disk, and an operator who chose this path has to be told
- * where it will be in the same breath.
+ * first run — it moves it to the browser: the first `ui` start creates
+ * nobody, writes a one-time setup code (0600) and serves `/setup`, where the
+ * code plus a chosen name make the owner (ADR-0004, amendment of 2026-09-19).
+ * Until then that file is what stands between a visitor and the owner role,
+ * and an operator who chose this path has to be told where it will be in the
+ * same breath.
  */
-export function noAdminWarning(tokenPath: string): string {
+export function noAdminWarning(codePath: string): string {
   return (
-    `${SETUP_LABEL}--no-admin: this install has no admin yet. The first "ui" start will create ` +
-    `"owner" and write its one-time token to ${tokenPath} (0600); the file is deleted after ` +
-    `the first sign-in — or run "${CLI_NAME} admin add <name> --role owner" before starting anything.\n`
+    `${SETUP_LABEL}--no-admin: this install has no admin yet. Run "${CLI_NAME}" on this host: the ` +
+    `console asks for the owner's name and shows its token once (no browser, no code). In a ` +
+    `browser instead: the first "ui" start serves /setup and writes the one-time setup code that ` +
+    `page asks for to ${codePath} (0600), deleted once the owner exists.\n`
   )
 }
 

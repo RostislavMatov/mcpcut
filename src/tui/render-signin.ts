@@ -9,7 +9,8 @@ import {
   SIGNIN_TOKEN_LABEL,
 } from './constants.js'
 import {
-  SIGNIN_BOOTSTRAP_PREFIX,
+  REMOTE_ADDRESS_PREFIX,
+  REMOTE_INSECURE_NOTICE,
   SIGNIN_SERVICES_DOWN_HINT,
   SIGNIN_SERVICES_EXTERNAL_HINT,
   SIGNIN_SERVICES_PREFIX,
@@ -38,6 +39,9 @@ import { hasDownService, servicesHeaderPart, type ServiceSummary } from './servi
 /** What the sign-in screen offers instead of a key footer. */
 export const SIGNIN_FOOTER = 'Enter sign in · Esc quit'
 
+/** The same footer, plus the chord a remote console answers Ctrl-D to (2026-09-20). */
+export const SIGNIN_REMOTE_FOOTER = `${SIGNIN_FOOTER} · Ctrl-D disconnect`
+
 /** What the token field says while the store is being asked about it. */
 export const SIGNIN_BUSY_TEXT = 'signing in…'
 
@@ -62,8 +66,9 @@ export function renderSignIn(
     ...block,
   ]
   const footerRow = rows - FOOTER_ROWS
+  const footer = install?.remote === true ? SIGNIN_REMOTE_FOOTER : SIGNIN_FOOTER
 
-  return [...fillTo(above, footerRow, columns), padRight(SIGNIN_FOOTER, columns)]
+  return [...fillTo(above, footerRow, columns), padRight(footer, columns)]
 }
 
 /** Where the prompt block sits: a third down, but never over the title row. */
@@ -84,19 +89,24 @@ function signInBlockOf(screen: SigninScreen, install: InstallFacts | undefined):
     `${SIGNIN_TOKEN_LABEL}: ${screen.busy ? SIGNIN_BUSY_TEXT : maskedTokenOf(screen.form)}`,
     '',
     ...(notice === undefined ? [] : [sanitizeLine(notice)]),
+    ...remoteAddressLines(install),
     ...servicesBannerLines(screen.services, install),
-    ...bootstrapTokenLines(screen.bootstrapTokenPath),
   ]
 }
 
 /**
- * Where the first owner's one-time token is, while its file is still there
- * (phase 6, F6b). Sanitised like the notice: the path is measured for the
- * block's centring and cut by `padRight` on a narrow terminal, and both
- * count characters, so nothing invisible may be in it.
+ * The remote address (ADR-0014), and — for as long as nobody has signed
+ * in — the standing plain-http notice beside it. Nothing at all for a local
+ * console (`install?.remoteAddress` absent).
  */
-function bootstrapTokenLines(path: string | undefined): readonly string[] {
-  return path === undefined ? [] : [`${SIGNIN_BOOTSTRAP_PREFIX}${sanitizeLine(path)}`]
+function remoteAddressLines(install: InstallFacts | undefined): readonly string[] {
+  const address = install?.remoteAddress
+  if (address === undefined) return []
+
+  return [
+    `${REMOTE_ADDRESS_PREFIX}${sanitizeLine(address)}`,
+    ...(install?.remoteInsecure === true ? [REMOTE_INSECURE_NOTICE] : []),
+  ]
 }
 
 /**

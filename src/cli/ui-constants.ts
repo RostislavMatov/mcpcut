@@ -37,9 +37,9 @@ export const DEFAULT_UI_SIGNALS: readonly NodeJS.Signals[] = Object.freeze([
 ] as NodeJS.Signals[])
 
 /**
- * Name of the admin created on a first start with no `admins.json`. A fixed
- * name (rather than a generated one) keeps the bootstrap line copy-pasteable
- * and the follow-up `admin rotate <name>` obvious.
+ * Default name of an install's first owner: what `setup` uses without
+ * `--admin` and what the wizard pre-fills. (`ui` itself no longer creates an
+ * admin on a first start — the `/setup` page asks for the name.)
  */
 export const BOOTSTRAP_ADMIN_NAME = 'owner'
 
@@ -96,18 +96,18 @@ of an empty store needs none, and every change is recorded in the journal under 
 `
 
 /**
- * The bootstrap notice for a first start with no admins (phase 6, F6). It
- * names the FILE the one-time token was written to and never the token: under
- * the service manager stderr is `run/ui.log`, and a credential in a log is a
- * credential in every copy, tail and screenshot of that log. Written to
- * stderr (stdout is a daemon's silent channel), exactly once per process.
+ * The first-run notice for a start with no admins (ADR-0004, amendment of
+ * 2026-09-19). It names the FILE the one-time setup code was written to and
+ * never the code: under the service manager stderr is `run/ui.log`, and a
+ * secret in a log is a secret in every copy, tail and screenshot of that log.
+ * Written to stderr (stdout is a daemon's silent channel), once per process.
  */
-export function bootstrapNotice(host: string, port: number, name: string, tokenPath: string): string {
+export function firstRunNotice(host: string, port: number, codePath: string): string {
   return (
-    `[ui] no admins found: created "${name}" with role owner\n` +
-    `[ui] its one-time token is in ${tokenPath} (mode 0600); ` +
-    `sign in at http://${host}:${port}/login as "${name}"\n` +
-    `[ui] the file is deleted after the first sign-in. ` +
-    `Rotate the token later with: mcpcut admin rotate ${name}\n`
+    `[ui] no admins found: open http://${host}:${port}/setup to create the owner\n` +
+    `[ui] the page asks for the one-time setup code in ${codePath} (mode 0600); ` +
+    `the file is deleted once the owner exists\n` +
+    `[ui] no browser? run "mcpcut" on this host (in Docker: docker compose exec -it ui mcpcut): ` +
+    `the console creates the owner and asks for no code\n`
   )
 }

@@ -2,6 +2,7 @@ import { ADMIN_NAME_PATTERN } from '../admin/constants.js'
 import { MAX_TCP_PORT } from '../cli/serve-constants.js'
 import { BOOTSTRAP_ADMIN_NAME } from '../cli/ui-constants.js'
 import { EXTERNAL_SUPERVISOR, type ServiceName } from '../services/constants.js'
+import { parsePublicUrl } from '../setup/public-url.js'
 import { checkBindExposure } from '../setup/bind-checks.js'
 import { SUPERVISORS } from '../setup/constants.js'
 import type { InstallConfig } from '../setup/schema.js'
@@ -30,14 +31,16 @@ import type {
  * prints — one text, two surfaces.
  */
 
-/** The eight answers, by the name they reach `argv` builders under. */
+/** The ten answers, by the name they reach `argv` builders under; the two addresses are optional. */
 export const WIZARD_FIELD = {
   dataDir: 'dataDir',
   uiHost: 'uiHost',
   uiPort: 'uiPort',
   behindTls: 'behindTls',
+  uiPublicUrl: 'uiPublicUrl',
   serveHost: 'serveHost',
   servePort: 'servePort',
+  servePublicUrl: 'servePublicUrl',
   admin: 'admin',
   supervisor: 'supervisor',
 } as const
@@ -149,6 +152,7 @@ export function wizardFieldsOf(prefill: WizardPrefill): readonly FieldSpec[] {
       initial: config.ui.behindTls === true ? FLAG_ON : 'false',
       hint: 'a proxy terminates TLS (ADR-0004)',
     },
+    publicUrlField(WIZARD_FIELD.uiPublicUrl, 'UI URL', '--ui-public-url', 'optional: how you will open it, http://<ip>:8091'),
     {
       name: WIZARD_FIELD.serveHost,
       label: 'Agent host',
@@ -159,6 +163,7 @@ export function wizardFieldsOf(prefill: WizardPrefill): readonly FieldSpec[] {
       validate: hostError,
     },
     portField(WIZARD_FIELD.servePort, 'Agent port', config.serve.port),
+    publicUrlField(WIZARD_FIELD.servePublicUrl, 'Agent URL', '--serve-public-url', 'optional: what agents will dial'),
     {
       name: WIZARD_FIELD.admin,
       label: 'First admin',
@@ -178,6 +183,30 @@ export function wizardFieldsOf(prefill: WizardPrefill): readonly FieldSpec[] {
       hint: 'mcpcut · external (compose/systemd)',
     },
   ]
+}
+
+/**
+ * An optional public address (2026-09-19). Always EMPTY on opening, never
+ * prefilled from the config: the config keeps allow-lists, not the address
+ * they came from, and an empty answer adds nothing — so an edit that leaves
+ * the field alone leaves every entry an earlier run wrote exactly as it was.
+ * The bind and the TLS answer above are stated by the wizard on every run, so
+ * here the address contributes the one thing nobody can guess: the Host and
+ * Origin entries without which a request by IP is a 403.
+ */
+function publicUrlField(name: string, label: string, flag: string, hint: string): FieldSpec {
+  return {
+    name,
+    label,
+    kind: 'text',
+    initial: '',
+    hint,
+    validate: (value) => {
+      if (value.trim() === '') return undefined
+      const parsed = parsePublicUrl(flag, value.trim())
+      return parsed.ok ? undefined : parsed.message
+    },
+  }
 }
 
 /** The screen the wizard opens on: its form, on the form stage. */
@@ -220,7 +249,14 @@ export function setupArgvOf(values: FormValues): readonly string[] {
     valueOf(values, WIZARD_FIELD.admin),
     '--supervisor',
     valueOf(values, WIZARD_FIELD.supervisor),
+    ...publicUrlArgv('--ui-public-url', valueOf(values, WIZARD_FIELD.uiPublicUrl)),
+    ...publicUrlArgv('--serve-public-url', valueOf(values, WIZARD_FIELD.servePublicUrl)),
   ]
+}
+
+/** An address that was left empty is not a flag at all. */
+function publicUrlArgv(flag: string, value: string): readonly string[] {
+  return value.trim() === '' ? [] : [flag, value.trim()]
 }
 
 /**

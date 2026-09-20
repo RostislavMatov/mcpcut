@@ -21,8 +21,12 @@ import {
   type LoginRateLimiter,
   type SessionManager,
 } from './auth.js'
+import { CONSOLE_API_PREFIX } from '../console-api/contract.js'
+import type { ConsoleRunner } from '../console-api/runner.js'
 import { authorize, matchRoute, type RouteEntry } from './authz.js'
-import { handleLoginRequest, type LoginFlowDeps } from './login-flow.js'
+import { createConsoleApiRoutes, type ConsoleApiRouter } from './console-api.js'
+import { createCorePublicRoutes } from './core-public.js'
+import type { LoginFlowDeps } from './login-flow.js'
 import {
   assertHandlersComplete,
   describeError,
@@ -36,6 +40,7 @@ import {
   type UiResult,
 } from './routes.js'
 import { securityHeaders } from './security-headers.js'
+import type { FirstRunOptions } from './setup-flow.js'
 import {
   BODY_FORBIDDEN,
   BODY_INTERNAL,
@@ -55,6 +60,7 @@ import {
   HTTP_STATUS_PAYLOAD_TOO_LARGE,
   HTTP_STATUS_SEE_OTHER,
   HTTP_STATUS_UNAUTHORIZED,
+  LOGIN_LOCATION,
   MAX_UI_BODY_BYTES,
   NON_LOCALHOST_BIND_WARNING,
   SCRIPT_REQUEST_HEADER,
@@ -80,10 +86,12 @@ import {
  *  4. Off the public surface: resolve+re-validate the presented session
  *     cookie. NOT SIGNED IN — no cookie, or one that no longer resolves (then
  *     it is cleared) — → `/login` (303, or 401 for the page script),
- *     identical for a listed and an unlisted path so it is no oracle.
+ *     identical for a listed and an unlisted path so it is no oracle. While
+ *     the install has NO admin the 303 names `/setup` instead (first run,
+ *     `setup-flow.ts`): nobody holds a token the sign-in screen could take.
  *  5. No route match → 403 for a signed-in caller (deny-by-default: an
  *     unlisted route is denied to everyone).
- *  6. Public routes (`/login`, assets) dispatch straight away.
+ *  6. Public routes (`/login`, `/setup`, assets) dispatch straight away.
  *  7. Protected routes: authorize by role → CSRF-check state-changing POSTs →
  *     dispatch.
  *
@@ -135,6 +143,22 @@ export interface UiServerOptions {
   readonly stderr?: WarnSink
   /** Runs after each successful login (`LoginFlowDeps.afterSignIn`); its failure never changes the answer. */
   readonly afterSignIn?: LoginFlowDeps['afterSignIn']
+  /**
+   * Makes `/setup` exist (`setup-flow.ts`): while its gate is open, a caller
+   * who is not signed in is sent there instead of to a sign-in screen nobody
+   * holds a token for. Absent — `/setup` answers `/login`, as if closed.
+   */
+  readonly firstRun?: FirstRunOptions
+  /**
+   * Enables `/api/console/*` (ADR-0014, wave 1): the injected runner IS the
+   * remote console API, on this same port. `server.ts` branches to it before
+   * the cookie-based pipeline even parses a session — no cookie is read and
+   * an `Origin` header refuses the request outright, on every method.
+   * Absent (every UI test that predates this feature, and any deployment that
+   * never wants a remote console), `/api/console/*` falls through unbranched
+   * and is answered exactly as any other unlisted route is today.
+   */
+  readonly consoleRunner?: ConsoleRunner
 }
 
 /** The per-connection timeouts a live listener enforces, read back from it (tests). */
@@ -178,6 +202,41 @@ export function createUiServer(opts: UiServerOptions): UiServer {
     ...(opts.loginMaxFailures !== undefined ? { maxFailures: opts.loginMaxFailures } : {}),
     ...(opts.loginWindowMs !== undefined ? { windowMs: opts.loginWindowMs } : {}),
   })
+
+  // The login and first-run flows share one limiter on purpose: `/setup` is
+  // not a second budget of attempts for the same address.
+  const corePublic = createCorePublicRoutes({
+    login: {
+      adminStore: opts.adminStore,
+      sessions,
+      rateLimiter,
+      penaltyGate,
+      behindTls,
+      stderr,
+      ...(opts.trustedProxyHeader !== undefined ? { trustedProxyHeader: opts.trustedProxyHeader } : {}),
+      ...(opts.afterSignIn !== undefined ? { afterSignIn: opts.afterSignIn } : {}),
+    },
+    ...(opts.firstRun !== undefined ? { firstRun: opts.firstRun } : {}),
+  })
+
+  // The remote console API (ADR-0014, wave 1): built only when a runner is
+  // injected, sharing this server's own admin store, rate limiter and
+  // first-run options — one shared limiter is what keeps `/api/console/setup`
+  // from being a second budget beside `/login` and `/setup`.
+  const consoleApi: ConsoleApiRouter | undefined =
+    opts.consoleRunner === undefined
+      ? undefined
+      : createConsoleApiRoutes({
+          adminStore: opts.adminStore,
+          rateLimiter,
+          penaltyGate,
+          ...(opts.trustedProxyHeader !== undefined ? { trustedProxyHeader: opts.trustedProxyHeader } : {}),
+          ...(opts.firstRun !== undefined ? { firstRun: opts.firstRun } : {}),
+          runner: opts.consoleRunner,
+          behindTls,
+          maxBodyBytes,
+          stderr,
+        })
 
   let server: Server | null = null
   let closePromise: Promise<void> | null = null
@@ -276,7 +335,7 @@ export function createUiServer(opts: UiServerOptions): UiServer {
     // byte-identical to an unlisted route: the two must stay indistinguishable,
     // or a viewer could enumerate the owner-only surface.
     if (session === undefined) {
-      sendToLogin(req, res, false)
+      await sendToLogin(req, res, false)
       return
     }
     if (decision.kind !== 'allow') {
@@ -293,7 +352,7 @@ export function createUiServer(opts: UiServerOptions): UiServer {
       writeResult(res, {
         kind: 'response',
         status: HTTP_STATUS_FOUND,
-        headers: { location: '/login', 'set-cookie': clearSessionCookie({ secure: behindTls }) },
+        headers: { location: LOGIN_LOCATION, 'set-cookie': clearSessionCookie({ secure: behindTls }) },
       })
       return
     }
@@ -326,7 +385,7 @@ export function createUiServer(opts: UiServerOptions): UiServer {
    * uniform is the refusal that DOES depend on the path's role: a signed-in
    * caller below the bar and an unlisted route are one byte-identical 403.
    */
-  function sendToLogin(req: IncomingMessage, res: ServerResponse, hadCookie: boolean): void {
+  async function sendToLogin(req: IncomingMessage, res: ServerResponse, hadCookie: boolean): Promise<void> {
     // Nothing to clear when no cookie was presented; sending the header anyway
     // would make the two cases distinguishable for no gain.
     const setCookie = hadCookie ? { 'set-cookie': clearSessionCookie({ secure: behindTls }) } : {}
@@ -342,7 +401,7 @@ export function createUiServer(opts: UiServerOptions): UiServer {
     writeResult(res, {
       kind: 'response',
       status: HTTP_STATUS_SEE_OTHER,
-      headers: { location: '/login', ...setCookie },
+      headers: { location: await corePublic.signedOutLocation(), ...setCookie },
     })
   }
 
@@ -378,7 +437,7 @@ export function createUiServer(opts: UiServerOptions): UiServer {
     const isPublicRoute = match !== null && match.entry.minRole === 'public'
     const { sessionId, session } = await presentedSession(req, isPublicRoute)
     if (sessionId !== undefined && session === undefined) {
-      sendToLogin(req, res, true)
+      await sendToLogin(req, res, true)
       return
     }
     if (match === null) {
@@ -387,7 +446,7 @@ export function createUiServer(opts: UiServerOptions): UiServer {
       // else an unlisted route is a 403, the same one an over-privileged path
       // gives (no existence oracle).
       if (session === undefined) {
-        sendToLogin(req, res, false)
+        await sendToLogin(req, res, false)
         return
       }
       sendPlan(res, HTTP_STATUS_FORBIDDEN, BODY_FORBIDDEN)
@@ -405,31 +464,9 @@ export function createUiServer(opts: UiServerOptions): UiServer {
     }
     const { entry, params } = match
     if (isPublicRoute) {
-      if (entry.handler === '@login') {
-        const loginCtx = buildContext(req, parsed.path, params, parsed.query, undefined, body)
-        writeResult(
-          res,
-          await handleLoginRequest(
-            {
-              adminStore: opts.adminStore,
-              sessions,
-              rateLimiter,
-              penaltyGate,
-              behindTls,
-              stderr,
-              ...(opts.trustedProxyHeader !== undefined
-                ? { trustedProxyHeader: opts.trustedProxyHeader }
-                : {}),
-              ...(opts.afterSignIn !== undefined ? { afterSignIn: opts.afterSignIn } : {}),
-            },
-            loginCtx,
-            req,
-          ),
-        )
-        return
-      }
       const ctx = buildContext(req, parsed.path, params, parsed.query, undefined, body)
-      writeResult(res, await dispatchInjected(entry.handler, ctx))
+      const core = await corePublic.handle(entry, ctx, req)
+      writeResult(res, core ?? (await dispatchInjected(entry.handler, ctx)))
       return
     }
     await handleProtected(entry, req, res, parsed.path, params, parsed.query, body, sessionId, session)
@@ -447,6 +484,18 @@ export function createUiServer(opts: UiServerOptions): UiServer {
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!isRequestHostAllowed(req)) {
       sendPlan(res, HTTP_STATUS_FORBIDDEN, BODY_FORBIDDEN)
+      return
+    }
+    // The remote console API is a DIFFERENT trust domain from the browser UI
+    // below (Bearer, not cookie) and is branched to BEFORE the cookie-based
+    // pipeline's own Origin rule and session resolution: it enforces its own,
+    // stricter Origin rule (any Origin at all is refused, module doc) and
+    // never reads a cookie. Host screening above still applies to it. Absent
+    // `consoleRunner`, this branch is skipped and the prefix falls through
+    // unchanged — an unlisted route, exactly as it answered before this
+    // feature existed.
+    if (consoleApi !== undefined && parseTarget(req.url).path.startsWith(CONSOLE_API_PREFIX)) {
+      await consoleApi.handle(req, res)
       return
     }
     const origin = headerValue(req.headers, 'origin')

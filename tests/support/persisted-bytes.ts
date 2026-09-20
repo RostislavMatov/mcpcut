@@ -4,7 +4,7 @@ import { join } from 'node:path'
 /**
  * The ONE implementation of the project's core "no secret ever persists
  * unredacted" sweep, shared by every suite that asserts over persisted bytes
- * (agents hardening, the m3/m4 e2e gates, the UI bootstrap-token test).
+ * (agents hardening, the m3/m4 e2e gates, the UI first-run test).
  * Keeping it single means the next hardening — an extra rendering, a new
  * side file, files created mid-scan — lands in every suite at once instead
  * of leaving diverged copies silently weaker.
@@ -25,7 +25,7 @@ export interface PersistedBytes {
 export interface PersistedBytesOptions {
   /**
    * Absolute paths left out of the sweep. The one legitimate use is the
-   * bootstrap token file BEFORE the first sign-in, which holds the token by
+   * setup code file BEFORE the owner is created, which holds the code by
    * design (phase 6, F6); a caller excluding it must assert its removal
    * afterwards and sweep again with nothing excluded.
    */

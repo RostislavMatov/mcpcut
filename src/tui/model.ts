@@ -70,6 +70,27 @@ export interface RunRequest {
 /** What the console knows about the install it runs over; absent = an install mcpcut supervises. */
 export interface InstallFacts {
   readonly supervisor: Supervisor
+  /**
+   * True when this console is driving a remote install over `--remote`/
+   * `MCPCUT_REMOTE` (ADR-0014). Absent — never `false` — for the ordinary
+   * local console, so `{ supervisor } === DEFAULT_INSTALL_FACTS`-shaped
+   * objects built before wave 2 keep meaning exactly what they always meant.
+   */
+  readonly remote?: true
+  /**
+   * The origin this console is driving, present only alongside `remote` —
+   * shown on the sign-in and first-owner screens so an operator always knows
+   * which install a keystroke is about to reach (ADR-0014).
+   */
+  readonly remoteAddress?: string
+  /**
+   * True when `remoteAddress` is plain `http` to a non-loopback host: the
+   * admin token crosses the network in clear. The loud one-time warning is on
+   * stderr before the console opens (`tui-remote.ts`); this is the same fact
+   * said again on the sign-in screen, which stays on screen for as long as
+   * nobody has signed in.
+   */
+  readonly remoteInsecure?: true
 }
 
 /**
@@ -171,7 +192,95 @@ export type WizardStage =
       readonly quitAsked: boolean
     }
 
+/**
+ * Where the first-owner screen has got to (2026-09-19): the form asking for a
+ * name, or the one-time token of the owner it created, held until the
+ * operator says it is saved. As on the wizard's final screen, the token lives
+ * in the model for exactly as long as it is on screen.
+ */
+export type FirstOwnerStage =
+  | {
+      readonly kind: 'form'
+      readonly form: Form
+      readonly busy: boolean
+      /**
+       * A remote `POST setup` refusal (`code-refused`/`invalid-name`/
+       * `rate-limited`, ADR-0014): the operator stays on the form, with the
+       * code already cleared, and reads why. A LOCAL `admin add` refusal
+       * never sets this — it goes to the sign-in screen instead, since a
+       * shell winning the race is not something retyping the form fixes.
+       */
+      readonly notice?: string
+    }
+  | {
+      readonly kind: 'hold'
+      readonly admin: MintedAdmin
+      /** `q` with the token on screen asks first; this is the question being asked. */
+      readonly quitAsked: boolean
+      /**
+       * The owner was created but its `access-edit` record was not (ADR-0014,
+       * `POST setup`'s `journaled: false` — audit 2026-09-02, H4). Absent for
+       * every local mint and every remote one that journalled cleanly.
+       */
+      readonly warning?: string
+    }
+
+/**
+ * What a remote `POST setup` came to, folded down to what the first-owner
+ * screen needs to answer — never the code, which the effect that made the
+ * call already forgot.
+ */
+export type FirstOwnerRemoteOutcome =
+  | { readonly kind: 'ok'; readonly name: string; readonly token: string; readonly journaled: boolean }
+  /** `code-refused`/`invalid-name`/`rate-limited`/anything else the server said. */
+  | { readonly kind: 'refused'; readonly message: string }
+  /** An admin exists now (a race, or a shell got there first): sign in instead. */
+  | { readonly kind: 'closed' }
+
+/**
+ * What a `connect-probe` effect answers with (2026-09-19): the welcome
+ * screen's "Connect to a service on another host" asks nothing more of a
+ * remote install than whether it is there at all — `EffectDeps.probeRemote`
+ * (`runtime-effects.ts`) is a thin `GET state`, the same call `--remote`
+ * itself makes before opening a frame (`tui-remote.ts`) — and this is its
+ * whole answer.
+ */
+export type RemoteProbeOutcome = { readonly ok: true } | { readonly ok: false; readonly message: string }
+
+/**
+ * Where the welcome screen has got to (2026-09-19): the console opens here
+ * over an install nothing has configured yet, and asks whether THIS machine
+ * is about to run the service or merely dial one that already runs somewhere
+ * else. The wizard screen "Set up a service" swaps to lives on `Screen`
+ * itself, not here — prebuilt once, so choosing it is a pure swap of
+ * `model.screen` and never a second place that knows how to build one.
+ */
+export type WelcomeStage =
+  | { readonly kind: 'choose'; readonly index: number }
+  | {
+      readonly kind: 'connect'
+      readonly form: Form
+      readonly busy: boolean
+      /** Why the last attempt did not reach a console; cleared by the next edit. */
+      readonly notice?: string
+      /**
+       * Where Esc goes from this stage (2026-09-20): back to "choose" when
+       * absent or `true` — the ordinary path, reached by picking "connect"
+       * from the choice above — and a quit when `false`, which is how
+       * `mcpcut --connect` opens this stage directly over an install that
+       * already exists. "choose" would then offer "set up a service" over an
+       * install already there, so there is nowhere honest for Esc to go but
+       * out (ADR-0014, owner request 2026-09-20).
+       */
+      readonly escapesToChoose?: boolean
+    }
+
 export type Screen =
+  /**
+   * What the console opens on when the install has NO admin: the console runs
+   * under the service's uid, so it may create the owner itself (ADR-0012 §19).
+   */
+  | { readonly kind: 'first-owner'; readonly stage: FirstOwnerStage }
   | {
       readonly kind: 'signin'
       readonly form: Form
@@ -179,13 +288,6 @@ export type Screen =
       readonly busy: boolean
       /** What `status` answered before anyone signed in; absent until it has. */
       readonly services?: readonly ServiceSummary[]
-      /**
-       * Where the one-time bootstrap token file is, if it existed when the
-       * console opened (phase 6, F6b). A host fact read once, like `install`;
-       * a screen that follows a lost session never carries it, since the
-       * sign-in that just ended is the one that consumed the file.
-       */
-      readonly bootstrapTokenPath?: string
     }
   | {
       readonly kind: 'main'
@@ -222,11 +324,19 @@ export type Screen =
       readonly form: Form
       readonly stage: WizardStage
     }
+  | {
+      readonly kind: 'welcome'
+      readonly stage: WelcomeStage
+      /** The wizard screen "Set up a service" opens onto; built once, ahead of the choice. */
+      readonly wizard: WizardScreen
+    }
 
-/** The three screens by name, for the reducers and renderers that handle one of them. */
+/** The screens by name, for the reducers and renderers that handle one of them. */
 export type MainScreen = Extract<Screen, { kind: 'main' }>
 export type SigninScreen = Extract<Screen, { kind: 'signin' }>
 export type WizardScreen = Extract<Screen, { kind: 'wizard' }>
+export type FirstOwnerScreen = Extract<Screen, { kind: 'first-owner' }>
+export type WelcomeScreen = Extract<Screen, { kind: 'welcome' }>
 
 export interface Model {
   readonly screen: Screen
@@ -247,11 +357,17 @@ export type Msg =
   /** The auto-refresh timer fired; the reducer decides whether anything is due. */
   | { readonly kind: 'tick' }
   | { readonly kind: 'poll-result'; readonly result: RunResult }
+  /** The sessionless `admin add` of the first-owner screen has answered. */
+  | { readonly kind: 'first-owner-result'; readonly result: RunResult }
+  /** A remote `POST setup` (ADR-0014) has answered. */
+  | { readonly kind: 'first-owner-setup-result'; readonly result: FirstOwnerRemoteOutcome }
   | {
       readonly kind: 'wizard-run-result'
       readonly step: DeployStepId
       readonly result: RunResult
     }
+  /** The welcome screen's `connect-probe` (2026-09-19) has answered. */
+  | { readonly kind: 'connect-probe-result'; readonly url: string; readonly result: RemoteProbeOutcome }
 
 export type Effect =
   | { readonly kind: 'signin'; readonly token: string }
@@ -265,13 +381,29 @@ export type Effect =
   | { readonly kind: 'refresh-services' }
   /** The same command as `run`, run quietly: no `busy`, no running line, no stolen screen. */
   | { readonly kind: 'poll'; readonly request: RunRequest }
+  /** The first-owner screen's `admin add`: dispatched with no session — there is no admin yet. */
+  | { readonly kind: 'first-owner-run'; readonly request: RunRequest }
+  /** The first-owner screen's remote `POST setup` (ADR-0014); the code lives only here. */
+  | { readonly kind: 'first-owner-setup'; readonly code: string; readonly name: string }
   /** Leave the console and run this argv as a child on the same terminal. */
   | { readonly kind: 'reopen'; readonly argv: readonly string[] }
+  /**
+   * Leaves a remote console (2026-09-20, owner request "a way to
+   * disconnect"): forgets the saved address, if any, and reopens with
+   * `argv` — always `['--connect', <the address this console was driving>]`,
+   * built by the reducer from `InstallFacts.remoteAddress` because the
+   * catalogue's `disconnect` action has no CLI command of its own to build it
+   * from. Handled like `reopen` (`runtime.ts`'s `enqueue`): the terminal is
+   * about to be handed to a child process and there is nothing to wait for.
+   */
+  | { readonly kind: 'disconnect'; readonly argv: readonly string[] }
   | { readonly kind: 'quit'; readonly exitCode: number }
   /** One rung of the deploy ladder: dispatched with no session, since there is no admin yet. */
   | { readonly kind: 'wizard-run'; readonly step: DeployStepId; readonly request: RunRequest }
   /** The operator asked for the sign-in screen; the runtime reopens the console. */
   | { readonly kind: 'wizard-finish' }
+  /** The welcome screen's "Connect": ask whether `url` answers at all (2026-09-19). */
+  | { readonly kind: 'connect-probe'; readonly url: string }
 
 /** One reducer step: the next model and the effects it requests, in order. */
 export interface Step {
@@ -284,16 +416,12 @@ export const SIGNIN_FIELDS: readonly FieldSpec[] = [
   { name: 'token', label: SIGNIN_TOKEN_LABEL, kind: 'secret', required: true },
 ]
 
-/** What the sign-in screen is told about the host on opening, besides the install. */
-export type SigninHostFacts = Pick<SigninScreen, 'bootstrapTokenPath'>
-
 export function initialModel(
   size: TerminalSize,
   install: InstallFacts = DEFAULT_INSTALL_FACTS,
-  signin: SigninHostFacts = {},
 ): Model {
   return {
-    screen: { kind: 'signin', form: formOf(SIGNIN_FIELDS), busy: false, ...signin },
+    screen: { kind: 'signin', form: formOf(SIGNIN_FIELDS), busy: false },
     size,
     install,
   }

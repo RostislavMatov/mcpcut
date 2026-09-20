@@ -7,6 +7,7 @@ import {
   AdminExistsError,
   AdminNotFoundError,
   createAdminStore,
+  FirstOwnerRefusedError,
   InvalidAdminNameError,
   InvalidAdminRoleError,
   LastOwnerError,
@@ -182,5 +183,40 @@ describe('corruption', () => {
   test('a hand-edited invalid file fails loudly, never degrades to empty', async () => {
     await writeFile(join(journalDir, ADMINS_FILE_NAME), '{"version":1,"admins":{"x":{}}}', 'utf8')
     await expect(store.listAdmins()).rejects.toBeInstanceOf(StoreCorruptError)
+  })
+})
+
+describe('createFirstOwner', () => {
+  test('creates an owner with a one-time token when the store holds no active admin', async () => {
+    const { admin, token } = await store.createFirstOwner('alice')
+
+    expect(admin.name).toBe('alice')
+    expect(admin.role).toBe('owner')
+    expect(token.startsWith('mcpa_')).toBe(true)
+    expect(await store.findAdminByToken(token)).toEqual(admin)
+  })
+
+  test('refuses once any active admin exists, whatever that admin is called', async () => {
+    await store.createAdmin('alice', 'viewer')
+
+    await expect(store.createFirstOwner('bob')).rejects.toBeInstanceOf(FirstOwnerRefusedError)
+    expect((await store.listAdmins()).map((a) => a.name)).toEqual(['alice'])
+  })
+
+  test('two concurrent claims produce exactly one owner', async () => {
+    const results = await Promise.allSettled([
+      store.createFirstOwner('alice'),
+      store.createFirstOwner('bob'),
+    ])
+
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+    const refused = results.find((r) => r.status === 'rejected')
+    expect(refused?.status === 'rejected' && refused.reason).toBeInstanceOf(FirstOwnerRefusedError)
+    expect(await store.listAdmins()).toHaveLength(1)
+  })
+
+  test('rejects an invalid name before touching the store', async () => {
+    await expect(store.createFirstOwner('Not Valid')).rejects.toBeInstanceOf(InvalidAdminNameError)
+    expect(await store.listAdmins()).toHaveLength(0)
   })
 })

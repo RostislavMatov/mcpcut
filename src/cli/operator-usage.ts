@@ -1,5 +1,6 @@
 import { LOG_TAIL_DEFAULT_LINES } from '../services/constants.js'
 import { CLI_NAME, SUPERVISORS } from '../setup/constants.js'
+import { REMOTE_URL_ENV_VAR } from '../tui/remote/url.js'
 
 /**
  * The synopsis of the operator commands — `mcpcut setup` and
@@ -61,10 +62,13 @@ export const SETUP_SYNOPSIS_LINES: readonly string[] = [
   `${ROW_INDENT}${CLI_NAME} setup --yes [--data-dir <dir>] [--ui-host H] [--ui-port N] [--serve-host H] [--serve-port N]`,
   `${FLAG_CONTINUATION_INDENT}[--behind-tls|--no-behind-tls] [--admin <name>|--no-admin] [--supervisor ${SUPERVISORS.join('|')}]`,
   `${FLAG_CONTINUATION_INDENT}[--ui-probe-host H] [--serve-probe-host H] [--start] [--force]`,
+  `${FLAG_CONTINUATION_INDENT}[--ui-public-url <url>] [--serve-public-url <url>]`,
   `${DESCRIPTION_INDENT}Write the install config, prepare the data directory, run the`,
   `${DESCRIPTION_INDENT}checks and mint the first owner`,
   `${DESCRIPTION_INDENT}--behind-tls is remembered across reruns; --no-behind-tls takes it back`,
   `${DESCRIPTION_INDENT}--*-probe-host: where status dials a service it has no pid file for`,
+  `${DESCRIPTION_INDENT}--*-public-url: the address you will reach the service at (http://<ip>:<port>,`,
+  `${DESCRIPTION_INDENT}https://<name>); allows that Host/Origin, records TLS, opens the bind for plain http`,
   `${DESCRIPTION_INDENT}--force, --no-admin and --start apply to --yes only`,
 ]
 
@@ -88,6 +92,15 @@ export const SERVICE_SYNOPSIS_LINES: readonly string[] = [
 export const TUI_SYNOPSIS_LINES: readonly string[] = [
   `${ROW_INDENT}${`${CLI_NAME} tui`.padEnd(USAGE_DESCRIPTION_COLUMN - ROW_INDENT.length)}Open the interactive console (a bare "${CLI_NAME}" on a terminal does the same;`,
   `${DESCRIPTION_INDENT}in a pipe a bare "${CLI_NAME}" prints this help)`,
+  `${ROW_INDENT}${`${CLI_NAME} --remote <url>`.padEnd(USAGE_DESCRIPTION_COLUMN - ROW_INDENT.length)}Open the console over HTTP against a remote "ui" instead (a Bearer admin`,
+  `${DESCRIPTION_INDENT}token, never a browser); ${REMOTE_URL_ENV_VAR} sets the address too, the flag wins`,
+  `${DESCRIPTION_INDENT}(a bare "${CLI_NAME}" with only the variable set does the same). Everything the`,
+  `${DESCRIPTION_INDENT}console can do runs there except Services ▸ setup (local only, ADR-0014).`,
+  `${DESCRIPTION_INDENT}Plain http to a non-loopback host warns loudly rather than refusing.`,
+  `${ROW_INDENT}${`${CLI_NAME} --connect [url]`.padEnd(USAGE_DESCRIPTION_COLUMN - ROW_INDENT.length)}Open the "connect to another host" form directly, address optional and`,
+  `${DESCRIPTION_INDENT}prefilled when given; a bad one is a notice on the form, not a refusal.`,
+  `${DESCRIPTION_INDENT}Opens even over a broken local config or an existing install, and ignores`,
+  `${DESCRIPTION_INDENT}any saved address (Home ▸ disconnect remembers/forgets one automatically).`,
 ]
 
 /** One command's own usage: its synopsis under a header, and nothing else. */

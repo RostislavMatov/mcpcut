@@ -57,6 +57,32 @@ export function quit(model: Model, exitCode: number): Step {
   return { model, effects: [{ kind: 'quit', exitCode }] }
 }
 
+/** The Ctrl-D chord: "disconnect" on a remote console, nothing at all locally (2026-09-20). */
+const DISCONNECT_CHAR = 'd'
+
+/** Whether a keystroke is the Ctrl-D "disconnect" chord. */
+export function isDisconnectKey(key: KeyEvent): boolean {
+  return key.kind === 'ctrl' && key.char === DISCONNECT_CHAR
+}
+
+/** Whether this console is driving a remote install (`InstallFacts.remote`, ADR-0014). */
+export function isRemoteInstall(model: Model): boolean {
+  return model.install?.remote === true
+}
+
+/**
+ * Leaves the console: forgets the saved address, if any, and reopens on
+ * `--connect <the address this console was driving>` (2026-09-20, owner
+ * request "a way to disconnect"). Shared by Home's `disconnect` action
+ * (`update-form.ts`) and the Ctrl-D chord on the sign-in and first-owner
+ * screens (`update-signin.ts`, `update-first-owner.ts`) — one builder, so the
+ * address a keystroke reopens on can never disagree with the one a menu item
+ * would have.
+ */
+export function disconnectStep(model: Model): Step {
+  return { model, effects: [{ kind: 'disconnect', argv: ['--connect', model.install?.remoteAddress ?? ''] }] }
+}
+
 /**
  * How many lines of output one PgUp/PgDn moves on a terminal this size. Read
  * off the layout rather than the height alone since phase 6: on a narrow

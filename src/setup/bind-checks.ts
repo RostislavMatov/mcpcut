@@ -146,7 +146,7 @@ export function checkBindExposure(
  * which that list does not enumerate because a Host header carries a name and
  * a bind flag carries an address.
  */
-function isLoopbackHost(host: string): boolean {
+export function isLoopbackHost(host: string): boolean {
   const bare = stripBrackets(host.toLowerCase())
   return LOCALHOST_HOSTNAMES.includes(bare) || bare.startsWith(LOOPBACK_IPV4_PREFIX)
 }

@@ -4,11 +4,13 @@ import { createServer as createNetServer, type AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test, vi } from 'vitest'
+import { readJournalRecords } from '../support/journal-rows.js'
 import { collectPersistedBytes } from '../support/persisted-bytes.js'
 import { writeCorruptDatabase } from '../support/corrupt-db.js'
-import { bootstrapTokenPathFor } from '../../src/admin/bootstrap-file.js'
+import { setupCodePathFor } from '../../src/admin/setup-code-file.js'
 import { ADMINS_FILE_NAME } from '../../src/admin/constants.js'
 import { createAdminStore } from '../../src/admin/store.js'
+import { ACCESS_EDIT_SESSION_ID } from '../../src/journal/access-edit-record.js'
 import { runUi, type UiCommandOptions, type UiHandle } from '../../src/cli/ui-cmd.js'
 import { BOOTSTRAP_ADMIN_NAME, UI_USAGE } from '../../src/cli/ui-constants.js'
 import { openInventoryStore } from '../../src/policy/inventory-store.js'
@@ -23,7 +25,7 @@ import { UI_PORT_ENV_VAR } from '../../src/setup/constants.js'
  *
  * The daemon discipline is asserted throughout: stdout stays byte-empty for a
  * whole run, and every diagnostic — the bind warning, the listening line and
- * the one-time bootstrap credential — goes to stderr.
+ * the one-time setup code — goes to stderr.
  */
 
 /** Origin a browser attaches to every POST; the UI requires it on state changes. */
@@ -537,108 +539,142 @@ describe('runUi: flag parsing and startup', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Bootstrap admin
+// First run: no admin is minted; a setup code is written and `/setup` served
 // ---------------------------------------------------------------------------
 
-/** The one-time token the bootstrap wrote to its file — exactly one, or the test fails here. */
-async function readBootstrapToken(journalDir: string): Promise<string> {
-  const tokens = tokensIn(await readFile(bootstrapTokenPathFor(journalDir), 'utf8'))
-  expect(tokens).toHaveLength(1)
+const SETUP_CODE_PATTERN = /mcps_[A-Za-z0-9_-]+/g
+
+function setupCodesIn(text: string): string[] {
+  return text.match(SETUP_CODE_PATTERN) ?? []
+}
+
+/** The one-time setup code the first start wrote to its file — exactly one, or the test fails here. */
+async function readSetupCode(journalDir: string): Promise<string> {
+  const codes = setupCodesIn(await readFile(setupCodePathFor(journalDir), 'utf8'))
+  expect(codes).toHaveLength(1)
+  return codes[0] as string
+}
+
+function postSetup(base: string, fields: Record<string, string>): Promise<HttpResponse> {
+  return httpCall(base, '/setup', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', origin: UI_TEST_ORIGIN },
+    body: new URLSearchParams(fields).toString(),
+  })
+}
+
+/**
+ * Walks the first-run page the way an operator does — code from the file, a
+ * name, the token off the answer — and returns that owner's token.
+ */
+async function firstOwnerToken(
+  fixture: Pick<UiFixture, 'journalDir' | 'base'>,
+  name: string = BOOTSTRAP_ADMIN_NAME,
+): Promise<string> {
+  const code = await readSetupCode(fixture.journalDir)
+  const response = await postSetup(fixture.base, { code, name })
+  expect(response.status).toBe(200)
+  const tokens = tokensIn(response.body)
+  expect(new Set(tokens).size).toBe(1)
   return tokens[0] as string
 }
 
-describe('runUi: first start with no admins.json', () => {
-  test('creates an owner admin, writes its token to a 0600 file and names the file on stderr', async () => {
+describe('runUi: first start with no admins', () => {
+  test('creates NO admin: writes a 0600 setup code and names the file and /setup on stderr', async () => {
     const fixture = await startUi()
 
     const err = fixture.io.errText()
-    const loginUrl = `http://127.0.0.1:${fixture.handle.port}/login`
-    const tokenPath = bootstrapTokenPathFor(fixture.journalDir)
-    expect(err.split(loginUrl).length - 1).toBe(1)
-    expect(err).toContain(tokenPath)
-    // Phase 6 (F6): the credential is in the file and nowhere on a stream.
+    const setupUrl = `http://127.0.0.1:${fixture.handle.port}/setup`
+    const codePath = setupCodePathFor(fixture.journalDir)
+    expect(err.split(setupUrl).length - 1).toBe(1)
+    expect(err).toContain(codePath)
+    // Neither credential shape reaches a stream: under the service manager
+    // stderr IS `run/ui.log`.
     expect(tokensIn(err)).toHaveLength(0)
+    expect(setupCodesIn(err)).toHaveLength(0)
     expect(fixture.io.outText()).toBe('')
 
-    const info = await stat(tokenPath)
+    const info = await stat(codePath)
     expect(info.mode & 0o777).toBe(0o600)
-    const token = await readBootstrapToken(fixture.journalDir)
-    expect(await readFile(tokenPath, 'utf8')).toBe(`${token}\n`)
+    const code = await readSetupCode(fixture.journalDir)
+    expect(await readFile(codePath, 'utf8')).toBe(`${code}\n`)
+
+    expect(await createAdminStore({ journalDir: fixture.journalDir }).listAdmins()).toHaveLength(0)
+  })
+
+  test('every page of that install leads to /setup', async () => {
+    const fixture = await startUi()
+
+    for (const path of ['/', '/journal', '/login']) {
+      const response = await httpCall(fixture.base, path)
+      expect([path, response.status, response.headers.location]).toEqual([path, 303, '/setup'])
+    }
+    const form = await httpCall(fixture.base, '/setup')
+    expect(form.status).toBe(200)
+    expect(form.body).toContain('<form method="post" action="/setup">')
+  })
+
+  test('the code plus a chosen name make the owner; its token signs in; the code file is gone', async () => {
+    const fixture = await startUi()
+    const codePath = setupCodePathFor(fixture.journalDir)
+    const code = await readSetupCode(fixture.journalDir)
+
+    const token = await firstOwnerToken(fixture, 'alice')
 
     const store = createAdminStore({ journalDir: fixture.journalDir })
     const admins = await store.listAdmins()
-    expect(admins).toHaveLength(1)
-    expect(admins[0]?.name).toBe(BOOTSTRAP_ADMIN_NAME)
-    expect(admins[0]?.role).toBe('owner')
-  })
-
-  test('the bootstrap token works for a real login, and the first sign-in removes the file', async () => {
-    const fixture = await startUi()
-    const tokenPath = bootstrapTokenPathFor(fixture.journalDir)
-    const token = await readBootstrapToken(fixture.journalDir)
-
-    // Before the sign-in the token file holds the token BY DESIGN, so it is
-    // the one path the sweep leaves out; every other persisted byte of the
-    // plane must be clean of it already.
-    const before = await collectPersistedBytes(fixture.journalDir, { exclude: [tokenPath] })
-    expect(before.fileNames).toContain('state.db')
-    for (const rendering of before.renderings) {
-      expect(rendering).not.toContain(token)
-      expect(tokensIn(rendering)).toEqual([])
-    }
+    expect(admins.map((admin) => [admin.name, admin.role])).toEqual([['alice', 'owner']])
+    await expect(stat(codePath)).rejects.toMatchObject({ code: 'ENOENT' })
 
     const cookie = await login(fixture.base, token)
     expect(cookie).toContain('=')
+    expect((await httpCall(fixture.base, '/', { headers: { cookie } })).status).toBe(200)
 
-    const page = await httpCall(fixture.base, '/', { headers: { cookie } })
-    expect(page.status).toBe(200)
+    // The page is gone for good: the spent code opens nothing.
+    const replay = await postSetup(fixture.base, { code, name: 'mallory' })
+    expect([replay.status, replay.headers.location]).toEqual([303, '/login'])
+    expect((await store.listAdmins()).map((admin) => admin.name)).toEqual(['alice'])
 
-    // The first successful sign-in consumed the file.
-    await expect(stat(tokenPath)).rejects.toMatchObject({ code: 'ENOENT' })
-    expect(fixture.io.errText()).not.toContain('bootstrap token file:')
-
-    // Admin state now lives in state.db (and its -wal side file, while
-    // uncheckpointed) rather than a directly-readable admins.json. Sweep
-    // every persisted byte of the plane directory under two decodings so a
-    // token hiding anywhere in a page -- including a partial/binary one --
-    // still trips the check. Nothing is excluded this time.
+    // Sentinel-first sweep: the store's bytes were reached (the owner's hash
+    // is in them), and neither the token nor the code is anywhere on disk.
     const { fileNames, renderings } = await collectPersistedBytes(fixture.journalDir)
-
-    // Sentinel-first: prove the sweep actually reached the state database,
-    // and that what it read really is the bootstrap admin's persisted record
-    // -- otherwise the absence assertions below could pass vacuously against
-    // bytes that never held the store at all.
     expect(fileNames).toContain('state.db')
-    expect(fileNames).not.toContain('bootstrap-token')
-    const bootstrapAdmin = await createAdminStore({
-      journalDir: fixture.journalDir,
-    }).getActiveAdmin(BOOTSTRAP_ADMIN_NAME)
-    expect(bootstrapAdmin).toBeDefined()
-    expect(
-      renderings.some((rendering) => rendering.includes(bootstrapAdmin?.tokenHash as string)),
-    ).toBe(true)
-
+    expect(fileNames).not.toContain('setup-code')
+    const owner = await store.getActiveAdmin('alice')
+    expect(renderings.some((rendering) => rendering.includes(owner?.tokenHash as string))).toBe(true)
     for (const rendering of renderings) {
       expect(rendering).not.toContain(token)
       expect(tokensIn(rendering)).toEqual([])
+      expect(setupCodesIn(rendering)).toEqual([])
     }
-
-    // A second sign-in finds no file and says nothing about it: `absent` is
-    // the normal state after the first one, not a fault.
-    const errBefore = fixture.io.errText()
-    const store = createAdminStore({ journalDir: fixture.journalDir })
-    const { token: second } = await store.createAdmin('bob', 'viewer')
-    expect(await login(fixture.base, second)).toContain('=')
-    expect(fixture.io.errText()).toBe(errBefore)
+    expect(tokensIn(fixture.io.errText())).toEqual([])
+    expect(setupCodesIn(fixture.io.errText())).toEqual([])
   })
 
-  test('refuses the run when the token file cannot be written, and says the owner exists', async () => {
+  test('the first owner leaves an access-edit record that names nobody as its author', async () => {
+    const fixture = await startUi()
+
+    await firstOwnerToken(fixture, 'alice')
+    await fixture.shutdown()
+
+    const records = await readJournalRecords(fixture.journalDir, ACCESS_EDIT_SESSION_ID)
+    expect(records).toHaveLength(1)
+    expect(records[0]?.payload).toMatchObject({
+      action: 'admin.add',
+      admin: 'alice',
+      targetRole: 'owner',
+      actor: { adminName: null, role: null, via: 'ui' },
+    })
+    expect(fixture.io.errText()).toContain('[ui] first-run setup admin.add alice')
+  })
+
+  test('refuses the run when the code file cannot be written, and mints nobody', async () => {
     const journalDir = await makeJournalDir()
     // A directory with a child where the file must go: the exclusive create
     // fails, the leftover cannot be removed, and the retry fails the same way.
-    const tokenPath = bootstrapTokenPathFor(journalDir)
-    await mkdir(tokenPath)
-    await writeFile(join(tokenPath, 'child'), '', 'utf8')
+    const codePath = setupCodePathFor(journalDir)
+    await mkdir(codePath)
+    await writeFile(join(codePath, 'child'), '', 'utf8')
     const io = captureIo()
     const onListening = vi.fn()
 
@@ -646,25 +682,52 @@ describe('runUi: first start with no admins.json', () => {
 
     expect(code).toBe(1)
     expect(onListening).not.toHaveBeenCalled()
-    expect(io.errText()).toContain('ui: cannot write the bootstrap token file:')
-    expect(io.errText()).toContain(`admin rotate ${BOOTSTRAP_ADMIN_NAME}`)
-    expect(tokensIn(io.errText())).toEqual([])
+    expect(io.errText()).toContain('ui: cannot write the setup code file:')
+    expect(io.errText()).toContain('admin add <name> --role owner')
+    expect(setupCodesIn(io.errText())).toEqual([])
     expect(io.outText()).toBe('')
-    // The owner was minted before the write failed; the line above is honest about it.
-    const admins = await createAdminStore({ journalDir }).listAdmins()
-    expect(admins.map((admin) => admin.name)).toEqual([BOOTSTRAP_ADMIN_NAME])
+    expect(await createAdminStore({ journalDir }).listAdmins()).toHaveLength(0)
   })
 
-  test('no bootstrap admin is created when one already exists', async () => {
+  test('a restart over a still-empty store replaces the code: the old one is dead', async () => {
+    const first = await startUi()
+    const oldCode = await readSetupCode(first.journalDir)
+    await first.shutdown()
+
+    const second = await startUi({ journalDir: first.journalDir })
+    const newCode = await readSetupCode(second.journalDir)
+
+    expect(newCode).not.toBe(oldCode)
+    expect((await postSetup(second.base, { code: oldCode, name: 'alice' })).status).toBe(401)
+  })
+
+  test('with an admin already there: no code, no /setup, and a stale code file is removed', async () => {
     const journalDir = await makeJournalDir()
     const store = createAdminStore({ journalDir })
     await store.createAdmin('alice', 'owner')
+    await writeFile(setupCodePathFor(journalDir), 'mcps_stale\n', 'utf8')
 
     const fixture = await startUi({ journalDir })
 
     expect(tokensIn(fixture.io.errText())).toEqual([])
-    expect(fixture.io.errText()).not.toContain('/login')
+    expect(fixture.io.errText()).not.toContain('/setup')
+    await expect(stat(setupCodePathFor(journalDir))).rejects.toMatchObject({ code: 'ENOENT' })
+    expect((await httpCall(fixture.base, '/setup')).headers.location).toBe('/login')
+    expect((await httpCall(fixture.base, '/')).headers.location).toBe('/login')
     expect((await store.listAdmins()).map((admin) => admin.name)).toEqual(['alice'])
+  })
+
+  test('a stale code file that will not unlink is one stderr line, not a refused start', async () => {
+    const journalDir = await makeJournalDir()
+    await createAdminStore({ journalDir }).createAdmin('alice', 'owner')
+    // A non-empty directory where the file would be: `unlink` fails on it.
+    await mkdir(setupCodePathFor(journalDir))
+    await writeFile(join(setupCodePathFor(journalDir), 'child'), '', 'utf8')
+
+    const fixture = await startUi({ journalDir })
+
+    expect(fixture.io.errText()).toContain('[ui] setup code file:')
+    expect((await httpCall(fixture.base, '/')).headers.location).toBe('/login')
   })
 
   test('a corrupt admins file refuses the run instead of listening on an unusable plane', async () => {
@@ -687,7 +750,11 @@ describe('runUi: first start with no admins.json', () => {
 
 describe('runUi: composed handlers', () => {
   test('the login page is served and unauthenticated pages are refused', async () => {
-    const fixture = await startUi()
+    // With an admin in place: an install without one serves `/setup` instead
+    // (the first-run block above).
+    const journalDir = await makeJournalDir()
+    await createAdminStore({ journalDir }).createAdmin('alice', 'owner')
+    const fixture = await startUi({ journalDir })
 
     const loginPage = await httpCall(fixture.base, '/login')
     expect(loginPage.status).toBe(200)
@@ -702,7 +769,7 @@ describe('runUi: composed handlers', () => {
 
   test('every authenticated page an owner can reach renders', async () => {
     const fixture = await startUi()
-    const token = await readBootstrapToken(fixture.journalDir)
+    const token = await firstOwnerToken(fixture)
     const cookie = await login(fixture.base, token)
 
     for (const path of ['/', '/quarantine', '/servers', '/groups', '/agents', '/journal', '/vault', '/admins']) {
@@ -714,7 +781,7 @@ describe('runUi: composed handlers', () => {
 
   test('the journal browser is wired to the real search layer, over an empty journal too', async () => {
     const fixture = await startUi()
-    const token = await readBootstrapToken(fixture.journalDir)
+    const token = await firstOwnerToken(fixture)
     const cookie = await login(fixture.base, token)
 
     // Three distinct read paths behind one route: session list, cross-session
@@ -742,7 +809,7 @@ describe('runUi: composed stores and watcher', () => {
     await writeFile(inventoryPath, inventoryWithQuarantinedTool('srv', 'dangerous_tool'), 'utf8')
 
     const fixture = await startUi({ journalDir, queuePollIntervalMs: WATCH_POLL_MS })
-    const token = await readBootstrapToken(fixture.journalDir)
+    const token = await firstOwnerToken(fixture)
     const session = await loginSession(fixture.base, token)
 
     const stream = await openStream(fixture.base, '/events', { cookie: session.cookie })
@@ -778,7 +845,7 @@ describe('runUi: composed stores and watcher', () => {
 
   test('an admin created from the UI is attributed on stderr without its token', async () => {
     const fixture = await startUi()
-    const token = await readBootstrapToken(fixture.journalDir)
+    const token = await firstOwnerToken(fixture)
     const session = await loginSession(fixture.base, token)
 
     const response = await postAction(fixture.base, '/admins/add', session, {
@@ -790,7 +857,7 @@ describe('runUi: composed stores and watcher', () => {
     const errAfter = fixture.io.errText()
     expect(errAfter).toContain(`${BOOTSTRAP_ADMIN_NAME} admins.add bob`)
     // The new admin's one-time token belongs in the page, never in the log —
-    // and since phase 6 (F6) neither does the bootstrap one, so stderr holds none.
+    // and since phase 6 (F6) neither does a first-run secret, so stderr holds none.
     expect(tokensIn(errAfter)).toHaveLength(0)
     expect(fixture.io.outText()).toBe('')
 
@@ -800,7 +867,7 @@ describe('runUi: composed stores and watcher', () => {
 
   test('--behind-tls marks the session cookie Secure', async () => {
     const fixture = await startUi({ argv: ['--behind-tls'] })
-    const token = await readBootstrapToken(fixture.journalDir)
+    const token = await firstOwnerToken(fixture)
 
     const session = await loginSession(fixture.base, token)
 
@@ -810,8 +877,10 @@ describe('runUi: composed stores and watcher', () => {
   test('--allowed-host admits a proxy name the bind address does not cover', async () => {
     const fixture = await startUi({ argv: ['--allowed-host', 'admin.internal'] })
 
-    const allowed = await httpCall(fixture.base, '/login', { headers: { host: 'admin.internal' } })
-    const refused = await httpCall(fixture.base, '/login', { headers: { host: 'evil.example' } })
+    // `/setup`, not `/login`: this install has no admin, so the sign-in
+    // screen itself redirects — the Host check in front of both is the same.
+    const allowed = await httpCall(fixture.base, '/setup', { headers: { host: 'admin.internal' } })
+    const refused = await httpCall(fixture.base, '/setup', { headers: { host: 'evil.example' } })
 
     expect(allowed.status).toBe(200)
     expect(refused.status).toBe(403)
@@ -877,7 +946,7 @@ describe('runUi: graceful shutdown', () => {
     const fixture = await startUi({ signals: ['SIGINT'] })
     expect(fixture.installedSignalListeners).toHaveLength(1)
 
-    const token = await readBootstrapToken(fixture.journalDir)
+    const token = await firstOwnerToken(fixture)
     const cookie = await login(fixture.base, token)
     const stream = await openStream(fixture.base, '/events', { cookie })
     expect(stream.status).toBe(200)
@@ -917,7 +986,7 @@ describe('runUi: graceful shutdown', () => {
 
   test('stdout stays byte-empty across a whole run', async () => {
     const fixture = await startUi()
-    const token = await readBootstrapToken(fixture.journalDir)
+    const token = await firstOwnerToken(fixture)
     const cookie = await login(fixture.base, token)
     await httpCall(fixture.base, '/', { headers: { cookie } })
 

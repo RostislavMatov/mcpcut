@@ -2,6 +2,7 @@ import { resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { formatReadableField } from '../journal/format.js'
 import { SUPERVISORS, type Supervisor } from '../setup/constants.js'
+import { applyPublicUrl, parsePublicUrl, type PublicUrl } from '../setup/public-url.js'
 import type { InstallConfig } from '../setup/schema.js'
 import { MAX_TCP_PORT } from './serve-constants.js'
 
@@ -35,7 +36,7 @@ export interface SetupArgs {
   readonly force: boolean
   /** Start both services once the install is prepared. */
   readonly start: boolean
-  /** Leave the install with no admin: the first `ui` start writes the owner's token to the bootstrap file. */
+  /** Leave the install with no admin: the first `ui` start serves `/setup` and writes its one-time code to a file. */
   readonly noAdmin: boolean
   readonly behindTls?: boolean
   readonly dataDir?: string
@@ -49,6 +50,10 @@ export interface SetupArgs {
   readonly serveProbeHost?: string
   readonly admin?: string
   readonly supervisor?: Supervisor
+  /** The address the admin UI will be opened at; allow-lists, TLS and (for plain http) the bind follow from it. */
+  readonly uiPublicUrl?: PublicUrl
+  /** The address agents will dial `serve` at; its Host entry and (for plain http) the bind follow from it. */
+  readonly servePublicUrl?: PublicUrl
 }
 
 /**
@@ -65,6 +70,38 @@ export const NO_SETUP_ARGS: SetupArgs = { yes: false, force: false, start: false
  * so every field that was not asked about is carried across untouched.
  */
 export function overlaySetupArgs(base: InstallConfig, args: SetupArgs, cwd: string): InstallConfig {
+  return withPublicUrls(overlayTypedFlags(base, args, cwd), args)
+}
+
+/**
+ * The public addresses, laid over the flags rather than beside them: a bind
+ * or a TLS word the operator typed in the same run always wins over what an
+ * address would have implied.
+ */
+function withPublicUrls(config: InstallConfig, args: SetupArgs): InstallConfig {
+  const { uiPublicUrl, servePublicUrl } = args
+  return {
+    ...config,
+    ...(uiPublicUrl !== undefined
+      ? {
+          ui: {
+            ...applyPublicUrl(config.ui, uiPublicUrl, { isHostTyped: args.uiHost !== undefined, withOrigin: true }),
+            behindTls: args.behindTls ?? uiPublicUrl.scheme === 'https',
+          },
+        }
+      : {}),
+    ...(servePublicUrl !== undefined
+      ? {
+          serve: applyPublicUrl(config.serve, servePublicUrl, {
+            isHostTyped: args.serveHost !== undefined,
+            withOrigin: false,
+          }),
+        }
+      : {}),
+  }
+}
+
+function overlayTypedFlags(base: InstallConfig, args: SetupArgs, cwd: string): InstallConfig {
   return {
     ...base,
     // `resolve` returns an absolute path unchanged, so this is the one branch
@@ -111,6 +148,8 @@ interface SetupFlagValues {
   readonly 'serve-probe-host'?: string | undefined
   readonly admin?: string | undefined
   readonly supervisor?: string | undefined
+  readonly 'ui-public-url'?: string | undefined
+  readonly 'serve-public-url'?: string | undefined
 }
 
 /** Parses `setup` argv; every refusal is a sentence, never a bare `undefined`. */
@@ -133,6 +172,10 @@ export function parseSetupArgs(args: readonly string[]): SetupArgsResult {
 
   const behindTls = parseBehindTlsFlags(parsed.values)
   if (!behindTls.ok) return behindTls
+  const uiPublicUrl = parsePublicUrlFlag('--ui-public-url', parsed.values['ui-public-url'])
+  if (!uiPublicUrl.ok) return uiPublicUrl
+  const servePublicUrl = parsePublicUrlFlag('--serve-public-url', parsed.values['serve-public-url'])
+  if (!servePublicUrl.ok) return servePublicUrl
 
   return {
     ok: true,
@@ -151,8 +194,20 @@ export function parseSetupArgs(args: readonly string[]): SetupArgsResult {
       ...optionalString('serveProbeHost', parsed.values['serve-probe-host']),
       ...optionalString('admin', admin),
       ...(supervisor.supervisor !== undefined ? { supervisor: supervisor.supervisor } : {}),
+      ...(uiPublicUrl.url !== undefined ? { uiPublicUrl: uiPublicUrl.url } : {}),
+      ...(servePublicUrl.url !== undefined ? { servePublicUrl: servePublicUrl.url } : {}),
     },
   }
+}
+
+type PublicUrlFlagResult =
+  | { readonly ok: true; readonly url?: PublicUrl }
+  | { readonly ok: false; readonly message: string }
+
+/** An absent flag is a result, not a refusal; an empty value is the env var of a compose file left unset. */
+function parsePublicUrlFlag(flag: string, raw: string | undefined): PublicUrlFlagResult {
+  if (raw === undefined || raw === '') return { ok: true }
+  return parsePublicUrl(flag, raw)
 }
 
 type FlagsResult =
@@ -185,6 +240,8 @@ function parseFlags(args: readonly string[]): FlagsResult {
         'serve-probe-host': { type: 'string' },
         admin: { type: 'string' },
         supervisor: { type: 'string' },
+        'ui-public-url': { type: 'string' },
+        'serve-public-url': { type: 'string' },
       },
       allowPositionals: true,
       strict: true,

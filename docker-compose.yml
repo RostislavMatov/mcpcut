@@ -22,15 +22,23 @@
 # console would then be editing rules the proxies do not enforce.
 #
 # The first start of `ui` runs `setup --yes --supervisor external` from the
-# entrypoint: it writes the install config, prepares the data directory and
-# mints the `owner` admin, printing that one-time token to the container's
-# output. The entrypoint takes its answers from `MCPCUT_DATA_DIR`,
-# `MCPCUT_UI_HOST`/`MCPCUT_UI_PORT`, `MCPCUT_SERVE_HOST`/`MCPCUT_SERVE_PORT`
-# and `MCPCUT_ADMIN` — add them to both services' `environment:` blocks to
+# entrypoint: it writes the install config and prepares the data directory. It
+# creates NO admin (see below). The entrypoint takes its answers from
+# `MCPCUT_DATA_DIR`, `MCPCUT_UI_HOST`/`MCPCUT_UI_PORT` and
+# `MCPCUT_SERVE_HOST`/`MCPCUT_SERVE_PORT` — add them to both services' `environment:` blocks to
 # change what the install is. Do NOT set `MCPCUT_DATA_DIR` here: it outranks
 # the config for every command, so `setup` refuses the run (`dataDirConflict`)
 # and, under `set -eu` with `restart: unless-stopped`, the container
 # crash-loops.
+#
+# On a VPS: `MCPCUT_UI_PUBLIC_URL` (e.g. http://203.0.113.7:8091 or
+# https://mcp.example.com) and `MCPCUT_SERVE_PUBLIC_URL` name the address the
+# service is reached at from outside; `setup` derives the Host/Origin
+# allow-lists and the TLS flag from them — without it a request by IP is a 403.
+# Set them BEFORE the first start (or rerun: `docker compose run --rm ui setup
+# --yes --ui-public-url …`), and publish the port beyond host loopback by
+# dropping `127.0.0.1:` from `ports:` below. Plain http to a public address
+# sends admin tokens in clear text — `setup` warns; prefer TLS in front.
 #
 # `MCPCUT_UI_PROBE_HOST`/`MCPCUT_SERVE_PROBE_HOST` become `probeHost` in the
 # config: the address `mcpcut status` dials for the neighbour container, which
@@ -44,20 +52,20 @@
 #
 #   docker compose run --rm ui setup --yes --ui-probe-host ui --serve-probe-host serve
 #
-# One-time owner token:   docker compose logs ui
-# The console in a shell: docker compose exec -it ui mcpcut
+# First owner, no browser:  docker compose exec -it ui mcpcut
+#   The console sees an install with no admin, asks for the owner's name and
+#   shows the token once, on that terminal. Nothing reaches the container log.
+# First owner, in a browser: http://localhost:8091 leads to /setup, which asks
+#   for the one-time code:   docker compose exec ui cat /home/node/.mcpcut/data/setup-code
+# Unattended:                docker compose exec ui mcpcut admin add <name> --role owner
 #
-# The entrypoint passes `--admin` (from `MCPCUT_ADMIN`), never `--no-admin`,
-# so the bootstrap-token file `<data dir>/bootstrap-token` that a bare `ui`
-# over an empty store writes (README "Admin UI") never applies here: `setup`
-# mints the owner itself and the token goes to this container's stdout, as it
-# always has. Behaviour unchanged; see README "Docker".
+# The entrypoint passes `--no-admin` (owner decision 2026-09-19): an owner
+# minted at container start could only print its token into this container's
+# json-file log, readable by anyone who can run `docker compose logs`. Until a
+# person creates the owner, reaching the published port claims nothing — the
+# first-run page refuses without the code, and the code is inside the volume.
 #
-# Rotate the owner token after the first sign-in: it went to stdout, so a copy
-# sits in this container's json-file log, readable by anyone who can run
-# `docker compose logs`. The same command recovers a token that was missed:
-#
-#   docker compose run --rm ui admin rotate owner
+# A lost token:              docker compose exec ui mcpcut admin rotate <name> --recover
 
 name: mcp-control-plane
 

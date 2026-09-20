@@ -233,6 +233,12 @@ export function openWizard(stand: WizardStand, managerEnv?: NodeJS.ProcessEnv): 
     },
     dispatchOptions: dispatchOptionsOf(stand, managerEnv),
   })
+  // A bare, absent-install entry opens the welcome screen first (2026-09-19);
+  // "1" chooses "set up a service", which swaps straight to the very wizard
+  // form this stand exists to drive. Queued before the first frame is even
+  // drawn, exactly as a real operator's keystroke would be if it landed while
+  // the console was still starting up.
+  fake.type('1')
 
   const running: RunningWizard = {
     fake,
@@ -311,8 +317,10 @@ export async function answerForm(
   // Field 2 is `UI host`: retyped only by the test about the exposure question.
   fake.type(answers.uiHost === undefined ? '' : `${ERASE}${answers.uiHost}`)
   fake.type(`${TAB}${ERASE}${stand.uiPort}`)
-  fake.type(`${TAB}${TAB}${TAB}${ERASE}${stand.servePort}`)
-  fake.type(`${TAB}${TAB}`)
+  // Past `TLS in front`, the optional `UI URL` and `Agent host` to `Agent port`…
+  fake.type(`${TAB}${TAB}${TAB}${TAB}${ERASE}${stand.servePort}`)
+  // …and past the optional `Agent URL` and `First admin` to `Services by`.
+  fake.type(`${TAB}${TAB}${TAB}`)
   if (answers.external === true) fake.type(LEFT_ARROW)
   fake.type(ENTER)
 }

@@ -1,3 +1,4 @@
+import { OWN_SUPERVISOR } from '../../src/tui/model.js'
 import { describe, expect, test } from 'vitest'
 import { visibleSections } from '../../src/tui/catalogue/index.js'
 import type { SectionSpec } from '../../src/tui/catalogue/types.js'
@@ -37,6 +38,8 @@ const SESSION: Session = { adminName: 'root', role: 'owner' }
 
 /** Owner tabs, in tab-bar order: `9` names Approvals, Tab from there is Journal. */
 const HOME_TAB = 0
+/** Home ▸ disconnect — the second Home action, offered only to a remote console. */
+const DISCONNECT_ACTION = 1
 const ADMINS_TAB = 1
 const APPROVALS_TAB = 8
 const JOURNAL_TAB = 9
@@ -315,6 +318,26 @@ describe('update: the queue is replayed when the run answers', () => {
     const step = update(model, RUN_RESULT)
 
     expect(step.effects).toEqual([{ kind: 'quit', exitCode: EXIT_OK }])
+    expect(mainOf(step.model).sectionIndex).toBe(HOME_TAB)
+  })
+
+  test('a replayed `disconnect` leaves, and the keys behind it are not fed to a screen that is leaving', () => {
+    // Review of 2026-09-20: `disconnect` ends the console exactly as `quit`
+    // and `reopen` do, so the queue must stop at it — otherwise the last frame
+    // drawn before the connect form is some tab the operator never opened.
+    const facts = { supervisor: OWN_SUPERVISOR, remote: true, remoteAddress: 'http://127.0.0.1:8091' }
+    const remote: Model = {
+      ...busyWith([key('enter'), char('9')], {
+        actionIndex: DISCONNECT_ACTION,
+        // The screen carries its own filtered sections: a remote console's include `disconnect`.
+        sections: visibleSections('owner', undefined, facts),
+      }),
+      install: facts,
+    }
+
+    const step = update(remote, RUN_RESULT)
+
+    expect(step.effects.map((effect) => effect.kind)).toEqual(['disconnect'])
     expect(mainOf(step.model).sectionIndex).toBe(HOME_TAB)
   })
 

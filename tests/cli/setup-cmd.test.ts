@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
-import { bootstrapTokenPathFor } from '../../src/admin/bootstrap-file.js'
+import { setupCodePathFor } from '../../src/admin/setup-code-file.js'
 import { ADMIN_TOKEN_PREFIX } from '../../src/admin/constants.js'
 import { createAdminStore } from '../../src/admin/store.js'
 import { runSetupCommand } from '../../src/cli/setup-cmd.js'
@@ -508,7 +508,7 @@ describe('setup --yes --no-admin', () => {
     expect(await createAdminStore({ journalDir: dataDir }).listAdmins()).toEqual([])
     expect(io.out()).not.toContain(`token: ${ADMIN_TOKEN_PREFIX}`)
     // Phase 6 (F6): the warning names the one-time token file, not the daemon log.
-    expect(io.err()).toContain(bootstrapTokenPathFor(dataDir))
+    expect(io.err()).toContain(setupCodePathFor(dataDir))
     expect(io.err()).not.toContain(join(dataDir, 'run', 'ui.log'))
     expect(io.err()).toContain('owner')
   })
@@ -520,7 +520,7 @@ describe('setup --yes --no-admin', () => {
  * write a config whose `dataDir` the operator did not ask for, ignoring it
  * would prepare one directory while every later command uses another — vault,
  * signing key and owner in one plane, daemons serving a second one, and a `ui`
- * bootstrapping its own owner into `run/ui.log`. So it refuses.
+ * opening a first run of its own there. So it refuses.
  */
 describe('setup --yes with MCPCUT_DATA_DIR exported', () => {
   test('refuses when the variable and the config disagree, naming both paths', async () => {

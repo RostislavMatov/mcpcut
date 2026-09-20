@@ -90,10 +90,32 @@ interface ActionSpecCommon extends CommandPair {
    * confirm is the only question.
    */
   readonly leavesConsole?: true
+  /**
+   * This action is Home's `disconnect` (2026-09-20): it dispatches nothing —
+   * the console ends and forgets the saved remote address, if any, before
+   * reopening on `--connect <this address>` (`Effect.disconnect`, ADR-0014).
+   * A THIRD way an action can end the console, alongside `leavesConsole`: that
+   * one runs its own `argv` as a child, this one never runs `argv` at all —
+   * the address it reopens with is a fact of the RUNNING console
+   * (`InstallFacts.remoteAddress`), not something the catalogue's `argv`
+   * builder could construct from a form. Implies `fields: []` and no
+   * `confirm` — disconnecting asks nothing (owner request: "a way to
+   * disconnect").
+   */
+  readonly disconnectsConsole?: true
 }
 
-/** What an install must be for an action to be offered at all. */
-export type ActionRequirement = 'own-supervisor'
+/**
+ * What an install must be for an action to be offered at all. `'local'`
+ * joined on 2026-09-19 (ADR-0014): `Services ▸ setup` ends the console and
+ * spawns the wizard as a CHILD PROCESS ON THIS MACHINE (`leavesConsole`) —
+ * over `--remote` that child would configure the operator's own laptop, not
+ * the install the console is driving, so the action is withdrawn rather than
+ * offered and confusing. `'remote'` joined on 2026-09-20: the exact opposite
+ * sense — an action that makes sense ONLY over `--remote` (Home's
+ * `disconnect`: there is nothing to disconnect FROM on a local console).
+ */
+export type ActionRequirement = 'own-supervisor' | 'local' | 'remote'
 
 /**
  * One runnable command: the common members above, plus EITHER a question

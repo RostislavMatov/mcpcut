@@ -21,6 +21,28 @@ const statusAction: ActionSpec = {
   argv: () => ['status'],
 }
 
+/**
+ * "A way to disconnect from the server and fill in another server" (owner
+ * request, 2026-09-20). Visible ONLY on a remote console (`requires:
+ * 'remote'`) — there is nothing to disconnect from on the local one — and
+ * confirm-free: leaving a service you are looking at takes nothing away from
+ * it, unlike `Services ▸ stop`. `command`/`subcommand` name no real CLI
+ * command; `argv` is never called (`disconnectsConsole`), and the catalogue
+ * parity test (`tests/tui/catalogue-parity.test.ts`) lists it explicitly as a
+ * console-only action rather than pretending it describes `mcpcut disconnect`.
+ */
+const disconnectAction: ActionSpec = {
+  id: 'disconnect',
+  title: 'disconnect',
+  minRole: 'viewer',
+  command: 'disconnect',
+  requires: 'remote',
+  disconnectsConsole: true,
+  fields: [],
+  argv: () => [],
+  hint: 'forget this service and connect to another',
+}
+
 /** The part of Home's intro that holds on every install, whoever supervises it. */
 const RUN_AN_AGENT_LINES: readonly string[] = [
   'Run an agent through the plane (outside this console):',
@@ -42,6 +64,6 @@ export const HOME_SECTION: SectionSpec = {
     'Services are run by compose or systemd',
     '(supervisor: external): mcpcut only reports.',
   ],
-  actions: [statusAction],
+  actions: [statusAction, disconnectAction],
   refreshActionId: 'status',
 }

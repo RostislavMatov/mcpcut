@@ -17,15 +17,26 @@ export const ADMINS_FILE_NAME = 'admins.json'
 export const ADMINS_FILE_PATH = join(JOURNAL_DIR, ADMINS_FILE_NAME)
 
 /**
- * File name of the one-time bootstrap token inside the journal directory
- * (phase 6, F6 / Q27). The first `ui` start with no admins writes the owner's
- * plaintext token here — 0600, beside `state.db` in a 0700 directory — instead
- * of printing it, and the first successful sign-in removes it. Named here,
- * next to the store it bootstraps, so the writer (`cli/ui-cmd.ts`), the two
- * consumers (web login, console sign-in) and the console's opening frame all
- * spell one path.
+ * File name of the one-time SETUP CODE inside the journal directory. A `ui`
+ * start that finds no admin creates nobody: it writes this code — 0600, beside
+ * `state.db` in a 0700 directory — and serves `/setup`, where the code plus a
+ * chosen name mint the first owner. The code proves its bearer can read this
+ * directory, which is the same proof the bootstrap token file gave before it
+ * (phase 6, F6 / Q27); unlike that token it opens nothing once an admin
+ * exists. Named here so the writer (`cli/ui-first-run.ts`), the consumers and
+ * the console's opening frame all spell one path.
  */
-export const BOOTSTRAP_TOKEN_FILE_NAME = 'bootstrap-token'
+export const SETUP_CODE_FILE_NAME = 'setup-code'
+
+/**
+ * Prefix of the setup code — a third shape beside `mcpa_` (admin) and `mcpj_`
+ * (agent), so a code pasted into the wrong field, or found in a log, says
+ * what it is.
+ */
+export const SETUP_CODE_PREFIX = 'mcps_'
+
+/** Entropy of the setup code: 24 bytes, well above the 16-byte bearer floor. */
+export const SETUP_CODE_RANDOM_BYTES = 24
 
 /**
  * Prefix of every admin token. Deliberately DIFFERENT from the agent prefix

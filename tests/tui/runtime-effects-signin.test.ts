@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
-import { bootstrapTokenPathFor, writeBootstrapTokenFile } from '../../src/admin/bootstrap-file.js'
+import { setupCodePathFor, writeSetupCodeFile } from '../../src/admin/setup-code-file.js'
 import { createAdminStore } from '../../src/admin/store.js'
 import type { CliWritable, DispatchFn } from '../../src/cli/dispatch-types.js'
 import { errnoCodeOf } from '../../src/errno.js'
@@ -12,12 +12,12 @@ import {
   type EffectDeps,
   type TokenCell,
 } from '../../src/tui/runtime-effects.js'
-import { BOOTSTRAP_FILE_WARNING_PREFIX } from '../../src/tui/runtime-signin.js'
+import { SETUP_CODE_FILE_WARNING_PREFIX } from '../../src/tui/runtime-signin.js'
 
 /**
- * The console's half of the one-time bootstrap token file (phase 6, F6 /
+ * The console's half of the one-time setup code file (phase 6, F6 /
  * Q27). The web UI removes the file on its first login; the console removes
- * it on its first successful sign-in, through the same `consumeBootstrapTokenFile`.
+ * it on its first successful sign-in, through the same `consumeSetupCodeFile`.
  *
  * Three things are pinned. The file goes with the FIRST successful sign-in
  * and stays through a refused one — a wrong token must not destroy the
@@ -42,7 +42,7 @@ let tokenPath: string
 
 beforeEach(async () => {
   journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-effects-signin-'))
-  tokenPath = bootstrapTokenPathFor(journalDir)
+  tokenPath = setupCodePathFor(journalDir)
 })
 
 afterEach(async () => {
@@ -78,7 +78,7 @@ async function createTestAdmin(name = ADMIN_NAME): Promise<string> {
   return created.token
 }
 
-/** Whether the bootstrap file is on disk; `ENOENT` is the one absence that counts. */
+/** Whether the setup code file is on disk; `ENOENT` is the one absence that counts. */
 async function fileExists(): Promise<boolean> {
   try {
     await stat(tokenPath)
@@ -89,10 +89,10 @@ async function fileExists(): Promise<boolean> {
   }
 }
 
-describe('executeEffect — signin removes the bootstrap token file', () => {
+describe('executeEffect — signin removes the setup code file', () => {
   test('a successful sign-in removes the file, and says nothing about it', async () => {
     const token = await createTestAdmin()
-    await writeBootstrapTokenFile(tokenPath, token)
+    await writeSetupCodeFile(tokenPath, token)
     const cell = createTokenCell()
     const stderr = stderrSink()
 
@@ -109,7 +109,7 @@ describe('executeEffect — signin removes the bootstrap token file', () => {
 
   test('a refused token leaves the file where it is', async () => {
     const token = await createTestAdmin()
-    await writeBootstrapTokenFile(tokenPath, token)
+    await writeSetupCodeFile(tokenPath, token)
     const stderr = stderrSink()
 
     const message = await executeEffect(
@@ -124,7 +124,7 @@ describe('executeEffect — signin removes the bootstrap token file', () => {
 
   test('a second sign-in finds no file and says nothing', async () => {
     const token = await createTestAdmin()
-    await writeBootstrapTokenFile(tokenPath, token)
+    await writeSetupCodeFile(tokenPath, token)
     const stderr = stderrSink()
     await executeEffect({ kind: 'signin', token }, depsOf(createTokenCell(), stderr))
 
@@ -138,7 +138,7 @@ describe('executeEffect — signin removes the bootstrap token file', () => {
   test('a file that cannot be removed is one stderr line, and the sign-in still succeeds', async () => {
     const token = await createTestAdmin()
     // A directory with a child at the path: `unlink` refuses it, the way
-    // `tests/admin/bootstrap-file.test.ts` forces the same failure.
+    // `tests/admin/setup-code-file.test.ts` forces the same failure.
     await mkdir(tokenPath)
     await writeFile(join(tokenPath, 'child'), '', 'utf8')
     const cell = createTokenCell()
@@ -153,8 +153,8 @@ describe('executeEffect — signin removes the bootstrap token file', () => {
     expect(cell.get()).toBe(token)
     const lines = stderr.text().split('\n').filter((line) => line !== '')
     expect(lines).toHaveLength(1)
-    expect(lines[0]?.startsWith(BOOTSTRAP_FILE_WARNING_PREFIX)).toBe(true)
-    expect(lines[0]?.length).toBeGreaterThan(BOOTSTRAP_FILE_WARNING_PREFIX.length)
+    expect(lines[0]?.startsWith(SETUP_CODE_FILE_WARNING_PREFIX)).toBe(true)
+    expect(lines[0]?.length).toBeGreaterThan(SETUP_CODE_FILE_WARNING_PREFIX.length)
     expect((await stat(tokenPath)).isDirectory()).toBe(true)
   })
 

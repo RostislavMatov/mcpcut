@@ -2,29 +2,26 @@ import { mkdtemp, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
-import { bootstrapTokenPathFor, writeBootstrapTokenFile } from '../../src/admin/bootstrap-file.js'
+import { setupCodePathFor, writeSetupCodeFile } from '../../src/admin/setup-code-file.js'
 import { createAdminStore } from '../../src/admin/store.js'
 import { JOURNAL_FILE_MODE } from '../../src/config.js'
 import { errnoCodeOf } from '../../src/errno.js'
 import { SIGNIN_TITLE, SIGNIN_UNKNOWN_TOKEN_NOTICE } from '../../src/tui/constants.js'
-import { SIGNIN_BOOTSTRAP_PREFIX } from '../../src/tui/constants-live.js'
-import { BOOTSTRAP_FILE_WARNING_PREFIX } from '../../src/tui/runtime-signin.js'
+import { SETUP_CODE_FILE_WARNING_PREFIX } from '../../src/tui/runtime-signin.js'
 import { closeConsoles, openConsole, signIn, type RunningConsole } from './support/console-harness.js'
 import { waitForScreen } from './support/fake-terminal.js'
 
 /**
- * The bootstrap token file through the console (mcpcut phase 6, F6 / F6b):
- * the sign-in screen names it while it exists, the first sign-in removes it,
- * and the screen after that is silent about it.
+ * The setup code file through the console: a sign-in removes it, a refused
+ * token leaves it. With an admin in the store the file can only be a leftover
+ * of a first run that something else finished (`admin add` in a shell while
+ * `ui` was serving `/setup`), which is why nothing on the sign-in screen names
+ * it any more — an install with NO admin opens on the first-owner screen
+ * instead (`console-first-owner-e2e.test.ts`).
  *
- * The file is written the way `ui` writes it (`writeBootstrapTokenFile`, the
- * same 0600 create) with the token of an owner created directly in the store,
- * rather than by booting the real `ui` — `tests/cli/ui-cmd.test.ts` already
- * proves that boot writes exactly this file, and a second HTTP server here
- * would buy nothing but a port and a second of wall clock.
- *
- * The consoles are wide, so a temp-dir path fits on the sign-in line uncut
- * and the assertion can be the whole path rather than a prefix of it.
+ * The file is written the way `ui` writes it (`writeSetupCodeFile`, the same
+ * 0600 create) rather than by booting the real `ui` — `tests/cli/ui-cmd.test.ts`
+ * already proves that boot writes exactly this file.
  */
 
 const FIRST_OWNER = 'root'
@@ -40,7 +37,7 @@ let tokenPath: string
 
 beforeEach(async () => {
   journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-bootstrap-e2e-'))
-  tokenPath = bootstrapTokenPathFor(journalDir)
+  tokenPath = setupCodePathFor(journalDir)
 })
 
 afterEach(async () => {
@@ -67,23 +64,21 @@ async function openAtSignin(): Promise<RunningConsole> {
   return app
 }
 
-describe('the bootstrap token file through the console', () => {
-  test('is named on the sign-in screen, removed by the first sign-in, and gone from the next', async () => {
+describe('the setup code file through the console', () => {
+  test('is removed by the first sign-in, and later sign-ins find nothing and say nothing', async () => {
     const store = createAdminStore({ journalDir })
     const { token } = await store.createAdmin(FIRST_OWNER, 'owner')
-    await writeBootstrapTokenFile(tokenPath, token)
+    await writeSetupCodeFile(tokenPath, token)
     expect((await stat(tokenPath)).mode & MODE_BITS).toBe(JOURNAL_FILE_MODE)
 
     const first = await openAtSignin()
-    expect(first.fake.screen()).toContain(`${SIGNIN_BOOTSTRAP_PREFIX}${tokenPath}`)
 
     await signIn(first, token, FIRST_OWNER, 'owner')
     expect(await fileExists()).toBe(false)
-    expect(first.errText()).not.toContain(BOOTSTRAP_FILE_WARNING_PREFIX)
+    expect(first.errText()).not.toContain(SETUP_CODE_FILE_WARNING_PREFIX)
     await first.close()
 
     const second = await openAtSignin()
-    expect(second.fake.screen()).not.toContain(SIGNIN_BOOTSTRAP_PREFIX)
 
     // Another admin's sign-in finds nothing to remove and says nothing.
     const other = await store.createAdmin(SECOND_ADMIN, 'operator')
@@ -92,9 +87,9 @@ describe('the bootstrap token file through the console', () => {
     expect(second.errText()).toBe('')
   })
 
-  test('a refused token leaves the file, and the screen keeps naming it', async () => {
+  test('a refused token leaves the file', async () => {
     const { token } = await createAdminStore({ journalDir }).createAdmin(FIRST_OWNER, 'owner')
-    await writeBootstrapTokenFile(tokenPath, token)
+    await writeSetupCodeFile(tokenPath, token)
 
     const app = await openAtSignin()
     app.fake.type('mcpa_not-the-owner\r')
@@ -105,6 +100,5 @@ describe('the bootstrap token file through the console', () => {
     )
 
     expect(await fileExists()).toBe(true)
-    expect(app.fake.screen()).toContain(`${SIGNIN_BOOTSTRAP_PREFIX}${tokenPath}`)
   })
 })

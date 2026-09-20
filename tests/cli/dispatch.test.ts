@@ -19,6 +19,7 @@ import { createJournalSink } from '../../src/journal/sink.js'
 import { TUI_NOT_A_TTY } from '../../src/cli/tui-constants.js'
 import { plainStyle } from '../../src/tui/ansi.js'
 import { WIZARD_TITLE_FIRST_RUN } from '../../src/tui/constants.js'
+import { WELCOME_TITLE } from '../../src/tui/constants-live.js'
 import { createClientHarness } from '../proxy/harness.js'
 import { createFakeTerminal, waitForScreen } from '../tui/support/fake-terminal.js'
 
@@ -576,7 +577,7 @@ describe('dispatch: a bare invocation', () => {
     expect(io.err()).toBe('')
   })
 
-  test('on a terminal without a config, opens the first-run wizard', async () => {
+  test('on a terminal without a config, opens the welcome screen', async () => {
     const io = fakeIo()
     const fake = createFakeTerminal()
 
@@ -593,7 +594,38 @@ describe('dispatch: a bare invocation', () => {
         escapeCodeTimeoutMs: 10,
       },
     })
-    await waitForScreen(fake, (screen) => screen.includes('Data dir'), 'the wizard form')
+    await waitForScreen(fake, (screen) => screen.includes(WELCOME_TITLE), 'the welcome screen')
+    fake.type('\x03')
+
+    expect(await running).toBe(0)
+    expect(fake.restored()).toBe(true)
+    expect(io.err()).toBe('')
+  })
+
+  test('choosing "set up" on the welcome screen opens the first-run wizard', async () => {
+    const io = fakeIo()
+    const fake = createFakeTerminal()
+
+    const running = dispatch([], io, {
+      tui: {
+        isTty: true,
+        env: {},
+        install: { kind: 'absent', path: CONFIG_PATH },
+        home: tempDir,
+        cwd: tempDir,
+        terminal: fake.terminal,
+        style: plainStyle,
+        processEvents: new EventEmitter(),
+        escapeCodeTimeoutMs: 10,
+      },
+    })
+    await waitForScreen(fake, (screen) => screen.includes(WELCOME_TITLE), 'the welcome screen')
+    fake.type('1')
+    await waitForScreen(
+      fake,
+      (screen) => screen.includes(WIZARD_TITLE_FIRST_RUN) && screen.includes('Data dir'),
+      'the wizard form',
+    )
     fake.type('\x03')
 
     expect(await running).toBe(0)

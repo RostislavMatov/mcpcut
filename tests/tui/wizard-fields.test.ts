@@ -315,3 +315,38 @@ describe('mintedAdminOf: the first admin as setup reported it', () => {
     expect(MINTED_TOKEN_PREFIX).toBe('token: ')
   })
 })
+
+describe('the two optional addresses (2026-09-19)', () => {
+  function valuesWith(extra: Record<string, string>): Record<string, string> {
+    const base = Object.fromEntries(wizardFieldsOf(prefillOf()).map((field) => [field.name, field.initial ?? '']))
+    return { ...base, ...extra }
+  }
+
+  test('left empty they add no flag, so an edit keeps every allow-list entry an earlier run wrote', () => {
+    const argv = setupArgvOf(valuesWith({}))
+
+    expect(argv).not.toContain('--ui-public-url')
+    expect(argv).not.toContain('--serve-public-url')
+  })
+
+  test('filled in, each becomes its flag with the value trimmed', () => {
+    const argv = setupArgvOf(valuesWith({ uiPublicUrl: ' http://203.0.113.7:8091 ', servePublicUrl: 'https://agents.example.com' }))
+
+    expect(argv.slice(-4)).toEqual([
+      '--ui-public-url',
+      'http://203.0.113.7:8091',
+      '--serve-public-url',
+      'https://agents.example.com',
+    ])
+  })
+
+  test('they open empty, are not required, and refuse what `setup` would refuse — in its words', () => {
+    const field = wizardFieldsOf(prefillOf()).find((each) => each.name === 'uiPublicUrl')
+
+    expect(field?.initial).toBe('')
+    expect(field?.required).toBeUndefined()
+    expect(field?.validate?.('')).toBeUndefined()
+    expect(field?.validate?.('http://203.0.113.7:8091')).toBeUndefined()
+    expect(field?.validate?.('203.0.113.7:8091')).toContain('--ui-public-url')
+  })
+})

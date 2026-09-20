@@ -2,6 +2,7 @@ import { join } from 'node:path'
 import { parseArgs } from 'node:util'
 import { createAdminStore, type AdminStore } from '../admin/store.js'
 import { createAgentsStore, type AgentsStore } from '../agents/store.js'
+import type { ConsoleRunner } from '../console-api/runner.js'
 import { JOURNAL_DIR } from '../config.js'
 import { isRejectedOriginFlagValue } from '../net/origin-host.js'
 import { INVENTORY_FILE_NAME } from '../policy/inventory.js'
@@ -14,11 +15,15 @@ import {
 import { loadInstallConfigSync } from '../setup/load.js'
 import { preflightDatabases } from '../store/preflight.js'
 import { createSessionManager } from '../ui/auth.js'
+import { formatReadableField } from '../journal/format.js'
 import { createUiServer, type UiServer } from '../ui/server.js'
+import { createSetupGate, type SetupGate } from '../ui/setup-gate.js'
 import { createEventHub, type EventHub } from '../ui/events.js'
 import { createQueueWatcher, type QueueWatcher } from '../ui/watch.js'
 import { createVaultStore, type VaultStore } from '../vault/store.js'
 import { describeBindFailure } from './bind-failure.js'
+import { createConsoleRunner } from './console-runner.js'
+import type { DispatchFn, DispatchOptions } from './dispatch-types.js'
 import { MAX_TCP_PORT } from './serve-constants.js'
 import {
   DEFAULT_UI_SIGNALS,
@@ -27,7 +32,7 @@ import {
   UI_USAGE,
   type UiCliIo,
 } from './ui-constants.js'
-import { bootstrapAdmin, type BoundAddress } from './ui-bootstrap.js'
+import { prepareFirstRun, type BoundAddress } from './ui-first-run.js'
 import { composeUi } from './ui-wiring.js'
 
 /**
@@ -40,18 +45,18 @@ import { composeUi } from './ui-wiring.js'
  *
  *  - **stdout is silent for the whole run.** `ui` is a daemon: the listening
  *    line, the bind warning and every other diagnostic go to stderr, and the
- *    one-time bootstrap credential goes to NO stream. A supervisor redirecting
- *    either stream into a log must never end up with an admin token in it.
- *  - **A first start with no admins bootstraps ONE owner.** Shipping a UI
- *    nobody can log into is a worse failure than minting a credential once,
- *    and the alternative (a blank admin surface plus a second CLI step) is the
- *    kind of friction that ends in a shared token. The token is written to
- *    `<journalDir>/bootstrap-token` (0600, phase 6 F6); stderr names that
- *    path, the first successful sign-in — web or console — removes the file,
- *    and only the token's hash reaches the store. Bootstrap runs AFTER the
- *    socket is bound, so a failed bind never mints a credential; a token file
- *    that could not be written refuses the run, because an owner whose token
- *    nobody can read is the UI nobody can log into.
+ *    one-time setup code goes to NO stream. A supervisor redirecting either
+ *    stream into a log must never end up with a first-run secret in it.
+ *  - **A first start with no admins creates NOBODY and serves `/setup`**
+ *    (ADR-0004, amendment of 2026-09-19; until then it minted an `owner`
+ *    nobody had named). A one-time setup code is written to
+ *    `<journalDir>/setup-code` (0600); stderr names that path; the page takes
+ *    the code plus a chosen name, creates the owner and shows its token once.
+ *    The code proves its bearer can read the data directory — the proof the
+ *    old token file asked for — and dies with the first admin. It is written
+ *    AFTER the socket is bound, so a failed bind leaves nothing on disk; a
+ *    code file that could not be written refuses the run, because a first-run
+ *    page whose code nobody can read is the UI nobody can get into.
  *  - **Shutdown is a handler, not a signal.** SIGINT/SIGTERM merely call the
  *    same `shutdown()` the handle exposes: stop the watcher, end every SSE
  *    stream (the hub), then close the listener. Ordering matters — closing the
@@ -94,6 +99,19 @@ export interface UiCommandOptions {
    * caller that already read the config.
    */
   readonly bindDefaults?: UiServiceDefaults
+  /**
+   * The dispatcher the remote console API (ADR-0014, wave 1) runs commands
+   * through — the same value `cli.ts` hands `runTui` for the local console.
+   * `ui-cmd.ts` never imports `cli.ts` itself (`tests/architecture/imports.test.ts`),
+   * so this arrives as a plain function value, handed down from `cli.ts`'s
+   * own `ui` command line. Absent, `/api/console/*` does not exist: the
+   * prefix falls through and answers as any unlisted route does.
+   */
+  readonly dispatch?: DispatchFn
+  /** Per-command seams every dispatched run starts from (tests). Production passes none. */
+  readonly dispatchOptions?: DispatchOptions
+  /** Environment the daemon's own dispatched runs start from, before a request's token joins it (tests). Defaults to `process.env`. */
+  readonly dispatchEnv?: NodeJS.ProcessEnv
 }
 
 const DEFAULT_IO: UiCliIo = { stdout: process.stdout, stderr: process.stderr }
@@ -216,12 +234,28 @@ function resolveDefaults(opts: UiCommandOptions): DefaultsResult {
   }
 }
 
+/**
+ * Builds the remote console's runner (ADR-0014, wave 1) when a dispatcher was
+ * handed in; `undefined` otherwise, which leaves `/api/console/*` unbuilt —
+ * `createUiServer` then answers the whole prefix as any unlisted route.
+ */
+function buildConsoleRunner(opts: UiCommandOptions): ConsoleRunner | undefined {
+  if (opts.dispatch === undefined) return undefined
+  return createConsoleRunner({
+    dispatch: opts.dispatch,
+    ...(opts.dispatchOptions !== undefined ? { baseOptions: opts.dispatchOptions } : {}),
+    ...(opts.dispatchEnv !== undefined ? { env: opts.dispatchEnv } : {}),
+  })
+}
+
 /** Everything one run owns, built once and torn down together. */
 interface UiRuntime {
   readonly server: UiServer
   readonly hub: EventHub
   readonly watcher: QueueWatcher
   readonly adminStore: AdminStore
+  /** The first-run gate `prepareFirstRun` arms or closes once the socket is bound. */
+  readonly setupGate: SetupGate
   /** Waits for in-flight server probes (M5.5 п.1); starts nothing new. */
   readonly closeProbes: () => Promise<void>
 }
@@ -272,6 +306,16 @@ function buildRuntime(flags: UiFlags, io: UiCliIo, opts: UiCommandOptions): UiRu
     ...(opts.queuePollIntervalMs !== undefined ? { pollIntervalMs: opts.queuePollIntervalMs } : {}),
   })
 
+  // Built closed-until-armed: `prepareFirstRun` arms it only after the socket
+  // is bound and only over a store with no admin.
+  const setupGate = createSetupGate({
+    hasAdmins: async () => (await adminStore.listAdmins()).length > 0,
+    onReadError: (error) => {
+      const message = error instanceof Error ? error.message : String(error)
+      io.stderr.write(`[ui] first run: cannot read the admin store: ${formatReadableField(message)}\n`)
+    },
+  })
+  const consoleRunner = buildConsoleRunner(opts)
   const server = createUiServer({
     adminStore,
     handlers: composed.handlers,
@@ -285,9 +329,15 @@ function buildRuntime(flags: UiFlags, io: UiCliIo, opts: UiCommandOptions): UiRu
     stderr: io.stderr,
     ...(opts.clock !== undefined ? { clock: opts.clock } : {}),
     afterSignIn: composed.afterSignIn,
+    firstRun: {
+      gate: setupGate,
+      createFirstOwner: (name) => adminStore.createFirstOwner(name),
+      afterOwnerCreated: composed.afterOwnerCreated,
+    },
+    ...(consoleRunner !== undefined ? { consoleRunner } : {}),
   })
 
-  return { server, hub, watcher, adminStore, closeProbes: composed.closeProbes }
+  return { server, hub, watcher, adminStore, setupGate, closeProbes: composed.closeProbes }
 }
 
 /**
@@ -332,7 +382,14 @@ export async function runUi(
   }
 
   const address: BoundAddress = { port: bound.port, host: flags.host }
-  if (!(await bootstrapAdmin(runtime.adminStore, io, address, opts.journalDir ?? JOURNAL_DIR))) {
+  const isPrepared = await prepareFirstRun(
+    runtime.adminStore,
+    runtime.setupGate,
+    io,
+    address,
+    opts.journalDir ?? JOURNAL_DIR,
+  )
+  if (!isPrepared) {
     await closeRuntime(runtime).catch(() => undefined)
     return EXIT_STARTUP_FAILURE
   }

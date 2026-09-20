@@ -102,9 +102,69 @@ export const PENDING_KEYS_MAX = 32
 /** How often the wizard's `deploying` stage counts a second beside a running `start-*` step (F8). */
 export const WIZARD_STOPWATCH_INTERVAL_MS = 1_000
 
+/** The first-owner screen (2026-09-19): what the console opens on over an install with no admin. */
+export const FIRST_OWNER_TITLE = 'No admin yet — create the owner'
+export const FIRST_OWNER_NAME_LABEL = 'Name'
+export const FIRST_OWNER_HINT = 'role owner · the token is shown once · every change is journalled under this name'
+export const FIRST_OWNER_BUSY_TEXT = 'creating…'
+export const FIRST_OWNER_FOOTER = 'Enter create · Esc quit'
+export const FIRST_OWNER_TOKEN_QUESTION = 'Saved it? [y/N] — y signs you in'
+
 /**
- * Prefix of the sign-in screen's line naming the one-time bootstrap token
- * file, shown while the file exists (F6b). The path follows it uncut where
- * the terminal is wide enough — an operator is meant to copy it.
+ * The sign-in screen's remote-address line (ADR-0014): so an operator who
+ * opened this console over `--remote`/`MCPCUT_REMOTE` always knows which
+ * install a keystroke is about to reach, before they type a token.
  */
-export const SIGNIN_BOOTSTRAP_PREFIX = 'first owner token: '
+export const REMOTE_ADDRESS_PREFIX = 'remote: '
+
+/**
+ * The standing notice on a plain-http-to-non-loopback remote address. The
+ * loud one-time warning is on stderr before the console opens
+ * (`tui-remote.ts`); this is the same fact said again on the sign-in screen,
+ * which the operator may be looking at for a while before typing a token.
+ */
+export const REMOTE_INSECURE_NOTICE =
+  'plain http: the admin token crosses the network in clear — use https or an SSH tunnel'
+
+/**
+ * The remote first-owner screen's extra field (ADR-0014, 2026-09-19): the
+ * same one-time code the browser's `/setup` page asks for, from the file
+ * `<data dir>/setup-code` on the SERVER this console is driving.
+ */
+export const FIRST_OWNER_CODE_LABEL = 'Setup code'
+
+/**
+ * The line a `POST setup` answer carries when the owner was created but its
+ * `access-edit` record was not (audit 2026-09-02, H4). Byte-identical to
+ * `AUDIT_RECORD_DROPPED_WARNING` in `src/ui/constants.ts` — a mirror rather
+ * than an import, since `src/tui/**` may not import `src/ui/**`
+ * (`tests/architecture/imports.test.ts`); a test mirrors the two constants
+ * back together so the two sentences cannot drift apart unnoticed.
+ */
+export const REMOTE_AUDIT_RECORD_DROPPED_WARNING =
+  'The change was applied, but its audit record was NOT written to the journal — ' +
+  'check the server log and the journal integrity before relying on the evidence.'
+
+/**
+ * The welcome screen (2026-09-19): what a bare `mcpcut` opens on when this
+ * machine has no install yet — before the first-run wizard, which one of its
+ * two options swaps straight into (ADR-0014's remote console is the other).
+ */
+export const WELCOME_TITLE = 'No install here yet — what should this console do?'
+export const WELCOME_OPTION_INSTALL = 'Set up a service on this machine'
+export const WELCOME_OPTION_CONNECT = 'Connect to a service on another host'
+export const WELCOME_CHOOSE_FOOTER = '↑↓ / jk move · 1/2 select · Enter choose · Esc quit'
+
+/** The "connect" form: its heading, its footer, and what it says while a probe is out. */
+export const WELCOME_CONNECT_TITLE = 'Connect to a service on another host'
+export const WELCOME_CONNECT_FOOTER =
+  'Enter connect · Tab/↓ next · Shift-Tab/↑ previous · ←/→ change · Esc back'
+export const WELCOME_CONNECT_BUSY_TEXT = 'connecting…'
+
+/**
+ * Appended to a failed probe's own message when the attempt was `https`: the
+ * likeliest reason a fresh install refuses is that it has no TLS in front of
+ * it yet, and the fix is one field away rather than a research project.
+ */
+export const WELCOME_CONNECT_HTTPS_HINT = 'a service with no TLS in front needs Protocol http.'
+

@@ -336,6 +336,23 @@ export interface LoginRateLimiter {
   recordFailure(key: string): void
   /** Clears that key's window, forgiving its provisional count, on a successful login. */
   recordSuccess(key: string): void
+  /**
+   * Clears that key's window AND forgives exactly the one GLOBAL entry this
+   * key's own `recordFailure` added — never a different key's, and never more
+   * than one, however many other attempts are interleaved with this one's own
+   * `await`s in between.
+   *
+   * `recordSuccess` (above) is `/login`'s own method and its global window is
+   * left untouched ON PURPOSE — its doc comment explains why. This is a
+   * SEPARATE method for the console API's Bearer path (`console-auth.ts`,
+   * ADR-0014 review): unlike a human typing a password, a Bearer request is
+   * every console action, including ones nobody sat down to type — a hundred
+   * of them left sitting in the global window would make every `/login` and
+   * every OTHER console request pay the shared penalty behind them, for
+   * traffic that never guessed anything. Named for what it is used for
+   * (an admin was just authenticated), not for the mechanism.
+   */
+  recordAuthenticated(key: string): void
 }
 
 export interface RateLimiterOptions {
@@ -356,6 +373,37 @@ function withinWindow(timestamps: readonly number[], cutoff: number): number[] {
   return timestamps.filter((ts) => ts > cutoff)
 }
 
+/**
+ * One entry of the GLOBAL window, tagged with the key that added it. The
+ * tag is what makes `recordAuthenticated` safe under interleaving: without
+ * it, forgiving "the most recent global timestamp" could remove a different,
+ * still-unresolved caller's entry instead of the one THIS success itself
+ * contributed (security review: "a success cannot forgive somebody else's
+ * failure beyond its own one entry").
+ */
+interface GlobalEntry {
+  readonly ts: number
+  readonly key: string
+}
+
+/** Drops global entries older than the window; returns the surviving ones. */
+function withinGlobalWindow(entries: readonly GlobalEntry[], cutoff: number): GlobalEntry[] {
+  return entries.filter((entry) => entry.ts > cutoff)
+}
+
+/**
+ * The index of the LAST (most recent) entry tagged with `key`, or -1. A hand
+ * written reverse scan rather than `Array.prototype.findLastIndex`: the
+ * project's `lib` target is ES2022 (`tsconfig.json`), one edition behind that
+ * method, and this is one small function rather than a project-wide lib bump.
+ */
+function lastIndexByKey(entries: readonly GlobalEntry[], key: string): number {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    if (entries[index]?.key === key) return index
+  }
+  return -1
+}
+
 export function createLoginRateLimiter(opts: RateLimiterOptions = {}): LoginRateLimiter {
   const clock = opts.clock ?? (() => Date.now())
   const maxFailures = opts.maxFailures ?? LOGIN_MAX_FAILURES
@@ -365,11 +413,11 @@ export function createLoginRateLimiter(opts: RateLimiterOptions = {}): LoginRate
   const globalPenaltyMs = opts.globalPenaltyMs ?? LOGIN_GLOBAL_PENALTY_DELAY_MS
   /** Insertion-ordered: re-inserting on touch makes the first key the LRU one. */
   const perKey = new Map<string, number[]>()
-  let global: number[] = []
+  let global: GlobalEntry[] = []
 
   function prune(key: string, now: number): number[] {
     const cutoff = now - windowMs
-    global = withinWindow(global, cutoff)
+    global = withinGlobalWindow(global, cutoff)
     const kept = withinWindow(perKey.get(key) ?? [], cutoff)
     if (kept.length === 0) perKey.delete(key)
     else perKey.set(key, kept)
@@ -403,10 +451,22 @@ export function createLoginRateLimiter(opts: RateLimiterOptions = {}): LoginRate
       const now = clock()
       const kept = prune(key, now)
       touch(key, [...kept, now])
-      global = [...global, now]
+      global = [...global, { ts: now, key }]
     },
     recordSuccess(key: string): void {
       perKey.delete(key)
+    },
+    recordAuthenticated(key: string): void {
+      perKey.delete(key)
+      // Remove the NEWEST entry tagged with this key — under interleaving
+      // there may be more than one still outstanding for the same key (two
+      // concurrent requests with the same token), and removing the most
+      // recent one is enough: it is still exactly one entry per call, and
+      // which of a key's own several entries is removed makes no observable
+      // difference to the count.
+      const index = lastIndexByKey(global, key)
+      if (index === -1) return
+      global = [...global.slice(0, index), ...global.slice(index + 1)]
     },
   }
 }

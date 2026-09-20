@@ -1,4 +1,4 @@
-import { padRight, type Style } from './ansi.js'
+import { padRight, sanitizeLine, type Style } from './ansi.js'
 import { visibleActions } from './catalogue/index.js'
 import type { ActionSpec } from './catalogue/types.js'
 import {
@@ -14,7 +14,7 @@ import {
 } from './constants.js'
 import { TOKEN_HOLD_FOOTER } from './constants-live.js'
 import { actionWindowOf, type BodyLayout, bodyLayoutOfRows, fillTo } from './layout.js'
-import type { MainScreen, TerminalSize } from './model.js'
+import type { InstallFacts, MainScreen, TerminalSize } from './model.js'
 import { helpLines } from './render-help.js'
 import { isOutputClipped } from './render-output.js'
 import { paneLines } from './render-panes.js'
@@ -69,17 +69,22 @@ export const RUNNING_HELP_FOOTER =
 export const CLIPPED_HELP_FOOTER =
   'Tab sections · ↑↓ actions · Enter run · PgUp/PgDn · [ ] scroll · ? help · q quit'
 
-/** The whole main screen, header to footer. */
+/**
+ * The whole main screen, header to footer. `install` is optional and threaded
+ * through only for the header's remote address (2026-09-20) — the local
+ * header is byte-for-byte what it always was, `install` absent or not remote.
+ */
 export function renderMain(
   screen: MainScreen,
   size: TerminalSize,
   style: Style,
+  install?: InstallFacts,
 ): readonly string[] {
   const { columns, rows } = size
   const bodyRows = Math.max(0, rows - HEADER_ROWS - FOOTER_ROWS)
 
   return [
-    style.bold(padRight(headerText(screen), columns)),
+    style.bold(padRight(headerText(screen, install), columns)),
     tabsLine(screen, columns, style),
     RULE_CHAR.repeat(Math.max(0, columns)),
     ...bodyLines(screen, columns, bodyRows, style),
@@ -87,14 +92,33 @@ export function renderMain(
   ]
 }
 
-function headerText(screen: MainScreen): string {
+/**
+ * `McpCut console · kate (owner) @ plane.example.com:8091 · services: …`
+ * (2026-09-20): the address rides on the SAME segment as the name and role,
+ * `@ host[:port]` — host and port only, never the scheme, and sanitised like
+ * every other value this console did not itself compute (the header already
+ * degrades to a shorter line on a narrow terminal, exactly as it always has:
+ * nothing here is aware of the width it will be padded or cut to).
+ */
+function headerText(screen: MainScreen, install: InstallFacts | undefined): string {
   const { adminName, role } = screen.session
+  const address = install?.remote === true ? install.remoteAddress : undefined
+  const identity = address === undefined ? `${adminName} (${role})` : `${adminName} (${role}) @ ${hostPortOf(address)}`
 
-  return [
-    CONSOLE_TITLE,
-    `${adminName} (${role})`,
-    servicesHeaderPart(screen.services),
-  ].join(HEADER_SEPARATOR)
+  return [CONSOLE_TITLE, identity, servicesHeaderPart(screen.services)].join(HEADER_SEPARATOR)
+}
+
+/** An origin (`scheme://host[:port]`) reduced to `host[:port]` — never the scheme. */
+function hostPortOf(origin: string): string {
+  try {
+    const url = new URL(origin)
+    return sanitizeLine(url.port === '' ? url.hostname : `${url.hostname}:${url.port}`)
+  } catch {
+    // A malformed address should not have reached here (`parseRemoteUrl`
+    // refuses it long before this screen exists) — sanitised as-is rather
+    // than thrown, since a header is drawn far too often to risk a crash on it.
+    return sanitizeLine(origin)
+  }
 }
 
 /**

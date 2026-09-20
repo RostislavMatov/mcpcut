@@ -4,7 +4,7 @@ import { SECRET_DISPLAY_MASK } from './constants.js'
 import { applyFormKey, type FormValues, isValid, validateForm, valuesOf } from './form.js'
 import type { KeyEvent } from './keys.js'
 import type { Effect, Model, Pane, RunRequest, Step } from './model.js'
-import { ACTIONS_PANE, type MainScreen, noEffects, withMain } from './update-step.js'
+import { ACTIONS_PANE, disconnectStep, type MainScreen, noEffects, withMain } from './update-step.js'
 
 /**
  * The two panes that stand between a chosen action and a running command
@@ -126,6 +126,16 @@ export function submit(
   action: ActionSpec,
   values: FormValues,
 ): Step {
+  // `disconnect` dispatches nothing at all — never `requestOf`, never
+  // `dispatch()` — it only ends the console (ADR-0014, owner request "a way
+  // to disconnect"). `disconnectStep` (`update-step.ts`) is the SAME builder
+  // the Ctrl-D chord uses, so the address a menu item reopens on can never
+  // disagree with the one a keystroke would.
+  if (action.disconnectsConsole === true) {
+    const step = disconnectStep(model)
+    return { model: withMain(model, screen, { pane: ACTIONS_PANE }).model, effects: step.effects }
+  }
+
   const request = requestOf(action, values)
   // An action may ask conditionally: `confirm` returning `undefined` for these
   // values means the operator already answered on the form (`prune --yes`).

@@ -217,18 +217,30 @@ describe('the Home section', () => {
       'Services are run by compose or systemd',
       '(supervisor: external): mcpcut only reports.',
     ])
-    expect(external?.actions).toBe(HOME_SECTION.actions)
+    // `disconnect` (`requires: 'remote'`) is filtered out on a non-remote
+    // install, whatever supervisor it names — so this is no longer the same
+    // array as `HOME_SECTION.actions`, which still carries both.
+    expect(external?.actions.map((action) => action.id)).toEqual(['status'])
   })
 
-  test('on an install mcpcut supervises, Home is the very same object, start advice included', () => {
+  test('on an install mcpcut supervises, the intro is unchanged and disconnect stays hidden', () => {
     const owned = visibleSections('owner').find((section) => section.id === 'home')
 
-    expect(owned).toBe(HOME_SECTION)
+    expect(owned?.intro).toEqual(HOME_SECTION.intro)
     expect(owned?.intro.at(-1)).toBe('A service marked ○ in the header: Services ▸ start.')
+    expect(owned?.actions.map((action) => action.id)).toEqual(['status'])
   })
 
-  test('its only action is `status`, which is also its refresh', () => {
-    expect(home?.actions.map((action) => action.id)).toEqual(['status'])
+  test('remote: disconnect joins status, and only there', () => {
+    const remote = visibleSections('owner', SECTIONS, { supervisor: 'mcpcut', remote: true }).find(
+      (section) => section.id === 'home',
+    )
+
+    expect(remote?.actions.map((action) => action.id)).toEqual(['status', 'disconnect'])
+  })
+
+  test('status is Home’s refresh action; disconnect is its remote-only second action', () => {
+    expect(home?.actions.map((action) => action.id)).toEqual(['status', 'disconnect'])
     expect(home?.actions[0]?.argv({})).toEqual(['status'])
     expect(home?.refreshActionId).toBe('status')
   })
@@ -244,6 +256,7 @@ describe('the Home section', () => {
  */
 const CATALOGUE_PAIR_KEYS: readonly string[] = [
   'status',
+  'disconnect',
   'admin list',
   'admin add',
   'admin rotate',
