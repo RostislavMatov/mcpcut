@@ -17,6 +17,10 @@ export const USAGE = `Usage:
                                          Run a wrapped MCP server ad hoc, journaling all traffic
   mcpcut connect <server> --agent <name> [--policy <path>] [--fail-closed]
                                          Connect an agent to a registry server (token via MCP_AGENT_TOKEN)
+  mcpcut connect --url <address> [--allow-http]
+                                         Bridge this machine's stdio to a remote mcpcut service
+                                         (token via MCP_AGENT_TOKEN; no setup, no data directory).
+                                         Plain http to another host needs --allow-http
   mcpcut serve [--port N] [--host H] [--policy <path>] [--fail-closed]
                                          Run the HTTP front for remote agents (default 127.0.0.1:8090)
   mcpcut ui [--port N] [--host H] [--behind-tls] [--allowed-host <h>]

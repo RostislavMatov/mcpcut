@@ -23,6 +23,7 @@ import type { AdminCliOptions } from './admin-cmd.js'
 import type { AgentCliOptions } from './agent-cmd.js'
 import type { ApprovalsCliOptions } from './approvals-cmd.js'
 import type { BackupCommandOptions } from './backup-cmd.js'
+import type { ConnectBridgeDeps } from './connect-bridge-cmd.js'
 import type { ConnectDeps } from './connect-cmd.js'
 import type { ExportCommandOptions } from './export-cmd.js'
 import type { GroupCliOptions } from './group-cmd.js'
@@ -65,6 +66,8 @@ export interface DispatchOptions {
   readonly agent?: AgentCliOptions
   readonly group?: GroupCliOptions
   readonly connect?: ConnectDeps
+  /** Seams for the REMOTE form, `connect --url` (ADR-0015): env, stdio, the HTTP client. */
+  readonly connectBridge?: ConnectBridgeDeps
   readonly serve?: ServeCommandOptions
   readonly ui?: UiCommandOptions
   readonly admin?: AdminCliOptions

@@ -54,6 +54,12 @@ export const CONNECT_USAGE = `Usage:
                                          The agent token comes from ${AGENT_TOKEN_ENV_VAR};
                                          the policy comes from ${POLICY_SOURCE_DESCRIPTION} only
                                          (no --policy, no $${POLICY_ENV_VAR}).
+  mcpcut connect --url <address> [--allow-http]
+                                         The REMOTE form (ADR-0015): bridge this machine's stdio
+                                         to a mcpcut service on another host. Reads no registry,
+                                         no vault and no install config — the service on the
+                                         other end resolves the agent from the same
+                                         ${AGENT_TOKEN_ENV_VAR}.
 `
 
 /**

@@ -1,5 +1,12 @@
 #!/usr/bin/env node
-// First, on purpose: it silences the one `node:sqlite` experimental warning
+// FIRST, and this one really must be: ESM evaluates a module's dependencies
+// in import order, and `store/sqlite.ts` reaches for `node:sqlite` while it
+// is being evaluated. Since `connect --url` (ADR-0015) this binary also runs
+// on an agent's machine, on whatever Node that machine has — and below the
+// floor every import ordered ahead of this one would throw
+// `ERR_UNKNOWN_BUILTIN_MODULE` before anything could explain why.
+import './cli/node-floor-install.js'
+// Then: it silences the one `node:sqlite` experimental warning
 // that used to head every command's stderr and every daemon log
 // (`cli/warning-filter.ts`, user-journey smoke UX-7).
 import './cli/warning-filter-install.js'
@@ -11,6 +18,7 @@ import { runGroupCommand } from './cli/group-cmd.js'
 import { runApprovals } from './cli/approvals-cmd.js'
 import { runBackupCommand } from './cli/backup-cmd.js'
 import { runConnect } from './cli/connect-cmd.js'
+import { isBridgeInvocation, runConnectBridge } from './cli/connect-bridge-cmd.js'
 import { runExportCommand } from './cli/export-cmd.js'
 import { runJournalCommandGroup } from './cli/journal-cmds.js'
 import { runKeygenCommand } from './cli/keygen-cmd.js'
@@ -138,6 +146,16 @@ export async function dispatch(
       entry: 'connect',
       ...(hasUrl ? { connectArg: maybeUrl } : {}),
     })
+  }
+
+  // `connect --url` (ADR-0015) routes ahead of the broken-config gate for the
+  // same reason as the two branches above: the bridge is a stdio client of
+  // ANOTHER host's `serve` front. It reads no registry, no vault and no
+  // config, and the machine it runs on may well have none — so a gate over
+  // this machine's install would refuse the one command that never needed it.
+  // The local form of `connect` is untouched and still hits the gate.
+  if (command === 'connect' && isBridgeInvocation(rest)) {
+    return runConnectBridge(rest, io, opts.connectBridge)
   }
 
   // A pipe, a script, CI: a bare invocation prints the usage, as it always

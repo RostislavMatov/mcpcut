@@ -1,4 +1,4 @@
-import { createServer as createNetServer, type Server } from 'node:net'
+import { createServer as createNetServer, isIPv4, type Server } from 'node:net'
 import { describeBindFailure } from '../cli/bind-failure.js'
 import { LOCALHOST_HOSTNAMES } from '../net/origin-host.js'
 import type { CheckResult } from './checks.js'
@@ -145,10 +145,23 @@ export function checkBindExposure(
  * of the list both HTTP fronts screen against) plus the rest of `127.0.0.0/8`,
  * which that list does not enumerate because a Host header carries a name and
  * a bind flag carries an address.
+ *
+ * The `/8` half is checked against a real IPv4 LITERAL, never against a string
+ * prefix. Security review 2026-09-21 (CRITICAL): `'127.'.startsWith` matched
+ * `127.evil.com`, an ordinary DNS name that WHATWG URL parsing leaves as a
+ * hostname rather than folding into an address. Every caller that asks this
+ * question about an address arriving from OUTSIDE — `--remote`, the
+ * `--*-public-url` flags, and `connect --url`, whose owner decision PE8 turns
+ * the answer into a refusal — would have called such a host "unreachable from
+ * the network" and sent a bearer token to it in clear, with no warning.
+ * Addresses written in the decimal, octal and hex forms (`127.1`,
+ * `0x7f000001`, `2130706433`) reach this function already normalized to
+ * `127.0.0.1` by the URL parser, so nothing is lost by being strict here.
  */
 export function isLoopbackHost(host: string): boolean {
   const bare = stripBrackets(host.toLowerCase())
-  return LOCALHOST_HOSTNAMES.includes(bare) || bare.startsWith(LOOPBACK_IPV4_PREFIX)
+  if (LOCALHOST_HOSTNAMES.includes(bare)) return true
+  return isIPv4(bare) && bare.startsWith(LOOPBACK_IPV4_PREFIX)
 }
 
 /** `[::1]` is how an IPv6 literal is written in a URL; `--host` takes it either way. */
