@@ -1013,3 +1013,108 @@ describe('the agent pool core is traffic semantics, not an operator surface (ADR
   })
 })
 
+// ---------------------------------------------------------------------------
+// The connect bridge runs where there is no install (ADR-0015). `connect
+// --url` is a stdio client of ANOTHER host's `serve` front: it reads no
+// registry, no vault, no agents store, no policy, no journal and no install
+// config, and the machine it runs on may have none of them. That is not a
+// style preference — it is the command's whole claim, and `src/cli.ts` routes
+// it ahead of the broken-config gate on the strength of it. Here the claim is
+// mechanical: the file set is derived from the directory, so a module added
+// to `src/bridge/` later is covered the moment it lands.
+//
+// The rule is about DIRECT imports. Transitively `protocol/split.ts` does
+// reach `src/config.ts` for one size constant, and that module resolves the
+// data directory as it is imported — tolerable, because `resolveDataDir`
+// returns a problem as a VALUE and never throws (`src/setup/data-dir.ts`), so
+// a missing or broken config costs the bridge nothing.
+// ---------------------------------------------------------------------------
+
+/** The bridge core: transport and nothing else. */
+const BRIDGE_DIRS: readonly string[] = ['src/bridge']
+
+/** The command module, which is not under the directory rule but owes it the same promise. */
+const BRIDGE_COMMAND_MODULES: readonly string[] = [
+  'src/cli/connect-bridge-cmd.ts',
+  'src/cli/connect-bridge-messages.ts',
+]
+
+/**
+ * Matches a specifier that names this installation's own state: the stores,
+ * the vault, the registry, the agents and groups, the policy, the journal,
+ * the admin UI, the console, the install config — and `src/setup/*` except
+ * the one leaf that merely answers "is this host loopback".
+ */
+function isInstallStateSpecifier(specifier: string): boolean {
+  return (
+    /(?:^|\/)(store|vault|registry|agents|groups|policy|journal|ui|tui|admin|services|approvals)\//.test(
+      specifier,
+    ) ||
+    /(?:^|\/)setup\/(?!bind-checks)/.test(specifier) ||
+    /(?:^|\/)config\.js$/.test(specifier)
+  )
+}
+
+function bridgeFiles(): string[] {
+  return collectTransportFiles(PROJECT_ROOT, BRIDGE_DIRS, new Set())
+}
+
+describe('the connect bridge runs on a machine with no install (ADR-0015)', () => {
+  test.each(bridgeFiles())(
+    '%s imports no store/vault/registry/agents/policy/journal/config module',
+    (relativePath) => {
+      const source = readFileSync(join(PROJECT_ROOT, relativePath), 'utf8')
+
+      const forbidden = importSpecifiersOf(source).filter(isInstallStateSpecifier)
+
+      expect(forbidden).toEqual([])
+    },
+  )
+
+  test.each(BRIDGE_COMMAND_MODULES)('%s keeps the same promise', (relativePath) => {
+    // Not under the directory rule (it lives with the other commands), but it
+    // is the module `cli.ts` routes ahead of the config gate, so an install
+    // import here would break the claim just as thoroughly.
+    const source = readFileSync(join(PROJECT_ROOT, relativePath), 'utf8')
+
+    expect(importSpecifiersOf(source).filter(isInstallStateSpecifier)).toEqual([])
+  })
+
+  test('the directory exists and contributes files, so the rule is not vacuous', () => {
+    const files = bridgeFiles()
+
+    expect(files.length).toBeGreaterThan(0)
+    for (const file of files) expect(file.startsWith('src/bridge/')).toBe(true)
+  })
+
+  test('the matcher catches install state and lets transport through', () => {
+    // Guards the guard: were it to go lax, the rule above would pass no matter
+    // what the bridge imported.
+    for (const forbidden of [
+      '../store/sqlite.js',
+      '../config.js',
+      '../agents/store.js',
+      '../vault/resolve.js',
+      '../registry/store.js',
+      '../policy/load.js',
+      '../journal/db.js',
+      '../ui/server.js',
+      '../tui/model.js',
+      '../setup/data-dir.js',
+    ]) {
+      expect(isInstallStateSpecifier(forbidden), `not caught: ${forbidden}`).toBe(true)
+    }
+    for (const allowed of [
+      '../setup/bind-checks.js',
+      '../transport/http/client.js',
+      '../transport/message.js',
+      '../protocol/classify.js',
+      '../proxy/synthesize.js',
+      '../upstream/readable-source.js',
+      './constants.js',
+      'node:util',
+    ]) {
+      expect(isInstallStateSpecifier(allowed), `wrongly caught: ${allowed}`).toBe(false)
+    }
+  })
+})
