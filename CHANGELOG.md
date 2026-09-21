@@ -8,6 +8,28 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **An agent on another machine connects with one command: `mcpcut connect
+  --url <address>`.** The remote form of `connect` is pure transport between
+  this machine's stdio and a `serve` front on another host — it reads no
+  registry, no vault and no install config, so the machine it runs on needs no
+  `setup` and no data directory, and it routes ahead of the broken-config gate
+  like `--remote` does. The address is the service's base URL (the agent pool
+  endpoint is appended) or the full `/agents/<agent>/servers/<server>` address
+  of one pair. The token comes from `MCP_AGENT_TOKEN` and nowhere else: a token
+  anywhere in `argv` is refused before anything is parsed or dialed. Plain
+  `http` to a non-loopback host is a **refusal**, taken back only by an
+  explicit `--allow-http` (which then warns once) — unlike the console's
+  `--remote`, because an agent token crosses that network on every request.
+  Exit codes: 0 when the client hangs up, 1 for anything refused before or
+  instead of a session (401, 403, 404 included), 4 when the session itself was
+  lost, which tells a client to start a fresh bridge. A network blip is none of
+  those — the request it hit gets a JSON-RPC `-32004` back and the bridge keeps
+  running. ADR-0015; README "From another machine: `mcpcut connect --url`".
+- **A runtime below Node 24 gets one line instead of a missing builtin.** Every
+  command now prints `mcpcut needs Node 24 or newer (this is vX)` and exits 1,
+  ahead of the import that used to fail with `ERR_UNKNOWN_BUILTIN_MODULE:
+  node:sqlite` and a stack. This matters now that `connect --url` runs the
+  binary on machines nobody installed it on.
 - **A bare `mcpcut` on a machine with no install asks what to do**: "Set up a
   service on this machine" (the first-run wizard, unchanged; `mcpcut setup`
   still opens it directly) or "Connect to a service on another host" (host,
@@ -36,6 +58,21 @@ All notable changes to this project are documented here. The format follows
   loopback; the first owner is created with the setup code, as on `/setup`.
   Plain `http` to a non-loopback host is a loud warning, not a refusal.
   ADR-0014; README "A console for a service on another host".
+
+### Fixed
+
+- **A host that merely LOOKS like a loopback address is no longer treated as
+  one.** `isLoopbackHost` matched the `127.0.0.0/8` block with a string
+  prefix, so an ordinary DNS name such as `127.evil.com` — which URL parsing
+  leaves as a hostname rather than folding into an address — counted as
+  "unreachable from the network". Every caller that asks the question about an
+  address arriving from outside was affected: `connect --url` (agent token,
+  where owner decision PE8 turns the answer into a refusal), `--remote` (admin
+  token) and the `--*-public-url` flags all sent a bearer token over plain
+  `http` to such a host with no warning and no flag. The block is now matched
+  against a real IPv4 literal; the decimal, octal and hex spellings of the
+  real loopback address are unaffected, since the URL parser normalizes them
+  first. Found by the security review of the bridge, 2026-09-21.
 
 ### Changed
 

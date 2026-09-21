@@ -1221,6 +1221,54 @@ plain HTTP is not acceptable, so any `--host` beyond localhost prints a loud
 warning: terminate TLS in a reverse proxy in front of `serve` and let it keep
 listening on loopback. `serve` has no TLS of its own.
 
+#### From another machine: `mcpcut connect --url`
+
+An agent whose client speaks only stdio does not need a second tool to reach a
+`serve` front on another host — `connect` has a remote form that is nothing but
+transport. It reads no registry, no vault and no install config, so the machine
+it runs on needs no `setup` and no data directory; the service on the other end
+resolves the agent from the token and gates the traffic exactly as it does for
+an HTTP agent.
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "mcpcut",
+      "args": [
+        "connect",
+        "--url",
+        "https://plane.example:8090/agents/research-bot/servers/github"
+      ],
+      "env": { "MCP_AGENT_TOKEN": "mcpj_…" }
+    }
+  }
+}
+```
+
+The token comes from the environment and only from the environment: a token in
+`argv` is refused outright, because every process on the machine can read
+another's command line through `ps`.
+
+Plain `http` to another host is **refused**, not warned about — the token
+crosses that network on every single request, with nobody watching. Use
+`https://`, tunnel it (`ssh -L 8090:127.0.0.1:8090 user@host`), or say the
+network is trusted out loud with `--allow-http`. Plain `http` to this machine
+needs no flag.
+
+| Exit code | What happened | What a client should do |
+|---|---|---|
+| 0 | the client hung up | nothing — this is the ordinary ending |
+| 1 | refused: a bad address, a token in `argv`, no token, 401, 403, 404 | fix the invocation; retrying will not help |
+| 4 | the session was lost mid-conversation (expired, or the event stream did not come back) | start a fresh bridge |
+
+A network blip is none of those: the request it hit gets a JSON-RPC error back
+(`-32004`) and the bridge keeps running, because a dropped packet is not a
+revoked token.
+
+Needs Node 24 or newer, like every other form of the command; below that the
+binary says so in one line instead of failing on a missing builtin.
+
 ### What the vault protects against, and what it does not
 
 `vault.enc` is a single AES-256-GCM envelope; `vault.key` is the master key,
