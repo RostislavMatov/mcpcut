@@ -1,11 +1,13 @@
 import { AGENT_NAME_PATTERN, GRANT_SERVER_NAME_PATTERN } from '../../agents/constants.js'
 import { ACCESS_MIN_ROLE } from '../../cli/access-cmd-write.js'
-import { optionFlag, patternField, textField, valueOf } from './fields.js'
+import { HTTP_FLAG } from '../../cli/agent-config-cmd.js'
+import { flagField, optionFlag, patternField, switchFlag, textField, valueOf } from './fields.js'
 import type { ActionSpec, SectionSpec } from './types.js'
 
 /**
- * The Agents section (mcpcut phase 4, Task 5): `agent list|create|grant|
- * ungrant|revoke` as five declarative actions.
+ * The Agents section (mcpcut phase 4, Task 5): `agent list|create|config|
+ * grant|ungrant|revoke` as six declarative actions (`config` — ADR-0015, PRD
+ * phase 4: the client config block with `<token>`, readable by anyone).
  *
  * Reading is free (`viewer`), and every MUTATION is `ACCESS_MIN_ROLE` —
  * imported from `src/cli/access-cmd-write.ts`, which is where owner decision
@@ -68,7 +70,25 @@ const createAction: ActionSpec = {
   fields: [agentNameField],
   mintsToken: true,
   argv: (values) => ['agent', 'create', valueOf(values, 'name')],
-  hint: 'prints the agent’s token once — copy it before leaving',
+  hint: 'prints the token and client config once — copy both',
+}
+
+/** `agent config --http`: the native HTTP form instead of the `connect --url` bridge. */
+const httpFormField = flagField('http', 'HTTP form', 'url + Bearer header, no bridge')
+
+/**
+ * The client config block again, with `<token>` in place of the token. Not a
+ * minting action — nothing secret is printed — so it earns no `token-hold`.
+ */
+const configAction: ActionSpec = {
+  id: 'config',
+  title: 'config',
+  minRole: 'viewer',
+  command: 'agent',
+  subcommand: 'config',
+  fields: [agentNameField, httpFormField],
+  argv: (values) => ['agent', 'config', valueOf(values, 'name'), ...switchFlag(values, 'http', HTTP_FLAG)],
+  hint: 'the client config with <token>; no admin token',
 }
 
 const grantAction: ActionSpec = {
@@ -121,6 +141,6 @@ export const AGENTS_SECTION: SectionSpec = {
     'Agent identities and their grants; a token is shown',
     'once, at creation.',
   ],
-  actions: [listAction, createAction, grantAction, ungrantAction, revokeAction],
+  actions: [listAction, createAction, configAction, grantAction, ungrantAction, revokeAction],
   refreshActionId: 'list',
 }

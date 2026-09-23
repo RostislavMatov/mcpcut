@@ -12,6 +12,8 @@ import { createRemoteClient, type RemoteClient } from '../../src/tui/remote/clie
 import { createRemoteDispatch } from '../../src/tui/remote/dispatch.js'
 import { createRemoteResolve } from '../../src/tui/remote/session.js'
 import { createRemoteFirstOwnerSetup } from '../../src/tui/remote/setup.js'
+import { INSTALL_CONFIG_VERSION } from '../../src/setup/constants.js'
+import type { InstallConfigLoad } from '../../src/setup/load.js'
 
 /**
  * Both halves of the remote console (ADR-0014) with nothing faked between
@@ -39,7 +41,7 @@ interface Install {
 
 const SILENT = { stdout: { write: () => undefined }, stderr: { write: () => undefined } }
 
-async function startInstall(): Promise<Install> {
+async function startInstall(extra: (journalDir: string) => DispatchOptions = () => ({})): Promise<Install> {
   const journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-remote-e2e-'))
   cleanups.push(() => rm(journalDir, { recursive: true, force: true }))
   let handle: UiHandle | undefined
@@ -48,7 +50,7 @@ async function startInstall(): Promise<Install> {
     signals: [],
     dispatch,
     // The `admin` commands of this test must read the store `ui` serves.
-    dispatchOptions: { admin: { journalDir } },
+    dispatchOptions: { admin: { journalDir }, ...extra(journalDir) },
     onListening: (started) => {
       handle = started
     },
@@ -120,6 +122,38 @@ describe('remote console, end to end', () => {
     expect(exitCode).toBe(0)
     expect(run.out()).toContain('kate')
     expect(run.out()).not.toContain(made.token)
+  })
+
+  test('agent create over the network prints the client config with the SERVER\'s serve address (ADR-0015, phase 4)', async () => {
+    // The command runs in the host's `ui` daemon, so the block names where
+    // agents dial THAT host — its install config — never the address the
+    // administrator's console connected from.
+    const serverInstall: InstallConfigLoad = {
+      kind: 'ok',
+      path: '/srv/.mcpcut/config.json',
+      config: {
+        version: INSTALL_CONFIG_VERSION,
+        dataDir: '/srv/mcpcut',
+        ui: { host: '0.0.0.0', port: 8091 },
+        serve: { host: '0.0.0.0', port: 8090, publicUrl: 'https://plane.example:8090' },
+      },
+    }
+    const install = await startInstall((journalDir) => ({ agent: { journalDir, install: serverInstall } }))
+    const code = (await readFile(setupCodePathFor(install.journalDir), 'utf8')).trim()
+    const made = await createRemoteFirstOwnerSetup(install.client)(code, 'kate')
+    if (made.kind !== 'ok') throw new Error('setup did not answer ok')
+    const run = captured()
+
+    const exitCode = await createRemoteDispatch(install.client)(
+      ['agent', 'create', 'research-bot'],
+      run.io,
+      sessionOptions(made.token),
+    )
+
+    expect(exitCode).toBe(0)
+    expect(run.out()).toContain('"mcpServers"')
+    expect(run.out()).toContain('"https://plane.example:8090"')
+    expect(run.out()).not.toContain('127.0.0.1')
   })
 
   test('an admin removed on the host stops resolving on the very next request', async () => {

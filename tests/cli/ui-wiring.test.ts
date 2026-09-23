@@ -28,6 +28,15 @@ vi.mock('../../src/ui/handlers/servers.js', () => ({
   },
 }))
 
+const capturedAgentsDeps: Array<{ readonly serveAddress: unknown }> = []
+
+vi.mock('../../src/ui/handlers/agents.js', () => ({
+  createAgentsHandlers: (deps: { readonly serveAddress: unknown }) => {
+    capturedAgentsDeps.push(deps)
+    return {}
+  },
+}))
+
 const { composeUi } = await import('../../src/cli/ui-wiring.js')
 
 /** True when `key` is reachable on `target`, own or through its prototype chain. */
@@ -102,6 +111,18 @@ describe('composeUi: capability narrowing is enforced at runtime, not just compi
   })
 })
 
+describe('composeUi: the serve address reaches the agent pages (ADR-0015, phase 4)', () => {
+  test('the address handed to composeUi is the one createAgentsHandlers renders client configs with', () => {
+    capturedAgentsDeps.length = 0
+
+    composeUi(buildDeps({}))
+
+    expect(capturedAgentsDeps[0]?.serveAddress).toEqual(WIRING_SERVE_ADDRESS)
+  })
+})
+
+const WIRING_SERVE_ADDRESS = { url: 'https://plane.example:8090', source: 'config' } as const
+
 interface BuildDepsOverrides {
   readonly vault?: VaultStore
   readonly registry?: RegistryStore
@@ -126,5 +147,6 @@ function buildDeps(overrides: BuildDepsOverrides): Parameters<typeof composeUi>[
     vault,
     hub,
     stderr: { write: () => undefined },
+    serveAddress: WIRING_SERVE_ADDRESS,
   }
 }

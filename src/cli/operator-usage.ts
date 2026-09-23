@@ -69,6 +69,8 @@ export const SETUP_SYNOPSIS_LINES: readonly string[] = [
   `${DESCRIPTION_INDENT}--*-probe-host: where status dials a service it has no pid file for`,
   `${DESCRIPTION_INDENT}--*-public-url: the address you will reach the service at (http://<ip>:<port>,`,
   `${DESCRIPTION_INDENT}https://<name>); allows that Host/Origin, records TLS, opens the bind for plain http`,
+  `${DESCRIPTION_INDENT}--serve-public-url is remembered as serve.publicUrl — the address agent create`,
+  `${DESCRIPTION_INDENT}puts into the client config`,
   `${DESCRIPTION_INDENT}--force, --no-admin and --start apply to --yes only`,
 ]
 

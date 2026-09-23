@@ -3,6 +3,8 @@ import type { AgentGrant, AgentRecord } from '../../agents/schema.js'
 import type { GroupRecord } from '../../groups/schema.js'
 import type { UiSession } from '../auth.js'
 import { html, type Html, join, safeUrl } from '../html.js'
+import type { ServeAddress } from '../../setup/serve-address.js'
+import { renderCardConfigDrawer } from './agents-config.js'
 import { csrfField } from './csrf-field.js'
 
 /**
@@ -152,6 +154,8 @@ export function renderAgentCard(view: {
   /** `owner` only (decision T4): below it the card is a read-only matrix. */
   readonly canManage: boolean
   readonly session: UiSession
+  /** The address the card's client config dials (ADR-0015, phase 4). */
+  readonly serveAddress: ServeAddress
 }): Html {
   const { agent, groups, canManage, session } = view
   const revoked = agent.revokedAt !== undefined
@@ -170,7 +174,7 @@ export function renderAgentCard(view: {
       <span class="muted small num">${String(grantCount)} server${grantCount === 1 ? '' : 's'} granted</span>
     </div>
     ${grantTable({ agentName: agent.name, effective, canManage, session })}
-    <div class="ag-foot">${footer}</div>
+    <div class="ag-foot">${renderCardConfigDrawer(agent.name, view.serveAddress)}${footer}</div>
   </section>`
 }
 

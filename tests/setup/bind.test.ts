@@ -148,6 +148,30 @@ describe('resolveServeDefaults', () => {
   })
 })
 
+describe('resolveServeDefaults: serve.publicUrl (phase 4, C1)', () => {
+  test('the remembered public address travels from the config', () => {
+    const defaults = resolveServeDefaults(
+      {},
+      loadOf({ serve: { host: '10.0.0.6', port: 9090, publicUrl: 'https://mcp.example.com' } }),
+    )
+
+    expect(defaults.publicUrl).toBe('https://mcp.example.com')
+  })
+
+  test('an env port override moves the bind but never the public address', () => {
+    const defaults = resolveServeDefaults(
+      { [SERVE_PORT_ENV_VAR]: '18090' },
+      loadOf({ serve: { host: '10.0.0.6', port: 9090, publicUrl: 'https://mcp.example.com' } }),
+    )
+
+    expect(defaults).toMatchObject({ port: 18090, publicUrl: 'https://mcp.example.com' })
+  })
+
+  test('absent in the config, absent in the defaults', () => {
+    expect(resolveServeDefaults({}, loadOf({}))).not.toHaveProperty('publicUrl')
+  })
+})
+
 describe('an unusable bind variable is refused, never silently ignored', () => {
   test('a non-numeric port names the variable and the accepted range', () => {
     expect(() => resolveUiDefaults({ [UI_PORT_ENV_VAR]: 'abc' }, ABSENT)).toThrow(InvalidBindEnvError)

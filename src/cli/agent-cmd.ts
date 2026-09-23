@@ -14,9 +14,12 @@ import {
 import { createGroupsStore } from '../groups/store.js'
 import { formatReadableField } from '../journal/format.js'
 import type { JournalSinkOptions } from '../journal/sink.js'
+import type { InstallConfigLoad } from '../setup/load.js'
+import { resolveServeAddress } from '../setup/serve-address.js'
 import { pairTarget, requireRegisteredServer } from './access-cmd-write.js'
 import { formatAgentLine, formatGrantLines, summaryOf } from './agent-cmd-format.js'
 import { recordChange, requireOwner, warnIfGroupsUncovered } from './agent-cmd-write.js'
+import { runConfig, writeClientConfig } from './agent-config-cmd.js'
 import { resolveGrantFlags } from './grant-flags.js'
 import { TOKEN_ONCE_NOTICE } from './ui-constants.js'
 import { StoreCorruptError, StoreLockError, StoreWriteRejectedError } from '../policy/store.js'
@@ -33,8 +36,9 @@ import { StoreCorruptError, StoreLockError, StoreWriteRejectedError } from '../p
  * 2026-09-01; the gate and the record live in `agent-cmd-write.ts`). The token
  * buys ATTRIBUTION and parity with the UI's role table, not an access barrier.
  *
- * The ONE place a plaintext token ever surfaces is `agent create`'s stdout;
- * every other output path — the journal record included — renders hash-free,
+ * The ONE place a plaintext token ever surfaces is `agent create`'s stdout —
+ * its `token:` line and the client config block beside it (ADR-0015 phase 4,
+ * C5); every other output path — the journal record included — renders hash-free,
  * `formatReadableField`-sanitized data read back from the store.
  */
 
@@ -58,12 +62,15 @@ export interface AgentCliOptions extends AgentsStoreOptions {
   /** Environment holding `MCP_ADMIN_TOKEN`. Defaults to `process.env`. */
   readonly env?: NodeJS.ProcessEnv
   readonly deps?: AgentCliDeps
+  /** The install config `create`/`config` take the serve address from; defaults to the process's. */
+  readonly install?: InstallConfigLoad
 }
 
 const DEFAULT_IO: AgentCliIo = { stdout: process.stdout, stderr: process.stderr }
 
 const USAGE = `Usage:
   agent create <name>                          Create an agent; prints its token ONCE
+  agent config <name> [--http]                 Print the agent's client config block with <token>
   agent list                                   List agents and their grants
   agent grant <agent> <server> [--tools a,b,prefix*] [--resources uri,uriprefix*|*] [--prompts name,prefix*|*]
                                                Grant server access. NOTE the asymmetric defaults:
@@ -73,7 +80,7 @@ const USAGE = `Usage:
                                                (opening a method surface is always an explicit act)
   agent ungrant <agent> <server>               Remove the grant for a server
   agent revoke <name>                          Revoke the agent (its token stops working)
-Every change needs a personal admin token in MCP_ADMIN_TOKEN (role owner); list does not.
+Every change needs a personal admin token in MCP_ADMIN_TOKEN (role owner); list and config do not.
 `
 
 /** Errors these commands convert into an exit-1 message instead of a crash. */
@@ -110,6 +117,8 @@ export async function runAgentCommand(
     switch (subcommand) {
       case 'create':
         return await runCreate(rest, io, opts, store)
+      case 'config':
+        return await runConfig(rest, io, opts, store)
       case 'list':
         return await runList(io, store, opts)
       case 'grant':
@@ -162,6 +171,7 @@ async function runCreate(
   io.stdout.write(`agent: ${formatReadableField(agent.name)}\n`)
   io.stdout.write(`token: ${token}\n`)
   io.stdout.write(TOKEN_ONCE_NOTICE)
+  writeClientConfig(io, { agentName: agent.name, token, form: 'stdio', address: resolveServeAddress(opts) })
   // The record names the agent and nothing else — the token stays in the one
   // place it was printed.
   return recordChange(io, opts, actor, 'create', formatReadableField(name), {

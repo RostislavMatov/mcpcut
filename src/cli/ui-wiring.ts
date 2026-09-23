@@ -19,6 +19,7 @@ import type { RegistryStore } from '../registry/store.js'
 import type { VaultStore } from '../vault/store.js'
 import type { EventHub, UiEvent } from '../ui/events.js'
 import { createAdminsHandlers } from '../ui/handlers/admins.js'
+import type { ServeAddress } from '../setup/serve-address.js'
 import { createAgentsHandlers, type UiAuditEvent } from '../ui/handlers/agents.js'
 import { createApprovalsHandlers, DASHBOARD_RECENT_DECISIONS } from '../ui/handlers/approvals.js'
 import { createAssetsHandler } from '../ui/handlers/assets.js'
@@ -76,6 +77,8 @@ export interface UiCompositionDeps {
   readonly hub: EventHub
   /** Diagnostics sink; receives the attribution lines for UI mutations. */
   readonly stderr: UiCliWritable
+  /** The serve address the agent pages put into client configs (ADR-0015, phase 4). */
+  readonly serveAddress: ServeAddress
   /** Clock (ms epoch) for approval countdowns. Defaults to `Date.now`. */
   readonly clock?: () => number
   /**
@@ -343,6 +346,7 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
   })
   const agents = createAgentsHandlers({
     agentsStore: deps.agents,
+    serveAddress: deps.serveAddress,
     groups: { listGroups: () => groups.listGroups() },
     // The same registry port the group handlers take: a personal grant may
     // only name a server the plane has (owner decision S1, 2026-09-03).

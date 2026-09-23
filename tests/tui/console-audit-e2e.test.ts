@@ -64,7 +64,7 @@ const PRUNE_QUESTION = 'Delete journal records older than'
 const OPERATOR_SECTIONS: readonly (readonly string[])[] = [
   ['status'],
   ['list', 'show', 'refresh'],
-  ['list'],
+  ['list', 'config'],
   ['list', 'show'],
   ['show', 'show --server', 'validate'],
   ['list', 'show', 'approve', 'approve --all', 'reject'],

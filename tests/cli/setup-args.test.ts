@@ -279,10 +279,14 @@ describe('SETUP_USAGE', () => {
 describe('--ui-public-url / --serve-public-url: one address instead of three flags', () => {
   const BASE: InstallConfig = defaultInstallConfig('/var/lib/mcpcut')
 
-  function overlaid(argv: readonly string[]): InstallConfig {
+  function parsedArgs(argv: readonly string[]): SetupArgs {
     const parsed = parseSetupArgs(['--yes', ...argv])
     if (!parsed.ok) throw new Error(parsed.message)
-    return overlaySetupArgs(BASE, parsed.args, '/')
+    return parsed.args
+  }
+
+  function overlaid(argv: readonly string[]): InstallConfig {
+    return overlaySetupArgs(BASE, parsedArgs(argv), '/')
   }
 
   test('http by IP: bind opened, Host and Origin allowed, no TLS claimed', () => {
@@ -314,6 +318,48 @@ describe('--ui-public-url / --serve-public-url: one address instead of three fla
     expect(serve).toMatchObject({ host: '0.0.0.0', allowedHosts: ['203.0.113.7:8090'] })
     expect(serve.allowedOrigins).toBeUndefined()
     expect(ui).toEqual(BASE.ui)
+  })
+
+  test('the serve address is remembered as serve.publicUrl: the address generated client configs carry', () => {
+    const { serve } = overlaid(['--serve-public-url', 'http://203.0.113.7:8090'])
+
+    expect(serve).toMatchObject({
+      host: '0.0.0.0',
+      allowedHosts: ['203.0.113.7:8090'],
+      publicUrl: 'http://203.0.113.7:8090',
+    })
+  })
+
+  test('the remembered address is the WHATWG origin: the default port is dropped the way the bridge and Host drop it', () => {
+    const { serve } = overlaid(['--serve-public-url', 'https://MCP.Example.com:443'])
+
+    expect(serve.publicUrl).toBe('https://mcp.example.com')
+  })
+
+  test('the ui address is not remembered: nothing reads it (C1)', () => {
+    const { serve, ui } = overlaid(['--ui-public-url', 'https://mcp.example.com'])
+
+    expect(serve.publicUrl).toBeUndefined()
+    expect(ui).not.toHaveProperty('publicUrl')
+  })
+
+  test('a rerun that does not type the flag keeps the remembered address', () => {
+    const base: InstallConfig = { ...BASE, serve: { ...BASE.serve, publicUrl: 'https://mcp.example.com' } }
+    const parsed = parseSetupArgs(['--yes', '--serve-port', '9000'])
+    if (!parsed.ok) throw new Error(parsed.message)
+
+    expect(overlaySetupArgs(base, parsed.args, '/').serve).toMatchObject({
+      port: 9000,
+      publicUrl: 'https://mcp.example.com',
+    })
+  })
+
+  test('a rerun with another address replaces publicUrl but adds to the allow-list', () => {
+    const first = overlaySetupArgs(BASE, parsedArgs(['--serve-public-url', 'https://a.example.com']), '/')
+    const second = overlaySetupArgs(first, parsedArgs(['--serve-public-url', 'https://b.example.com']), '/')
+
+    expect(second.serve.publicUrl).toBe('https://b.example.com')
+    expect(second.serve.allowedHosts).toEqual(['a.example.com', 'b.example.com'])
   })
 
   test('a malformed address refuses the run before anything is written', () => {

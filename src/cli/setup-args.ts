@@ -92,10 +92,15 @@ function withPublicUrls(config: InstallConfig, args: SetupArgs): InstallConfig {
       : {}),
     ...(servePublicUrl !== undefined
       ? {
-          serve: applyPublicUrl(config.serve, servePublicUrl, {
-            isHostTyped: args.serveHost !== undefined,
-            withOrigin: false,
-          }),
+          serve: {
+            ...applyPublicUrl(config.serve, servePublicUrl, {
+              isHostTyped: args.serveHost !== undefined,
+              withOrigin: false,
+            }),
+            // Remembered (ADR-0015, phase 4, C1): the address `agent create`
+            // puts into every client config it prints.
+            publicUrl: servePublicUrl.origin,
+          },
         }
       : {}),
   }

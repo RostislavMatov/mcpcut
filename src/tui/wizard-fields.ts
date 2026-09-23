@@ -152,7 +152,7 @@ export function wizardFieldsOf(prefill: WizardPrefill): readonly FieldSpec[] {
       initial: config.ui.behindTls === true ? FLAG_ON : 'false',
       hint: 'a proxy terminates TLS (ADR-0004)',
     },
-    publicUrlField(WIZARD_FIELD.uiPublicUrl, 'UI URL', '--ui-public-url', 'optional: how you will open it, http://<ip>:8091'),
+    publicUrlField(WIZARD_FIELD.uiPublicUrl, 'UI URL', '--ui-public-url', 'optional: how you will open it, http://<ip>:8091', ''),
     {
       name: WIZARD_FIELD.serveHost,
       label: 'Agent host',
@@ -163,7 +163,13 @@ export function wizardFieldsOf(prefill: WizardPrefill): readonly FieldSpec[] {
       validate: hostError,
     },
     portField(WIZARD_FIELD.servePort, 'Agent port', config.serve.port),
-    publicUrlField(WIZARD_FIELD.servePublicUrl, 'Agent URL', '--serve-public-url', 'optional: what agents will dial'),
+    publicUrlField(
+      WIZARD_FIELD.servePublicUrl,
+      'Agent URL',
+      '--serve-public-url',
+      'optional: what agents will dial',
+      config.serve.publicUrl ?? '',
+    ),
     {
       name: WIZARD_FIELD.admin,
       label: 'First admin',
@@ -186,20 +192,25 @@ export function wizardFieldsOf(prefill: WizardPrefill): readonly FieldSpec[] {
 }
 
 /**
- * An optional public address (2026-09-19). Always EMPTY on opening, never
- * prefilled from the config: the config keeps allow-lists, not the address
- * they came from, and an empty answer adds nothing — so an edit that leaves
- * the field alone leaves every entry an earlier run wrote exactly as it was.
- * The bind and the TLS answer above are stated by the wizard on every run, so
- * here the address contributes the one thing nobody can guess: the Host and
- * Origin entries without which a request by IP is a 403.
+ * An optional public address (2026-09-19). An empty answer adds nothing, so an
+ * edit that leaves the field empty leaves every allow-list entry an earlier
+ * run wrote exactly as it was. The bind and the TLS answer above are stated
+ * by the wizard on every run, so here the address contributes the one thing
+ * nobody can guess: the Host and Origin entries without which a request by IP
+ * is a 403.
+ *
+ * `initial` differs per service. The UI's opens EMPTY: the config keeps its
+ * allow-lists, not the address they came from. `serve`'s opens with the
+ * remembered `serve.publicUrl` (ADR-0015, phase 4) so an edit of a configured
+ * install does not look unconfigured — and sending it back unchanged is a
+ * no-op, because `applyPublicUrl` deduplicates and the typed host keeps the bind.
  */
-function publicUrlField(name: string, label: string, flag: string, hint: string): FieldSpec {
+function publicUrlField(name: string, label: string, flag: string, hint: string, initial: string): FieldSpec {
   return {
     name,
     label,
     kind: 'text',
-    initial: '',
+    initial,
     hint,
     validate: (value) => {
       if (value.trim() === '') return undefined

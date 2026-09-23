@@ -46,6 +46,8 @@ export interface ServeServiceDefaults extends BindDefaults {
   readonly allowedHosts?: readonly string[]
   readonly failClosed?: boolean
   readonly policy?: string
+  /** The origin agents dial (`serve.publicUrl`, ADR-0015 phase 4); never the bind. */
+  readonly publicUrl?: string
 }
 
 /**
@@ -98,6 +100,7 @@ export function resolveServeDefaults(
     ...(configured?.allowedHosts !== undefined ? { allowedHosts: configured.allowedHosts } : {}),
     ...(configured?.failClosed !== undefined ? { failClosed: configured.failClosed } : {}),
     ...(configured?.policy !== undefined ? { policy: configured.policy } : {}),
+    ...(configured?.publicUrl !== undefined ? { publicUrl: configured.publicUrl } : {}),
   }
 }
 

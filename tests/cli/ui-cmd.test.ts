@@ -1044,6 +1044,21 @@ describe('runUi: bind defaults when a flag is absent', () => {
     expect(started.io.errText()).toContain(`listening on http://127.0.0.1:${started.handle.port}`)
   })
 
+  test('an unusable MCPCUT_SERVE_PORT does not stop ui: the client config address is merely unknown (phase 4)', async () => {
+    // `ui` resolves the SERVE address for the agent pages; the other service's
+    // variable must never refuse this one's start.
+    vi.stubEnv('MCPCUT_SERVE_PORT', '8O90')
+    vi.stubEnv('MCPCUT_CONFIG', join(tmpdir(), 'mcpcut-no-such-config.json'))
+    try {
+      const started = await startWithDefaults([], { host: '127.0.0.1', port: 0 })
+
+      expect(started.handle.port).toBeGreaterThan(0)
+      expect(started.io.errText()).not.toContain('MCPCUT_SERVE_PORT')
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
   test('an explicit --port 0 still wins over a configured port', async () => {
     const started = await startWithDefaults(['--port', '0'], { host: '127.0.0.1', port: 1 })
 

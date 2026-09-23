@@ -123,7 +123,10 @@ export function consoleDispatchOptions(
     journalDir,
     admin: { journalDir },
     vault: { journalDir },
-    agent: { journalDir },
+    // `install` too: `agent create` prints the client config whose address it
+    // reads from the install config (ADR-0015, phase 4) — the stand's, never
+    // the developer's own `~/.mcpcut/config.json`.
+    agent: { journalDir, install },
     group: { journalDir },
     server: { journalDir, probes: { runProbe: async () => ALIVE_PROBE } },
     policy: { journalDir, cwd: journalDir },

@@ -54,6 +54,9 @@ ${TUI_SYNOPSIS_LINES.join('\n')}
                                          Manage the encrypted secrets vault (set reads stdin)
   mcpcut agent create <name>            Create an agent identity (prints its token once;
                                          owner token via MCP_ADMIN_TOKEN, like every agent change)
+  mcpcut agent config <name> [--http]   Print the agent's client config block with <token>
+                                         (--http: url + Authorization header, no bridge;
+                                         needs no admin token)
   mcpcut agent grant <agent> <server> [--tools a,b,prefix*]
                                          Grant a server (optionally specific tools) to an agent
   mcpcut agent ungrant <agent> <server> | revoke <name> | list

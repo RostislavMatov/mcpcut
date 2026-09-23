@@ -76,6 +76,7 @@ describe('the Agents section runs the agent commands', () => {
         'greet*',
       ],
     ],
+    ['config', ['agent', 'config', 'reader']],
     ['ungrant', ['agent', 'ungrant', 'reader', 'files']],
     ['revoke', ['agent', 'revoke', 'reader']],
   ])('%s builds the command line the CLI parses', (id, expected) => {
@@ -206,11 +207,27 @@ describe('the --tools asymmetry of grant-flags.ts reaches both forms', () => {
   })
 })
 
+describe('Agents ▸ config: the client config block (ADR-0015, phase 4)', () => {
+  test('the HTTP flag adds --http and nothing else', () => {
+    expect(actionOf(AGENTS_SECTION, 'config').argv({ ...FILLED, http: 'true' })).toEqual([
+      'agent',
+      'config',
+      'reader',
+      '--http',
+    ])
+  })
+
+  test('it never holds the screen: nothing it prints is a credential', () => {
+    expect(actionOf(AGENTS_SECTION, 'config').mintsToken).toBeUndefined()
+  })
+})
+
 describe('role thresholds mirror ACCESS_MIN_ROLE: every mutation is owner-only', () => {
   test.each([
-    ['viewer' as Role, ['list']],
-    ['operator' as Role, ['list']],
-    ['owner' as Role, ['list', 'create', 'grant', 'ungrant', 'revoke']],
+    // `config` prints the block with <token> — nothing secret — so it is a read.
+    ['viewer' as Role, ['list', 'config']],
+    ['operator' as Role, ['list', 'config']],
+    ['owner' as Role, ['list', 'create', 'config', 'grant', 'ungrant', 'revoke']],
   ])('a %s sees exactly the agents actions it may run', (role, expected) => {
     // Arrange & Act
     const ids = actionIdsFor(AGENTS_SECTION, role)

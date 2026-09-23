@@ -28,6 +28,7 @@ import {
   type TerminalSize,
 } from '../../src/tui/model.js'
 import { type OutputPanel, outputPanelOf } from '../../src/tui/output.js'
+import { renderClientConfig } from '../../src/agents/client-config.js'
 import { render } from '../../src/tui/render.js'
 import { helpLines } from '../../src/tui/render-help.js'
 import { CLIPPED_HELP_FOOTER } from '../../src/tui/render-main.js'
@@ -273,6 +274,37 @@ describe('render-narrow: the token banner (F4)', () => {
 
     expect(lines[HEADER_ROWS]?.startsWith('One-time token on screen:')).toBe(true)
     expect(text).toContain('token: mcpa_abc')
+  })
+
+  test('an agent token with its client config at 40×24: banner and token first, JSON clipped with ›, nothing wrapped', () => {
+    // `agent create` prints the block under the notice (ADR-0015, phase 4).
+    // The pane never wraps: a line wider than the body is clipped and marked,
+    // and `[`/`]` slide it — the one layout the block's lines have to survive.
+    const stdout =
+      'agent: research-bot\ntoken: mcpj_abc\nSave this token now: it cannot be recovered or shown again.\n\n' +
+      renderClientConfig({ serveUrl: 'https://plane.example.com:8090', token: 'mcpj_abc', form: 'stdio' })
+    const output = outputPanelOf({
+      argv: ['agent', 'create', 'research-bot'],
+      display: ['agent', 'create', 'research-bot'],
+      exitCode: 0,
+      stdout,
+      stderr: '',
+      mintsToken: true,
+    })
+
+    // 12 rows show the banner and the token only — the block is a PgDn away
+    // there (the pane's rows do not subtract the banner, Q29/Q30); 24 show both.
+    const size: TerminalSize = { columns: 40, rows: 24 }
+
+    const lines = render(mainModel({ pane: { kind: 'token-hold' }, output }, size), plainStyle)
+    const text = lines.join('\n')
+
+    expect(lines[HEADER_ROWS]?.startsWith('One-time token on screen:')).toBe(true)
+    expect(text).toContain('token: mcpj_abc')
+    expect(text).toContain('"mcpServers"')
+    expect(text).toContain('›')
+    expect(lines.every((line) => line.length <= size.columns)).toBe(true)
+    expect(lines).toHaveLength(size.rows)
   })
 
   test('a held token at 30 columns shows the short banner', () => {

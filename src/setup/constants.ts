@@ -97,6 +97,17 @@ export const MAX_HOST_LENGTH = 253
 export const MAX_CONFIG_STRING_LENGTH = 1024
 
 /**
+ * `serve.publicUrl`: the address agents dial, kept as a WHATWG origin —
+ * `scheme://host[:port]`, no path, no query, no credentials (ADR-0015, phase
+ * 4, C1). `setup` writes the `origin` of a parsed `--serve-public-url`; this
+ * pattern only keeps a hand-edited config from smuggling a path (a backslash
+ * included: WHATWG reads it as a slash), a query or a space into the client
+ * config `agent create` prints. Bounded by
+ * `MAX_CONFIG_STRING_LENGTH` in the schema.
+ */
+export const PUBLIC_ORIGIN_PATTERN = /^https?:\/\/[^\s/\\?#@]+$/i
+
+/**
  * The one origin value that can never be allowlisted: `"null"` is the opaque
  * origin a sandboxed or privacy-stripped browser context sends, so admitting
  * it would re-open the check it exists to fail. `src/net/origin-host.ts`

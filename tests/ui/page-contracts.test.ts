@@ -190,7 +190,7 @@ function allPages(): ReadonlyArray<{ readonly name: string; readonly html: strin
         secrets: [],
       }),
     },
-    { name: 'agents', html: renderAgentsPage({ agents: [], session: SESSION }) },
+    { name: 'agents', html: renderAgentsPage({ agents: [], session: SESSION, serveAddress: { url: 'https://plane.example', source: 'config' } }) },
     {
       name: 'groups',
       html: renderGroupsPage({

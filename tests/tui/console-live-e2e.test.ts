@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { ADMIN_TOKEN_PREFIX } from '../../src/admin/constants.js'
 import { createAdminStore, type AdminStore } from '../../src/admin/store.js'
+import { AGENT_TOKEN_MARKER } from '../../src/cli/connect-bridge-messages.js'
 import { createApprovalQueue } from '../../src/policy/approvals/queue.js'
 import { EXIT_OK, QUIT_WITH_TOKEN_QUESTION } from '../../src/tui/constants.js'
 import { APPROVALS_POLL_INTERVAL_MS } from '../../src/tui/constants-live.js'
@@ -65,6 +66,9 @@ const MISSED_TICK_SLACK_MS = 500
 const OWNER_NAME = 'root'
 const NEW_ADMIN_NAME = 'alice'
 const NEW_ADMIN_ROLE = 'operator'
+
+/** The agent the client-config test creates. */
+const AGENT_NAME = 'research-bot'
 
 /** The request seeded straight into the queue, as `approvals-cmd.test.ts` shapes one. */
 const SEEDED_SERVER = 'github'
@@ -156,6 +160,36 @@ describe('console end to end: the Approvals queue re-reads itself', () => {
     },
     LIVE_TEST_TIMEOUT_MS,
   )
+})
+
+describe('console end to end: agent create holds the token AND the client config (ADR-0015, phase 4)', () => {
+  test('the token-hold pane shows the token above the mcpServers block; ] slides the view, y lets go', async () => {
+    // Arrange
+    const app = await ownerConsole()
+    const { fake } = app
+    await goToSection(app, 'agents', 'owner')
+
+    // Act
+    await runAction(app, { title: 'create', values: [AGENT_NAME], command: `agent create ${AGENT_NAME}` })
+    await waitForText(app, TOKEN_HOLD_BANNER_HEAD, 'the token-hold banner')
+
+    // Assert: both on the first screen of the pane, the token first.
+    const held = fake.screen()
+    expect(held).toContain(`token: ${AGENT_TOKEN_MARKER}`)
+    expect(held).toContain('"mcpServers"')
+    expect(held.indexOf('token: ')).toBeLessThan(held.indexOf('"mcpServers"'))
+    const callsWhenHeld = app.argvCalls().length
+
+    // `]` scrolls the pane sideways without leaving the hold: the long token
+    // line is what earns the `‹` marker.
+    fake.type(']')
+    await waitForText(app, '‹', 'the pane to slide right')
+    expect(fake.screen()).toContain(TOKEN_HOLD_BANNER_HEAD)
+
+    fake.type(YES_KEY)
+    await waitForScreen(fake, (screen) => !screen.includes(TOKEN_HOLD_BANNER_HEAD), 'the banner to go')
+    expect(app.argvCalls().length).toBe(callsWhenHeld)
+  })
 })
 
 describe('console end to end: a one-time token is held until it is saved', () => {

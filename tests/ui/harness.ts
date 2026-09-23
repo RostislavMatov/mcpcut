@@ -122,6 +122,9 @@ function encodeForm(fields: Readonly<Record<string, string>>): string {
   return params.toString()
 }
 
+/** The serve address every harness-booted `ui` puts into client configs. */
+export const HARNESS_SERVE_ADDRESS = { url: 'https://plane.example:8090', source: 'config' } as const
+
 export async function startUiHarness(opts: StartUiOptions): Promise<UiTestHarness> {
   const journalDir = opts.journalDir
   const adminStore = createAdminStore({ journalDir })
@@ -147,6 +150,8 @@ export async function startUiHarness(opts: StartUiOptions): Promise<UiTestHarnes
       approvalsBaseDir: opts.approvalsBaseDir ?? join(journalDir, 'approvals'),
       inventoryStorePath: opts.inventoryStorePath ?? join(journalDir, INVENTORY_FILE_NAME),
       signals: [],
+      // Explicit, so a developer's own ~/.mcpcut/config.json never reaches a page.
+      serveAddress: HARNESS_SERVE_ADDRESS,
       ...(opts.queuePollIntervalMs !== undefined
         ? { queuePollIntervalMs: opts.queuePollIntervalMs }
         : {}),

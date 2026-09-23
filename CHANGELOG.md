@@ -8,6 +8,24 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **`agent create` prints the agent's client config; `agent config <name>` prints it again with `<token>`.**
+  Right under the one-time token, `agent create` — CLI, web console and
+  console alike, the remote console included — now shows the whole
+  `mcpServers` block to paste into the agent's client: one `mcpcut` entry that
+  runs `mcpcut connect --url <address>` with the token in
+  `env.MCP_AGENT_TOKEN` (never in `args`). The address is the new
+  `serve.publicUrl`; without one it is the loopback address of the `serve`
+  bind, with a note saying it only works on this machine. `--allow-http` is in
+  the block exactly when the bridge would refuse the address without it (the
+  same function decides both). Until the package is on npm the block runs the
+  installed `mcpcut` binary. `agent config <name> [--http]` needs no admin
+  token — the block without the token is not a secret — and `--http` prints the
+  form for clients that speak HTTP natively (`url` with the pool path and an
+  `Authorization: Bearer` header). The web page `create` answers with shows
+  both forms and, if the `agent.create` journal record was lost, says so; every
+  agent card on `/agents` has the `<token>` block in a drawer. The token still
+  appears in exactly one place per surface: `agent create`'s stdout and the web
+  response to the create. ADR-0015, phase 4 amendment (C1–C6).
 - **One address per agent, and the service decides what is behind it: `POST|GET|DELETE /mcp`.**
   An agent that connects to this single address sees the tools of **every**
   server it was granted, named `<server>__<tool>`, and gets new ones without a
@@ -112,6 +130,13 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- **`setup --serve-public-url` now remembers the address** as `serve.publicUrl`
+  in `~/.mcpcut/config.json` (an origin: scheme, host, optional port — no
+  path). It still adds the `Host` allow-list entry and, for plain `http`, opens
+  the bind as before; a rerun without the flag keeps the field, a rerun with
+  another address replaces it. The wizard's `Agent URL` opens with it, and in
+  Docker `MCPCUT_SERVE_PUBLIC_URL` lands there too. `ui.publicUrl` is not
+  stored — nothing reads it.
 - **The Docker image no longer mints an owner, and no token reaches
   `docker compose logs`.** The entrypoint runs `setup … --no-admin`;
   `MCPCUT_ADMIN` is gone. Create the first owner with
