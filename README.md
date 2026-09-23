@@ -1,24 +1,41 @@
 # mcpcut
 
-[![CI](https://img.shields.io/badge/CI-GitHub%20Actions-informational)](.github/workflows/ci.yml) [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![CI](https://github.com/RostislavMatov/mcpcut/actions/workflows/ci.yml/badge.svg)](https://github.com/RostislavMatov/mcpcut/actions/workflows/ci.yml) [![npm](https://img.shields.io/npm/v/mcpcut)](https://www.npmjs.com/package/mcpcut) [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-A transparent stdio proxy for MCP (Model Context Protocol) servers. It sits
-between an AI agent and a real MCP server, forwards traffic byte-for-byte in
-both directions, and writes a persistent, secret-redacted journal of the
-messages and stderr lines it observes, into `journal.db` (SQLite). (At the
-pool address, where one agent reaches all its servers, the plane rewrites
-exactly what an address needs — the `<server>__` prefix on tool and prompt
-names — and nothing else: see [the pool](#one-address-for-every-server-an-agent-has-the-pool).)
+See every tool call your AI agent makes over MCP, hold the risky ones for your approval, and keep a secret-redacted journal that is tamper-evident with an external anchor. Self-hosted, Apache-2.0, two runtime dependencies — and it grows into a [control plane for many agents](#registry-agents-vault).
 
-When enforcement is enabled, every observed `tools/call` is classified before
-forwarding. Without a policy file, the proxy is journaling-only and forwards
-everything unmodified.
+![mcpcut in 60 seconds](docs/demo/quickstart.gif)
 
-`mcpcut` is also how the plane is installed and run: a first-run wizard that writes the
-install config and mints the first admin, `ui` and `serve` as detached services
-that survive the terminal, and a terminal console that works the whole plane
-without a browser — see [First run](#first-run-mcpcut), [Services](#services)
-and [Docker](#docker).
+## Quick start
+
+Requires **Node.js 24+** (`node -v`); on older Node, mcpcut prints one line and exits. Nothing else to install.
+
+**See.** Put mcpcut in front of a server — here for Claude Code; in any other client, the server's command becomes `npx -y mcpcut@0.1.0 wrap -- <your server>`:
+
+    claude mcp add fs -- npx -y mcpcut@0.1.0 wrap -- npx -y @modelcontextprotocol/server-filesystem ~/project
+
+Let the agent work, then `npx -y mcpcut@0.1.0 sessions` and `npx -y mcpcut@0.1.0 show <id>`: every request, response and decision, secrets redacted.
+
+**Stop.** Save this as `policy.json` — reads pass, everything else waits for you (quarantine of new tools is off, so the first minute shows one gate: see [Quarantine](#quarantine)) — and re-add the server with `--policy "$PWD/policy.json"` right after `wrap` (`claude mcp remove fs` first):
+
+    { "version": 1, "defaultDecision": "require-approval", "classDefaults": { "read": "allow" },
+      "quarantine": { "enabled": false } }
+
+A write now waits. Mint your approver token once, and approve from another terminal within the agent's wait (60 s; after it, the agent's retry passes):
+
+    npx -y mcpcut@0.1.0 admin add me --role owner    # prints your token, once
+    export MCP_ADMIN_TOKEN=<that token>
+    npx -y mcpcut@0.1.0 approvals list
+    npx -y mcpcut@0.1.0 approvals approve <id>
+
+**Prove.** Sign the history, export it, and check it offline — with nothing but the directory:
+
+    npx -y mcpcut@0.1.0 keygen && npx -y mcpcut@0.1.0 export --report --out ./report
+    npx -y mcpcut@0.1.0 verify --report ./report
+
+Record the chain head somewhere this host cannot rewrite — [the out-of-band anchor](#the-out-of-band-anchor) is what makes the journal tamper-evident, not the hashes alone.
+
+**Grow.** A server registry, per-agent keys and grants, a credential vault, a web UI, a terminal console and one address per agent: `npm install -g mcpcut`, then `mcpcut` ([First run](#first-run-mcpcut)). How it fits together: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Status
 
@@ -42,8 +59,10 @@ other text about the project may claim more than it does.
 | admin UI / approval queue | shipped | e2e + UI test suites, TS + security reviews, manual browser smoke (`docs/smoke-m4.md`), `docs/adr/0004-admin-ui-architecture.md` |
 | named admin accounts (owner/operator/viewer) | shipped | admin CLI + role-enforcement tests |
 | one address per agent (the pool, `/mcp`) | shipped, tools and prompts, sessionful agents | pool unit + e2e tests, `docs/smoke-agent-pool.md` (live clients — official SDK v1/v2, Inspector CLI, Claude Code headless — against a VPS over TLS) |
-| `connect --url` bridge for agents on another machine | shipped | `docs/smoke-connect-bridge.md`, `docs/smoke-agent-pool.md` |
+| `connect --url` bridge for agents on another machine | shipped, **[preview](#what-preview-means-here)** | `docs/smoke-connect-bridge.md`, `docs/smoke-agent-pool.md` |
+| remote console (`--remote`, `--connect`) | shipped, **[preview](#what-preview-means-here)** | `docs/smoke-remote-console.md`, `docs/adr/0014-remote-console.md` |
 | ready-made client config at `agent create` | shipped | `docs/smoke-agent-config.md`, `docs/smoke-agent-pool.md` |
+| npm package (`npm i -g mcpcut`, `npx mcpcut@0.1.0`) | shipped, 0.1.0 | `tests/release/*`, `docs/release.md`, `docs/smoke-npm-package.md` |
 | whole-product security audit | passed 2026-09-02, **internal** | `docs/security-audit-2026-09.md` — 0 CRITICAL, 4 HIGH fixed in the same wave; no independent pass has been done (ADR-0011), reports via `SECURITY.md` |
 
 The journal is a persistent, append-oriented, secret-redacted SQLite database
@@ -71,6 +90,26 @@ not arbitrary: `node:sqlite`'s API — the storage layer since M4.5 — is only
 complete from v24.19.0 (older builds either lack the module entirely or lack
 the `Session` class M5's audit export will use); see `docs/adr/0006-storage-sqlite.md`
 for the measured version matrix.
+
+### From npm
+
+On the machine that runs the service:
+
+```
+npm install -g mcpcut
+mcpcut          # first run: the wizard
+```
+
+Install it there rather than run it through `npx`: `Services ▸ start` (and
+`mcpcut start`) launches `ui` and `serve` from the copy of mcpcut that ran it,
+and npx's cache is not a place a service should live in.
+
+On an agent's machine nothing is installed: the block `agent create` prints
+runs the bridge as `npx -y mcpcut@0.1.0 connect --url …`, pinned to the
+service's own version — never `@latest`, because that process holds the
+agent's token (see `SECURITY.md`, "Versions and the supply chain").
+
+### From source
 
 ```
 npm install
@@ -278,7 +317,17 @@ running are **queued** (up to 32) and replayed in order once it answers, except
 when the answer is a one-time token — then the queue is dropped so nothing
 can acknowledge the token unread. `Ctrl-C` is never queued: it quits at once.
 
-### A console for a service on another host (`--remote`)
+### A console for a service on another host (`--remote`) (preview)
+
+#### What preview means here
+
+The remote console and the `connect --url` bridge are **preview**: they work,
+and they are covered by tests and by live smokes against a VPS over TLS, but
+the network surface they open — an admin token (console) or an agent token
+(bridge) crossing the network on every request — has had only this project's
+**internal** security audit, no independent one (`docs/adr/0011-open-source-release.md`).
+Their interface may still change within 0.x. Report anything you find through
+[`SECURITY.md`](SECURITY.md).
 
 ```
 mcpcut --remote https://plane.example.com:8091
@@ -1070,8 +1119,10 @@ Client config — paste into the agent's client (the token is inside):
 {
   "mcpServers": {
     "mcpcut": {
-      "command": "mcpcut",
+      "command": "npx",
       "args": [
+        "-y",
+        "mcpcut@0.1.0",
         "connect",
         "--url",
         "https://plane.example:8090"
@@ -1084,6 +1135,11 @@ Client config — paste into the agent's client (the token is inside):
 }
 HTTP client instead? mcpcut agent config research-bot --http
 ```
+
+The block runs the bridge through `npx`, pinned to the service's own version,
+so the agent's machine needs nothing installed but Node 24+. Installed mcpcut
+on the agent's machine yourself? Replace `"command": "npx"` and the first two
+`args` with `"command": "mcpcut"`.
 
 Paste it into the agent's client (`.mcp.json`, Claude Desktop, Cursor…) once.
 The one entry, `mcpcut`, is the agent's **pool**: every server it is granted
@@ -1419,7 +1475,9 @@ Known limits of a pool:
 which servers attached (each with the child session id its decisions are under),
 what changed, and when it closed.
 
-#### From another machine: `mcpcut connect --url`
+#### From another machine: `mcpcut connect --url` (preview)
+
+The bridge is [preview](#what-preview-means-here).
 
 An agent whose client speaks only stdio does not need a second tool to reach a
 `serve` front on another host — `connect` has a remote form that is nothing but
@@ -1432,8 +1490,10 @@ an HTTP agent.
 {
   "mcpServers": {
     "mcpcut": {
-      "command": "mcpcut",
+      "command": "npx",
       "args": [
+        "-y",
+        "mcpcut@0.1.0",
         "connect",
         "--url",
         "https://plane.example:8090"
@@ -2122,15 +2182,16 @@ An agent the plane manages needs no hand wiring: `agent create` prints its
 block, ready to paste — see [Onboarding an agent](#onboarding-an-agent). What
 follows is for wrapping a server of your own, outside the registry.
 
-Wrap a real server by replacing its `command`/`args` with `mcpcut wrap --`
-followed by the original command:
+Wrap a real server by replacing its `command`/`args` with
+`npx -y mcpcut@0.1.0 wrap --` (or `mcpcut wrap --`, once installed) followed by
+the original command:
 
 ```json
 {
   "mcpServers": {
     "some-server": {
-      "command": "mcpcut",
-      "args": ["wrap", "--", "npx", "-y", "@some/mcp-server"]
+      "command": "npx",
+      "args": ["-y", "mcpcut@0.1.0", "wrap", "--", "npx", "-y", "@some/mcp-server"]
     }
   }
 }
