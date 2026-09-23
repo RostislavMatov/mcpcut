@@ -1,0 +1,43 @@
+# Override for the repository's docker-compose.yml: Caddy terminates TLS in
+# front of `serve`, the agent front. Exactly the shape the phase-5 smoke ran
+# on a VPS (docs/smoke-agent-pool.md), with the smoke's host replaced by
+# <your-host>. Run from the repository root, with the Caddyfile beside it:
+#
+#   cp docs/deploy/caddy/Caddyfile docs/deploy/caddy/docker-compose.tls.yml .
+#   # edit <your-host> in both files, BEFORE the first start
+#   docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d --build
+#
+# MCPCUT_SERVE_PUBLIC_URL is set on BOTH services: whichever container starts
+# first runs `setup`, which writes `serve.publicUrl` into the install config.
+# From it `setup` derives the Host allow-list and the TLS flag, and
+# `agent create` prints the address agents are given (`connect --url ...`).
+# Set it before the first start, or rerun setup (docker-compose.yml header).
+#
+# The admin UI is deliberately NOT published here: it stays on host loopback
+# (127.0.0.1:8091, from docker-compose.yml). Reach it through an SSH tunnel:
+#   ssh -N -L 8091:127.0.0.1:8091 <user>@<your-host>   then  http://localhost:8091
+#
+# Servers a pool launches start in parallel. On a small host, register them
+# by an installed binary rather than `npx -y ...` -- see README "One address
+# for every server an agent has (the pool)".
+services:
+  ui:
+    environment:
+      MCPCUT_SERVE_PUBLIC_URL: https://<your-host>:8443
+  serve:
+    environment:
+      MCPCUT_SERVE_PUBLIC_URL: https://<your-host>:8443
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      serve:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "8443:8443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+volumes:
+  caddy-data:
