@@ -51,6 +51,28 @@ export function cancelledRequestIdOf(raw: string): SynthesizableId | null {
   return typeof id === 'string' || typeof id === 'number' ? id : null
 }
 
+/**
+ * The `progressToken` an agent put on a request, from `params._meta`, or
+ * `null`. Only a string or a finite number is a token (MCP progress spec);
+ * anything else binds nothing, so progress on it can never be forwarded.
+ */
+export function progressTokenOfRequest(raw: string): SynthesizableId | null {
+  const params = tryParseObject(raw)?.['params']
+  const meta = isPlainObject(params) ? params['_meta'] : undefined
+  return isPlainObject(meta) ? tokenOf(meta['progressToken']) : null
+}
+
+/** The `progressToken` a `notifications/progress` reports on, from `params`, or `null`. */
+export function progressTokenOfNotification(raw: string): SynthesizableId | null {
+  const params = tryParseObject(raw)?.['params']
+  return isPlainObject(params) ? tokenOf(params['progressToken']) : null
+}
+
+function tokenOf(value: unknown): SynthesizableId | null {
+  if (typeof value === 'string') return value
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
 /** The plane-minted id, as the catalog filed its page under. */
 export function fanoutTagOf(id: JsonRpcId): string {
   return typeof id === 'string' ? id : String(id)

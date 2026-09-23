@@ -65,6 +65,11 @@ export type PoolDropReason =
   | 'at-capacity'
   /** An id in the range the plane reserves for its own upstream requests. */
   | 'reserved-id'
+  /**
+   * A notification an upstream had no standing to send: progress on a token
+   * the agent gave another server's call, or after that call was answered.
+   */
+  | 'unscoped-notification'
 
 /**
  * Everything a `pool`-kind record says. Flat and short by design: the frames

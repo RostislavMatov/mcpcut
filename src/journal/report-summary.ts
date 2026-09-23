@@ -1,4 +1,6 @@
-import { formatReadableField } from './format.js'
+import { ABSENT_VALUE, inlineValue, markdownCell } from './report-markdown.js'
+import { childBindingsOf, type ReportPoolTally } from './report-pools.js'
+import { childHeadingNote, renderPoolSection } from './report-summary-pools.js'
 import type { ReportManifest } from './report.js'
 
 /**
@@ -8,25 +10,9 @@ import type { ReportManifest } from './report.js'
  * manifest is the machine-checkable claim, this is the prose beside it, and
  * a v2 of the prose must not be able to disturb the digested bytes.
  *
- * EVERYTHING RENDERED HERE IS UNTRUSTED. Every string below was read back
- * out of the journal, which means it came from a proxied MCP server, an
- * approval an operator typed, or a hand-edited/forged row on disk. Two
- * separate escapes are therefore applied to every value, in order:
- * - `formatReadableField` (`format.ts`) -- the same pass the CLI's readable
- *   view uses: C0/DEL control characters become `?` and the field is length
- *   capped. A `doc` can carry a raw ESC, and `summary.md` gets `cat`ed on a
- *   terminal by the first auditor who opens it.
- * - `escapeMarkdown` -- the markup channels. A `|` inside a value would end
- *   its table cell early and let one journal string forge extra columns; and
- *   `summary.md` is not a plain-text file in practice -- it is handed to a
- *   third party who opens it in GitHub, VS Code, pandoc or a GRC portal,
- *   every one of which renders raw HTML and links from Markdown. The wave-5
- *   review confirmed a tool name of
- *   `<img src=x onerror=alert(1)> [click](javascript:alert(2))` rendering
- *   LIVE in the delivered document, because only `|` was escaped.
- *
- * Neither escape is optional and neither substitutes for the other; the
- * helpers below apply both so no call site can pick just one. The ONLY
+ * EVERYTHING RENDERED HERE IS UNTRUSTED: every value read back out of the
+ * journal goes through both escapes in `report-markdown.ts` (control
+ * characters, then markup), which explains why neither is optional. The ONLY
  * unescaped text in this file is `AS_OF_CONTRACT`, which this codebase wrote.
  */
 
@@ -61,6 +47,8 @@ export interface ReportDecisionRow {
   readonly outcome: string
   readonly rule: string
   readonly toolName: string
+  /** The server the decision was about; absent when the record lacks it (never validated on read). */
+  readonly serverName?: string
   /**
    * Absent on any row `line-source.ts` did not validate it on:
    * `isDecisionShape` checks outcome/rule/toolName ONLY, so
@@ -80,30 +68,30 @@ export interface ReportSummaryInput {
   /** Already capped at {@link MAX_SUMMARY_DECISION_ROWS} by the builder. */
   readonly decisions: readonly ReportDecisionRow[]
   readonly omittedDecisionCount: number
+  /** The pool ledger of the same pass (`report-pools.ts`). */
+  readonly pools: ReportPoolTally
 }
 
 /** What an absent optional field prints as, so an empty cell can never be mistaken for an empty value. */
 const ABSENT_ACTOR = '(no human actor)'
 const ABSENT_POLICY_HASH = '(unprovenanced)'
 const ABSENT_GRANTS_HASH = '(no agent)'
-/**
- * The fallback for a field whose absence carries no meaning of its own --
- * it simply was not there. Every value this renderer did not personally
- * validate is treated as possibly absent and rendered with a marker: a
- * summary that crashes on a field the READER never required is a journal
- * that cannot be exported at all (wave-5 review, HIGH).
- */
-const ABSENT_VALUE = '(absent)'
 
+/**
+ * `server` sits between `rule` and `tool` (ADR-0015 phase 5, R4): a pool
+ * child's decision records the bare tool name its server published, and the
+ * name the agent called is `<server>__<tool>` -- both columns side by side.
+ */
 const TABLE_HEADER =
-  '| ts | outcome | rule | tool | actor | policyHash | grantsHash | argsHash |\n' +
-  '| --- | --- | --- | --- | --- | --- | --- | --- |'
+  '| ts | outcome | rule | server | tool | actor | policyHash | grantsHash | argsHash |\n' +
+  '| --- | --- | --- | --- | --- | --- | --- | --- | --- |'
 
 /** Renders the whole of `summary.md`. */
 export function renderReportSummary(input: ReportSummaryInput): string {
   return [
     ...headerSection(input.manifest),
     ...countsSection(input.manifest),
+    ...renderPoolSection({ pools: input.pools, manifest: input.manifest }),
     ...decisionsSection(input),
     ...contractSection(input.manifest),
   ].join('\n')
@@ -232,8 +220,12 @@ function decisionsSection(input: ReportSummaryInput): readonly string[] {
     return ['## Decisions', '', 'This export holds no decision records.', '']
   }
   const lines = ['## Decisions', '']
+  // Bound at render time from EVERY attach in the export, not in seq order:
+  // a child's decisions can be journaled before the attach that names it (R2).
+  const bindings = childBindingsOf(input.pools)
   for (const [sessionId, rows] of groupBySession(input.decisions)) {
-    lines.push(`### Session ${inlineValue(sessionId)}`, '', TABLE_HEADER)
+    const note = childHeadingNote(bindings.get(sessionId))
+    lines.push(`### Session ${inlineValue(sessionId)}${note}`, '', TABLE_HEADER)
     for (const row of rows) {
       lines.push(decisionTableRow(row))
     }
@@ -282,6 +274,7 @@ function decisionTableRow(row: ReportDecisionRow): string {
     [row.ts, ABSENT_VALUE],
     [row.outcome, ABSENT_VALUE],
     [row.rule, ABSENT_VALUE],
+    [row.serverName, ABSENT_VALUE],
     [row.toolName, ABSENT_VALUE],
     [row.actor, ABSENT_ACTOR],
     [row.policyHash, ABSENT_POLICY_HASH],
@@ -289,49 +282,6 @@ function decisionTableRow(row: ReportDecisionRow): string {
     [row.argsHash, ABSENT_VALUE],
   ]
   return `| ${cells.map(([value, absent]) => markdownCell(value, absent)).join(' | ')} |`
-}
-
-/**
- * One table cell: the absent marker when there is no value, otherwise control
- * characters neutralized first (`formatReadableField`), then the markup
- * escaped. Order matters -- escaping first and sanitizing after would let the
- * sanitizer's own replacement character run back over an escape.
- *
- * The marker is NOT escaped: it is this module's own text, and escaping it
- * would print `\(absent\)` to an auditor.
- */
-function markdownCell(value: string | undefined, absent: string): string {
-  return typeof value === 'string' ? escapeMarkdown(formatReadableField(value)) : absent
-}
-
-/** An inline (non-table) value: untrusted like every other, so sanitized and escaped the same way. */
-function inlineValue(value: string): string {
-  return typeof value === 'string' ? escapeMarkdown(formatReadableField(value)) : ABSENT_VALUE
-}
-
-/**
- * Every character that opens a markup channel in the renderers this document
- * is actually read in, backslash-escaped in ONE pass (a per-character chain
- * would have to get its own ordering right, and would double-escape the
- * escapes it just added):
- * - `\\` itself, first by being in the class rather than by being applied
- *   first, so an escape cannot be forged out of a journal string;
- * - `<` `>` `&` -- raw HTML and entities. GitHub, VS Code and pandoc all
- *   render these, which is how `<img src=x onerror=...>` reached a delivered
- *   report in the review;
- * - `[` `]` `!` -- links and images, including `javascript:` targets;
- * - `` ` `` `*` `_` -- code spans and emphasis, which can hide or restyle
- *   text an auditor is reading as evidence;
- * - `|` -- the table delimiter: a cell that ends early forges extra columns,
- *   i.e. puts words in the report that the journal never held.
- *
- * All of these are ASCII punctuation, which CommonMark defines as
- * backslash-escapable, so the rendered text is the original string exactly.
- */
-const MARKDOWN_SPECIAL_PATTERN = /[\\`*_[\]<>&|!]/g
-
-function escapeMarkdown(value: string): string {
-  return value.replace(MARKDOWN_SPECIAL_PATTERN, '\\$&')
 }
 
 function contractSection(manifest: ReportManifest): readonly string[] {

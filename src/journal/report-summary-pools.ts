@@ -1,0 +1,133 @@
+import { ABSENT_VALUE, inlineValue } from './report-markdown.js'
+import {
+  childrenOutsideExport,
+  type ReportChildBinding,
+  type ReportPoolServerNote,
+  type ReportPoolSession,
+  type ReportPoolTally,
+} from './report-pools.js'
+import type { ReportManifest } from './report.js'
+
+/**
+ * The pool half of `summary.md` (ADR-0015, phase-5 amendment, R1-R4): the
+ * "Pool sessions" section and the note on a child session's heading.
+ *
+ * Every value printed here was read back out of the journal and goes through
+ * `inlineValue` -- both escapes of `report-markdown.ts`, in order. The ONLY
+ * unescaped text is this module's own: the fixed labels and
+ * {@link POOL_NAMING_NOTE}, whose code spans are markup this codebase wrote.
+ *
+ * `summary.md` is attested by `summary.sha256` but is prose: none of this
+ * changes `report.json` or what `verify --report` re-derives (O1, ADR-0007).
+ */
+
+/**
+ * What a pool session is, said once at the top of the section: how an auditor
+ * gets from the name an agent called (`<server>__<tool>`) to the bare name a
+ * child session's decision records. This codebase's own text -- NOT escaped.
+ */
+export const POOL_NAMING_NOTE =
+  'A pool session is one agent connected at the pool address (`/mcp`). The plane answered it ' +
+  'itself and opened one ordinary per-server session -- a child -- for each server the agent ' +
+  'was granted, so every decision it led to is recorded by a child session, under the bare ' +
+  'tool name that server published. The agent addressed that tool as `<server>__<tool>`: the ' +
+  'prefix is the server name and nothing else (ADR-0015 §2, PE11). Every name in this section ' +
+  'was read back from the journal.'
+
+export interface PoolSectionInput {
+  readonly pools: ReportPoolTally
+  readonly manifest: Pick<ReportManifest, 'scope' | 'sessionIds' | 'records'>
+}
+
+/** The whole "Pool sessions" section, ending with a blank line. */
+export function renderPoolSection(input: PoolSectionInput): readonly string[] {
+  const { pools, manifest } = input
+  const lines = ['## Pool sessions', '']
+  if (pools.sessions.length === 0) {
+    lines.push('This export holds no pool session records.', '')
+  } else {
+    lines.push(POOL_NAMING_NOTE, '')
+    const outside = childrenOutsideExport(pools, manifest)
+    for (const session of pools.sessions) {
+      const isScoped = manifest.scope.session === session.sessionId
+      lines.push(...sessionBlock(session, isScoped ? outside : []))
+    }
+  }
+  if (pools.omittedRecordCount > 0) {
+    lines.push(
+      `${pools.omittedRecordCount} further pool record(s) are not reflected here (this summary keeps ` +
+        'a bounded number of pool sessions and events). They are present in full in ' +
+        `${manifest.records.file}.`,
+      '',
+    )
+  }
+  if (pools.unreadableCount > 0) {
+    lines.push(
+      `${pools.unreadableCount} pool record(s) could not be read; they are in ${manifest.records.file} verbatim.`,
+      '',
+    )
+  }
+  return lines
+}
+
+function sessionBlock(session: ReportPoolSession, outside: readonly string[]): readonly string[] {
+  const agents = session.agentNames.map(inlineValue).join(', ')
+  const lines = [
+    `### Pool session ${inlineValue(session.sessionId)} — agent ${agents}`,
+    '',
+    `- Opened: ${instantText(session.openedAt, 'open')} · Closed: ${instantText(session.closedAt, 'close')}`,
+    `- Attached (server → child session): ${attachedText(session)}`,
+  ]
+  if (session.refused.length > 0) lines.push(`- Did not attach: ${notesText(session.refused)}`)
+  if (session.detached.length > 0) lines.push(`- Left the pool: ${notesText(session.detached)}`)
+  const dropped = Object.entries(session.dropped)
+  if (dropped.length > 0) {
+    lines.push(
+      `- Frames the pool refused: ${dropped.map(([reason, count]) => `${inlineValue(reason)} ×${count}`).join('; ')}`,
+    )
+  }
+  if (outside.length > 0) {
+    lines.push(
+      `- Not in this export: child session(s) ${outside.map(inlineValue).join(', ')} — their ` +
+        'decisions are recorded under those sessions. Export the whole journal (no --session) to ' +
+        'include them.',
+    )
+  }
+  lines.push('')
+  return lines
+}
+
+function instantText(ts: string | undefined, event: 'open' | 'close'): string {
+  return ts === undefined ? `no ${event} record in this export` : inlineValue(ts)
+}
+
+function attachedText(session: ReportPoolSession): string {
+  if (session.children.length === 0) return '(none)'
+  return session.children
+    .map((child) => `${inlineValue(child.serverName)} → ${inlineValue(child.childSessionId)}`)
+    .join('; ')
+}
+
+function notesText(notes: readonly ReportPoolServerNote[]): string {
+  return notes
+    .map((note) => `${inlineValue(note.serverName)} (${note.reason === undefined ? ABSENT_VALUE : inlineValue(note.reason)})`)
+    .join('; ')
+}
+
+/**
+ * The note appended to a child session's decision heading: which server and
+ * pool session it belongs to. Two claims on one child are a forgery or a bug,
+ * and both are named rather than one picked. Empty for a session no pool named.
+ */
+export function childHeadingNote(bindings: readonly ReportChildBinding[] | undefined): string {
+  if (bindings === undefined || bindings.length === 0) return ''
+  const [only] = bindings
+  if (bindings.length === 1 && only !== undefined) {
+    return (
+      ` — server ${inlineValue(only.serverName)}, pool session ${inlineValue(only.poolSessionId)} ` +
+      `(agent ${only.agentNames.map(inlineValue).join(', ')})`
+    )
+  }
+  const pools = bindings.map((binding) => inlineValue(binding.poolSessionId)).join(', ')
+  return ` — claimed by ${bindings.length} pool sessions: ${pools}`
+}

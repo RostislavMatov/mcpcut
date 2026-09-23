@@ -187,3 +187,99 @@ describe('createPoolCorrelator', () => {
     expect(correlator.pending).toBe(2)
   })
 })
+
+/**
+ * ADR-0015 phase 5 (N2): the progress token an agent put on a request belongs
+ * to that request's entry, and leaves with it -- on the reply, on a dropped
+ * server, and nowhere else. One owner of the request's lifecycle, so a token
+ * cannot outlive its call on some path nobody remembered (the lesson of the
+ * phase-3 CRITICAL).
+ */
+describe('createPoolCorrelator: progress tokens (N2)', () => {
+  test('binds a token to the server its request was sent to', () => {
+    const correlator = createPoolCorrelator(10)
+    correlator.trackClient(1, 'alpha', 'p-1')
+
+    expect(correlator.progressServerOf('p-1')).toBe('alpha')
+  })
+
+  test('knows no server for a token nobody gave', () => {
+    const correlator = createPoolCorrelator(10)
+    correlator.trackClient(1, 'alpha')
+
+    expect(correlator.progressServerOf('p-1')).toBeUndefined()
+  })
+
+  test('releases the token once its request is answered', () => {
+    const correlator = createPoolCorrelator(10)
+    correlator.trackClient(1, 'alpha', 'p-1')
+
+    correlator.settle('alpha', 1)
+
+    expect(correlator.progressServerOf('p-1')).toBeUndefined()
+  })
+
+  test('keeps the token when another server answers the id', () => {
+    const correlator = createPoolCorrelator(10)
+    correlator.trackClient(1, 'alpha', 'p-1')
+
+    expect(correlator.settle('beta', 1)).toEqual({ kind: 'unexpected' })
+
+    expect(correlator.progressServerOf('p-1')).toBe('alpha')
+  })
+
+  test('releases the token when its server is dropped', () => {
+    const correlator = createPoolCorrelator(10)
+    correlator.trackClient(1, 'alpha', 'p-1')
+    correlator.trackClient(2, 'beta', 'p-2')
+
+    correlator.dropServer('alpha')
+
+    expect(correlator.progressServerOf('p-1')).toBeUndefined()
+    expect(correlator.progressServerOf('p-2')).toBe('beta')
+  })
+
+  test('first wins: a token reused while its first request lives binds nothing new', () => {
+    const correlator = createPoolCorrelator(10)
+    correlator.trackClient(1, 'alpha', 'shared')
+
+    expect(correlator.trackClient(2, 'beta', 'shared')).toEqual({ ok: true })
+    expect(correlator.progressServerOf('shared')).toBe('alpha')
+
+    // The second request's reply must not release the first one's token...
+    correlator.settle('beta', 2)
+    expect(correlator.progressServerOf('shared')).toBe('alpha')
+    // ...and the first one's reply frees it for a later request.
+    correlator.settle('alpha', 1)
+    expect(correlator.progressServerOf('shared')).toBeUndefined()
+    correlator.trackClient(3, 'beta', 'shared')
+    expect(correlator.progressServerOf('shared')).toBe('beta')
+  })
+
+  test('tells numeric 1 and string "1" apart as tokens', () => {
+    const correlator = createPoolCorrelator(10)
+    correlator.trackClient(1, 'alpha', 1)
+    correlator.trackClient(2, 'beta', '1')
+
+    expect(correlator.progressServerOf(1)).toBe('alpha')
+    expect(correlator.progressServerOf('1')).toBe('beta')
+  })
+
+  test('binds nothing for a request it refused', () => {
+    const correlator = createPoolCorrelator(1)
+    correlator.trackClient(1, 'alpha')
+
+    expect(correlator.trackClient(2, 'beta', 'p-2')).toEqual({ ok: false, reason: 'at-capacity' })
+    expect(correlator.trackClient(1, 'beta', 'p-3')).toEqual({ ok: false, reason: 'duplicate-id' })
+    expect(correlator.progressServerOf('p-2')).toBeUndefined()
+    expect(correlator.progressServerOf('p-3')).toBeUndefined()
+  })
+
+  test('a fan-out id never owns a token, even one spelled like it', () => {
+    const correlator = createPoolCorrelator(10)
+    const fanoutId = correlator.trackFanout('alpha', 'tools')
+
+    expect(fanoutId).not.toBeNull()
+    expect(correlator.progressServerOf(fanoutId ?? '')).toBeUndefined()
+  })
+})

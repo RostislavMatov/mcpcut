@@ -240,6 +240,14 @@ export const PING_METHOD = 'ping'
 export const CANCELLED_NOTIFICATION = 'notifications/cancelled'
 
 /**
+ * "Here is how far along that request is." Its `params.progressToken` was
+ * chosen by the REQUESTER in `params._meta.progressToken` -- at a pool address,
+ * the agent -- so only the upstream the agent gave that token to may report on
+ * it, and only while that request is in flight (ADR-0015 phase-5 amendment).
+ */
+export const PROGRESS_NOTIFICATION = 'notifications/progress'
+
+/**
  * Sessionful revisions the plane can answer `initialize` for ITSELF, oldest
  * first, so the tail is "latest supported" (ADR-0015 §4: at a pool address the
  * plane is the server, and ADR-0002 §4's "forward, never substitute" does not

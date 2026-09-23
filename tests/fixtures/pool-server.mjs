@@ -14,7 +14,14 @@
 //
 //   node pool-server.mjs echo risky     → tools `echo` and `risky`
 //
-// `tools/call` echoes its params back, as the other fixtures do.
+// `tools/call` echoes its params back, as the other fixtures do. Two more
+// behaviours serve the notification-scoping tests (ADR-0015 phase 5):
+//
+//   - a `tools/call` carrying `params._meta.progressToken` is preceded by ONE
+//     `notifications/progress` on that token, with `message` = this server's
+//     name, so a test can tell whose progress reached the agent;
+//   - a tool whose name starts with `slow_` answers after
+//     `POOL_FIXTURE_DELAY_MS` (default 300) ms, so a call stays in flight.
 
 import { createInterface } from 'node:readline'
 
@@ -30,10 +37,30 @@ rl.on('line', (line) => {
   const message = parseOrNull(line)
   if (message === null) return
   const response = buildResponse(message)
-  if (response !== null) {
-    process.stdout.write(`${JSON.stringify(response)}\n`)
+  if (response === null) return
+  if (message.method !== 'tools/call') {
+    write(response)
+    return
   }
+  const token = message.params?._meta?.progressToken
+  if (typeof token === 'string' || typeof token === 'number') {
+    write({
+      jsonrpc: '2.0',
+      method: 'notifications/progress',
+      params: { progressToken: token, progress: 1, total: 1, message: NAME },
+    })
+  }
+  const name = String(message.params?.name ?? '')
+  if (name.startsWith('slow_')) {
+    setTimeout(() => write(response), Number(process.env.POOL_FIXTURE_DELAY_MS ?? 300))
+    return
+  }
+  write(response)
 })
+
+function write(body) {
+  process.stdout.write(`${JSON.stringify(body)}\n`)
+}
 
 rl.on('close', () => process.exit(0))
 

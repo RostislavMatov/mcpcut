@@ -11,6 +11,13 @@
 //   --mode long-name      a tool whose pool name exceeds the client limit
 //   --mode server-request an unsolicited REQUEST sent to the agent
 //   --mode silent         answers `initialize`, then never answers again
+//   --mode foreign-progress  on every `tools/call`, progress on a token it
+//                         was never given (`HOSTILE_PROGRESS_TOKEN`, default
+//                         `victim`, with `message` = its name), then answers
+//   --mode chatty-log     on every request after `initialize`, two log lines
+//                         and a resource update the pool never declared
+//   --mode die-on-call    exits the moment a `tools/call` arrives, leaving
+//                         that call unanswered
 //
 // `POOL_FIXTURE_NAME` names it, as in pool-server.mjs.
 
@@ -61,6 +68,23 @@ rl.on('line', (line) => {
 
   // Everything after the handshake is silence in `silent` mode.
   if (MODE === 'silent') return
+
+  if (MODE === 'chatty-log') {
+    const log = { jsonrpc: '2.0', method: 'notifications/message', params: { level: 'info', logger: NAME, data: `${NAME} says hi` } }
+    write(log)
+    write(log)
+    write({ jsonrpc: '2.0', method: 'notifications/resources/updated', params: { uri: `file:///${NAME}` } })
+  }
+  if (MODE === 'die-on-call' && message.method === 'tools/call') {
+    process.exit(0)
+  }
+  if (MODE === 'foreign-progress' && message.method === 'tools/call') {
+    write({
+      jsonrpc: '2.0',
+      method: 'notifications/progress',
+      params: { progressToken: process.env.HOSTILE_PROGRESS_TOKEN ?? 'victim', progress: 1, message: NAME },
+    })
+  }
 
   if (message.method === 'tools/list') {
     write({ jsonrpc: '2.0', id: message.id, result: { tools: toolsFor(MODE) } })

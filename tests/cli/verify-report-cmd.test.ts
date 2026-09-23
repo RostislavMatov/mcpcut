@@ -3,6 +3,8 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { runExportCommand } from '../../src/cli/export-cmd.js'
+import { runKeygenCommand } from '../../src/cli/keygen-cmd.js'
 import { runVerifyCommand } from '../../src/cli/verify-cmd.js'
 import {
   insertRecordRows,
@@ -11,7 +13,10 @@ import {
   type JournalRecordRow,
 } from '../../src/journal/db.js'
 import { REPORT_FILES, buildJournalReport, type ReportManifest } from '../../src/journal/report.js'
+import { buildPoolRecord } from '../../src/journal/pool-record.js'
+import type { JournalRecord } from '../../src/journal/record.js'
 import { signReportManifest } from '../../src/journal/report-signing.js'
+import { createJournalSink } from '../../src/journal/sink.js'
 import {
   generateAndWriteSigningKeyPair,
   loadSigningPrivateKey,
@@ -671,5 +676,59 @@ describe('verify --report: the printed check list', () => {
       expect(io.out()).toContain(label)
     }
     expect(io.out()).toContain('NOT re-derived: seqRange')
+  })
+})
+
+/**
+ * ADR-0015 phase 5 (O1): the pool binding lives in `summary.md` only. A signed
+ * export of a journal holding a pool session and its children is still format
+ * v1, carries exactly the manifest keys it always did, and passes every
+ * offline check -- through the real `keygen` -> `export --report` -> `verify
+ * --report --pub` path an operator and an auditor take.
+ */
+describe('verify --report: an export holding a pool session', () => {
+  async function journalThrough(sessionId: string, records: readonly JournalRecord[]): Promise<void> {
+    const sink = createJournalSink(sessionId, { dir: journalDir })
+    for (const record of records) sink.write(record)
+    await sink.close()
+  }
+
+  function request(sessionId: string, id: string): JournalRecord {
+    return { id, ts: new Date().toISOString(), sessionId, direction: 'client→server', kind: 'request', method: 'tools/call', payload: {} }
+  }
+
+  async function exportTo(dir: string): Promise<ReportManifest> {
+    expect(await runExportCommand(['--report', '--out', dir], fakeIo(), { journalDir })).toBe(0)
+    return JSON.parse(await readFile(join(dir, REPORT_FILES.manifest), 'utf8')) as ReportManifest
+  }
+
+  test('stays format v1 with the same manifest keys and passes all seven checks', async () => {
+    expect(await runKeygenCommand([], fakeIo(), { journalDir })).toBe(0)
+    await journalThrough('plain-1', [request('plain-1', '01AAAAAAAAAAAAAAAAAAAAAAA0')])
+    const plainDir = join(reportDir, 'plain')
+    const plainKeys = Object.keys(await exportTo(plainDir)).sort()
+
+    await journalThrough('pool-p', [
+      buildPoolRecord({ sessionId: 'pool-p', pool: { agentName: 'bot', event: 'open', members: ['alpha'] } }),
+      buildPoolRecord({
+        sessionId: 'pool-p',
+        pool: { agentName: 'bot', event: 'attach', serverName: 'alpha', childSessionId: 'child-1' },
+      }),
+      buildPoolRecord({ sessionId: 'pool-p', pool: { agentName: 'bot', event: 'close' } }),
+    ])
+    await journalThrough('child-1', [request('child-1', '01AAAAAAAAAAAAAAAAAAAAAAA1')])
+    const poolDir = join(reportDir, 'pool')
+    const manifest = await exportTo(poolDir)
+    const io = fakeIo()
+
+    const exitCode = await run(['--report', poolDir, '--pub', join(journalDir, 'signing.pub')], io)
+
+    expect(manifest.formatVersion).toBe(1)
+    expect(Object.keys(manifest).sort()).toEqual(plainKeys)
+    expect(await readFile(join(poolDir, REPORT_FILES.summary), 'utf8')).toContain('### Pool session pool-p')
+    expect(exitCode).toBe(0)
+    expect(io.out().match(/\[PASS\]/g)).toHaveLength(7)
+    expect(io.out()).not.toContain('[FAIL]')
+    expect(io.out()).toContain('RESULT: PASSED')
   })
 })

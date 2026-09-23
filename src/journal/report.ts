@@ -7,6 +7,7 @@ import {
   type ChainBreak,
 } from './chain-verify.js'
 import { latestPruneMarker } from './prune.js'
+import type { ReportPoolTally } from './report-pools.js'
 import { renderReportSummary } from './report-summary.js'
 import {
   streamRecords,
@@ -195,6 +196,8 @@ export interface JournalReport {
   readonly manifest: ReportManifest
   /** `summary.md`'s full text. */
   readonly summaryMarkdown: string
+  /** Pool sessions the export saw -- for the CLI's own summary line; not part of `report.json`. */
+  readonly pools: ReportPoolTally
 }
 
 /**
@@ -237,6 +240,7 @@ export async function buildJournalReport(
       manifest: core,
       decisions: tally.decisions,
       omittedDecisionCount: tally.omittedDecisionCount,
+      pools: tally.pools,
     })
     return {
       // Spreading over a key the core already carries REPLACES the value and
@@ -249,6 +253,7 @@ export async function buildJournalReport(
         summary: { file: REPORT_FILES.summary, sha256: sha256Hex(summaryMarkdown) },
       },
       summaryMarkdown,
+      pools: tally.pools,
     }
   })
 }

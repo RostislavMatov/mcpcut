@@ -1,5 +1,7 @@
 import type { InventoryStoreData } from '../../policy/inventory-store.js'
 import type { Policy } from '../../policy/schema.js'
+import { POOL_NAME_HIDE_ABOVE_CHARS, POOL_NAME_WARN_ABOVE_CHARS } from '../../pool/constants.js'
+import { encodePoolName, poolNameFit } from '../../pool/name-codec.js'
 import { renderToolName } from '../display-name.js'
 import { html, join, safeUrl, type Html } from '../html.js'
 import { csrfField } from './csrf-field.js'
@@ -39,12 +41,19 @@ export interface ServerToolView {
   readonly quarantined?: 'new' | 'changed'
   /** The effective policy outcome + source (ADR-0009); absent when the page has no loaded policy. */
   readonly rule?: ToolRuleView
+  /**
+   * How `<server>__<tool>` sits against the pool's client limits (ADR-0015
+   * PE2); absent when it fits, or when the server can never be a pool member.
+   */
+  readonly poolName?: { readonly fit: 'warn' | 'hidden'; readonly length: number }
 }
 
 /** The tools of one server, from the inventory store. */
 export interface ServerToolsView {
   readonly tools: readonly ServerToolView[]
   readonly quarantinedCount: number
+  /** Tools no agent pool will list (pool name past the hide threshold); absent at zero. */
+  readonly poolHiddenCount?: number
 }
 
 /**
@@ -93,14 +102,53 @@ export function toServerToolsByName(inventory: InventoryStoreData, policy?: Poli
     }
     const tools = [...byName.values()]
       .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+      .map((tool) => withPoolName(tool, serverName))
       .map((tool) => (policy === undefined ? tool : { ...tool, rule: toolRuleViewOf(policy, inventory, serverName, tool.name) }))
-    out.set(serverName, { tools, quarantinedCount: Object.keys(inv.quarantined).length })
+    const hidden = tools.filter((tool) => tool.poolName?.fit === 'hidden').length
+    out.set(serverName, {
+      tools,
+      quarantinedCount: Object.keys(inv.quarantined).length,
+      ...(hidden > 0 ? { poolHiddenCount: hidden } : {}),
+    })
   }
   return out
 }
 
 function withDescription(view: ServerToolView, description: string | undefined): ServerToolView {
   return description === undefined ? view : { ...view, description }
+}
+
+/**
+ * The tool's fit in an agent pool, from the SAME codec and thresholds the
+ * merge uses (ADR-0015 phase 5, L1), so the card cannot disagree with what the
+ * pool actually lists. `encodePoolName` refuses a server name the registry
+ * would not carry -- such a server is never a pool member, so no mark.
+ */
+function withPoolName(tool: ServerToolView, serverName: string): ServerToolView {
+  const poolName = encodePoolName(serverName, tool.name)
+  if (poolName === null) return tool
+  const fit = poolNameFit(poolName)
+  return fit === 'ok' ? tool : { ...tool, poolName: { fit, length: poolName.length } }
+}
+
+/**
+ * The pool-name pill of a tool row (L2). The `title` explains the mark in the
+ * pool's own thresholds and never echoes the tool name: that text is
+ * server-authored, and the row already renders it through `renderToolName`.
+ */
+function renderPoolNamePill(tool: ServerToolView): Html {
+  const pool = tool.poolName
+  if (pool === undefined) return html``
+  if (pool.fit === 'hidden') {
+    const title =
+      `The pool name of this tool is ${pool.length} characters, over ${POOL_NAME_HIDE_ABOVE_CHARS}: ` +
+      'it is left out of every agent pool (/mcp) and stays reachable at the per-server address.'
+    return html`<span class="pill pill-pixel pill-alert" title="${title}">not in pool · ${pool.length}</span>`
+  }
+  const title =
+    `The pool name of this tool is ${pool.length} characters, over ${POOL_NAME_WARN_ABOVE_CHARS}: ` +
+    'clients that add their own prefix may shorten or refuse it.'
+  return html`<span class="pill pill-pixel" title="${title}">long pool name · ${pool.length}</span>`
 }
 
 /** A description, truncated EXPLICITLY past the cap (by code point, not UTF-16 unit). */
@@ -190,7 +238,7 @@ function renderTool(tool: ServerToolView, ctx: ToolsPanelContext): Html {
         })
       : html``
   return html`<div class="srv-tool">
-    <div class="row"><span class="srv-tool-name">${renderToolName(tool.name)}</span>${pill}${rulePill}<span class="spacer"></span>${review}</div>
+    <div class="row"><span class="srv-tool-name">${renderToolName(tool.name)}</span>${pill}${rulePill}${renderPoolNamePill(tool)}<span class="spacer"></span>${review}</div>
     ${tool.description !== undefined ? renderDescription(tool.description) : html``}
     ${controls}
     ${renderRelease(tool, ctx)}
@@ -202,7 +250,9 @@ function toolsCountLabel(tools: ServerToolsView | undefined, probing: boolean): 
   if (probing) return 'probing…'
   const total = tools?.tools.length ?? 0
   const quarantined = tools?.quarantinedCount ?? 0
-  return `${total} exposed · ${quarantined} quarantined`
+  const notInPool = tools?.poolHiddenCount ?? 0
+  const pool = notInPool > 0 ? ` · ${notInPool} not in pool` : ''
+  return `${total} exposed · ${quarantined} quarantined${pool}`
 }
 
 /**

@@ -292,7 +292,32 @@ function isUiSpecifier(specifier: string): boolean {
   return /(?:^|\/)ui\//.test(specifier)
 }
 
+/**
+ * True for a specifier reaching into `src/pool/**` for anything but the name
+ * codec and its constants (ADR-0015 phase 5, L1). The server card marks tools
+ * whose pool name is too long with the SAME thresholds the merge uses, so it
+ * imports those two modules -- and nothing that carries traffic.
+ */
+function isPoolTrafficSpecifier(specifier: string): boolean {
+  if (!/(?:^|\/)pool\//.test(specifier)) return false
+  return !/(?:^|\/)pool\/(?:name-codec|constants)\.js$/.test(specifier)
+}
+
 describe('the admin UI is an operator surface, not a traffic or secret surface', () => {
+  test.each(uiFiles())('%s reaches src/pool only for the name codec and its constants', (relativePath) => {
+    const source = readFileSync(join(PROJECT_ROOT, relativePath), 'utf8')
+
+    expect(importSpecifiersOf(source).filter(isPoolTrafficSpecifier)).toEqual([])
+  })
+
+  test('the pool matcher catches traffic modules and lets the codec through (guards the guards)', () => {
+    expect(isPoolTrafficSpecifier('../../pool/multiplexer.js')).toBe(true)
+    expect(isPoolTrafficSpecifier('../pool/correlator.js')).toBe(true)
+    expect(isPoolTrafficSpecifier('../../pool/name-codec.js')).toBe(false)
+    expect(isPoolTrafficSpecifier('../../pool/constants.js')).toBe(false)
+    expect(isPoolTrafficSpecifier('../../agents/pool-ish.js')).toBe(false)
+  })
+
   test.each(uiFiles())('%s imports no proxy/transport module', (relativePath) => {
     const source = readFileSync(join(PROJECT_ROOT, relativePath), 'utf8')
 
@@ -995,6 +1020,7 @@ describe('the agent pool core is traffic semantics, not an operator surface (ADR
       'src/pool/watch.ts',
       'src/pool/multiplexer.ts',
       'src/pool/multiplexer-frames.ts',
+      'src/pool/child-frames.ts',
       'src/pool/errors.ts',
     ]) {
       expect(files).toContain(expected)
