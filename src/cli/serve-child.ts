@@ -9,7 +9,7 @@ import type { PolicyProvider } from '../policy/reload.js'
 import type { Policy } from '../policy/schema.js'
 import type { ServerRecord } from '../registry/schema.js'
 import type { AgentRecordReader } from '../session/agent-watch.js'
-import { createSession, type SessionHandle } from '../session/core.js'
+import { createSession, type SessionEndReason, type SessionHandle } from '../session/core.js'
 import type {
   OpenedSession,
   OpenSessionRefusal,
@@ -52,7 +52,7 @@ export interface ChildSessionDeps {
   /** Environment/vault plumbing for upstreams (see `serve-upstream.ts`). */
   readonly upstream: Pick<
     OpenUpstreamDeps,
-    'processEnv' | 'envAllowlist' | 'resolveRefs' | 'killEscalationMs'
+    'processEnv' | 'envAllowlist' | 'resolveRefs' | 'killEscalationMs' | 'httpClient'
   >
   /** Mints one journal session id per opened session. */
   readonly newSessionId: () => string
@@ -73,6 +73,12 @@ export interface ChildSessionTarget {
 /** `OpenedSession` plus the journal session id a pool binds its records to. */
 export interface OpenedChildSession extends OpenedSession {
   readonly sessionId: string
+  /**
+   * Why the session ended on its own terms, or `null` while it lives (or when
+   * it was closed from outside). Set BEFORE the front source ends, so a pool
+   * listening on that end reads the reason in the same synchronous chain.
+   */
+  readonly endReason: () => SessionEndReason | null
 }
 
 export type ChildSessionOpener = (
@@ -166,6 +172,7 @@ export function createChildSessionOpener(deps: ChildSessionDeps): ChildSessionOp
     target: ChildSessionTarget,
   ): Promise<OpenedChildSession | OpenSessionRefusal> {
     let handle: SessionHandle | null = null
+    let endedWith: SessionEndReason | null = null
     const journal = createJournalWiring(() => {
       void handle?.close('closed')
     })
@@ -208,6 +215,9 @@ export function createChildSessionOpener(deps: ChildSessionDeps): ChildSessionOp
           // The session died on its own terms (revocation, upstream end):
           // tell whoever is driving it, whose teardown then calls `close()` —
           // which is what reaps the child process and closes the journal.
+          // Recorded first: `endFrontSource` runs the pool's `onEnd` in this
+          // very chain, and that is where the reason is read (DR1).
+          endedWith = reason
           report(ctx, `session ${journal.sessionId} ended (${reason})`)
           pipe.endFrontSource()
         },
@@ -225,6 +235,7 @@ export function createChildSessionOpener(deps: ChildSessionDeps): ChildSessionOp
       sink: pipe.front.sink,
       source: pipe.front.source,
       close: closeAll,
+      endReason: () => endedWith,
     }
   }
 }

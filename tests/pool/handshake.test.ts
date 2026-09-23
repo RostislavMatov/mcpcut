@@ -1,95 +1,89 @@
 import { describe, expect, test } from 'vitest'
-import { performUpstreamHandshake } from '../../src/pool/handshake.js'
-import type { PoolChild } from '../../src/pool/children.js'
-import type { PoolFanout } from '../../src/pool/fanout.js'
-import type { MessageSink } from '../../src/transport/message.js'
+import {
+  negotiateUpstream,
+  type NegotiateInput,
+  type UpstreamRevisionHint,
+} from '../../src/pool/handshake.js'
 
 /**
- * The handshake the plane opens to one upstream of a pool (ADR-0015 §4).
- *
- * A pool address answers the AGENT's `initialize` itself (PE12), so nothing
- * the agent sends reaches an upstream — the plane has to introduce itself, or a
- * server that follows the spec refuses everything after. Every "no" here means
- * "this server did not come up", which the caller turns into a smaller pool
- * rather than a refused one (PE6).
+ * How the plane introduces itself to one pool member (ADR-0015 §4 and the
+ * 2026-09-23 amendment, RV1-RV2): the handshake first, `server/discover` only
+ * after an error or a revision with no handshake, and ONE deadline for both.
  */
 
 const PLANE_VERSION = '0.1.0'
 
-interface Harness {
-  readonly child: PoolChild
-  /** Lines the plane wrote to the upstream, in order. */
-  readonly written: string[]
-  readonly asked: string[]
+/** One scripted answer per tag; `null` = the upstream never answered. */
+type Script = Readonly<Record<string, string | null>>
+
+interface Run {
+  readonly asked: Array<{ tag: string; line: string; timeoutMs: number }>
+  readonly notified: string[]
+  readonly outcome: Awaited<ReturnType<typeof negotiateUpstream>>
 }
 
-function harnessWith(answer: string | null): Harness {
-  const written: string[] = []
-  const asked: string[] = []
-  const sink: MessageSink = {
-    write: (message) => {
-      written.push(message.bytes.toString('utf8'))
+async function negotiate(
+  script: Script,
+  options: { hint?: UpstreamRevisionHint; deadline?: number; clock?: number[] } = {},
+): Promise<Run> {
+  const asked: Run['asked'] = []
+  const notified: string[] = []
+  // Each read of the clock takes the next value; the last one repeats.
+  const clock = [...(options.clock ?? [0])]
+  const now = (): number => (clock.length > 1 ? (clock.shift() as number) : (clock[0] as number))
+  const input: NegotiateInput = {
+    ask: (tag, buildLine, timeoutMs) => {
+      asked.push({ tag, line: buildLine('plane-1'), timeoutMs })
+      return Promise.resolve(script[tag] ?? null)
+    },
+    notify: (line) => {
+      notified.push(line)
       return Promise.resolve()
     },
-    dispose: () => undefined,
+    hint: options.hint ?? 'legacy-first',
+    deadline: options.deadline ?? 40_000,
+    now,
+    planeVersion: PLANE_VERSION,
   }
-  const child: PoolChild = {
-    server: 'fs',
-    sessionId: 's-fs',
-    sink,
-    close: () => Promise.resolve(),
-  }
-  const fanout: PoolFanout = {
-    ask: async (target, tag, buildLine) => {
-      asked.push(tag)
-      await target.sink.write({
-        bytes: Buffer.from(buildLine('plane-1'), 'utf8'),
-        meta: { origin: 'client' },
-      } as never)
-      return answer
-    },
-    settle: () => false,
-  }
-  return {
-    child,
-    written,
-    asked,
-    // The fanout is handed back through a closure property for the tests below.
-    ...({ fanout } as object),
-  } as Harness & { fanout: PoolFanout }
+  const outcome = await negotiateUpstream(input)
+  return { asked, notified, outcome }
 }
 
-function result(protocolVersion: string): string {
+function initializeResult(protocolVersion: string): string {
   return JSON.stringify({
     jsonrpc: '2.0',
     id: 'plane-1',
-    result: {
-      protocolVersion,
-      capabilities: { tools: {}, prompts: {} },
-      serverInfo: { name: 'fs', version: '1' },
-    },
+    result: { protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'fs', version: '1' } },
   })
 }
 
-function run(answer: string | null): {
-  readonly outcome: Promise<unknown>
-  readonly harness: Harness & { fanout: PoolFanout }
-} {
-  const harness = harnessWith(answer) as Harness & { fanout: PoolFanout }
-  return {
-    harness,
-    outcome: performUpstreamHandshake(harness.fanout, harness.child, PLANE_VERSION),
-  }
-}
+const INITIALIZE_ERROR = JSON.stringify({
+  jsonrpc: '2.0',
+  id: 'plane-1',
+  error: { code: -32022, message: 'unsupported', data: { supported: ['2026-07-28'], requested: '2025-11-25' } },
+})
 
-describe('performUpstreamHandshake', () => {
-  test('declares NO client capabilities, so no server will initiate one (PE3)', async () => {
-    // Load-bearing, not tidiness: a server told of no sampling, elicitation or
-    // roots will not ask the agent anything.
-    const { harness, outcome } = run(result('2025-11-25'))
-    await outcome
+const DISCOVER_RESULT = JSON.stringify({
+  jsonrpc: '2.0',
+  id: 'plane-1',
+  result: { supportedVersions: ['2026-07-28'], capabilities: { tools: {} }, resultType: 'complete' },
+})
 
-    const sent = JSON.parse(harness.written[0] as string) as {
+const DISCOVER_ERROR = JSON.stringify({ jsonrpc: '2.0', id: 'plane-1', error: { code: -32601, message: 'no' } })
+
+describe('an old server', () => {
+  test('is a sessionful member, greeted with `notifications/initialized`', async () => {
+    const run = await negotiate({ initialize: initializeResult('2025-06-18') })
+
+    expect(run.outcome).toEqual({ ok: true, discipline: { model: 'sessionful', protocolVersion: '2025-06-18' } })
+    expect(run.asked.map((entry) => entry.tag)).toEqual(['initialize'])
+    expect(run.notified).toEqual([JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })])
+  })
+
+  test('is told of NO client capabilities, so it will initiate none (PE3)', async () => {
+    const run = await negotiate({ initialize: initializeResult('2025-11-25') })
+
+    const sent = JSON.parse(run.asked[0]?.line as string) as {
       method: string
       params: { capabilities: Record<string, unknown>; clientInfo: { version: string } }
     }
@@ -97,57 +91,92 @@ describe('performUpstreamHandshake', () => {
     expect(sent.params.capabilities).toEqual({})
     expect(sent.params.clientInfo.version).toBe(PLANE_VERSION)
   })
+})
 
-  test('closes the handshake with the initialized notification', async () => {
-    const { harness, outcome } = run(result('2025-11-25'))
+describe('a dual-mode server', () => {
+  test('that takes the handshake stays sessionful, and is never asked to discover', async () => {
+    const run = await negotiate({ initialize: initializeResult('2025-11-25'), 'server/discover': DISCOVER_RESULT })
 
-    await expect(outcome).resolves.toMatchObject({ protocolVersion: '2025-11-25' })
-    expect(harness.written[1]).toContain('notifications/initialized')
+    expect(run.outcome).toMatchObject({ ok: true, discipline: { model: 'sessionful' } })
+    expect(run.asked.map((entry) => entry.tag)).toEqual(['initialize'])
+  })
+})
+
+describe('a server that speaks only 2026-07-28', () => {
+  test('answering the handshake with an error is asked to discover and becomes stateless', async () => {
+    const run = await negotiate({ initialize: INITIALIZE_ERROR, 'server/discover': DISCOVER_RESULT })
+
+    expect(run.outcome).toEqual({ ok: true, discipline: { model: 'stateless', protocolVersion: '2026-07-28' } })
+    expect(run.asked.map((entry) => entry.tag)).toEqual(['initialize', 'server/discover'])
+    expect(run.notified).toEqual([])
   })
 
-  test('reports the capabilities the upstream declared', async () => {
-    const { outcome } = run(result('2025-06-18'))
+  test('answering the handshake WITH 2026-07-28 is asked to discover too', async () => {
+    const run = await negotiate({ initialize: initializeResult('2026-07-28'), 'server/discover': DISCOVER_RESULT })
 
-    await expect(outcome).resolves.toEqual({
-      protocolVersion: '2025-06-18',
-      hasTools: true,
-      hasPrompts: true,
-    })
+    expect(run.outcome).toMatchObject({ ok: true, discipline: { model: 'stateless' } })
+    expect(run.notified).toEqual([])
   })
 
-  test('a server that never answered did not come up (PE6)', async () => {
-    const { harness, outcome } = run(null)
+  test('whose discover also fails did not come up', async () => {
+    const run = await negotiate({ initialize: INITIALIZE_ERROR, 'server/discover': DISCOVER_ERROR })
 
-    await expect(outcome).resolves.toBeNull()
-    // And the plane did not go on to greet a server that never replied.
-    expect(harness.written).toHaveLength(1)
+    expect(run.outcome).toEqual({ ok: false, reason: 'handshake-failed' })
   })
 
-  test('a revision the plane cannot negotiate means the server did not come up', async () => {
-    // 2026-07-28 REMOVED the handshake, so a server answering one with it is
-    // self-contradictory: the plane cannot tell which discipline applies, and
-    // opening the pool without it is the fail-closed direction.
-    const { harness, outcome } = run(result('2026-07-28'))
+  test('whose discover names no version the plane speaks did not come up', async () => {
+    const reply = JSON.stringify({ jsonrpc: '2.0', id: 'plane-1', result: { capabilities: {} } })
+    const run = await negotiate({ initialize: INITIALIZE_ERROR, 'server/discover': reply })
 
-    await expect(outcome).resolves.toBeNull()
-    expect(harness.written).toHaveLength(1)
+    expect(run.outcome).toEqual({ ok: false, reason: 'handshake-failed' })
   })
+})
 
-  test('an error response means the server did not come up', async () => {
-    const { outcome } = run(
-      JSON.stringify({
-        jsonrpc: '2.0',
-        id: 'plane-1',
-        error: { code: -32603, message: 'no' },
-      }),
+describe('the registry’s hint', () => {
+  test('`sessionful-only` never falls back to discover', async () => {
+    const run = await negotiate(
+      { initialize: INITIALIZE_ERROR, 'server/discover': DISCOVER_RESULT },
+      { hint: 'sessionful-only' },
     )
 
-    await expect(outcome).resolves.toBeNull()
+    expect(run.outcome).toEqual({ ok: false, reason: 'handshake-failed' })
+    expect(run.asked.map((entry) => entry.tag)).toEqual(['initialize'])
   })
 
-  test('garbage means the server did not come up', async () => {
-    const { outcome } = run('not json at all')
+  test('`stateless-only` never sends an initialize', async () => {
+    const run = await negotiate({ 'server/discover': DISCOVER_RESULT }, { hint: 'stateless-only' })
 
-    await expect(outcome).resolves.toBeNull()
+    expect(run.outcome).toMatchObject({ ok: true, discipline: { model: 'stateless' } })
+    expect(run.asked.map((entry) => entry.tag)).toEqual(['server/discover'])
+  })
+})
+
+describe('the one deadline (BU1)', () => {
+  test('no answer by the deadline is `start-timeout`', async () => {
+    const run = await negotiate({ initialize: null }, { deadline: 1000, clock: [0, 1000] })
+
+    expect(run.outcome).toEqual({ ok: false, reason: 'start-timeout' })
+  })
+
+  test('no answer BEFORE the deadline is a failed handshake, not a timeout', async () => {
+    const run = await negotiate({ initialize: null }, { deadline: 1000, clock: [0, 10] })
+
+    expect(run.outcome).toEqual({ ok: false, reason: 'handshake-failed' })
+  })
+
+  test('the second step gets what is left, not a fresh budget', async () => {
+    const run = await negotiate(
+      { initialize: INITIALIZE_ERROR, 'server/discover': DISCOVER_RESULT },
+      { deadline: 40_000, clock: [0, 30_000] },
+    )
+
+    expect(run.asked.map((entry) => entry.timeoutMs)).toEqual([40_000, 10_000])
+  })
+
+  test('garbage for a handshake is a failure, without a discover', async () => {
+    const run = await negotiate({ initialize: 'not json at all', 'server/discover': DISCOVER_RESULT })
+
+    expect(run.outcome).toEqual({ ok: false, reason: 'handshake-failed' })
+    expect(run.asked.map((entry) => entry.tag)).toEqual(['initialize'])
   })
 })

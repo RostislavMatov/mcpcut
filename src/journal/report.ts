@@ -7,6 +7,7 @@ import {
   type ChainBreak,
 } from './chain-verify.js'
 import { latestPruneMarker } from './prune.js'
+import { NO_OUTSIDE_LINKS, poolLinksOutsideExport, type ReportOutsideLinks } from './report-pool-links.js'
 import type { ReportPoolTally } from './report-pools.js'
 import { renderReportSummary } from './report-summary.js'
 import {
@@ -198,6 +199,11 @@ export interface JournalReport {
   readonly summaryMarkdown: string
   /** Pool sessions the export saw -- for the CLI's own summary line; not part of `report.json`. */
   readonly pools: ReportPoolTally
+  /**
+   * Pool sessions that attached a session exported ALONE, read from records
+   * OUTSIDE the export (D2) -- from the same snapshot. Not part of `report.json`.
+   */
+  readonly outsidePools: ReportOutsideLinks
 }
 
 /**
@@ -236,11 +242,17 @@ export async function buildJournalReport(
   return withConsistentReadView(handle, async () => {
     const tally = await streamRecords(handle, session, sink, createIncrementalSha256())
     const core = manifestCoreOf(handle, session, now(), tally)
+    // D2: a session exported alone that is not itself a pool session may be a
+    // pool's child -- the records saying so are the pool's, not in the export.
+    // Read in THIS view, so they describe the same state as everything else.
+    const isOwnPool = tally.pools.sessions.some((candidate) => candidate.sessionId === session)
+    const outsidePools = session !== null && !isOwnPool ? poolLinksOutsideExport(handle, session) : NO_OUTSIDE_LINKS
     const summaryMarkdown = renderReportSummary({
       manifest: core,
       decisions: tally.decisions,
       omittedDecisionCount: tally.omittedDecisionCount,
       pools: tally.pools,
+      outside: outsidePools,
     })
     return {
       // Spreading over a key the core already carries REPLACES the value and
@@ -254,6 +266,7 @@ export async function buildJournalReport(
       },
       summaryMarkdown,
       pools: tally.pools,
+      outsidePools,
     }
   })
 }

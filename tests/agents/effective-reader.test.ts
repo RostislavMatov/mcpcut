@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
-import { createEffectiveAgentReader } from '../../src/agents/effective-reader.js'
+import { createEffectiveAgentLister, createEffectiveAgentReader } from '../../src/agents/effective-reader.js'
 import { createAgentsStore, type AgentsStore } from '../../src/agents/store.js'
 import { createGroupsStore, type GroupsStore } from '../../src/groups/store.js'
 
@@ -34,6 +34,25 @@ function readerOf(): ReturnType<typeof createEffectiveAgentReader> {
 }
 
 describe('createEffectiveAgentReader', () => {
+  test('listAgents expands every agent, group grants included (resident supervisor, RS2)', async () => {
+    // Arrange
+    await agents.createAgent(AGENT)
+    await agents.createAgent('other-bot')
+    await agents.grantServer('other-bot', 'memory', '*')
+    await groups.createGroup('analytics')
+    await groups.grantServer('analytics', SERVER, ['query'])
+    await groups.addMember('analytics', AGENT)
+
+    // Act
+    const listed = await createEffectiveAgentLister({ agents, groups }).listAgents()
+
+    // Assert
+    expect(listed.map((record) => [record.name, record.grants])).toEqual([
+      ['other-bot', { memory: { tools: '*' } }],
+      [AGENT, { [SERVER]: { tools: ['query'] } }],
+    ])
+  })
+
   test('getAgent expands a grant the agent holds only through a group', async () => {
     // Arrange
     await agents.createAgent(AGENT)

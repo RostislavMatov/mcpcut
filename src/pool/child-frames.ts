@@ -10,7 +10,13 @@ import type { McpMessage } from '../transport/message.js'
 import { MAX_POOL_DROP_NOTE_METHOD_CHARS, MAX_POOL_NOTIFICATION_DROP_NOTES } from './constants.js'
 import type { PoolCorrelator } from './correlator.js'
 import type { PoolFanout } from './fanout.js'
-import { fanoutTagOf, notificationFrame, progressTokenOfNotification } from './multiplexer-frames.js'
+import { poolIncompleteResultError } from './errors.js'
+import {
+  fanoutTagOf,
+  incompleteResultTypeOf,
+  notificationFrame,
+  progressTokenOfNotification,
+} from './multiplexer-frames.js'
 
 /**
  * The child side of the multiplexer's dispatch: one frame from a child
@@ -141,6 +147,14 @@ export function createChildFrameHandler(deps: ChildFrameDeps): ChildFrameHandler
   function handleResponse(server: string, bytes: Buffer, id: JsonRpcId, raw: string): void {
     const settled = deps.correlator.settle(server, id)
     if (settled.kind === 'client') {
+      // `id` is never null here (`settle` refuses a null id); narrowed anyway.
+      if (id !== null && incompleteResultTypeOf(raw) !== null) {
+        // RV5: never handed on as if it were finished. One outcome still
+        // reaches the agent for this id — the pool's error.
+        deps.send(poolIncompleteResultError(id))
+        deps.record({ event: 'dropped', serverName: server, reason: 'incomplete-result' })
+        return
+      }
       // Byte for byte: the reply names no tool, so there is nothing in it
       // to rewrite (ADR-0015 §9).
       deps.send(bytes)

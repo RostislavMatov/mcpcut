@@ -33,6 +33,8 @@ export const HTTP_SESSIONFUL_FIXTURE = join(FIXTURES, 'http-server-sessionful.mj
 export const POOL_SERVER = join(FIXTURES, 'pool-server.mjs')
 /** The fixture that misbehaves on purpose; `--mode` picks how (pool hardening). */
 export const POOL_HOSTILE_SERVER = join(FIXTURES, 'pool-hostile-server.mjs')
+/** A stdio server that speaks ONLY 2026-07-28 (`POOL_MODERN_DUAL=1`: both). */
+export const POOL_MODERN_SERVER = join(FIXTURES, 'pool-modern-server.mjs')
 export const HTTP_STATELESS_FIXTURE = join(FIXTURES, 'http-server-stateless.mjs')
 
 export const AGENT = 'research-bot'
@@ -173,6 +175,13 @@ export async function startServe(opts: StartServeOptions = {}): Promise<ServeFix
     journalDir,
     signals: [],
     revocationPollIntervalMs: POLL_INTERVAL_MS,
+    // No residents and no warm servers unless a test asks (ADR-0016). Without
+    // this, every older test granting a stdio fixture would get a background
+    // process and journal sessions of its starts; stdio children still go
+    // through the supervisor, down the same on-demand path, and close at the
+    // release exactly as they did before.
+    maxPoolResidents: 0,
+    poolWarmIdleMs: 0,
     ...(opts.withoutPolicy === true ? { loadPolicy: { cwd: journalDir, env: {} } } : {}),
     ...opts.serveOptions,
     onListening: (started) => {
@@ -241,8 +250,11 @@ export async function readJournal(journalDir: string): Promise<JournalRecord[]> 
 }
 
 /** Spawns one of the HTTP MCP fixtures and returns its `/mcp` endpoint URL. */
-export async function startHttpFixture(file: string): Promise<string> {
-  const child = spawn(process.execPath, [file], { stdio: ['ignore', 'pipe', 'pipe'] })
+export async function startHttpFixture(file: string, env: Record<string, string> = {}): Promise<string> {
+  const child = spawn(process.execPath, [file], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, ...env },
+  })
   spawnedFixtures.push(child)
   const port = await new Promise<number>((resolve, reject) => {
     let out = ''

@@ -22,13 +22,31 @@
 //     name, so a test can tell whose progress reached the agent;
 //   - a tool whose name starts with `slow_` answers after
 //     `POOL_FIXTURE_DELAY_MS` (default 300) ms, so a call stays in flight.
+//
+// `POOL_FIXTURE_START_DELAY_MS=N` makes it sleep N ms before it reads stdin at
+// all — what a server installed by `npx -y` looks like while it installs.
+// stdin keeps what arrives meanwhile, so nothing is lost, only late.
+//
+// `POOL_FIXTURE_PID_FILE=<path>` appends one line per start, `<pid> <ms>`
+// (the start time), so a test can tell which process served it, whether one
+// is still alive, and whether two starts overlapped (ADR-0016).
 
+import { appendFileSync } from 'node:fs'
 import { createInterface } from 'node:readline'
 
 const TOOL_NAMES = process.argv.slice(2)
 const NAME = process.env.POOL_FIXTURE_NAME ?? 'pool-server'
 
 process.stderr.write(`${NAME}: starting\n`)
+
+if (process.env.POOL_FIXTURE_PID_FILE) {
+  appendFileSync(process.env.POOL_FIXTURE_PID_FILE, `${process.pid} ${Date.now()}\n`)
+}
+
+const START_DELAY_MS = Number(process.env.POOL_FIXTURE_START_DELAY_MS ?? 0)
+if (START_DELAY_MS > 0) {
+  await new Promise((resolve) => setTimeout(resolve, START_DELAY_MS))
+}
 
 const rl = createInterface({ input: process.stdin, terminal: false })
 

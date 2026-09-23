@@ -26,7 +26,6 @@ import {
 import { createStatelessRunner } from './session-stateless.js'
 import {
   appendBuffered,
-  createSlotCounter,
   EMPTY_BUFFER,
   jsonPlan,
   refusalPlan,
@@ -40,9 +39,9 @@ import {
   type SessionContext,
   type SessionManager,
   type SessionManagerOptions,
-  type SessionSlot,
   type StatelessValidation,
 } from './session-support.js'
+import { createSlotCounter, type SessionSlot } from './session-slots.js'
 import { createExchangeRules, rejectAllWaiting } from './session-exchange.js'
 import { openSseStream, type SseStream } from './sse.js'
 
@@ -172,7 +171,7 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
   })
   /** Registered sessions plus whatever else shares this manager's budget (P5). */
   const countRegistered = (): number => sessions.size + (opts.extraSessions?.() ?? 0)
-  const slots = createSlotCounter(maxSessions, countRegistered)
+  const slots = createSlotCounter(maxSessions, countRegistered, opts.reclaimSessions)
   let isManagerClosed = false
 
   const sweeper = setInterval(sweepIdleSessions, opts.sweepIntervalMs ?? SESSION_SWEEP_INTERVAL_MS)

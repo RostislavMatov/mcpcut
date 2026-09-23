@@ -3,6 +3,7 @@ import { request as httpsRequest } from 'node:https'
 import type { McpMessage, MessageSource } from '../message.js'
 import { UpstreamConnectionError, UpstreamResponseError } from './client-errors.js'
 import { createSseParser, type SseItem } from './sse-parse.js'
+import { CONTENT_TYPE_JSON } from './constants.js'
 
 /**
  * Wire-level plumbing for the HTTP upstream client (`./client.ts`): raw
@@ -184,6 +185,23 @@ export function readBoundedBody(
     res.on('end', () => resolve(Buffer.concat(chunks)))
     res.on('error', (error: unknown) => reject(new UpstreamConnectionError('read', host, error)))
   })
+}
+
+/**
+ * The body of an error response, when it is a non-empty JSON body; `null`
+ * otherwise, having read nothing. Read (bounded) BEFORE anything drains the
+ * response, so the caller can still `resume()` it on `null`.
+ */
+export async function readJsonErrorBody(
+  res: IncomingMessage,
+  maxBytes: number,
+  host: string,
+): Promise<Buffer | null> {
+  if (!contentTypeOf(res).startsWith(CONTENT_TYPE_JSON)) {
+    return null
+  }
+  const body = await readBoundedBody(res, maxBytes, host)
+  return body.length === 0 ? null : body
 }
 
 /** Lowercased `Content-Type` of a response, `''` when absent. */

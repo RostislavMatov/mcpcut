@@ -7,6 +7,9 @@
  * in `src/protocol/mcp.ts`, the single point of coupling to the spec.
  */
 
+import { INITIALIZE_METHOD } from '../protocol/mcp.js'
+import { SERVER_DISCOVER_METHOD } from '../protocol/mcp-stateless.js'
+
 /**
  * Separator between the server name and the tool/prompt name in a pool-side
  * name. `__` is what Claude Code, MetaMCP and Docker MCP Gateway already use;
@@ -88,11 +91,52 @@ export const MAX_ERROR_NAME_CHARS = 128
 export const POOL_FANOUT_TIMEOUT_MS = 10_000
 
 /**
+ * How long ONE server may take to come up in a pool: opening, spawning and
+ * the whole negotiation, both steps of it, under ONE deadline (BU1). Servers
+ * start at once, so five of them wait as long as the slowest, not five times
+ * as long. 40 s plus the 10 s list that follows stays under the 60-second
+ * request timeout of the official SDKs; `npx -y` of four packages on a
+ * 2-CPU host took ~14 s in the phase-5 smoke (Ф2), which the 10-second budget
+ * this replaces did not survive. Mostly an upper bound now: servers granted
+ * to an agent are already running when it connects (ADR-0016).
+ */
+export const POOL_CHILD_START_TIMEOUT_MS = 40_000
+
+/** Fan-out tag of the plane's own handshake with an upstream: its method name. */
+export const POOL_TAG_INITIALIZE = INITIALIZE_METHOD
+
+/** Fan-out tag of the `server/discover` that follows a refused handshake (RV1). */
+export const POOL_TAG_DISCOVER = SERVER_DISCOVER_METHOD
+
+/**
+ * Fan-out tags of the requests that make up a START (the plane's handshake
+ * and its `server/discover` fallback). A start that runs out of budget is
+ * reported as `attach-refused`, so a timeout on these is not a member to
+ * detach — it was never a member.
+ */
+export const POOL_START_TAGS: ReadonlySet<string> = new Set([POOL_TAG_INITIALIZE, POOL_TAG_DISCOVER])
+
+/**
  * Pages of ONE upstream's catalog the pool drains before giving up on the
  * rest. A server that pages further than this is either enormous or looping;
  * either way the merge has long since outgrown what a client will accept.
  */
 export const MAX_POOL_LIST_PAGES = 50
+
+/**
+ * The departure reason of a server whose grant was withdrawn (DR1). One word
+ * whichever watch notices first: the pool's own, or the child session's,
+ * which ends that session as `revoked`.
+ */
+export const POOL_DEPARTURE_UNGRANTED = 'ungranted'
+
+/**
+ * The departure a pool session writes for a server it still had requests in
+ * flight at when it closed (ADR-0016, RS5, RS9). Such a child leaves DIRTY: a
+ * held session is then closed rather than kept, because a reply still on its
+ * way must never reach the next pool session to attach.
+ */
+export const POOL_DEPARTURE_IN_FLIGHT_AT_CLOSE = 'in-flight-at-close'
 
 /**
  * Child sessions ONE pool session may hold. The process-wide ceiling already
@@ -120,6 +164,15 @@ export const ERROR_CODE_POOL_MEMBER_GONE = -32005
  */
 export const ERROR_CODE_POOL_AT_CAPACITY = -32006
 
+/**
+ * "The server asked for input, or for a retry, that the pool cannot provide"
+ * (RV5). Next free code after -32006. Distinct from both neighbours: the
+ * server is still here (not -32005) and the pool is not full (not -32006) —
+ * calling again is what may help, because a 2026-07-28 server that sheds load
+ * with a bare `requestState` usually answers the next call in full.
+ */
+export const ERROR_CODE_POOL_INCOMPLETE_RESULT = -32007
+
 /** JSON-RPC "Method not found": the pool declares only tools and prompts (PE3). */
 export const ERROR_CODE_POOL_METHOD_NOT_FOUND = -32601
 
@@ -145,3 +198,24 @@ export const MAX_POOL_NOTIFICATION_DROP_NOTES = 256
  * sharing this long a prefix are one kind, which is all a note says.
  */
 export const MAX_POOL_DROP_NOTE_METHOD_CHARS = 128
+
+/**
+ * (agent, stdio server) pairs the plane keeps running with no agent attached
+ * (ADR-0016, RS2; owner decision "up to 32"). Half of the front's 64: the
+ * other half stays for live sessions, and a warm server yields its slot to
+ * live work whenever the budget runs short (RS7).
+ */
+export const MAX_POOL_RESIDENTS = 32
+
+/**
+ * How long a server started on demand (past `MAX_POOL_RESIDENTS`) stays up
+ * after its last agent left (RS8; owner decision D5, "10 minutes"): the same
+ * agent reconnecting within it gets the same process, not a new start.
+ */
+export const POOL_WARM_IDLE_MS = 10 * 60_000
+
+/**
+ * Idle warm servers kept at once, across the service (owner decision "up to
+ * 32"). Past it the longest idle goes first; residents never go.
+ */
+export const MAX_POOL_WARM_IDLE = 32

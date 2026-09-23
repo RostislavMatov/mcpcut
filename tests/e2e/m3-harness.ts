@@ -96,7 +96,17 @@ function seamsFor(journalDir: string): DispatchOptions {
     approvals: { baseDir: join(journalDir, 'approvals'), journalDir, env: {} },
     quarantine: { storePath: join(journalDir, INVENTORY_FILE_NAME) },
     connect: { journalDir, env: {}, loadPolicy },
-    serve: { journalDir, signals: [], loadPolicy, revocationPollIntervalMs: POLL_INTERVAL_MS },
+    // No residents and no warm servers unless a test asks (ADR-0016): the
+    // older end-to-end tests count spawns and journal sessions, and would
+    // otherwise see background processes they never started.
+    serve: {
+      journalDir,
+      signals: [],
+      loadPolicy,
+      revocationPollIntervalMs: POLL_INTERVAL_MS,
+      maxPoolResidents: 0,
+      poolWarmIdleMs: 0,
+    },
   }
 }
 

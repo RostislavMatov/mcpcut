@@ -17,6 +17,7 @@ import { perMessageHeadersOptionOf } from '../session/per-message-headers.js'
 import {
   createHttpUpstreamClient,
   type HttpUpstreamClient,
+  type HttpUpstreamClientOptions,
   type HttpUpstreamProtocol,
 } from '../transport/http/client.js'
 import { createStdioMessageSink } from '../transport/stdio-adapter.js'
@@ -108,6 +109,12 @@ export interface PrepareUpstreamArgs {
   readonly killEscalationMs?: number
   /** Names the child may inherit from `processEnv`. Defaults to `SYSTEM_ENV_ALLOWLIST`. */
   readonly systemEnvAllowlist?: readonly string[]
+  /**
+   * Extra HTTP client behaviour. The probe asks for `deliverErrorBodies` (RV6):
+   * a 2026-07-28 server answers its `initialize` with a 4xx and a JSON-RPC
+   * body, which must reach the probe as an answer. `connect` asks for nothing.
+   */
+  readonly httpClient?: Pick<HttpUpstreamClientOptions, 'deliverErrorBodies'>
 }
 
 /** One operator line per resolution failure shape; every referenced-but-absent name is listed. */
@@ -169,7 +176,7 @@ export async function prepareUpstream(args: PrepareUpstreamArgs): Promise<Prepar
     upstream: {
       dropClientBlanks: true,
       guardInitialize: record.protocol === 'stateless',
-      open: () => openHttpUpstream(record.url, headers, record.protocol),
+      open: () => openHttpUpstream(record.url, headers, record.protocol, args.httpClient),
     },
   }
 }
@@ -295,10 +302,11 @@ function openHttpUpstream(
   url: string,
   headers: Record<string, string>,
   protocol: HttpUpstreamProtocol,
+  extra: Pick<HttpUpstreamClientOptions, 'deliverErrorBodies'> = {},
 ): ConnectUpstream {
   const client: HttpUpstreamClient = createHttpUpstreamClient(
     { url, headers, protocol },
-    perMessageHeadersOptionOf(protocol),
+    { ...perMessageHeadersOptionOf(protocol), ...extra },
   )
 
   return {

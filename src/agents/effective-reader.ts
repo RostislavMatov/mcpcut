@@ -58,3 +58,30 @@ export function createEffectiveAgentReader(deps: EffectiveAgentReaderDeps): Effe
     findAgentByToken: async (token) => materialize(await deps.agents.findAgentByToken(token)),
   }
 }
+
+/** Every agent with its effective grants: what the resident supervisor reconciles against. */
+export interface EffectiveAgentLister {
+  /**
+   * Every agent, revoked ones included, each with its effective grants
+   * (ADR-0016). Store order; a caller that needs a deterministic order sorts
+   * for itself. A failed groups read propagates, as everywhere on this path.
+   */
+  listAgents(): Promise<readonly AgentRecord[]>
+}
+
+/**
+ * The listing half, kept apart from the reader so the entry points that only
+ * ever look one agent up (`connect`) do not have to supply a store that can
+ * list. Same expansion, through the same `materializeAgent`.
+ */
+export function createEffectiveAgentLister(deps: {
+  readonly agents: Pick<AgentsStore, 'listAgents'>
+  readonly groups: Pick<GroupsStore, 'groupsOf'>
+}): EffectiveAgentLister {
+  return {
+    listAgents: async () => {
+      const all = await deps.agents.listAgents()
+      return Promise.all(all.map(async (record) => materializeAgent(record, await deps.groups.groupsOf(record.name))))
+    },
+  }
+}

@@ -1,4 +1,7 @@
+import type { StatelessClientMeta } from '../protocol/mcp-stateless.js'
 import type { McpMessage, MessageSink, MessageSource } from '../transport/message.js'
+import type { NegotiationOutcome, PoolMemberDiscipline, UpstreamRevisionHint } from './handshake.js'
+import { statelessMember } from './member.js'
 import {
   emptyRouteTable,
   routeOf,
@@ -30,15 +33,52 @@ export interface PoolChild {
   /** Journal session id of that child — the binding a `kind:'pool'` record carries. */
   readonly sessionId: string
   readonly sink: MessageSink
-  close(): Promise<void>
+  /**
+   * Lets the child go. `dirty` = requests of this pool were still in flight
+   * there: a child the caller would otherwise keep (a held session, ADR-0016)
+   * must then not be attached again, or a late reply could reach a pool that
+   * did not ask for it (RS5). A child that is simply closed ignores it.
+   */
+  close(options?: { readonly dirty?: boolean }): Promise<void>
 }
 
 export type OpenPoolChildResult =
-  | { readonly status: 'opened'; readonly child: PoolChild; readonly source: MessageSource }
+  | {
+      readonly status: 'opened'
+      readonly child: PoolChild
+      readonly source: MessageSource
+      /**
+       * The pool's word for why this child's own session ended, asked the
+       * moment it ends; `undefined` means `child-ended` (DR1). Lets a child
+       * that its OWN watch ended over a withdrawn grant leave as `ungranted`
+       * — the same record the pool's watch writes when it gets there first,
+       * so which watch wins the race no longer shows in the journal.
+       */
+      readonly departureReason?: () => string | undefined
+      /** Which negotiation to run; `legacy-first` when absent (RV1). */
+      readonly revisionHint?: UpstreamRevisionHint
+      /**
+       * The discipline of a child whose negotiation already happened (a held
+       * session the pool attaches to): `negotiate` is skipped entirely.
+       */
+      readonly negotiated?: PoolMemberDiscipline
+      /**
+       * How long the child lives (ADR-0016): `pool` — with this pool session,
+       * the default; `warm`/`resident` — a held session this pool attached to.
+       */
+      readonly lifetime?: PoolChildLifetime
+    }
   | { readonly status: 'refused'; readonly reason: string }
 
-/** Opening one child is the caller's job: `src/pool` may not read a registry. */
-export type OpenPoolChild = (server: string) => Promise<OpenPoolChildResult>
+/** How long one child lives; see `OpenPoolChildResult`. */
+export type PoolChildLifetime = 'pool' | 'warm' | 'resident'
+
+/**
+ * Opening one child is the caller's job: `src/pool` may not read a registry.
+ * `start.deadline` is the start's ONE deadline (BU1): a caller that waits for
+ * a server someone else is starting waits no longer than this.
+ */
+export type OpenPoolChild = (server: string, start: { readonly deadline: number }) => Promise<OpenPoolChildResult>
 
 /** A claim on one child slot, released once the child is counted or refused. */
 export interface PoolChildReservation {
@@ -48,19 +88,43 @@ export interface PoolChildReservation {
 
 /** What happened to one membership of the pool; goes straight to the journal. */
 export type PoolChildEvent =
-  | { readonly event: 'attach'; readonly server: string; readonly childSessionId: string }
+  | {
+      readonly event: 'attach'
+      readonly server: string
+      readonly childSessionId: string
+      readonly lifetime: PoolChildLifetime
+    }
   | { readonly event: 'attach-refused'; readonly server: string; readonly reason: string }
   | { readonly event: 'detach'; readonly server: string; readonly reason: string }
+
+/** What `negotiate` is told about one start. */
+export interface NegotiationContext {
+  /** Which negotiation the registry record asks for (RV1). */
+  readonly hint: UpstreamRevisionHint
+  /** The start's ONE deadline (BU1), shared with the open that came before. */
+  readonly deadline: number
+}
 
 export interface PoolChildrenDeps {
   readonly openChild: OpenPoolChild
   /**
    * Introduces the plane to a freshly opened child (`handshake.ts`). It runs
    * BEFORE the child becomes routable, so a `tools/call` can never reach an
-   * upstream that has not been initialized; `false` means the server did not
-   * come up, and the pool opens without it (PE6).
+   * upstream that has not been initialized; a failure means the server did
+   * not come up, and the pool opens without it (PE6).
    */
-  readonly handshake: (child: PoolChild) => Promise<boolean>
+  readonly negotiate: (child: PoolChild, ctx: NegotiationContext) => Promise<NegotiationOutcome>
+  /** Who the plane says it is to a stateless member, stamped on every frame (RV3). */
+  readonly clientInfo: StatelessClientMeta
+  /** How long one start may take in all, open and handshake together (BU1). */
+  readonly startTimeoutMs: number
+  readonly now?: () => number
+  /**
+   * The child died before it was routed: ends the start's waits at once
+   * rather than at the deadline (BU2). The caller owns the fan-out and the
+   * correlator, so it is the caller that lets go of them.
+   */
+  readonly abandonStart: (server: string) => void
   /**
    * Claims room for one more child, or `null` when there is none. `held` is what
    * this pool already has plus what it is opening.
@@ -88,10 +152,13 @@ export interface PoolChildren {
   childOf(server: string): PoolChild | undefined
   /** Opens every granted server not yet up (PE7, lazy). Never throws, never rejects. */
   ensure(granted: readonly string[]): Promise<void>
-  /** Closes one child and forgets it, reporting the reason. Absent server: no-op. */
-  detach(server: string, reason: string): Promise<void>
-  /** Closes everything. Idempotent; nothing opens afterwards. */
-  closeAll(): Promise<void>
+  /**
+   * Closes one child and forgets it, reporting the reason. Absent server:
+   * no-op. `dirty` = the pool still had requests in flight there (RS5).
+   */
+  detach(server: string, reason: string, options?: { readonly dirty?: boolean }): Promise<void>
+  /** Closes everything, each child dirty or not by `dirtyOf`. Idempotent; nothing opens afterwards. */
+  closeAll(options?: { readonly dirtyOf?: (server: string) => boolean }): Promise<void>
 }
 
 /** The refusal reason for a pool that has reached its own ceiling. */
@@ -100,8 +167,8 @@ const POOL_FULL_REASON = 'pool-full'
 /** The detach reason for a child whose own session ended under us. */
 const CHILD_ENDED_REASON = 'child-ended'
 
-/** The refusal reason for an upstream that would not complete the handshake. */
-const HANDSHAKE_FAILED_REASON = 'handshake-failed'
+/** The refusal reason for a child whose process or connection died mid-start (BU2). */
+const ENDED_DURING_START_REASON = 'ended-during-start'
 
 export function createPoolChildren(deps: PoolChildrenDeps): PoolChildren {
   /** Replaced whole on every change (IMMUTABLE_STATE_SWAP), never mutated. */
@@ -124,12 +191,21 @@ export function createPoolChildren(deps: PoolChildrenDeps): PoolChildren {
     return child
   }
 
+  const now = deps.now ?? Date.now
+
   async function openOne(server: string, reservation: PoolChildReservation): Promise<void> {
     /** Set once this instance is in the table; see `isCurrentInstance`. */
     let isRouted = false
+    /** True while the plane's introduction is still waiting (BU2). */
+    let isStarting = true
+    /** Set when the child's source ended during its start (BU2). */
+    let hasEnded = false
+    // Taken BEFORE the open: the owner's budget is "start plus handshake", and
+    // the spawn is part of the start (BU1).
+    const deadline = now() + deps.startTimeoutMs
     let result: OpenPoolChildResult
     try {
-      result = await deps.openChild(server)
+      result = await deps.openChild(server, { deadline })
     } catch (error: unknown) {
       // A server that blew up is a server that is not there. Letting this
       // escape would take the agent's whole `tools/list` down with it.
@@ -157,8 +233,8 @@ export function createPoolChildren(deps: PoolChildrenDeps): PoolChildren {
      * first — and it is here because only this module can tell the two
      * instances apart.
      */
-    const isCurrentInstance = (): boolean =>
-      !isRouted || routeOf(table, server) === result.child
+    let member: PoolChild = result.child
+    const isCurrentInstance = (): boolean => !isRouted || routeOf(table, server) === member
 
     // Registered BEFORE anything else awaits: a handler attached after an
     // await silently loses whatever the source emitted meanwhile — the lesson
@@ -169,21 +245,44 @@ export function createPoolChildren(deps: PoolChildrenDeps): PoolChildren {
       }
     })
     result.source.onEnd(() => {
-      void detachRoute(server, CHILD_ENDED_REASON)?.close()
+      if (!isRouted) {
+        // Dead before it was a member: nothing to detach, but the start is
+        // waiting on an answer that will never come (BU2). An end AFTER the
+        // start gave up is the close below, and changes nothing.
+        if (isStarting) {
+          hasEnded = true
+          deps.abandonStart(server)
+        }
+        return
+      }
+      void detachRoute(server, result.departureReason?.() ?? CHILD_ENDED_REASON)?.close()
     })
 
-    const isReady = await deps.handshake(result.child)
-    if (!isReady || isClosed) {
+    const outcome: NegotiationOutcome =
+      result.negotiated !== undefined
+        ? { ok: true, discipline: result.negotiated }
+        : await deps.negotiate(result.child, {
+            hint: result.revisionHint ?? 'legacy-first',
+            deadline,
+          })
+    isStarting = false
+    // Judged BEFORE the close: closing ends the source too, and that end is
+    // not the reason the start failed.
+    const failure = hasEnded ? ENDED_DURING_START_REASON : outcome.ok ? null : outcome.reason
+    if (!outcome.ok || failure !== null || isClosed) {
       await result.child.close()
-      if (!isClosed) {
-        deps.onEvent({ event: 'attach-refused', server, reason: HANDSHAKE_FAILED_REASON })
+      if (!isClosed && failure !== null) {
+        deps.onEvent({ event: 'attach-refused', server, reason: failure })
       }
       return
     }
 
-    table = withRoute(table, server, result.child)
+    // Wrapped only now: the handshake itself must not be stamped (RV3).
+    member =
+      outcome.discipline.model === 'stateless' ? statelessMember(result.child, deps.clientInfo) : result.child
+    table = withRoute(table, server, member)
     isRouted = true
-    deps.onEvent({ event: 'attach', server, childSessionId: result.child.sessionId })
+    deps.onEvent({ event: 'attach', server, childSessionId: member.sessionId, lifetime: result.lifetime ?? 'pool' })
   }
 
   function startOpen(server: string, reservation: PoolChildReservation): Promise<void> {
@@ -229,8 +328,8 @@ export function createPoolChildren(deps: PoolChildrenDeps): PoolChildren {
       await Promise.allSettled(pending)
     },
 
-    async detach(server: string, reason: string): Promise<void> {
-      await detachRoute(server, reason)?.close()
+    async detach(server: string, reason: string, options?: { readonly dirty?: boolean }): Promise<void> {
+      await detachRoute(server, reason)?.close(options?.dirty === true ? { dirty: true } : undefined)
     },
 
     /**
@@ -242,11 +341,15 @@ export function createPoolChildren(deps: PoolChildrenDeps): PoolChildren {
      * pipe being torn down would reach nobody. Every OTHER departure does
      * report, which is what `releaseServer` hangs off.
      */
-    async closeAll(): Promise<void> {
+    async closeAll(options?: { readonly dirtyOf?: (server: string) => boolean }): Promise<void> {
       isClosed = true
-      const live = serversOf(table).map((server) => routeOf(table, server))
+      const live = serversOf(table).map((server) => ({ server, child: routeOf(table, server) }))
       table = emptyRouteTable<PoolChild>()
-      await Promise.allSettled(live.map((child) => child?.close()))
+      await Promise.allSettled(
+        live.map(({ server, child }) =>
+          child?.close(options?.dirtyOf?.(server) === true ? { dirty: true } : undefined),
+        ),
+      )
     },
   })
 }

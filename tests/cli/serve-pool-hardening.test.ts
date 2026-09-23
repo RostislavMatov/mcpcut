@@ -210,14 +210,21 @@ describe('an upstream that asks the agent a question', () => {
     const pool = await openPool(fixture)
     await pool.call({ jsonrpc: '2.0', id: 2, method: 'tools/list' })
 
+    // The fixture asks right after its handshake. A stdio server is a HELD
+    // session now (ADR-0016), negotiated before any pool attaches: a frame
+    // that arrives with nobody attached is journaled by that session itself
+    // and relayed to no one (RS1), and the pool's own `dropped` note appears
+    // only when the attach happened first. The session's record is the one
+    // that is always there — which is what "never silently lost" means.
     await waitUntil(async () => {
       const records = await fixture.journalRecords()
       return records.some(
         (record) =>
-          record.kind === 'pool' &&
-          (record.payload as { reason?: string }).reason === 'server-request',
+          record.kind === 'request' &&
+          record.direction === 'server→client' &&
+          record.method === 'sampling/createMessage',
       )
-    }, 'a record of the dropped server request')
+    }, 'the child session’s record of the server request')
   })
 })
 

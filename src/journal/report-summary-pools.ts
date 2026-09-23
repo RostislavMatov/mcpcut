@@ -6,6 +6,7 @@ import {
   type ReportPoolSession,
   type ReportPoolTally,
 } from './report-pools.js'
+import type { ReportOutsideLinks } from './report-pool-links.js'
 import type { ReportManifest } from './report.js'
 
 /**
@@ -37,21 +38,34 @@ export const POOL_NAMING_NOTE =
 export interface PoolSectionInput {
   readonly pools: ReportPoolTally
   readonly manifest: Pick<ReportManifest, 'scope' | 'sessionIds' | 'records'>
+  /** Pool sessions that attached the exported session, found OUTSIDE the export (D2). */
+  readonly outside?: ReportOutsideLinks
 }
+
+/** Pool session ids a heading names before it only counts the rest (EX3). */
+const MAX_HEADING_POOL_IDS = 8
+
+/** Lifetimes worth naming on an attach: the held ones (ADR-0016, RS9). */
+const HELD_LIFETIMES: ReadonlySet<string> = new Set(['warm', 'resident'])
 
 /** The whole "Pool sessions" section, ending with a blank line. */
 export function renderPoolSection(input: PoolSectionInput): readonly string[] {
   const { pools, manifest } = input
   const lines = ['## Pool sessions', '']
+  const outside = input.outside
+  const hasOutside = outside !== undefined && hasAnyOutside(outside)
   if (pools.sessions.length === 0) {
-    lines.push('This export holds no pool session records.', '')
+    lines.push(`This export holds no pool session records${hasOutside ? ' of its own' : ''}.`, '')
   } else {
     lines.push(POOL_NAMING_NOTE, '')
-    const outside = childrenOutsideExport(pools, manifest)
+    const childrenNotExported = childrenOutsideExport(pools, manifest)
     for (const session of pools.sessions) {
       const isScoped = manifest.scope.session === session.sessionId
-      lines.push(...sessionBlock(session, isScoped ? outside : []))
+      lines.push(...sessionBlock(session, isScoped ? childrenNotExported : []))
     }
+  }
+  if (hasOutside && manifest.scope.session !== null) {
+    lines.push(...outsideBlock(manifest.scope.session, outside, manifest.records.file))
   }
   if (pools.omittedRecordCount > 0) {
     lines.push(
@@ -104,8 +118,43 @@ function instantText(ts: string | undefined, event: 'open' | 'close'): string {
 function attachedText(session: ReportPoolSession): string {
   if (session.children.length === 0) return '(none)'
   return session.children
-    .map((child) => `${inlineValue(child.serverName)} → ${inlineValue(child.childSessionId)}`)
+    .map((child) => `${inlineValue(child.serverName)} → ${inlineValue(child.childSessionId)}${lifetimeText(child.lifetime)}`)
     .join('; ')
+}
+
+/** ` (resident)` or ` (warm)` for a held session; nothing for a pool's own child. */
+function lifetimeText(lifetime: string | undefined): string {
+  return lifetime !== undefined && HELD_LIFETIMES.has(lifetime) ? ` (${lifetime})` : ''
+}
+
+function hasAnyOutside(outside: ReportOutsideLinks): boolean {
+  return outside.links.length > 0 || outside.omittedCount > 0 || outside.unreadableCount > 0 || outside.isScanCapped
+}
+
+/**
+ * D2 (EX2): the pool sessions that attached a session exported ALONE, from
+ * records this export does not hold — and a plain statement that nothing
+ * about the export vouches for them.
+ */
+function outsideBlock(session: string, outside: ReportOutsideLinks, recordsFile: string): readonly string[] {
+  const lines = [`### Pool membership of session ${inlineValue(session)} (from records outside this export)`, '']
+  for (const link of outside.links) {
+    lines.push(
+      `- pool session ${inlineValue(link.poolSessionId)} — agent ${inlineValue(link.agentName)}, server ` +
+        `${inlineValue(link.serverName)}, attached at ${inlineValue(link.attachedAt)} (record seq ${link.seq})` +
+        lifetimeText(link.lifetime),
+    )
+  }
+  if (outside.omittedCount > 0) lines.push(`- ${outside.omittedCount} further pool session(s) attached it; not listed.`)
+  if (outside.unreadableCount > 0) lines.push(`- ${outside.unreadableCount} pool record(s) naming it could not be read.`)
+  if (outside.isScanCapped) lines.push('- The lookup stopped early; there may be more.')
+  lines.push(
+    '',
+    `These records are NOT in ${recordsFile}: neither its digest nor the chain covers them. To check ` +
+      'them, export one of those pool sessions (`--session <pool session>`) or the whole journal.',
+    '',
+  )
+  return lines
 }
 
 function notesText(notes: readonly ReportPoolServerNote[]): string {
@@ -116,18 +165,44 @@ function notesText(notes: readonly ReportPoolServerNote[]): string {
 
 /**
  * The note appended to a child session's decision heading: which server and
- * pool session it belongs to. Two claims on one child are a forgery or a bug,
- * and both are named rather than one picked. Empty for a session no pool named.
+ * pool session(s) it belongs to. Empty for a session no pool named.
+ *
+ * Several claims are the norm for a HELD session (ADR-0016, EX3): one process
+ * of one agent's server, attached by that agent's pool sessions one after
+ * another. Claims that disagree on the agent or the server are still a forgery
+ * or a bug, and all of them are named rather than one picked. `outside` says
+ * the claims were read from records this export does not hold (D2).
  */
-export function childHeadingNote(bindings: readonly ReportChildBinding[] | undefined): string {
+export function childHeadingNote(
+  bindings: readonly ReportChildBinding[] | undefined,
+  options: { readonly outside?: boolean } = {},
+): string {
   if (bindings === undefined || bindings.length === 0) return ''
-  const [only] = bindings
-  if (bindings.length === 1 && only !== undefined) {
+  const where = options.outside === true ? '; from records outside this export' : ''
+  const [first] = bindings
+  if (first === undefined) return ''
+  const agents = first.agentNames.map(inlineValue).join(', ')
+  if (bindings.length === 1) {
+    return ` — server ${inlineValue(first.serverName)}, pool session ${inlineValue(first.poolSessionId)} (agent ${agents}${where})`
+  }
+  if (bindings.every((binding) => isSameHolder(binding, first))) {
+    const shown = bindings.slice(0, MAX_HEADING_POOL_IDS).map((binding) => inlineValue(binding.poolSessionId))
+    const more = bindings.length > MAX_HEADING_POOL_IDS ? `, … (+${bindings.length - MAX_HEADING_POOL_IDS} more)` : ''
     return (
-      ` — server ${inlineValue(only.serverName)}, pool session ${inlineValue(only.poolSessionId)} ` +
-      `(agent ${only.agentNames.map(inlineValue).join(', ')})`
+      ` — server ${inlineValue(first.serverName)}, agent ${agents}, attached by ${bindings.length} pool sessions: ` +
+      `${shown.join(', ')}${more}${where}`
     )
   }
   const pools = bindings.map((binding) => inlineValue(binding.poolSessionId)).join(', ')
-  return ` — claimed by ${bindings.length} pool sessions: ${pools}`
+  return ` — claimed by ${bindings.length} pool sessions: ${pools}${where}`
+}
+
+/** One server, one and the same single agent: what repeated attaches of a held session look like. */
+function isSameHolder(binding: ReportChildBinding, first: ReportChildBinding): boolean {
+  return (
+    binding.serverName === first.serverName &&
+    binding.agentNames.length === 1 &&
+    first.agentNames.length === 1 &&
+    binding.agentNames[0] === first.agentNames[0]
+  )
 }

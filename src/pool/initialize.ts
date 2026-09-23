@@ -109,28 +109,46 @@ export interface UpstreamInitializeInfo {
 }
 
 /**
- * Reads one upstream's `initialize` result. `null` whenever the revision is
- * not one the plane supports (or not a string at all): the caller treats that
- * exactly like a server that never came up — the pool opens without it (PE6),
- * which is less access, not more.
+ * How one upstream answered the plane's `initialize` (RV2):
+ *
+ *  - `sessionful` — a revision the plane has a handshake for;
+ *  - `other-revision` — a result naming any other revision (2026-07-28, or a
+ *    future one): not a server that is down, but one to ask `server/discover`;
+ *  - `error` — a JSON-RPC error: a server that speaks only the new revision
+ *    answers the handshake this way (`-32022`), and any error at all leads to
+ *    discover, because the spec forbids keying the fallback to one code;
+ *  - `unreadable` — anything else, which is a server that did not come up.
  */
-export function readUpstreamInitializeResult(raw: string): UpstreamInitializeInfo | null {
+export type UpstreamInitializeReply =
+  | { readonly kind: 'sessionful'; readonly info: UpstreamInitializeInfo }
+  | { readonly kind: 'other-revision'; readonly protocolVersion: string }
+  | { readonly kind: 'error' }
+  | { readonly kind: 'unreadable' }
+
+export function readUpstreamInitializeReply(raw: string): UpstreamInitializeReply {
   const parsed = tryParseObject(raw)
-  if (parsed === null) return null
+  if (parsed === null) return { kind: 'unreadable' }
 
   const result = parsed['result']
-  if (!isPlainObject(result)) return null
+  if (!isPlainObject(result)) {
+    return 'error' in parsed ? { kind: 'error' } : { kind: 'unreadable' }
+  }
 
   const protocolVersion = result['protocolVersion']
-  if (typeof protocolVersion !== 'string') return null
-  if (!SESSIONFUL_PROTOCOL_VERSIONS.some((version) => version === protocolVersion)) return null
+  if (typeof protocolVersion !== 'string') return { kind: 'unreadable' }
+  if (!SESSIONFUL_PROTOCOL_VERSIONS.some((version) => version === protocolVersion)) {
+    return { kind: 'other-revision', protocolVersion }
+  }
 
   const capabilities = result['capabilities']
   const declared = isPlainObject(capabilities) ? capabilities : {}
 
   return {
-    protocolVersion,
-    hasTools: isPlainObject(declared['tools']),
-    hasPrompts: isPlainObject(declared['prompts']),
+    kind: 'sessionful',
+    info: {
+      protocolVersion,
+      hasTools: isPlainObject(declared['tools']),
+      hasPrompts: isPlainObject(declared['prompts']),
+    },
   }
 }

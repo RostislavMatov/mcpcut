@@ -1,96 +1,67 @@
 import { describe, expect, test } from 'vitest'
-import {
-  createSessionManager,
-  type SessionContext,
-  type SessionManagerOptions,
-} from '../../../src/transport/http/session.js'
-import {
-  createFakeSessionFactory,
-  testDetectInitialize,
-  testExpectsResponse,
-  INITIALIZE_BODY,
-  type FakeSessionFactory,
-} from './front-harness.js'
+import { createSlotCounter } from '../../../src/transport/http/session-slots.js'
 
 /**
- * Sessions this manager did not open but which share its budget (plan
- * decision P5).
- *
- * A pool session is one session to this manager and N upstreams to the
- * process: each child costs a spawned server or an open HTTP client exactly
- * like a per-server session does. Without this hook one agent with broad
- * grants would walk straight past `maxSessions`, and the cap would only ever
- * have bounded the sessions that were cheapest to hold.
+ * The concurrency cap as reservations, with a way to make room (RS7): an idle
+ * warm server outside the manager's view may give its slot to a new session.
  */
 
-const CTX: SessionContext = { agentName: 'bot', serverName: 'github' }
+describe('createSlotCounter', () => {
+  test('reserves while there is room, and refuses at the cap', () => {
+    const slots = createSlotCounter(2, () => 0)
 
-interface Managed {
-  readonly manager: ReturnType<typeof createSessionManager>
-  readonly factory: FakeSessionFactory
-}
-
-function createManager(overrides: Partial<SessionManagerOptions> = {}): Managed {
-  const factory = createFakeSessionFactory()
-  const manager = createSessionManager({
-    openSession: factory.openSession,
-    detectInitialize: testDetectInitialize,
-    expectsResponse: testExpectsResponse,
-    ...overrides,
+    expect(slots.reserve()).not.toBeNull()
+    expect(slots.reserve()).not.toBeNull()
+    expect(slots.reserve()).toBeNull()
   })
-  return { manager, factory }
-}
 
-describe('extraSessions', () => {
-  test('refuses the very first open when the extra count already fills the cap', async () => {
-    // Arrange — the pool's children have taken every slot in the process.
-    const managed = createManager({ maxSessions: 2, extraSessions: () => 2 })
+  test('a full budget asks `reclaim`, and a freed slot is taken', () => {
+    // Arrange
+    let outside = 2
+    const slots = createSlotCounter(2, () => outside, () => {
+      outside -= 1
+      return true
+    })
 
     // Act
-    const plan = await managed.manager.handlePost(CTX, {}, Buffer.from(INITIALIZE_BODY))
+    const slot = slots.reserve()
 
     // Assert
-    expect(plan.status).toBe(429)
-    expect(plan.body?.toString('utf8')).toContain('too-many-sessions')
-    await managed.manager.close()
+    expect(slot).not.toBeNull()
+    expect(slots.reserved()).toBe(1)
   })
 
-  test('leaves room for exactly the slots the extras do not hold', async () => {
-    let children = 0
-    const managed = createManager({ maxSessions: 3, extraSessions: () => children })
+  test('`reclaim` that frees nothing leaves the refusal', () => {
+    const slots = createSlotCounter(1, () => 1, () => false)
 
-    const first = await managed.manager.handlePost(CTX, {}, Buffer.from(INITIALIZE_BODY))
-    expect(first.status).toBe(200)
-
-    // The session just opened spawns two children of its own.
-    children = 2
-    const second = await managed.manager.handlePost(CTX, {}, Buffer.from(INITIALIZE_BODY))
-
-    expect(second.status).toBe(429)
-    await managed.manager.close()
+    expect(slots.reserve()).toBeNull()
   })
 
-  test('behaves exactly as before when nothing extra is declared', async () => {
-    // The regression gate: every per-server front in the product passes no
-    // `extraSessions`, and their ceiling must not move by one.
-    const managed = createManager({ maxSessions: 1 })
+  test('`reclaim` that says it freed a slot but did not is not believed', () => {
+    const slots = createSlotCounter(1, () => 1, () => true)
 
-    const first = await managed.manager.handlePost(CTX, {}, Buffer.from(INITIALIZE_BODY))
-    const second = await managed.manager.handlePost(CTX, {}, Buffer.from(INITIALIZE_BODY))
-
-    expect(first.status).toBe(200)
-    expect(second.status).toBe(429)
-    await managed.manager.close()
+    expect(slots.reserve()).toBeNull()
   })
 
-  test('counts the extras in the reported active session count', async () => {
-    // `activeSessionCount()` is what an operator reads to understand the
-    // ceiling; reporting a number the cap does not use would be a lie.
-    const managed = createManager({ maxSessions: 8, extraSessions: () => 3 })
+  test('`reclaim` is not asked while there is room', () => {
+    let asked = 0
+    const slots = createSlotCounter(2, () => 0, () => {
+      asked += 1
+      return true
+    })
 
-    await managed.manager.handlePost(CTX, {}, Buffer.from(INITIALIZE_BODY))
+    slots.reserve()
 
-    expect(managed.manager.activeSessionCount()).toBe(4)
-    await managed.manager.close()
+    expect(asked).toBe(0)
+  })
+
+  test('without `reclaim` it behaves as before', () => {
+    const slots = createSlotCounter(1, () => 0)
+    const slot = slots.reserve()
+
+    expect(slots.reserve()).toBeNull()
+    slot?.release()
+    slot?.release()
+    expect(slots.reserve()).not.toBeNull()
   })
 })

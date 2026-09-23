@@ -13,10 +13,10 @@ import {
 } from '../../src/pool/constants.js'
 import { createPoolCorrelator } from '../../src/pool/correlator.js'
 import { createPoolFanout } from '../../src/pool/fanout.js'
-import { performUpstreamHandshake } from '../../src/pool/handshake.js'
+import { negotiateUpstream } from '../../src/pool/handshake.js'
 import { createPoolMultiplexer, type PoolMultiplexer } from '../../src/pool/multiplexer.js'
 import type { PoolWatch } from '../../src/pool/watch.js'
-import { serverMessage, type MessageSink, type MessageSource } from '../../src/transport/message.js'
+import { clientMessage, serverMessage, type MessageSink, type MessageSource } from '../../src/transport/message.js'
 
 /**
  * The whole dispatch, on fake child sessions and no IO at all.
@@ -136,14 +136,29 @@ function createHarness(
   const fanout = createPoolFanout({
     correlator,
     timeoutMs: options.timeoutMs ?? FANOUT_BUDGET_MS,
-    onTimeout: (server) => void children.detach(server, 'fanout-timeout'),
+    onTimeout: (server, tag) => {
+      if (tag !== 'initialize') void children.detach(server, 'fanout-timeout')
+    },
   })
   const children = createPoolChildren({
     openChild,
     // The real handshake against the fake upstreams below, so the dispatch
     // tests exercise the same attach path the product does.
-    handshake: async (child) =>
-      (await performUpstreamHandshake(fanout, child, PLANE_VERSION)) !== null,
+    negotiate: (child, start) =>
+      negotiateUpstream({
+        ask: (tag, buildLine, timeoutMs) => fanout.ask(child, tag, buildLine, { timeoutMs }),
+        notify: (line) => child.sink.write(clientMessage(Buffer.from(line, 'utf8'))),
+        hint: start.hint,
+        deadline: start.deadline,
+        now: Date.now,
+        planeVersion: PLANE_VERSION,
+      }),
+    clientInfo: { name: 'mcpcut-pool', version: PLANE_VERSION },
+    startTimeoutMs: 40_000,
+    abandonStart: (server) => {
+      fanout.abandon(server)
+      correlator.dropServer(server)
+    },
     reserveChild: (held) => (held < MAX_POOL_CHILD_SESSIONS ? { release: () => undefined } : null),
     onEvent: (event) => {
       records.push({ agentName: 'bot', ...event } as PoolRecordInfo)
