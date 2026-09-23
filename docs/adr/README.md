@@ -1,5 +1,11 @@
 # Architecture Decision Records
 
+> **In English.** These records are written in Russian. Each one answers "why this way and not
+> another" and names the conditions under which it is revisited. ADR-0007 (the evidentiary
+> journal) has an English translation: [0007-evidentiary-journal.en.md](0007-evidentiary-journal.en.md).
+> For an English overview of how the pieces fit together, and a one-line English title for every
+> record, start with [docs/ARCHITECTURE.md](../ARCHITECTURE.md).
+
 Решения, определяющие форму кода. Каждое ADR отвечает на «почему так, а не иначе» и называет
 условия, при которых решение пересматривается. Правка решения — правка его ADR, а не тихое
 изменение кода: несколько ADR прямо запрещают отдельные обратные ходы (например,
@@ -13,7 +19,7 @@
 | [0004](0004-admin-ui-architecture.md) | Admin UI: отдельный процесс, ноль зависимостей, именные админы с фикс. ролями | принято | 2026-08-11 |
 | [0005](0005-policy-source-resolution.md) | Источник политики определяется классом доверия входа, а не самим входом | принято | 2026-08-11 |
 | [0006](0006-storage-sqlite.md) | Хранилище: SQLite (`node:sqlite`, WAL), две базы, вместо файлов под локом | принято | 2026-08-13 |
-| [0007](0007-evidentiary-journal.md) | Доказательный журнал: хеш-цепочка и подпись главы (M5) | принято | 2026-08-18 |
+| [0007](0007-evidentiary-journal.md) ([en](0007-evidentiary-journal.en.md)) | Доказательный журнал: хеш-цепочка и подпись главы (M5) | принято | 2026-08-18 |
 | [0008](0008-server-probe-threat-model.md) | Активная проба MCP-сервера: состояние подключения ценой исполнения по обращению | принято | 2026-08-24 |
 | [0009](0009-policy-editing-and-hot-reload.md) | Политика редактируется из UI и CLI — файл остаётся файлом; горячая перезагрузка правил | принято | 2026-08-25 |
 | [0010](0010-server-groups.md) | Группы MCP-серверов — права пачкой, ключ остаётся персональным | принято | 2026-08-31 |
