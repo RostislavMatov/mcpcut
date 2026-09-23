@@ -985,6 +985,17 @@ describe('the agent pool core is traffic semantics, not an operator surface (ADR
       'src/pool/initialize.ts',
       'src/pool/route-table.ts',
       'src/pool/correlator.ts',
+      // Phase 3's effect layer. Listed for the same reason as the rest: the
+      // rule is derived from the DIRECTORY, so a new module is covered the
+      // moment it lands, and this list only stops the rule going vacuous.
+      'src/pool/children.ts',
+      'src/pool/fanout.ts',
+      'src/pool/handshake.ts',
+      'src/pool/catalog.ts',
+      'src/pool/watch.ts',
+      'src/pool/multiplexer.ts',
+      'src/pool/multiplexer-frames.ts',
+      'src/pool/errors.ts',
     ]) {
       expect(files).toContain(expected)
     }

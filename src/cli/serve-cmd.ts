@@ -1,7 +1,12 @@
 import { join } from 'node:path'
 import { parseArgs } from 'node:util'
 import { JOURNAL_DIR, SYSTEM_ENV_ALLOWLIST } from '../config.js'
+import {
+  MAX_CONCURRENT_SESSIONS,
+  POOL_ROUTE_TARGET,
+} from '../transport/http/server-constants.js'
 import { createEffectiveAgentReader } from '../agents/effective-reader.js'
+import { PRODUCT_VERSION } from '../brand.js'
 import { createAgentsStore, type AgentsStore } from '../agents/store.js'
 import type { JournalSinkOptions } from '../journal/sink.js'
 import { INVENTORY_FILE_NAME } from '../policy/inventory.js'
@@ -28,8 +33,12 @@ import { createVaultStore, type VaultStore } from '../vault/store.js'
 import { ulid } from 'ulid'
 import { MAX_TCP_PORT, SERVE_USAGE, type ServeCliIo } from './serve-constants.js'
 import { describeBindFailure } from './bind-failure.js'
-import { createServeHooks } from './serve-hooks.js'
+import { createChildSessionOpener, type ChildSessionDeps } from './serve-child.js'
+import { createServeHooks, poolResponseCorrelation } from './serve-hooks.js'
+import { createPoolSessionFactory } from './serve-pool.js'
+import { MAX_POOL_CHILD_SESSIONS } from '../pool/constants.js'
 import { createServeSessionFactory } from './serve-runtime.js'
+import { AGENT_REVOCATION_POLL_INTERVAL_MS } from '../session/constants.js'
 
 /**
  * `mcpcut serve` (M3 Task 13): the control plane's HTTP front for HTTP
@@ -90,6 +99,19 @@ export interface ServeCommandOptions {
   readonly clock?: () => number
   /** Agent revocation poll interval per session; defaults to the ≤5 s constant. */
   readonly revocationPollIntervalMs?: number
+  /**
+   * How long ONE upstream may take to answer a pool catalog fan-out before it
+   * is detached. Tests shorten it; nothing else should — `POOL_FANOUT_TIMEOUT_MS`
+   * is the value the product ships with.
+   */
+  readonly poolFanoutTimeoutMs?: number
+  /**
+   * Concurrently open sessions this front allows, counting a pool's children
+   * (plan decision P5). A test seam like the two above: driving the real
+   * ceiling would need 64 upstreams, and the point under test is that the
+   * children are COUNTED, not what the number is.
+   */
+  readonly maxSessions?: number
   readonly approvalsBaseDir?: string
   readonly inventoryStorePath?: string
   /** Signals that trigger a graceful shutdown. `[]` installs none (tests). */
@@ -335,10 +357,9 @@ function buildFront(
   const vault = opts.stores?.vault ?? createVaultStore({ journalDir, warn })
   const hooks = createServeHooks()
 
-  const openSession = createServeSessionFactory({
-    registry,
+  /** Everything both serve modes hand a session, per-server and pooled alike. */
+  const shared: ChildSessionDeps = {
     agents: agentReader,
-    handoff: hooks.handoff,
     policy,
     journalDir,
     approvalsBaseDir: opts.approvalsBaseDir ?? join(journalDir, 'approvals'),
@@ -360,11 +381,104 @@ function buildFront(
     ...(opts.journalCommitBatchImpl !== undefined
       ? { journalCommitBatchImpl: opts.journalCommitBatchImpl }
       : {}),
+  }
+
+  const openPerServer = createServeSessionFactory({
+    ...shared,
+    registry,
+    handoff: hooks.handoff,
   })
 
-  return createHttpFront({
+  /**
+   * Child sessions of every live pool. They cost an upstream each, so the
+   * front's own ceiling has to see them (plan decision P5) — without this one
+   * agent with broad grants would walk straight past `MAX_CONCURRENT_SESSIONS`.
+   *
+   * Counting them is only half of it: the front reserves a slot when a
+   * top-level session OPENS, and a pool grows later, so the pool must also
+   * CLAIM before opening each child. `reserveChildSlot` below is that claim,
+   * and it is why the front is held in a variable — the factory is built
+   * before it.
+   */
+  let poolChildCount = 0
+  /**
+   * Child opens decided but not yet counted in `poolChildCount` — across EVERY
+   * pool, which is the point. `activeSessionCount()` sees a child only once its
+   * transport is up, so without a shared claim two pools growing at once each
+   * saw room and both took it. This is `createSlotCounter`'s discipline applied
+   * to the one budget that lives outside the session manager.
+   */
+  let poolChildrenOpening = 0
+  let front: HttpFront | null = null
+  const maxSessions = opts.maxSessions ?? MAX_CONCURRENT_SESSIONS
+
+  /**
+   * Claims one child slot against both ceilings, or refuses. Synchronous and
+   * cheap by contract: it runs inside the children registry's loop, before any
+   * await, exactly as the front's own `reserve()` does.
+   *
+   * No front yet means no. A pool can only be opened by a request the front
+   * accepted, so that is unreachable — but a ceiling whose unknown state reads
+   * as "room available" fails open, and this one bounds spawned processes.
+   */
+  function reserveChildSlot(held: number): { release(): void } | null {
+    if (front === null || held >= MAX_POOL_CHILD_SESSIONS) {
+      return null
+    }
+    if (front.activeSessionCount() + poolChildrenOpening >= maxSessions) {
+      return null
+    }
+    poolChildrenOpening += 1
+    let isReleased = false
+    return {
+      release: () => {
+        if (isReleased) return
+        isReleased = true
+        poolChildrenOpening -= 1
+      },
+    }
+  }
+  const openPool = createPoolSessionFactory({
+    ...shared,
+    registry,
+    handoff: hooks.handoff,
+    // One opener per pool session, each reporting the exact vault values its
+    // children were handed so that pool's own journal can redact by value.
+    childSessionOpenerFor: (onSecrets) =>
+      createChildSessionOpener({
+        ...shared,
+        upstream: {
+          ...shared.upstream,
+          resolveRefs: async (record) => {
+            const result = await shared.upstream.resolveRefs(record)
+            if (result.status === 'resolved') {
+              onSecrets(Object.values(result.values))
+            }
+            return result
+          },
+        },
+      }),
+    correlate: poolResponseCorrelation,
+    planeVersion: PRODUCT_VERSION,
+    revocationPollIntervalMs: opts.revocationPollIntervalMs ?? AGENT_REVOCATION_POLL_INTERVAL_MS,
+    onChildCountChange: (delta) => {
+      poolChildCount += delta
+    },
+    reserveChild: (held) => reserveChildSlot(held),
+    ...(opts.poolFanoutTimeoutMs !== undefined
+      ? { fanoutTimeoutMs: opts.poolFanoutTimeoutMs }
+      : {}),
+  })
+
+  front = createHttpFront({
     agentsStore: agentReader,
-    openSession,
+    maxSessions,
+    // The pool address arrives with a reserved `serverName` no registry name
+    // could ever be (`POOL_ROUTE_TARGET` starts with `_`), so one comparison
+    // separates the two modes with no second parse of the route.
+    openSession: (ctx) =>
+      ctx.serverName === POOL_ROUTE_TARGET ? openPool(ctx) : openPerServer(ctx),
+    extraSessions: () => poolChildCount,
     detectInitialize: hooks.detectInitialize,
     validateStatelessHeaders: hooks.validateStatelessHeaders,
     expectsResponse: hooks.expectsResponse,
@@ -372,6 +486,7 @@ function buildFront(
     allowedHosts: flags.allowedHosts,
     stderr: io.stderr,
   })
+  return front
 }
 
 /**

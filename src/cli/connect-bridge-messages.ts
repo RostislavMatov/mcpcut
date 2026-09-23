@@ -124,8 +124,8 @@ export function forbiddenMessage(origin: string): string {
 export function noEndpointMessage(origin: string, isPoolAddress: boolean): string {
   if (isPoolAddress) {
     return (
-      `the service at ${origin} serves no agent pool endpoint (HTTP 404). Older services expose ` +
-      `one address per pair — give the full address instead: ` +
+      `the service at ${origin} serves no agent pool endpoint (HTTP 404). A service older than ` +
+      `the pool exposes one address per pair — give the full address instead: ` +
       `${origin}/agents/<agent>/servers/<server>.\n`
     )
   }

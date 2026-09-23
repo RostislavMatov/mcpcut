@@ -26,6 +26,13 @@ const FIXTURES = join(__dirname, '../fixtures')
 export const POLICY_SERVER = join(FIXTURES, 'policy-server.mjs')
 export const ENV_ECHO_SERVER = join(FIXTURES, 'env-echo-server.mjs')
 export const HTTP_SESSIONFUL_FIXTURE = join(FIXTURES, 'http-server-sessionful.mjs')
+/**
+ * The one stdio fixture that answers a SESSIONFUL revision, which a pool's own
+ * handshake requires (ADR-0015 §4). Its tool names come from argv.
+ */
+export const POOL_SERVER = join(FIXTURES, 'pool-server.mjs')
+/** The fixture that misbehaves on purpose; `--mode` picks how (pool hardening). */
+export const POOL_HOSTILE_SERVER = join(FIXTURES, 'pool-hostile-server.mjs')
 export const HTTP_STATELESS_FIXTURE = join(FIXTURES, 'http-server-stateless.mjs')
 
 export const AGENT = 'research-bot'
@@ -61,9 +68,18 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-export async function waitUntil(predicate: () => boolean, what = 'condition'): Promise<void> {
+/**
+ * Polls until `predicate` holds. The predicate may be async: an `async`
+ * predicate returns a Promise, which is ALWAYS truthy, so a version that only
+ * accepted `boolean` silently returned at once and every assertion after it
+ * raced the thing it was waiting for. Awaiting is a no-op for a sync one.
+ */
+export async function waitUntil(
+  predicate: () => boolean | Promise<boolean>,
+  what = 'condition',
+): Promise<void> {
   const deadline = Date.now() + WAIT_TIMEOUT_MS
-  while (!predicate()) {
+  while (!(await predicate())) {
     if (Date.now() > deadline) throw new Error(`waitUntil: timed out waiting for ${what}`)
     await sleep(5)
   }

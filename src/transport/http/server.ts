@@ -11,7 +11,7 @@ import {
 } from '../../net/connection-timeouts.js'
 import { isHostAllowed, isWildcardBindHost, LOCALHOST_HOSTNAMES } from '../../net/origin-host.js'
 import { authenticate, type TokenResolver } from './auth.js'
-import { isOriginAllowed, parseRoute, type RouteMatch } from './routes.js'
+import { isOriginAllowed, parseRoute, type RouteMethod } from './routes.js'
 import {
   BODY_FORBIDDEN,
   BODY_INTERNAL,
@@ -27,6 +27,7 @@ import {
   KEEP_ALIVE_TIMEOUT_MS,
   MAX_REQUEST_BODY_BYTES,
   NON_LOCALHOST_BIND_WARNING,
+  POOL_ROUTE_TARGET,
   REQUEST_TIMEOUT_MS,
   WILDCARD_BIND_WARNING,
 } from './server-constants.js'
@@ -34,6 +35,7 @@ import { CONTENT_TYPE_JSON, HTTP_STATUS_NOT_FOUND } from './constants.js'
 import {
   createSessionManager,
   type ResponsePlan,
+  type SessionContext,
   type SessionManagerOptions,
 } from './session.js'
 
@@ -48,10 +50,17 @@ import {
  * 2. Origin present and not allowed → the same 403 (spec MUST).
  * 3. Authentication → uniform 401 (`auth.ts`) — BEFORE any route
  *    existence answer, so the name space cannot be scanned without a token.
- * 4. Route parse; no match, or a path naming a DIFFERENT agent than the
- *    token resolved to → 404 (a valid token buys visibility into exactly
- *    one agent's namespace, nobody else's).
+ * 4. Route parse; no match, or a PER-SERVER path naming a different agent
+ *    than the token resolved to → 404 (a valid token buys visibility into
+ *    exactly one agent's namespace, nobody else's). The pool path carries no
+ *    agent segment — the token alone names the agent (PE5) — so there is
+ *    nothing to compare, and the union makes that a type-level fact rather
+ *    than a rule to remember.
  * 5. Dispatch to the session manager.
+ *
+ * The pool route sits AFTER authentication like every other: an
+ * unauthenticated `GET /mcp` gets the same 401 as any path, so the endpoint's
+ * existence is never an oracle.
  *
  * Handler failures are caught: the response is a detail-free 500
  * `{"error":"internal"}` and the stderr line carries the error's class and
@@ -82,6 +91,13 @@ export interface HttpFront {
   close(): Promise<void>
   /** Timeouts of the live listener; `null` before `listen` (tests). */
   connectionTimeouts(): ConnectionTimeouts | null
+  /**
+   * Sessions occupying a slot right now: registered ones, opens in flight, and
+   * whatever `extraSessions` declares (a pool's children). Read by the pool
+   * factory so a pool that grows AFTER its own admission still respects the
+   * process-wide ceiling (plan decision P5).
+   */
+  activeSessionCount(): number
 }
 
 /** Body read outcome: the whole payload or an over-limit refusal. */
@@ -159,19 +175,19 @@ export function createHttpFront(opts: HttpFrontOptions): HttpFront {
   let bound: { readonly host: string; readonly port: number } | null = null
 
   async function dispatch(
-    route: RouteMatch,
+    method: RouteMethod,
+    ctx: SessionContext,
     req: IncomingMessage,
     res: ServerResponse,
   ): Promise<void> {
-    const ctx = { agentName: route.agentName, serverName: route.serverName }
-    if (route.method === 'GET') {
+    if (method === 'GET') {
       const outcome = manager.handleGet(ctx, req.headers, res)
       if (outcome !== 'attached') {
         writePlan(res, outcome)
       }
       return
     }
-    if (route.method === 'DELETE') {
+    if (method === 'DELETE') {
       writePlan(res, await manager.handleDelete(ctx, req.headers))
       return
     }
@@ -221,11 +237,15 @@ export function createHttpFront(opts: HttpFrontOptions): HttpFront {
       return
     }
     const route = parseRoute(req.method, req.url)
-    if (route === null || route.agentName !== auth.agent.name) {
+    if (route === null || (route.kind === 'server' && route.agentName !== auth.agent.name)) {
       writePlan(res, { status: HTTP_STATUS_NOT_FOUND, body: BODY_NOT_FOUND })
       return
     }
-    await dispatch(route, req, res)
+    const ctx: SessionContext =
+      route.kind === 'pool'
+        ? { agentName: auth.agent.name, serverName: POOL_ROUTE_TARGET }
+        : { agentName: route.agentName, serverName: route.serverName }
+    await dispatch(route.method, ctx, req, res)
   }
 
   function onRequest(req: IncomingMessage, res: ServerResponse): void {
@@ -302,5 +322,6 @@ export function createHttpFront(opts: HttpFrontOptions): HttpFront {
     listen,
     close,
     connectionTimeouts: () => (server === null ? null : readConnectionTimeouts(server)),
+    activeSessionCount: manager.activeSessionCount,
   })
 }

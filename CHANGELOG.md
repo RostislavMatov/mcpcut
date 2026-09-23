@@ -8,6 +8,42 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **One address per agent, and the service decides what is behind it: `POST|GET|DELETE /mcp`.**
+  An agent that connects to this single address sees the tools of **every**
+  server it was granted, named `<server>__<tool>`, and gets new ones without a
+  config edit or a restart on its machine. Behind the address the plane answers
+  `initialize` itself, brings one ordinary per-server session up per granted
+  server on the first `tools/list` (not before), merges their catalogs, strips
+  the prefix from a call and hands the frame to that server's session. Policy,
+  quarantine, approvals, provenance and the shape of a decision record are
+  unchanged — they are simply created N times, and every decision still records
+  the **bare** tool name, so a pooled call and a per-server call are
+  indistinguishable in the journal. The per-server addresses
+  (`/agents/<agent>/servers/<server>`) are untouched and keep working in the
+  same process.
+
+  A grant added or withdrawn while the agent is connected reaches it:
+  `notifications/tools/list_changed` goes out and the next list reflects it. A
+  withdrawn server leaves the pool while the session lives on, and any call in
+  flight at it gets exactly one answer (`-32005`). A server that will not come
+  up — unknown, protocol-mismatched, or one that will not complete the plane's
+  own handshake — is simply absent: the pool opens without it rather than
+  refusing, and the fact is journaled. Likewise a server that answers a
+  catalog fan-out too slowly is detached rather than allowed to hold up
+  everyone else's list.
+
+  The new `kind: 'pool'` journal record binds one pool session to the child
+  sessions underneath it (`open`, `attach`, `attach-refused`, `detach`,
+  `members-changed`, `dropped`, `close`), which is what ties a pooled call to
+  the per-server decision it produced. `mcpcut show <sessionId> --kind pool`
+  reads them.
+
+  Limits and refusals worth knowing: a pool serves tools and prompts only
+  (anything else is `-32601`); it issues no cursor, so one in a request is
+  `-32602`; an upstream's unsolicited request to the agent is dropped, because
+  the plane declares no client capabilities to any of them; a pool holds at
+  most 32 children, and those children count against the process-wide session
+  ceiling. ADR-0015 and its 2026-09-22 amendment.
 - **An agent on another machine connects with one command: `mcpcut connect
   --url <address>`.** The remote form of `connect` is pure transport between
   this machine's stdio and a `serve` front on another host — it reads no

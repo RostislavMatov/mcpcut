@@ -1,9 +1,11 @@
 import type { IncomingHttpHeaders } from 'node:http'
 import { classify } from '../protocol/classify.js'
 import { detectInitializeBytes, extractPerMessageHeaders } from '../protocol/mcp.js'
+import { idKeyOf } from '../proxy/gate-helpers.js'
 import type {
   DetectInitialize,
   ExpectsResponse,
+  ResponseCorrelation,
   StatelessValidation,
   ValidateStatelessHeaders,
 } from '../transport/http/session.js'
@@ -128,6 +130,31 @@ export function validateStatelessHeaders(
  */
 export function expectsResponse(bytes: Buffer): boolean {
   return classify(bytes.toString('utf8')).kind === 'request'
+}
+
+/**
+ * How the front pairs a POOL session's replies with its requests (ADR-0015
+ * phase 3, plan decision P1). Lives here for the same reason every other hook
+ * does: the key is a JSON-RPC `id`, and the transport must not learn what that
+ * is — it only compares the strings this returns.
+ *
+ * A request or response with no id (a notification, or garbage) correlates
+ * nothing, which the front reads as "owed no answer" and acknowledges with a
+ * 202. `idKeyOf` is the gate's own keying function, so an id is keyed
+ * identically wherever the plane tracks one.
+ */
+export const poolResponseCorrelation: ResponseCorrelation = Object.freeze({
+  keyOfRequest: (bytes: Buffer): string | null => correlationKeyOf(bytes, 'request'),
+  keyOfResponse: (bytes: Buffer): string | null => correlationKeyOf(bytes, 'response'),
+})
+
+/** The id key of a classified message of `kind`, or `null` when it has none. */
+function correlationKeyOf(bytes: Buffer, kind: 'request' | 'response'): string | null {
+  const message = classify(bytes.toString('utf8'))
+  if (message.kind !== kind || message.id === null) {
+    return null
+  }
+  return idKeyOf(message.id)
 }
 
 /** Builds the hook set for one `serve` run, sharing one model handoff. */

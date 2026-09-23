@@ -1,6 +1,7 @@
 import { PROMPTS_GET_METHOD, TOOLS_CALL_METHOD } from '../protocol/mcp.js'
 import { synthesizeError, type SynthesizableId } from '../proxy/synthesize.js'
-import { ERROR_CODE_UNKNOWN_POOL_TARGET, MAX_ERROR_NAME_CHARS } from './constants.js'
+import { ERROR_CODE_UNKNOWN_POOL_TARGET } from './constants.js'
+import { safeNameOf } from './errors.js'
 import { isPlainObject, tryParseObject } from './json.js'
 import { decodePoolName } from './name-codec.js'
 
@@ -80,21 +81,4 @@ export function unknownTargetError(id: SynthesizableId, poolName: string): Buffe
     message: `Unknown tool: ${safeNameOf(poolName)}`,
     data: { reason: 'unknown_pool_target', toolName: safeNameOf(poolName) },
   })
-}
-
-/**
- * Everything that could make this text read as something other than what the
- * agent actually asked for: C0 controls and DEL, bidi overrides and embeds,
- * and zero-width/invisible formatting characters. Then bounded in length.
- *
- * This is display hygiene for a string a human will read in the journal or the
- * console — the same concern as `ui/display-name.ts` (audit finding H2), which
- * this module cannot import and must not: the pool ADDRESSES names, it does
- * not render them, and the raw name is never altered on any routing path.
- */
-function safeNameOf(poolName: string): string {
-  return poolName
-    .replace(/[\u0000-\u001f\u007f]/g, '')
-    .replace(/[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, '')
-    .slice(0, MAX_ERROR_NAME_CHARS)
 }

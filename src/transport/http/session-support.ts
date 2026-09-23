@@ -29,10 +29,31 @@ export interface SessionContext {
   readonly serverName: string
 }
 
+/**
+ * How a session pairs replies with requests. A session that declares it may
+ * hold SEVERAL POSTs in flight at once; one that does not keeps the older rule
+ * ("the answer is the next message this session emits", one at a time).
+ *
+ * Both hooks take raw bytes, because this module must not learn JSON-RPC
+ * (ADR-0001). What a "key" means is the injector's business; the manager only
+ * ever compares them.
+ */
+export interface ResponseCorrelation {
+  /** Key of an outgoing request body, or `null` when it is owed no answer. */
+  keyOfRequest(bytes: Buffer): string | null
+  /** Key of an inbound payload, or `null` when it answers nothing. */
+  keyOfResponse(bytes: Buffer): string | null
+}
+
 /** A live upstream conversation produced by the injected factory. */
 export interface OpenedSession {
   readonly sink: MessageSink
   readonly source: MessageSource
+  /**
+   * Opt-in id correlation (pool sessions). Absent — the per-server case —
+   * means today's positional pairing, unchanged.
+   */
+  readonly correlate?: ResponseCorrelation
   close(): Promise<void>
 }
 
@@ -74,6 +95,16 @@ export interface SessionManagerOptions {
   readonly validateStatelessHeaders?: ValidateStatelessHeaders
   readonly expectsResponse?: ExpectsResponse
   readonly maxSessions?: number
+  /** Requests ONE correlating session may hold at once; default `MAX_CORRELATED_IN_FLIGHT`. */
+  readonly maxCorrelatedInFlight?: number
+  /**
+   * Sessions this manager did not open but which share its budget — a pool's
+   * children each cost an upstream exactly as a per-server session does.
+   *
+   * Semantics-free: the manager only adds the number. Read synchronously inside
+   * `reserve()`, before any await, so it must be cheap — a counter, not a store.
+   */
+  readonly extraSessions?: () => number
   readonly idleTtlMs?: number
   readonly sweepIntervalMs?: number
   readonly heartbeatIntervalMs?: number

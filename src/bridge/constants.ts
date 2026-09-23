@@ -8,9 +8,9 @@
 /**
  * The agent pool endpoint an address WITHOUT a path means (owner decision
  * PE5): the operator is handed a base — `https://plane.example:8090` — and
- * the path stays an internal detail nobody types. Until the pool endpoint
- * exists (PRD phase 3) this address honestly answers 404, and
- * `noEndpointMessage` says so in as many words.
+ * the path stays an internal detail nobody types. Served since PRD phase 3;
+ * an OLDER service still answers 404 there, which `noEndpointMessage`
+ * explains by pointing at the per-server form.
  */
 export const BRIDGE_POOL_PATH = '/mcp'
 

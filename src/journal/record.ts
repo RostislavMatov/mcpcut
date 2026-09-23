@@ -25,7 +25,7 @@ export type ClientServerDirection = 'client→server' | 'server→client'
 /** Every direction a journal record can carry, including server stderr. */
 export type JournalDirection = ClientServerDirection | 'server-stderr'
 
-/** Journal-specific kind: classify()'s kinds plus the synthetic 'stderr', 'decision', 'probe', 'policy-edit' and 'access-edit' kinds. */
+/** Journal-specific kind: classify()'s kinds plus the synthetic 'stderr', 'decision', 'probe', 'policy-edit', 'access-edit' and 'pool' kinds. */
 export type JournalKind =
   | ClassifiedMessage['kind']
   | 'stderr'
@@ -33,6 +33,7 @@ export type JournalKind =
   | 'probe'
   | 'policy-edit'
   | 'access-edit'
+  | 'pool'
 
 export type {
   DecisionInfo,
@@ -50,6 +51,12 @@ export type {
   ProbeRecordTrigger,
   ProbeRecordVia,
 } from './probe-record.js'
+
+export type {
+  PoolDropReason,
+  PoolEventKind,
+  PoolRecordInfo,
+} from './pool-record.js'
 
 export type {
   PolicyEditActor,
