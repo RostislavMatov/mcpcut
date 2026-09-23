@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "defaultDecision": "require-approval",
+  "classDefaults": { "read": "allow" },
+  "quarantine": { "enabled": false }
+}
