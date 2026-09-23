@@ -1,7 +1,7 @@
 # Смок: карточка сервера по `Servers.dc.html` (тулзы в модалке, состояние словом, релиз из карантина)
 
 **Статус: ПРОЙДЕН** (прогон 2026-08-27, ветка `feat/ui-mcpcut-redesign`; 4021 тест зелёный, `npm run lint` чист).
-Источник — экран `Servers.dc.html` дизайн-проекта `claude.ai/design/p/862ebc55-…`. Скриншоты — `docs/design/mcpcut/servers-tiles-state.png`, `servers-card-tools-row.png`, `servers-tools-modal.png`, `servers-tools-release.png`, `servers-tools-modal-nojs.png`.
+Источник — экран `Servers.dc.html` дизайн-проекта `claude.ai/design/p/862ebc55-…`. Скриншоты — `docs/design/mcpcut/servers-tiles-state.png`, `servers-card-tools-row.png`, `servers-tools-modal.png`, `servers-tools-release.png`, `servers-tools-modal-nojs.png` (в публичный репозиторий не входят: на них пути локальной машины).
 
 **Чем прогоняли:** живой стенд на подменённом `HOME` (реальный `~/.mcp-journal` не тронут), UI на порту 8097; управляемая stdio-фикстура `tests/fixtures/probe-server.mjs` (тулзы `read_note`/`write_note`) плюс заведомо недоступный http-сервер; браузер — headless Chromium скриптом (playwright из npx-кеша + `executablePath`, см. память `browser-smoke-without-mcp-gate`), в двух контекстах: с JavaScript и **с полностью выключенным JavaScript**.
 

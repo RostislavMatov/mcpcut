@@ -12,13 +12,14 @@ import { execFile } from 'node:child_process'
 import { readFile, readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { createApprovalQueue } from '<path-to-mcpcut>/dist/policy/approvals/queue.js'
+import { fileURLToPath } from 'node:url'
+import { createApprovalQueue } from '../dist/policy/approvals/queue.js'
 
 const PENDING_DIR = join(homedir(), '.mcpcut', 'approvals', 'pending')
 const queue = createApprovalQueue() // default baseDir: ~/.mcpcut/data/approvals
 const POLL_INTERVAL_MS = 2000
-const NODE_BIN = '/opt/homebrew/bin/node'
-const CLI_JS = '<path-to-mcpcut>/dist/cli.js'
+const NODE_BIN = process.execPath
+const CLI_JS = fileURLToPath(new URL('../dist/cli.js', import.meta.url))
 /** Dialog auto-dismiss; slightly under the gate's 60s approval wait. */
 const DIALOG_GIVE_UP_S = 50
 

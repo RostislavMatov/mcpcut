@@ -1,7 +1,7 @@
 # Смок: правила тулзов из карточки сервера + горячая перезагрузка политики
 
 **Статус: ПРОЙДЕН** (прогон 2026-08-26, ветка `feat/ui-mcpcut-redesign`, сборка рабочего дерева до `d53b49b`; 3971 тест зелёный).
-План — `.claude/plans/policy-tool-rules-ui.plan.md`, модель угроз и решения владельца — ADR-0009. Скриншот карточки — `docs/design/mcpcut/servers-tool-rules.png`.
+План — `.claude/plans/policy-tool-rules-ui.plan.md`, модель угроз и решения владельца — ADR-0009. Скриншот карточки — `docs/design/mcpcut/servers-tool-rules.png` (в публичный репозиторий не входит: на нём пути локальной машины).
 
 **Чем прогоняли:** живой стенд на подменённом `HOME` (реальный `~/.mcp-journal` не тронут), UI на порту 8098; управляемая stdio-фикстура `tests/fixtures/probe-server.mjs` (тулзы `read_note`/`write_note`); **живой агент** — настоящий `connect probe --agent bot`, говорящий JSON-RPC в stdin/stdout прокси; браузер — headless Chromium скриптом (playwright из npx-кеша + `executablePath`, см. память `browser-smoke-without-mcp-gate`), чтобы не гейтить каждый шаг dogfood-контуром.
 
