@@ -43,7 +43,7 @@ ui: listening on http://127.0.0.1:8097
 
 После шага 8 в каталоге данных нет `setup-code`; остались только `state.db*` и `journal.db*`.
 
-Скриншоты: `docs/design/mcpcut/setup-form.png`, `docs/design/mcpcut/setup-done.png`.
+Скриншоты: `docs/design/mcpcut/setup-form.png`, `docs/design/mcpcut/setup-done.png` (второй в публичный репозиторий не входит: на нём токен локальной установки).
 
 ## Находка смока
 
