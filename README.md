@@ -1307,9 +1307,10 @@ What the plane does behind that address:
 
 - **answers `initialize` itself** — at a pool address the plane *is* the server,
   and reports itself as `mcpcut`;
-- **brings one ordinary per-server session up per granted server**, on the first
-  `tools/list` and not before, so connecting costs nothing until the agent
-  actually looks;
+- **attaches one ordinary per-server session per granted server** — for a stdio
+  server, the one the plane already keeps running for this agent (see *What
+  keeps running* below); for an HTTP server, one opened on the first
+  `tools/list`;
 - **merges their catalogs**, naming each tool `<server>__<tool>` — servers in
   alphabetical order, so two connections of the same agent see the same list;
 - **strips the prefix before the frame reaches that server's session.** This is
@@ -1333,8 +1334,10 @@ $ mcpcut agent grant research-bot postgres --tools '*'
 ```
 
 **A server that will not come up does not take the pool with it.** Unknown to
-the registry, registered as stateless-only, or unable to complete the plane's
-own handshake — it is simply absent, and the reason is journaled. The same goes
+the registry, too slow to start (`start-timeout`), dead before it started
+(`ended-during-start`), or unable to complete the plane's introduction
+(`handshake-failed`) — it is simply absent, and the reason is journaled; a
+server that dies during its start is given up on at once, not at the deadline. The same goes
 for one that answers a catalog fan-out too slowly: it is detached rather than
 allowed to hold up everyone else's list. Less access, never a refusal.
 
@@ -1347,6 +1350,7 @@ Limits and refusals worth knowing about:
 | a tool name the pool does not hold | `-32602`, with the same text whether the server is unknown or outside this agent's grants |
 | a request id already in flight | `-32602` — two live requests under one id have no single answer |
 | more requests than the pool tracks | `-32006` — retry once one has answered |
+| a server answers a call with a result that is not finished (`resultType` `input_required`, 2026-07-28) | `-32007` — call the tool again; the pool runs no input round trips of its own |
 | a POST with no session and no `initialize` | 400 `{"error":"pool-sessionful-only"}` — the pool is sessionful-only for now |
 | `notifications/progress` from a server on a token the agent did not give **that server's** call — or after the call was answered | not passed on; the pool journals it once per server (`unscoped-notification`) |
 | a server's log lines, resource updates, or any other notification the pool never declared | not passed on — at a pool address a log line could not be told apart from another server's; each kind is journaled once per server (`unsupported-method`) and every one of them stays in that server's own session traffic |
@@ -1360,23 +1364,56 @@ past 47 characters too (`long pool name · <length>`) — clients that add a
 prefix of their own may shorten or refuse those. One pool holds at most 32 servers, and those child
 sessions count against `serve`'s process-wide session ceiling.
 
-**Register pooled servers by an installed binary, not `npx -y …`.** A pool
-starts its servers **in parallel**, on the agent's first `tools/list`, and each
-gets 10 seconds from its start to answer the plane's handshake and the list.
-On a small host several `npx -y` launches at once take longer than that (four
-at once took ~14 s each on a 2-CPU VPS in the smoke), so those servers are
-absent from the first list (journaled as `attach-refused`,
-`handshake-failed`); parallel `npx -y` of one package into a cold cache can
-also corrupt npm's own `_npx` cache. Install the server (`npm i -g
-@scope/server`, or into your image) and register its binary:
-`mcpcut server add memory --transport stdio --command mcp-server-memory`.
-The per-server address is not affected — there the agent's client waits for
-one process by itself.
+**What keeps running.** A stdio server granted to an agent is started by
+`serve` as soon as the grant exists — at the grant, or when `serve` starts —
+and stays up while the grant does, so the agent's first `tools/list` answers at
+once, however many servers it has and however slowly they start:
 
-An upstream registered with the stateless revision `2026-07-28` cannot join a
-pool: the plane opens a handshake of its own to each server, and that revision
-removed the handshake. Such a server works unchanged at its per-server address,
-where the plane forwards the agent's handshake instead of conducting one.
+| Server | Started | Kept | Stopped |
+|---|---|---|---|
+| stdio, granted, within the first 32 (agent, server) pairs — a **resident** | in the background at the grant or at `serve` start; at most two at once, and two with the same command line never at once | while the grant lasts; restarted after a pause if it dies (1 s, 2 s, 4 s … up to a minute; given up after five failed starts in a row) | within ~5 s of the grant going (after the agent lets go, if attached) |
+| stdio past those 32 — **warm** | on the agent's first `tools/list`, first in line | 10 minutes after the agent leaves (at most 32 idle at once) | when that runs out, or earlier when the service needs the slot |
+| HTTP | on the agent's first `tools/list` | while the pool session lives | with the pool session |
+
+A server is only ever handed to **its own** agent; another agent granted the
+same server gets a process of its own. Two clients of the same agent at once:
+the second gets a process of its own for as long as it stays. A rotated vault
+secret or an edited registry record restarts the server before the next agent
+gets it. `serve.log` shows every start, restart and stop
+(`[serve] resident research-bot/memory: ready (2025-11-25)`).
+
+A start may take up to **40 seconds** — spawn and the plane's introduction
+together — which matters after a restart of `serve`, for a warm server and for
+an HTTP one. **Register pooled servers by an installed binary rather than
+`npx -y …` all the same**: a resident costs memory for as long as it runs, and
+an installed binary starts in a fraction of the time (`npm i -g
+@scope/server`, then `mcpcut server add memory --transport stdio --command
+mcp-server-memory`).
+
+**Both protocol revisions join a pool.** The plane introduces itself to each
+server with a handshake first, and asks `server/discover` only when that is
+refused: a server that speaks only the stateless revision `2026-07-28` — stdio or
+HTTP — is a pool member next to older ones. Every frame the pool sends it carries
+the `_meta` that revision requires, in the plane's own name
+(`clientCapabilities: {}`), whatever the agent put there. An HTTP server pinned
+to `--protocol stateless` is asked only the new way. The agent itself still
+connects sessionful.
+
+Known limits of a pool:
+
+- **Kept servers cost memory with no agent connected.** That is the price of a
+  first list that answers at once; the cap (32) bounds it.
+- **Two agents granted one stdio server run two processes with one environment.**
+  A server that keeps data in a file named by its environment
+  (`MEMORY_FILE_PATH` and the like) writes into the same file for both. Isolate
+  by registration: one server entry per agent.
+- **A `2026-07-28` member does not announce catalog changes** (the plane does not
+  subscribe with `subscriptions/listen`); the agent sees them on its next
+  `tools/list`.
+- **An agent that speaks only `2026-07-28` cannot use the pool address yet** —
+  it gets `pool-sessionful-only`; its per-server addresses work.
+- **The pool answers `-32007` rather than relaying an `input_required` result**:
+  it runs no multi-round-trip requests of its own.
 
 `mcpcut show <sessionId> --kind pool` shows a pool session's own record — when it opened,
 which servers attached (each with the child session id its decisions are under),
@@ -1827,6 +1864,20 @@ decisions live in its children — so the command prints a `Note:` and the
 summary names the child sessions the export leaves out. Export the whole
 journal to include them.
 
+Exporting a **child** alone (`--session <child session id>`) still names the
+pool it belonged to: `summary.md` adds "Pool membership of session … (from
+records outside this export)" — each pool session that attached it, with its
+agent, server, time and the record's `seq` — read from the same snapshot as the
+export, and says plainly that these lines are **not** in `records.jsonl`, so
+neither its digest nor the chain vouches for them. Export one of those pool
+sessions, or the whole journal, to check them. stdout prints only
+`Note: session <id> was attached by <n> pool session(s) …`.
+
+A stdio server the plane keeps running for an agent (see *What keeps running*)
+is ONE child session across many connections, so its heading reads "attached
+by N pool sessions" — the norm for such a server, not a sign of forgery. Claims
+on one child from different agents or servers are still named as such.
+
 ### Checking a report offline
 
 ```
@@ -1977,11 +2028,10 @@ consistent as exported" — never "was never rewritten."
   are recorded by its child sessions, which `--session <pool>` does not
   include; the export says so (`Note:` on stdout, "Not in this export" in
   `summary.md`). Export the whole journal for the full picture.
-- **A child session exported alone does not say it belonged to a pool.** The
-  binding lives in the pool session's own records, which `--session <child>`
-  does not include, so that summary reads like any per-server session's
-  (bare tool names, no pool note). Export the whole journal to see which pool
-  and agent a child served.
+- **A child session's pool, in its own export, is read from outside it.** The
+  "Pool membership" lines of a `--session <child>` export come from the pool
+  sessions' records, which that export does not hold: they are marked as
+  such, and nothing in the export vouches for them.
 - **The report is history, not a statement of anyone's current rights.** It
   attests to what happened as of the `asOf` instant in `report.json`. A
   grant that was valid when a decision was made may have been revoked
