@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import type { ClientConfigDocument, HttpClientEntry, StdioClientEntry } from '../../src/agents/client-config.js'
 import { createAgentsStore } from '../../src/agents/store.js'
+import { PRODUCT_VERSION } from '../../src/brand.js'
 import { runAgentCommand } from '../../src/cli/agent-cmd.js'
 import { CLIENT_CONFIG_HEADING, CLIENT_CONFIG_PLACEHOLDER_NOTE } from '../../src/cli/agent-config-cmd.js'
 import { INSTALL_CONFIG_VERSION, SERVE_PORT_ENV_VAR } from '../../src/setup/constants.js'
@@ -112,6 +113,8 @@ describe('agent config: the block with <token>', () => {
     await configOf(['research-bot'], io, { install: installWithPublicUrl('https://plane.example:8443') })
 
     expect((blockOf(io.out()).mcpServers.mcpcut as StdioClientEntry).args).toEqual([
+      '-y',
+      `mcpcut@${PRODUCT_VERSION}`,
       'connect',
       '--url',
       'https://plane.example:8443',

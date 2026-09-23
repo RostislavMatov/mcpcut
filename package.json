@@ -1,18 +1,49 @@
 {
   "name": "mcpcut",
   "version": "0.1.0",
-  "description": "Transparent stdio proxy for MCP servers with a persistent, secret-redacted JSONL journal",
+  "description": "See every tool call your AI agent makes over MCP, hold the risky ones for your approval, and keep a secret-redacted journal that is tamper-evident with an external anchor. Self-hosted; grows into a control plane for many agents.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "mcp-proxy",
+    "ai-agents",
+    "observability",
+    "human-in-the-loop",
+    "approvals",
+    "audit-log",
+    "access-control",
+    "self-hosted"
+  ],
   "license": "Apache-2.0",
+  "author": "Rostislav Matov",
+  "homepage": "https://github.com/RostislavMatov/mcpcut#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RostislavMatov/mcpcut.git"
+  },
+  "bugs": {
+    "url": "https://github.com/RostislavMatov/mcpcut/issues"
+  },
   "type": "module",
   "bin": {
     "mcpcut": "./dist/cli.js"
   },
-  "main": "./dist/cli.js",
+  "files": [
+    "dist/**/*.js",
+    "dist/ui/assets/LICENSE-Silkscreen-OFL.txt",
+    "NOTICE",
+    "CHANGELOG.md",
+    "SECURITY.md"
+  ],
   "engines": {
     "node": ">=24"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "prebuild": "npm run clean",
+    "build": "tsc -p tsconfig.json && node -e \"require('node:fs').cpSync('src/ui/assets/LICENSE-Silkscreen-OFL.txt', 'dist/ui/assets/LICENSE-Silkscreen-OFL.txt')\"",
+    "prepack": "npm run build",
+    "prepublishOnly": "node tools/release/check-release.mjs",
     "test": "vitest run --coverage",
     "test:watch": "vitest",
     "lint": "tsc -p tsconfig.json --noEmit"

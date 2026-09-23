@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { ADMIN_TOKEN_ENV_VAR } from '../../src/admin/constants.js'
 import { createAdminStore } from '../../src/admin/store.js'
+import { PRODUCT_VERSION } from '../../src/brand.js'
 import { runAgentCommand } from '../../src/cli/agent-cmd.js'
 import { TOKEN_ONCE_NOTICE } from '../../src/cli/ui-constants.js'
 import { CLIENT_CONFIG_HEADING } from '../../src/cli/agent-config-cmd.js'
@@ -134,7 +135,7 @@ describe('agent create', () => {
     await run(['create', 'research-bot'], io)
 
     const entry = blockOf(io.out()).mcpServers.mcpcut as StdioClientEntry
-    expect(entry.args).toEqual(['connect', '--url', `http://127.0.0.1:${DEFAULT_SERVE_PORT}`])
+    expect(entry.args).toEqual(['-y', `mcpcut@${PRODUCT_VERSION}`, 'connect', '--url', `http://127.0.0.1:${DEFAULT_SERVE_PORT}`])
     expect(io.out()).toContain('note: address derived from the serve bind')
     expect(io.out()).toContain('mcpcut setup --serve-public-url <url>')
   })
@@ -145,7 +146,7 @@ describe('agent create', () => {
     await run(['create', 'research-bot'], io, installWithPublicUrl('http://203.0.113.7:8090'))
 
     const entry = blockOf(io.out()).mcpServers.mcpcut as StdioClientEntry
-    expect(entry.args).toEqual(['connect', '--url', 'http://203.0.113.7:8090', '--allow-http'])
+    expect(entry.args).toEqual(['-y', `mcpcut@${PRODUCT_VERSION}`, 'connect', '--url', 'http://203.0.113.7:8090', '--allow-http'])
     expect(io.out()).not.toContain('note: address derived')
   })
 

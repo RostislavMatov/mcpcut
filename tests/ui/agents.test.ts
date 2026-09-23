@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { ZodError } from 'zod'
 import type { AgentRecord } from '../../src/agents/schema.js'
+import { PRODUCT_VERSION } from '../../src/brand.js'
 import {
   AgentsFileInvalidError,
   createAgentsStore,
@@ -262,7 +263,7 @@ describe('create issues a one-time token', () => {
     const entry = clientConfigIn(revealed, 'stdio').mcpServers.mcpcut as StdioClientEntry
 
     expect(entry.env).toEqual({ MCP_AGENT_TOKEN: token })
-    expect(entry.args).toEqual(['connect', '--url', 'https://plane.example:8090'])
+    expect(entry.args).toEqual(['-y', `mcpcut@${PRODUCT_VERSION}`, 'connect', '--url', 'https://plane.example:8090'])
     // Exactly one element carries `data-token`: the reveal regex above must
     // keep finding the token box, not the block.
     expect(revealed.match(/data-token/g)).toHaveLength(1)

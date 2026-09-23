@@ -27,8 +27,12 @@ export type ClientConfigForm = 'stdio' | 'http'
 /** How the client starts the bridge: the installed binary, or `npx` of the published package. */
 export type ClientConfigLauncher = 'binary' | 'npx'
 
-/** PE10: `'binary'` until the package is on npm; phase 6 flips this ONE constant. */
-export const CLIENT_CONFIG_LAUNCHER: ClientConfigLauncher = 'binary'
+/**
+ * PE10 fulfilled in phase 6: the package is on npm, so the block needs nothing
+ * installed on the agent's machine but Node 24+. `'binary'` stays for an owner
+ * who installs mcpcut there.
+ */
+export const CLIENT_CONFIG_LAUNCHER: ClientConfigLauncher = 'npx'
 
 export const NPX_COMMAND = 'npx'
 

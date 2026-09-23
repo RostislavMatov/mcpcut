@@ -8,3 +8,4 @@ dashboard.html
 .mcp.json
 .playwright-mcp/
 .claude/skills/
+*.tgz
