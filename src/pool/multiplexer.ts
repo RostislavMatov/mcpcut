@@ -26,6 +26,7 @@ import {
 import type { PoolRecordInfo } from '../journal/pool-record.js'
 import type { PoolCatalog } from './catalog.js'
 import { createChildFrameHandler } from './child-frames.js'
+import { POOL_DEPARTURE_IN_FLIGHT_AT_CLOSE, POOL_DEPARTURE_UNGRANTED } from './constants.js'
 import type { PoolChildren } from './children.js'
 import type { PoolCorrelator } from './correlator.js'
 import type { PoolFanout } from './fanout.js'
@@ -352,10 +353,14 @@ export function createPoolMultiplexer(deps: PoolMultiplexerDeps): PoolMultiplexe
     // `list_changed` waits on the slowest of them either way.
     await Promise.all(
       gone.map(async (server) => {
+        // Judged BEFORE the release, which forgets every entry: after it, a
+        // departure with calls in flight would look clean, and a held session
+        // could be attached again with a reply still on its way (RS5).
+        const dirty = deps.correlator.hasPending(server)
         // Before the route goes, so nothing arrives for an already-orphaned
         // id. `detach` releases again via the children's event: a no-op then.
         releaseServer(server)
-        await deps.children.detach(server, 'ungranted')
+        await deps.children.detach(server, POOL_DEPARTURE_UNGRANTED, { dirty })
       }),
     )
     // ...and only THEN is the agent told to read the list again. The other
@@ -370,7 +375,13 @@ export function createPoolMultiplexer(deps: PoolMultiplexerDeps): PoolMultiplexe
     if (isClosed) return
     isClosed = true
     deps.watch.stop()
-    await deps.children.closeAll()
+    // The front has already refused every waiting request, but the correlator
+    // still holds them: exactly what says which children leave DIRTY (RS5).
+    const dirtyOf = (server: string): boolean => deps.correlator.hasPending(server)
+    for (const server of deps.children.servers()) {
+      if (dirtyOf(server)) record({ event: 'detach', serverName: server, reason: POOL_DEPARTURE_IN_FLIGHT_AT_CLOSE })
+    }
+    await deps.children.closeAll({ dirtyOf })
   }
 
   return Object.freeze({

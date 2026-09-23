@@ -1,5 +1,6 @@
 import type { JsonRpcId } from '../protocol/classify.js'
 import { PROMPTS_LIST_METHOD, TOOLS_LIST_METHOD } from '../protocol/mcp.js'
+import { RESULT_TYPE_COMPLETE } from '../protocol/mcp-stateless.js'
 import type { SynthesizableId } from '../proxy/synthesize.js'
 import {
   poolAtCapacityError,
@@ -71,6 +72,21 @@ export function progressTokenOfNotification(raw: string): SynthesizableId | null
 function tokenOf(value: unknown): SynthesizableId | null {
   if (typeof value === 'string') return value
   return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+/**
+ * `result.resultType` of a reply when it is a string other than `complete`, or
+ * `null` (RV5). A member of the 2026-07-28 revision may answer `input_required`
+ * — or, to a client that declared no capabilities, a bare `requestState` to
+ * retry with. The plane runs no such retry, and a sessionful agent would read
+ * that result as finished and empty. Parsed only for replies to the agent's
+ * own calls, never on the notification path.
+ */
+export function incompleteResultTypeOf(raw: string): string | null {
+  const result = tryParseObject(raw)?.['result']
+  if (!isPlainObject(result)) return null
+  const resultType = result['resultType']
+  return typeof resultType === 'string' && resultType !== RESULT_TYPE_COMPLETE ? resultType : null
 }
 
 /** The plane-minted id, as the catalog filed its page under. */

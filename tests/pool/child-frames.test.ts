@@ -222,6 +222,49 @@ describe('createChildFrameHandler: the paths the multiplexer tests do not reach'
     expect(errors).toHaveLength(1)
   })
 
+  test('answers a call whose result is not finished with -32007, never the result (RV5)', () => {
+    // Arrange
+    const correlator = createPoolCorrelator(10)
+    correlator.trackClient(5, 'modern')
+    const { emit, sent, records } = handlerWith({ correlator })
+
+    // Act
+    emit('modern', JSON.stringify({ jsonrpc: '2.0', id: 5, result: { resultType: 'input_required', requestState: 'r1' } }))
+
+    // Assert
+    expect(sent).toHaveLength(1)
+    const answer = JSON.parse((sent[0] as Buffer).toString('utf8')) as { id: number; error: { code: number } }
+    expect(answer.id).toBe(5)
+    expect(answer.error.code).toBe(-32007)
+    expect((sent[0] as Buffer).toString('utf8')).not.toContain('r1')
+    expect(records).toEqual([{ event: 'dropped', serverName: 'modern', reason: 'incomplete-result' }])
+  })
+
+  test('an unknown resultType is not finished either', () => {
+    const correlator = createPoolCorrelator(10)
+    correlator.trackClient(6, 'modern')
+    const { emit, records } = handlerWith({ correlator })
+
+    emit('modern', JSON.stringify({ jsonrpc: '2.0', id: 6, result: { resultType: 'later', content: [] } }))
+
+    expect(records).toEqual([{ event: 'dropped', serverName: 'modern', reason: 'incomplete-result' }])
+  })
+
+  test('a `complete` result, and one with no resultType, pass byte for byte', () => {
+    const correlator = createPoolCorrelator(10)
+    correlator.trackClient(7, 'modern')
+    correlator.trackClient(8, 'old')
+    const { emit, sent, records } = handlerWith({ correlator })
+    const complete = JSON.stringify({ jsonrpc: '2.0', id: 7, result: { resultType: 'complete', content: [] } })
+    const plain = JSON.stringify({ jsonrpc: '2.0', id: 8, result: { content: [] } })
+
+    emit('modern', complete)
+    emit('old', plain)
+
+    expect(sent.map((bytes) => bytes.toString('utf8'))).toEqual([complete, plain])
+    expect(records).toEqual([])
+  })
+
   test('ignores every frame once the pool is closed', () => {
     const { emit, sent, records } = handlerWith({ closed: true })
 

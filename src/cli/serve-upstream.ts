@@ -6,7 +6,7 @@ import { buildServerEnv, type ResolveEnvRefsFn } from '../proxy/server-env.js'
 import { killWithEscalation, spawnServer, type ServerHandle } from '../proxy/spawn.js'
 import { createOrderedWriter } from '../proxy/writer.js'
 import type { ServerRecord } from '../registry/schema.js'
-import { createHttpUpstreamClient } from '../transport/http/client.js'
+import { createHttpUpstreamClient, type HttpUpstreamClientOptions } from '../transport/http/client.js'
 import { frameToMessage, createStdioMessageSink } from '../transport/stdio-adapter.js'
 import type { McpMessage, MessageSink, MessageSource } from '../transport/message.js'
 import type { ResolveVaultRefsResult } from '../vault/resolve.js'
@@ -72,6 +72,8 @@ export interface OpenUpstreamDeps {
   readonly onError: (error: unknown) => void
   /** SIGKILL grace period for a child that ignores SIGTERM. */
   readonly killEscalationMs?: number
+  /** Extra HTTP client behaviour, e.g. a pool child's `deliverErrorBodies` (RV4). */
+  readonly httpClient?: Pick<HttpUpstreamClientOptions, 'deliverErrorBodies'>
 }
 
 /**
@@ -315,7 +317,7 @@ async function openHttpUpstream(
     { url: record.url, headers: resolved.values, protocol: record.protocol },
     // Shared with connect — session/per-message-headers.ts is the single
     // owner of the "who gets the SEP-2243 header mirror" decision.
-    perMessageHeadersOptionOf(record.protocol),
+    { ...perMessageHeadersOptionOf(record.protocol), ...deps.httpClient },
   )
   // The source's error/end handlers belong to the session core (one handler
   // per channel — `transport/message.ts`); it ends the session on either.

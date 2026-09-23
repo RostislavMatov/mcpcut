@@ -1,5 +1,6 @@
 import { ABSENT_VALUE, inlineValue, markdownCell } from './report-markdown.js'
-import { childBindingsOf, type ReportPoolTally } from './report-pools.js'
+import { childBindingsOf, type ReportChildBinding, type ReportPoolTally } from './report-pools.js'
+import type { ReportOutsideLinks } from './report-pool-links.js'
 import { childHeadingNote, renderPoolSection } from './report-summary-pools.js'
 import type { ReportManifest } from './report.js'
 
@@ -70,6 +71,8 @@ export interface ReportSummaryInput {
   readonly omittedDecisionCount: number
   /** The pool ledger of the same pass (`report-pools.ts`). */
   readonly pools: ReportPoolTally
+  /** Pool sessions that attached the exported session, from records outside it (D2). */
+  readonly outside?: ReportOutsideLinks
 }
 
 /** What an absent optional field prints as, so an empty cell can never be mistaken for an empty value. */
@@ -91,7 +94,11 @@ export function renderReportSummary(input: ReportSummaryInput): string {
   return [
     ...headerSection(input.manifest),
     ...countsSection(input.manifest),
-    ...renderPoolSection({ pools: input.pools, manifest: input.manifest }),
+    ...renderPoolSection({
+      pools: input.pools,
+      manifest: input.manifest,
+      ...(input.outside === undefined ? {} : { outside: input.outside }),
+    }),
     ...decisionsSection(input),
     ...contractSection(input.manifest),
   ].join('\n')
@@ -223,8 +230,12 @@ function decisionsSection(input: ReportSummaryInput): readonly string[] {
   // Bound at render time from EVERY attach in the export, not in seq order:
   // a child's decisions can be journaled before the attach that names it (R2).
   const bindings = childBindingsOf(input.pools)
+  const outside = outsideBindingsOf(input)
   for (const [sessionId, rows] of groupBySession(input.decisions)) {
-    const note = childHeadingNote(bindings.get(sessionId))
+    const note =
+      outside.length > 0 && sessionId === input.manifest.scope.session
+        ? childHeadingNote(outside, { outside: true })
+        : childHeadingNote(bindings.get(sessionId))
     lines.push(`### Session ${inlineValue(sessionId)}${note}`, '', TABLE_HEADER)
     for (const row of rows) {
       lines.push(decisionTableRow(row))
@@ -286,4 +297,13 @@ function decisionTableRow(row: ReportDecisionRow): string {
 
 function contractSection(manifest: ReportManifest): readonly string[] {
   return ['## What this report does and does not say', '', manifest.contract, '']
+}
+
+/** The exported session's pool claims read from outside the export (D2), as heading bindings. */
+function outsideBindingsOf(input: ReportSummaryInput): readonly ReportChildBinding[] {
+  return (input.outside?.links ?? []).map((link) => ({
+    poolSessionId: link.poolSessionId,
+    serverName: link.serverName,
+    agentNames: [link.agentName],
+  }))
 }

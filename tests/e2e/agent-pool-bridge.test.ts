@@ -195,11 +195,10 @@ describe('e2e: one pasted block outlives three changes of access (PRD metric)', 
     expect(summary).toMatch(/alpha → \S+/)
     expect(summary).toMatch(/gamma → \S+/)
     expect(summary.match(/beta → \S+/g)).toHaveLength(2)
-    // Two watches race on an ungrant: the pool's own (reason `ungranted`) and
-    // the child session's gate watch, which ends that session first about one
-    // time in three (`child-ended`). Whichever wins writes the one departure;
-    // the report shows whichever it was. Recorded as a phase-5 finding.
-    expect(summary).toMatch(/- Left the pool: beta \((?:ungranted|child-ended)\)/)
+    // Two watches race on an ungrant, and either one now leaves the same
+    // record (DR1): the child session's own watch ends it as `revoked`, which
+    // the pool reads as `ungranted`.
+    expect(summary).toMatch(/- Left the pool: beta \(ungranted\)/)
     expect(summary).toMatch(/\| alpha \| slow\\_echo \|/)
     expect(summary).toMatch(/### Session \S+ — server alpha, pool session \S+ \(agent bot\)/)
 
@@ -208,5 +207,23 @@ describe('e2e: one pasted block outlives three changes of access (PRD metric)', 
     })
     expect(verified.code).toBe(0)
     expect(verified.out).toContain('RESULT: PASSED')
+
+    // D2 — one child exported alone still says whose pool it belonged to, and
+    // still verifies: the pool lines are marked as outside the export.
+    const child = /alpha → (\S+)/.exec(summary)?.[1] as string
+    const childDir = join(tempDir, 'report-child')
+    const childExport = await plane.run(['export', '--report', '--session', child, '--out', childDir], {
+      export: { journalDir: tempDir },
+    })
+    expect(childExport.code).toBe(0)
+    expect(childExport.out).toMatch(/Note: session \S+ was attached by 1 pool session\(s\)/)
+    const childSummary = await readFile(join(childDir, 'summary.md'), 'utf8')
+    expect(childSummary).toContain(`Pool membership of session ${child}`)
+    expect(childSummary).toMatch(/- pool session \S+ — agent bot, server alpha/)
+    const childVerified = await plane.run(['verify', '--report', childDir, '--pub', join(tempDir, 'signing.pub')], {
+      verify: { journalDir: tempDir },
+    })
+    expect(childVerified.code).toBe(0)
+    expect(childVerified.out).toContain('RESULT: PASSED')
   }, 60_000)
 })

@@ -105,6 +105,14 @@ export interface SessionManagerOptions {
    * `reserve()`, before any await, so it must be cheap — a counter, not a store.
    */
   readonly extraSessions?: () => number
+  /**
+   * Free one slot of the shared budget if you can; synchronous. Asked only
+   * when the budget is full, inside `reserve()`, before any await; `true`
+   * means a slot was freed and the budget is looked at once more.
+   *
+   * Semantics-free like `extraSessions`: the manager only asks.
+   */
+  readonly reclaimSessions?: () => boolean
   readonly idleTtlMs?: number
   readonly sweepIntervalMs?: number
   readonly heartbeatIntervalMs?: number
@@ -338,45 +346,7 @@ export function awaitFirstMessage(
   })
 }
 
-/** A reserved concurrency slot; releasing twice is a no-op. */
-export interface SessionSlot {
-  release(): void
-}
-
-export interface SlotCounter {
-  /** Takes a slot, or `null` when the cap is already reached. */
-  reserve(): SessionSlot | null
-  /** Slots held by opens that have not (yet) become registered sessions. */
-  reserved(): number
-}
-
-/**
- * The concurrency cap, as a synchronous reservation rather than a check.
- * `registered()` counts sessions already in the map; a slot bridges the gap
- * between "this request intends to open a session" and "the session exists"
- * — the window an `await openSession(...)` opens, during which a plain
- * `size >= max` check would let every parallel request through.
- */
-export function createSlotCounter(max: number, registered: () => number): SlotCounter {
-  let held = 0
-  return Object.freeze({
-    reserve(): SessionSlot | null {
-      if (registered() + held >= max) {
-        return null
-      }
-      held += 1
-      let isReleased = false
-      return {
-        release(): void {
-          if (isReleased) return
-          isReleased = true
-          held -= 1
-        },
-      }
-    },
-    reserved: () => held,
-  })
-}
+export { createSlotCounter, type SessionSlot, type SlotCounter } from './session-slots.js'
 
 /** A bounded message buffer: the payloads kept, and their total size. */
 export interface BufferedMessages {

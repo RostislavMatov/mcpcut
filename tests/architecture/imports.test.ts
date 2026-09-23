@@ -1022,6 +1022,10 @@ describe('the agent pool core is traffic semantics, not an operator surface (ADR
       'src/pool/multiplexer-frames.ts',
       'src/pool/child-frames.ts',
       'src/pool/errors.ts',
+      // The 2026-09-23 wave (D1-D5): both protocol revisions and the pure
+      // resident set.
+      'src/pool/discover.ts',
+      'src/pool/member.ts',
     ]) {
       expect(files).toContain(expected)
     }

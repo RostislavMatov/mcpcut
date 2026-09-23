@@ -18,6 +18,7 @@ import {
   createDispatchQueue,
   defaultDelay,
   readBoundedBody,
+  readJsonErrorBody,
   startRequest,
 } from './client-wire.js'
 import {
@@ -89,6 +90,13 @@ export interface HttpUpstreamClientOptions {
   readonly sseReconnectMaxDelayMs?: number
   readonly closeDrainTimeoutMs?: number
   readonly maxResponseBytes?: number
+  /**
+   * Deliver a non-2xx POST's JSON body as a message instead of failing (RV4):
+   * 2026-07-28 answers method-level errors with 4xx + JSON-RPC body. Status
+   * and `content-type` only, nothing parsed; empty/non-JSON bodies and `404`
+   * on a live session fail as before. Only pool children and the probe ask.
+   */
+  readonly deliverErrorBodies?: boolean
 }
 
 export interface HttpUpstreamClient {
@@ -185,6 +193,11 @@ export function createHttpUpstreamClient(
       throw new SessionExpiredError(host)
     }
     if (status < 200 || status >= 300) {
+      const errorBody = opts.deliverErrorBodies === true ? await readJsonErrorBody(res, maxBytes, host) : null
+      if (errorBody !== null) {
+        channel.emitMessage(serverMessage(errorBody))
+        return
+      }
       res.resume()
       throw new UpstreamHttpStatusError('POST', status, host)
     }

@@ -12,6 +12,7 @@ import {
   UpstreamHttpStatusError,
   UpstreamResponseError,
 } from '../transport/http/client.js'
+import { withStatelessMeta } from '../protocol/mcp-stateless.js'
 import { prepareUpstream, type ConnectUpstream } from '../upstream/prepare.js'
 import { PROBE_TIMEOUT_MS } from './constants.js'
 
@@ -79,7 +80,12 @@ export interface ProbeDeps {
 
 /** JSON-RPC ids of the probe's own requests (string ids — no collision space). */
 const PROBE_REQUEST_ID = 'plane-probe-1'
+/** The stamped `tools/list` that follows a refused handshake (RV6). */
+const FALLBACK_REQUEST_ID = 'plane-probe-2'
 const TOOLS_REQUEST_ID = 'plane-probe-tools'
+
+/** Who the probe says it is, in both revisions. */
+const PROBE_CLIENT = { name: 'mcp-control-plane-probe', version: '0' } as const
 
 /** Probes one registry record. Never throws; every failure is a result. */
 export async function probe(record: ServerRecord, deps: ProbeDeps): Promise<ProbeResult> {
@@ -92,6 +98,9 @@ export async function probe(record: ServerRecord, deps: ProbeDeps): Promise<Prob
     ...(deps.cwd !== undefined ? { cwd: deps.cwd } : {}),
     ...(deps.childExitGraceMs !== undefined ? { childExitGraceMs: deps.childExitGraceMs } : {}),
     ...(deps.killEscalationMs !== undefined ? { killEscalationMs: deps.killEscalationMs } : {}),
+    // A 2026-07-28 server refuses the handshake with a 4xx STATUS and a
+    // JSON-RPC body; that is an answer to fall back from, not a dead server.
+    httpClient: { deliverErrorBodies: true },
   })
   if (prepared.status === 'refused') {
     return { status: 'vault-refused', message: prepared.message.trim() }
@@ -150,26 +159,43 @@ async function converse(
 ): Promise<ProbeResult> {
   const conversation = startConversation(upstream)
 
-  const answer = await conversation.request(buildProbeRequest(probedVia), opts.timeoutMs)
+  const first = await conversation.request(buildProbeRequest(probedVia), opts.timeoutMs)
+  if (first.kind !== 'answered') {
+    return failureOf(first, probedVia, opts.timeoutMs)
+  }
+  // RV6: a server that speaks only 2026-07-28 refuses the handshake with an
+  // error. Asked the new way instead — with what is left of the step budget —
+  // it proves itself alive with a `tools/list`, and the result says so.
+  const isFallback = probedVia === INITIALIZE_METHOD && first.response.isError
+  const via: ProbedVia = isFallback ? TOOLS_LIST_METHOD : probedVia
+  const answer = isFallback
+    ? await conversation.request(
+        buildProbeRequest(TOOLS_LIST_METHOD, FALLBACK_REQUEST_ID),
+        Math.max(1, opts.timeoutMs - (opts.clock() - opts.startedAt)),
+      )
+    : first
   if (answer.kind !== 'answered') {
-    return failureOf(answer, probedVia, opts.timeoutMs)
+    return failureOf(answer, via, opts.timeoutMs)
   }
   if (answer.response.isError) {
+    // Both refused: the operator hears about the first one, as before RV6.
+    const refused = first.response.isError ? first.response : answer.response
     return {
       status: 'error',
-      message: `the server answered ${probedVia} with JSON-RPC error code ${answer.response.errorCode}`,
+      message: `the server answered ${probedVia} with JSON-RPC error code ${refused.errorCode}`,
     }
   }
-  // The latency is sealed here; the tools step below never touches it (O4).
+  // The latency is sealed here — at the answer that proved the server alive;
+  // the tools step below never touches it (O4).
   const initializeLatencyMs = opts.clock() - opts.startedAt
 
   const tools = opts.withTools
-    ? await toolsOf(conversation, probedVia, answer.response, opts.timeoutMs)
+    ? await toolsOf(conversation, via, answer.response, opts.timeoutMs)
     : undefined
   return {
     status: 'alive',
     initializeLatencyMs,
-    probedVia,
+    probedVia: via,
     ...(tools !== undefined ? { tools } : {}),
   }
 }
@@ -201,9 +227,13 @@ async function toolsOf(
   return parseToolsListResult(answer.response)?.tools
 }
 
-function buildProbeRequest(probedVia: ProbedVia): Record<string, unknown> {
+function buildProbeRequest(probedVia: ProbedVia, id: string = PROBE_REQUEST_ID): Record<string, unknown> {
   if (probedVia === TOOLS_LIST_METHOD) {
-    return { jsonrpc: '2.0', id: PROBE_REQUEST_ID, method: TOOLS_LIST_METHOD, params: {} }
+    // Stamped: a `tools/list` only ever goes to a server of the 2026-07-28
+    // revision, which MUST refuse a request without its `_meta`. An older
+    // server registered as `stateless` ignores the extra field.
+    const line = JSON.stringify({ jsonrpc: '2.0', id, method: TOOLS_LIST_METHOD, params: {} })
+    return JSON.parse(withStatelessMeta(line, PROBE_CLIENT) ?? line) as Record<string, unknown>
   }
   return {
     jsonrpc: '2.0',
@@ -212,7 +242,7 @@ function buildProbeRequest(probedVia: ProbedVia): Record<string, unknown> {
     params: {
       protocolVersion: '2025-06-18',
       capabilities: {},
-      clientInfo: { name: 'mcp-control-plane-probe', version: '0' },
+      clientInfo: PROBE_CLIENT,
     },
   }
 }

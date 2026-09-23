@@ -45,6 +45,8 @@ export interface ReportPoolChild {
   readonly childSessionId: string
   /** When the `attach` record was written. */
   readonly ts: string
+  /** `pool`, `warm` or `resident` when the record said (ADR-0016, RS9); read, never trusted. */
+  readonly lifetime?: string
 }
 
 export interface ReportPoolServerNote {
@@ -113,12 +115,13 @@ const POOL_EVENT_KINDS = {
 } as const satisfies Record<PoolEventKind, true>
 
 /** A payload that passed every check. */
-interface ReadPayload {
+export interface ReadPoolPayload {
   readonly agentName: string
   readonly event: PoolEventKind
   readonly serverName?: string
   readonly childSessionId?: string
   readonly reason?: string
+  readonly lifetime?: string
 }
 
 interface SessionDraft {
@@ -142,7 +145,7 @@ export function createPoolLedger(limits: PoolLedgerLimits = {}): PoolLedger {
 
   function take(record: JournalRecord): void {
     if (record.kind !== 'pool') return
-    const payload = readPayload(record.payload)
+    const payload = readPoolPayload(record.payload)
     if (payload === null) {
       unreadableCount += 1
       return
@@ -175,7 +178,7 @@ export function createPoolLedger(limits: PoolLedgerLimits = {}): PoolLedger {
 }
 
 /** How many kept elements applying `payload` would add. */
-function costOf(draft: SessionDraft | undefined, payload: ReadPayload): number {
+function costOf(draft: SessionDraft | undefined, payload: ReadPoolPayload): number {
   const newAgent = draft === undefined || !draft.agentNames.includes(payload.agentName) ? 1 : 0
   switch (payload.event) {
     case 'attach':
@@ -194,7 +197,7 @@ function newDraft(sessionId: string): SessionDraft {
 }
 
 /** Applies a checked payload; `readPayload` guarantees the fields each event needs. */
-function apply(draft: SessionDraft, payload: ReadPayload, ts: string): void {
+function apply(draft: SessionDraft, payload: ReadPoolPayload, ts: string): void {
   if (!draft.agentNames.includes(payload.agentName)) draft.agentNames.push(payload.agentName)
   const serverName = payload.serverName ?? ''
   switch (payload.event) {
@@ -205,7 +208,12 @@ function apply(draft: SessionDraft, payload: ReadPayload, ts: string): void {
       draft.closedAt = ts
       return
     case 'attach':
-      draft.children.push({ serverName, childSessionId: payload.childSessionId ?? '', ts })
+      draft.children.push({
+        serverName,
+        childSessionId: payload.childSessionId ?? '',
+        ts,
+        ...(payload.lifetime === undefined ? {} : { lifetime: payload.lifetime }),
+      })
       return
     case 'attach-refused':
       draft.refused.push(noteOf(serverName, payload.reason))
@@ -230,9 +238,11 @@ function noteOf(serverName: string, reason: string | undefined): ReportPoolServe
 /**
  * Reads an untrusted payload, or returns `null`. Each event must carry the
  * fields its line in `summary.md` names: an `attach` its server and child, a
- * refusal or a departure its server, a drop its reason.
+ * refusal or a departure its server, a drop its reason. The ONE reader for
+ * both passes that look at pool records — the export's own and the lookup of
+ * a child's pool outside the export (`report-pool-links.ts`).
  */
-function readPayload(value: unknown): ReadPayload | null {
+export function readPoolPayload(value: unknown): ReadPoolPayload | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
   const payload = value as Record<string, unknown>
   const event = payload['event']
@@ -242,7 +252,8 @@ function readPayload(value: unknown): ReadPayload | null {
   const serverName = optionalString(payload['serverName'])
   const childSessionId = optionalString(payload['childSessionId'])
   const reason = optionalString(payload['reason'])
-  if (serverName === null || childSessionId === null || reason === null) return null
+  const lifetime = optionalString(payload['lifetime'])
+  if (serverName === null || childSessionId === null || reason === null || lifetime === null) return null
   const kind = event as PoolEventKind
   if (!carriesWhatItNames(kind, serverName, childSessionId, reason)) return null
   return {
@@ -251,6 +262,7 @@ function readPayload(value: unknown): ReadPayload | null {
     ...(serverName === undefined ? {} : { serverName }),
     ...(childSessionId === undefined ? {} : { childSessionId }),
     ...(reason === undefined ? {} : { reason }),
+    ...(lifetime === undefined ? {} : { lifetime }),
   }
 }
 
@@ -308,9 +320,11 @@ function compareCodeUnits(left: string, right: string): number {
 }
 
 /**
- * Child session id -> every pool session that named it in an `attach`.
- * Normally one; two means a forgery or a bug, and both are shown rather than
- * one picked. A pool naming the same child twice counts once.
+ * Child session id -> every pool session that named it in an `attach`. One
+ * for a pool's own child; several for a HELD session, which one agent's pool
+ * sessions attach to in turn (ADR-0016, EX3). Claims that disagree on the
+ * agent or the server are a forgery or a bug — `childHeadingNote` names them
+ * all rather than picking one. A pool naming the same child twice counts once.
  */
 export function childBindingsOf(tally: ReportPoolTally): ReadonlyMap<string, readonly ReportChildBinding[]> {
   const bindings = new Map<string, ReportChildBinding[]>()

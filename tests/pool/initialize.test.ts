@@ -7,7 +7,7 @@ import {
   buildUpstreamInitialize,
   negotiatePoolVersion,
   readRequestedVersion,
-  readUpstreamInitializeResult,
+  readUpstreamInitializeReply,
   synthesizeInitializeResult,
   UPSTREAM_INITIALIZED_LINE,
 } from '../../src/pool/initialize.js'
@@ -145,7 +145,7 @@ describe('UPSTREAM_INITIALIZED_LINE', () => {
   })
 })
 
-describe('readUpstreamInitializeResult', () => {
+describe('readUpstreamInitializeReply', () => {
   test('reports the revision and which of the two catalogs the server offers', () => {
     const raw = initializeResult({
       protocolVersion: '2025-06-18',
@@ -153,45 +153,56 @@ describe('readUpstreamInitializeResult', () => {
       serverInfo: { name: 'gh', version: '1' },
     })
 
-    expect(readUpstreamInitializeResult(raw)).toEqual({
-      protocolVersion: '2025-06-18',
-      hasTools: true,
-      hasPrompts: true,
+    expect(readUpstreamInitializeReply(raw)).toEqual({
+      kind: 'sessionful',
+      info: { protocolVersion: '2025-06-18', hasTools: true, hasPrompts: true },
     })
   })
 
   test('a server offering neither catalog is still a server that came up', () => {
     const raw = initializeResult({ protocolVersion: '2025-11-25', capabilities: {} })
 
-    expect(readUpstreamInitializeResult(raw)).toEqual({
-      protocolVersion: '2025-11-25',
-      hasTools: false,
-      hasPrompts: false,
+    expect(readUpstreamInitializeReply(raw)).toEqual({
+      kind: 'sessionful',
+      info: { protocolVersion: '2025-11-25', hasTools: false, hasPrompts: false },
     })
   })
 
   test('a capability that is not an object does not count as the catalog', () => {
     const raw = initializeResult({ protocolVersion: '2025-11-25', capabilities: { tools: true } })
 
-    expect(readUpstreamInitializeResult(raw)?.hasTools).toBe(false)
+    const reply = readUpstreamInitializeReply(raw)
+    expect(reply.kind === 'sessionful' && reply.info.hasTools).toBe(false)
+  })
+
+  test('a revision the plane has no handshake for is named, for the caller to ask `server/discover`', () => {
+    // RV2: every fixture in this repository once answered `initialize` with
+    // 2026-07-28 — a revision with no handshake. It is not a server that is
+    // down; it is one to ask again the new way.
+    const raw = initializeResult({ protocolVersion: '2026-07-28', capabilities: {} })
+
+    expect(readUpstreamInitializeReply(raw)).toEqual({ kind: 'other-revision', protocolVersion: '2026-07-28' })
+  })
+
+  test('an error response is an error, not garbage: the caller falls back to discover', () => {
+    const raw = JSON.stringify({ jsonrpc: '2.0', id: 1, error: { code: -32022, message: 'no' } })
+
+    expect(readUpstreamInitializeReply(raw)).toEqual({ kind: 'error' })
   })
 
   test.each([
-    ['an unsupported revision', initializeResult({ protocolVersion: '2026-07-28', capabilities: {} })],
     ['a revision that is not a string', initializeResult({ protocolVersion: 7, capabilities: {} })],
     ['no protocolVersion at all', initializeResult({ capabilities: {} })],
-    ['an error response', JSON.stringify({ jsonrpc: '2.0', id: 1, error: { code: -1, message: 'no' } })],
     ['a result that is not an object', initializeResult('ok')],
     ['unparseable JSON', '{not json'],
-  ])('refuses %s, so the caller treats the server as not up (PE6)', (_label, raw) => {
-    expect(readUpstreamInitializeResult(raw)).toBeNull()
+  ])('reads %s as unreadable (PE6)', (_label, raw) => {
+    expect(readUpstreamInitializeReply(raw)).toEqual({ kind: 'unreadable' })
   })
 
   test('missing capabilities read as no catalogs, not as a failure', () => {
-    expect(readUpstreamInitializeResult(initializeResult({ protocolVersion: '2025-03-26' }))).toEqual({
-      protocolVersion: '2025-03-26',
-      hasTools: false,
-      hasPrompts: false,
+    expect(readUpstreamInitializeReply(initializeResult({ protocolVersion: '2025-03-26' }))).toEqual({
+      kind: 'sessionful',
+      info: { protocolVersion: '2025-03-26', hasTools: false, hasPrompts: false },
     })
   })
 })

@@ -70,6 +70,11 @@ export type PoolDropReason =
    * the agent gave another server's call, or after that call was answered.
    */
   | 'unscoped-notification'
+  /**
+   * A member's reply to the agent's call that was not a finished result
+   * (`resultType` other than `complete`, RV5); the agent got `-32007`.
+   */
+  | 'incomplete-result'
 
 /**
  * Everything a `pool`-kind record says. Flat and short by design: the frames
@@ -84,6 +89,12 @@ export interface PoolRecordInfo {
   readonly serverName?: string
   /** Journal session id of the child session — the binding a report needs. */
   readonly childSessionId?: string
+  /**
+   * On `attach`: how long the child lives (ADR-0016, RS9) — `pool` (it lives
+   * and dies with this pool session), `warm` or `resident` (a held session the
+   * supervisor keeps; several pool sessions of one agent may attach to it).
+   */
+  readonly lifetime?: string
   /** Servers in the pool at this moment, sorted; on `open` and membership changes. */
   readonly members?: readonly string[]
   /** A `PoolDropReason`, a refusal code, or prose — always redacted. */
@@ -189,6 +200,7 @@ function flatInfoOf(pool: PoolRecordInfo): Record<string, unknown> {
     event: pool.event,
     ...(pool.serverName !== undefined ? { serverName: pool.serverName } : {}),
     ...(pool.childSessionId !== undefined ? { childSessionId: pool.childSessionId } : {}),
+    ...(pool.lifetime !== undefined ? { lifetime: pool.lifetime } : {}),
     ...(pool.members !== undefined ? { members: [...pool.members] } : {}),
     ...(pool.reason !== undefined ? { reason: pool.reason } : {}),
     ...(pool.method !== undefined ? { method: pool.method } : {}),

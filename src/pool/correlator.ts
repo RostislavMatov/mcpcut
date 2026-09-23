@@ -56,6 +56,13 @@ export interface PoolCorrelator {
    * answered or its server dropped (`notifications/progress`, N2).
    */
   progressServerOf(token: SynthesizableId): string | undefined
+  /**
+   * Whether anything — the agent's call or the plane's own request — is in
+   * flight at `server`. A child let go with such an entry is DIRTY: a held
+   * session must then never be attached again, or the late reply could reach
+   * a pool session that did not ask for it (ADR-0016, RS5).
+   */
+  hasPending(server: string): boolean
   /** Forgets everything in flight for `server`; returns the CLIENT ids now needing an error. */
   dropServer(server: string): readonly SynthesizableId[]
   readonly pending: number
@@ -154,6 +161,13 @@ export function createPoolCorrelator(maxPending: number): PoolCorrelator {
       const entry = take(server, idKeyOf(id))
       if (entry === null) return { kind: 'unexpected' }
       return entry.origin === 'client' ? { kind: 'client' } : { kind: 'fanout', tag: entry.tag }
+    },
+
+    hasPending(server: string): boolean {
+      for (const entry of pending.values()) {
+        if (entry.server === server) return true
+      }
+      return false
     },
 
     serverOf(id: SynthesizableId): string | undefined {

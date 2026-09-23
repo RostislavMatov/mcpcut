@@ -1,4 +1,5 @@
 import type { ClassifiedMessage, JsonRpcId } from './classify.js'
+import { META_PROTOCOL_VERSION_KEY } from './mcp-stateless.js'
 
 /**
  * MCP-specific semantic extractions layered on top of the generic
@@ -276,8 +277,6 @@ const MCP_NAME_PARAM_BY_METHOD: Readonly<Record<string, 'name' | 'uri'>> = {
   'resources/read': 'uri',
 }
 
-/** `params._meta` key carrying the stateless protocol version (2026-07-28). */
-const PROTOCOL_VERSION_META_KEY = 'io.modelcontextprotocol/protocolVersion'
 
 /**
  * True iff `msg` is an `initialize` request — the handshake that selects
@@ -353,7 +352,7 @@ function protocolVersionOf(params: unknown): string | null {
   if (!isPlainObject(meta)) {
     return null
   }
-  const version = meta[PROTOCOL_VERSION_META_KEY]
+  const version = meta[META_PROTOCOL_VERSION_KEY]
   return typeof version === 'string' && version.length > 0 ? version : null
 }
 

@@ -10,6 +10,7 @@ import {
   type ReportManifest,
   type ReportRecordSink,
 } from '../journal/report.js'
+import type { ReportOutsideLinks } from '../journal/report-pool-links.js'
 import { childrenOutsideExport, type ReportPoolTally } from '../journal/report-pools.js'
 import { signReportManifest, type ReportSignatureFile } from '../journal/report-signing.js'
 import { isValidSessionId } from '../journal/session-id.js'
@@ -130,7 +131,7 @@ async function writeReport(
     // files the directory does not list (wave-5 review, MEDIUM).
     await syncDirectory(outDir.path)
 
-    io.stdout.write(successSummary(outDir.realPath, manifest, signature, report.pools))
+    io.stdout.write(successSummary(outDir.realPath, manifest, signature, report.pools, report.outsidePools))
     return EXIT_OK
   } catch (error: unknown) {
     await discardPartialExport(outDir, written)
@@ -291,6 +292,7 @@ function successSummary(
   manifest: ReportManifest,
   signature: ReportSignatureFile | null,
   pools: ReportPoolTally,
+  outside: ReportOutsideLinks,
 ): string {
   const files: string[] = [REPORT_FILES.manifest, REPORT_FILES.records, REPORT_FILES.summary]
   if (signature !== null) files.push(REPORT_FILES.signature)
@@ -302,7 +304,7 @@ function successSummary(
     `Files: ${files.join(', ')}\n`,
     `Scope: ${manifest.scope.session === null ? 'whole journal' : `session ${manifest.scope.session}`}\n`,
     `Records: ${manifest.counts.records}  Decisions: ${manifest.counts.decisions}\n`,
-    ...poolLines(manifest, pools),
+    ...poolLines(manifest, pools, outside),
     head === null
       ? 'Chain head: no attested head\n'
       : `Chain head: seq ${head.seq} (${head.recordHash})\n`,
@@ -320,7 +322,11 @@ function successSummary(
  * and the operator's own `--session` value are printed; child ids are
  * journal strings and stay in `summary.md`, which escapes them.
  */
-function poolLines(manifest: ReportManifest, pools: ReportPoolTally): readonly string[] {
+function poolLines(
+  manifest: ReportManifest,
+  pools: ReportPoolTally,
+  outsidePools: ReportOutsideLinks,
+): readonly string[] {
   const more = pools.omittedRecordCount > 0 ? ' (more are in records.jsonl)' : ''
   const lines = [`Pool sessions: ${pools.sessions.length}${more}\n`]
   const outside = childrenOutsideExport(pools, manifest)
@@ -329,6 +335,15 @@ function poolLines(manifest: ReportManifest, pools: ReportPoolTally): readonly s
       `Note: session ${manifest.scope.session} is a pool session; its decisions are in ` +
         `${outside.length} child session(s) this export does not include. Export the whole ` +
         'journal (no --session) to include them.\n',
+    )
+  }
+  const attachedBy = outsidePools.links.length + outsidePools.omittedCount
+  if (attachedBy > 0 && manifest.scope.session !== null) {
+    // D2: a count and the operator's own value only; the pool session ids
+    // are journal strings and stay in `summary.md`, which escapes them.
+    lines.push(
+      `Note: session ${manifest.scope.session} was attached by ${attachedBy} pool session(s) whose ` +
+        'records are not in this export; summary.md names them.\n',
     )
   }
   return lines

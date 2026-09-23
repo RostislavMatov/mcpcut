@@ -4,23 +4,25 @@ import { createJournalSink, type JournalSinkOptions } from '../journal/sink.js'
 import {
   MAX_POOL_LIST_PAGES,
   MAX_POOL_PENDING_REQUESTS,
+  POOL_CHILD_START_TIMEOUT_MS,
   POOL_FANOUT_TIMEOUT_MS,
+  POOL_START_TAGS,
+  POOL_UPSTREAM_CLIENT_NAME,
 } from '../pool/constants.js'
 import { createPoolCatalog } from '../pool/catalog.js'
 import {
   createPoolChildren,
-  type OpenPoolChildResult,
   type PoolChildEvent,
   type PoolChildReservation,
 } from '../pool/children.js'
 import { createPoolCorrelator } from '../pool/correlator.js'
 import { createPoolFanout } from '../pool/fanout.js'
-import { performUpstreamHandshake } from '../pool/handshake.js'
+import { negotiateUpstream } from '../pool/handshake.js'
 import { createPoolMultiplexer } from '../pool/multiplexer.js'
 import { createPoolWatch } from '../pool/watch.js'
 import type { RegistryStore } from '../registry/store.js'
 import type { AgentRecordReader } from '../session/agent-watch.js'
-import { serverMessage } from '../transport/message.js'
+import { clientMessage, serverMessage } from '../transport/message.js'
 import type {
   OpenSession,
   OpenedSession,
@@ -28,7 +30,7 @@ import type {
   ResponseCorrelation,
   SessionContext,
 } from '../transport/http/session.js'
-import { REFUSAL_UNKNOWN_SERVER, type ServeWritable } from './serve-constants.js'
+import type { ServeWritable } from './serve-constants.js'
 import type { ChildSessionOpener } from './serve-child.js'
 import type { ModelHandoff } from './serve-hooks.js'
 import { createMemoryPipe } from './serve-pipe.js'
@@ -37,8 +39,10 @@ import {
   POOL_STATELESS_MESSAGE,
   REFUSAL_POOL_NO_AGENT,
   REFUSAL_POOL_SESSIONFUL_ONLY,
+  startRefusalLine,
 } from './serve-pool-constants.js'
-import { checkModelCompatibility } from './serve-upstream.js'
+import { createPoolChildOpener } from './serve-pool-child.js'
+import type { ResidentSupervisor } from './serve-residents.js'
 
 /**
  * The `openSession` factory for the POOL address (ADR-0015 phase 3): one
@@ -100,14 +104,31 @@ export interface PoolSessionDeps {
    * the front's live session budget, which every pool shares (P5).
    */
   readonly reserveChild: (held: number) => PoolChildReservation | null
+  /**
+   * The resident supervisor (ADR-0016): stdio children are acquired from it
+   * rather than spawned per pool session.
+   */
+  readonly residents: Pick<ResidentSupervisor, 'acquire'>
+  /**
+   * Claims one slot of the service's shared budget, synchronously, or `null`:
+   * for every ordinary child — HTTP, or stdio when this agent's held session
+   * is attached elsewhere (`busy`). The supervisor claims its own.
+   */
+  readonly reserveProcessSlot: () => PoolChildReservation | null
   /** @internal test-only seam mirroring `wrap`'s, for fail-closed tests. */
   readonly journalCommitBatchImpl?: JournalSinkOptions['commitBatchImpl']
   /** Fan-out budget override for tests; defaults to `POOL_FANOUT_TIMEOUT_MS`. */
   readonly fanoutTimeoutMs?: number
+  /** Start budget override for tests; defaults to `POOL_CHILD_START_TIMEOUT_MS`. */
+  readonly startTimeoutMs?: number
+  /**
+   * How often the POOL's own watch re-reads the agent, apart from the one every
+   * child session runs. Tests shorten or lengthen it to decide which of the two
+   * watches notices a withdrawn grant first; nothing else should — both follow
+   * `revocationPollIntervalMs` in the product.
+   */
+  readonly poolWatchPollIntervalMs?: number
 }
-
-/** The refusal code for a server whose session model the pool cannot use. */
-const REFUSAL_POOL_PROTOCOL_MISMATCH = 'protocol-mismatch'
 
 export function createPoolSessionFactory(deps: PoolSessionDeps): OpenSession {
   function report(ctx: SessionContext, message: string): void {
@@ -164,11 +185,12 @@ export function createPoolSessionFactory(deps: PoolSessionDeps): OpenSession {
      * might ever populate a `reason`.
      */
     const knownSecrets = new Set<string>()
-    const openChildSession = deps.childSessionOpenerFor((values) => {
+    const collectSecrets = (values: readonly string[]): void => {
       for (const value of values) {
         knownSecrets.add(value)
       }
-    })
+    }
+    const openChildSession = deps.childSessionOpenerFor(collectSecrets)
 
     const sink = createJournalSink(poolSessionId, {
       dir: deps.journalDir,
@@ -205,91 +227,67 @@ export function createPoolSessionFactory(deps: PoolSessionDeps): OpenSession {
       }
     }
 
-    /**
-     * Opening one child: the registry lookup and model check the pool cannot
-     * do for itself. Every "no" here is PE6 — a smaller pool, never a refused
-     * one — so it is a `refused` result rather than a throw.
-     */
-    const openChild = async (server: string): Promise<OpenPoolChildResult> => {
-      const record = await deps.registry.getServer(server)
-      if (record === undefined) {
-        return { status: 'refused', reason: REFUSAL_UNKNOWN_SERVER }
-      }
-      // Re-read rather than reuse the record this pool opened with. A child
-      // is opened lazily (PE7), which can be long after the pool was — and by
-      // then the agent may have been granted this very server, or ungranted
-      // another. A stale record would hand the child a grant matrix that never
-      // mentioned its server, so its gate would deny everything until its own
-      // watch caught up. It is the fail-closed direction too: a grant revoked
-      // in that window must not produce a live child.
-      const fresh = await deps.agents.getAgent(ctx.agentName)
-      if (fresh === undefined || fresh.revokedAt !== undefined) {
-        return { status: 'refused', reason: REFUSAL_POOL_NO_AGENT }
-      }
-      // The pool speaks sessionful to its upstreams (it opens a handshake of
-      // its own), so a stateless-only server is one that "did not come up".
-      const mismatch = checkModelCompatibility('sessionful', record)
-      if (mismatch !== null) {
-        report(ctx, mismatch)
-        return { status: 'refused', reason: REFUSAL_POOL_PROTOCOL_MISMATCH }
-      }
-      // The child knows nothing about the pool: its context is an ordinary
-      // (agent, server) pair, so its gate, policy, quarantine, approvals and
-      // decision records are byte-for-byte the per-server ones (PE11).
-      const opened = await openChildSession(
-        { agentName: ctx.agentName, serverName: server },
-        { record, agent: fresh },
-      )
-      if ('error' in opened) {
-        return { status: 'refused', reason: opened.error }
-      }
-      deps.onChildCountChange(1)
-      // Memoized like every other close in this codebase. `opened.close` is
-      // already idempotent, but the DECREMENT is not, and it feeds the
-      // process-wide session ceiling: a second call would quietly under-count
-      // it and let more sessions through than the front allows. Today the
-      // children registry calls this exactly once; relying on that would be an
-      // unenforced invariant on a number that bounds resources.
-      let closed: Promise<void> | null = null
-      return {
-        status: 'opened',
-        child: {
-          server,
-          sessionId: opened.sessionId,
-          sink: opened.sink,
-          close: () => {
-            closed ??= (async () => {
-              deps.onChildCountChange(-1)
-              await opened.close()
-            })()
-            return closed
-          },
-        },
-        source: opened.source,
-      }
-    }
+    const openChild = createPoolChildOpener({
+      ctx,
+      registry: deps.registry,
+      agents: deps.agents,
+      openChildSession,
+      report: (message) => report(ctx, message),
+      onChildCountChange: deps.onChildCountChange,
+      residents: deps.residents,
+      reserveProcessSlot: deps.reserveProcessSlot,
+      onSecrets: collectSecrets,
+    })
 
     const correlator = createPoolCorrelator(MAX_POOL_PENDING_REQUESTS)
     const fanout = createPoolFanout({
       correlator,
       timeoutMs: deps.fanoutTimeoutMs ?? POOL_FANOUT_TIMEOUT_MS,
-      onTimeout: (server: string) => {
+      onTimeout: (server: string, tag: string) => {
+        // A start that ran out of budget was never a member: `attach-refused`
+        // says so, and `detach` would be a no-op under a false stderr line.
+        if (POOL_START_TAGS.has(tag)) return
         // P4: a silent upstream is detached rather than left holding
         // correlation entries until the table fills.
         report(ctx, `server ${server} did not answer in time; detaching it`)
-        void children.detach(server, 'fanout-timeout')
+        // Dirty by definition: the request it did not answer is still out.
+        void children.detach(server, 'fanout-timeout', { dirty: true })
       },
     })
+    const startTimeoutMs = deps.startTimeoutMs ?? POOL_CHILD_START_TIMEOUT_MS
+    const now = deps.clock ?? Date.now
     const children = createPoolChildren({
       openChild,
       // The plane introduces itself to every upstream in its own name, with
       // no client capabilities declared (PE3, ADR-0015 §4) — the agent's own
       // handshake never reaches one, because the plane answered it (PE12).
-      handshake: async (child) =>
-        (await performUpstreamHandshake(fanout, child, deps.planeVersion)) !== null,
+      negotiate: (child, start) =>
+        negotiateUpstream({
+          ask: (tag, buildLine, timeoutMs) => fanout.ask(child, tag, buildLine, { timeoutMs }),
+          // Unstamped: `notifications/initialized` only ever closes a
+          // SESSIONFUL handshake.
+          notify: (line) => child.sink.write(clientMessage(Buffer.from(line, 'utf8'))),
+          hint: start.hint,
+          deadline: start.deadline,
+          now,
+          planeVersion: deps.planeVersion,
+        }),
+      clientInfo: { name: POOL_UPSTREAM_CLIENT_NAME, version: deps.planeVersion },
+      startTimeoutMs,
+      now,
+      abandonStart: (server) => {
+        // Both halves: the waits end now, and the entries they held do not
+        // linger against `MAX_POOL_PENDING_REQUESTS` (BU2).
+        fanout.abandon(server)
+        correlator.dropServer(server)
+      },
       reserveChild: deps.reserveChild,
       onEvent: (event) => {
         journal(childEventInfo(ctx.agentName, event))
+        if (event.event === 'attach-refused') {
+          const line = startRefusalLine(event.server, event.reason, startTimeoutMs)
+          if (line !== null) report(ctx, line)
+        }
         if (event.event === 'detach') {
           // EVERY departure, not only an ungranted one: a child whose own
           // session ended, and one detached for not answering, leave calls in
@@ -305,7 +303,7 @@ export function createPoolSessionFactory(deps: PoolSessionDeps): OpenSession {
       agentName: ctx.agentName,
       initial: agent,
       readAgent: () => deps.agents.getAgent(ctx.agentName),
-      pollIntervalMs: deps.revocationPollIntervalMs,
+      pollIntervalMs: deps.poolWatchPollIntervalMs ?? deps.revocationPollIntervalMs,
       onRevoked: () => {
         report(ctx, `pool session ${poolSessionId} ended (revoked)`)
         endPool()
@@ -382,6 +380,7 @@ function childEventInfo(agentName: string, event: PoolChildEvent): PoolRecordInf
     event: event.event,
     serverName: event.server,
     ...(event.event === 'attach' ? { childSessionId: event.childSessionId } : {}),
+    ...(event.event === 'attach' ? { lifetime: event.lifetime } : {}),
     ...(event.event === 'attach' ? {} : { reason: event.reason }),
   }
 }

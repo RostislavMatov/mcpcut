@@ -627,6 +627,25 @@ describe('export --report: pool sessions on stdout', () => {
     expect(summary).toContain('- Not in this export: child session(s) child-a, child-b')
   })
 
+  test('a child exported alone: says how many pool sessions attached it, with no journal strings (D2)', async () => {
+    await writePoolSession()
+    const io = fakeIo()
+
+    expect(await run(['--report', '--session', 'child-a', '--out', outDir], io)).toBe(0)
+
+    expect(io.out()).toContain(
+      'Note: session child-a was attached by 1 pool session(s) whose records are not in this export; ' +
+        'summary.md names them.\n',
+    )
+    // The pool session's id is a journal string: summary.md, which escapes it, names it — stdout does not.
+    expect(io.out()).not.toContain('pool-p')
+    const summary = await readFile(join(outDir, REPORT_FILES.summary), 'utf8')
+    expect(summary).toContain('### Pool membership of session child-a (from records outside this export)')
+    expect(summary).toContain('- pool session pool-p — agent bot, server alpha')
+    const manifest = await readManifest()
+    expect(manifest.formatVersion).toBe(1)
+  })
+
   test('keeps report.json free of any pool field', async () => {
     await writePoolSession()
 

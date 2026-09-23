@@ -27,3 +27,20 @@ export const POOL_MODEL_UNDETECTED_MESSAGE =
 /** Stderr line when an agent addressed the pool without a handshake. */
 export const POOL_STATELESS_MESSAGE =
   'a pool address serves sessionful agents only; send initialize first'
+
+/**
+ * The stderr line for a start that did not produce a member (BU3), or `null`
+ * for a refusal that is not about starting (a full pool, an unknown server —
+ * those already say what they are in the journal). Three different lines
+ * because they send the operator to three different remedies: a faster
+ * command (an installed binary rather than `npx`), a broken command, or a
+ * server that speaks no revision the plane does.
+ */
+export function startRefusalLine(server: string, reason: string, startTimeoutMs: number): string | null {
+  if (reason === 'start-timeout') {
+    return `server ${server} did not start within ${Math.round(startTimeoutMs / 1000)} s`
+  }
+  if (reason === 'ended-during-start') return `server ${server} ended before it started`
+  if (reason === 'handshake-failed') return `server ${server} did not complete the handshake`
+  return null
+}

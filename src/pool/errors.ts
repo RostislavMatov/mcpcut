@@ -1,6 +1,7 @@
 import { synthesizeError, type SynthesizableId } from '../proxy/synthesize.js'
 import {
   ERROR_CODE_POOL_AT_CAPACITY,
+  ERROR_CODE_POOL_INCOMPLETE_RESULT,
   ERROR_CODE_POOL_INVALID_PARAMS,
   ERROR_CODE_POOL_MEMBER_GONE,
   ERROR_CODE_POOL_METHOD_NOT_FOUND,
@@ -87,6 +88,20 @@ export function poolCursorError(id: SynthesizableId): Buffer {
     code: ERROR_CODE_POOL_INVALID_PARAMS,
     message: 'This address does not paginate; omit "cursor" and read the whole list.',
     data: { reason: 'pool_cursor_unsupported' },
+  })
+}
+
+/**
+ * A member answered the agent's call with a result that is not finished
+ * (`resultType` other than `complete`, RV5). The plane declared no client
+ * capabilities and runs no retry of its own, so the honest answer is an
+ * error that says what may help. Nothing of the member's result is echoed.
+ */
+export function poolIncompleteResultError(id: SynthesizableId): Buffer {
+  return synthesizeError(id, {
+    code: ERROR_CODE_POOL_INCOMPLETE_RESULT,
+    message: 'The server asked for input or a retry the pool cannot provide; call the tool again.',
+    data: { reason: 'pool_incomplete_result' },
   })
 }
 
