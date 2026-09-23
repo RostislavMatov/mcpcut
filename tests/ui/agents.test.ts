@@ -22,6 +22,9 @@ import {
   type UiAuditEvent,
 } from '../../src/ui/handlers/agents.js'
 import { renderAgentsPage } from '../../src/ui/pages/agents.js'
+import type { ClientConfigDocument, HttpClientEntry, StdioClientEntry } from '../../src/agents/client-config.js'
+import { renderClientConfig } from '../../src/agents/client-config.js'
+import type { ServeAddress } from '../../src/setup/serve-address.js'
 import type { UiRequestContext, UiResult } from '../../src/ui/routes.js'
 
 /**
@@ -30,6 +33,25 @@ import type { UiRequestContext, UiResult } from '../../src/ui/routes.js'
  * the real `agents/store.ts` behind a temp journal dir; no HTTP server needed
  * to exercise the handler contract.
  */
+
+/** A remembered serve address (C1): the block carries it and the page adds no note. */
+const SERVE_ADDRESS: ServeAddress = { url: 'https://plane.example:8090', source: 'config' }
+
+/** The `<pre>` holding the client config of the given form, HTML-unescaped and parsed. */
+function clientConfigIn(page: string, form: 'stdio' | 'http'): ClientConfigDocument {
+  const match = new RegExp(`<pre class="ag-config" data-client-config="${form}">([^<]*)</pre>`).exec(page)
+  if (match === null) throw new Error(`no ${form} client config on the page`)
+  return JSON.parse(unescapeHtml(match[1] as string)) as ClientConfigDocument
+}
+
+function unescapeHtml(text: string): string {
+  return text
+    .replaceAll('&quot;', '"')
+    .replaceAll('&#39;', "'")
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&amp;', '&')
+}
 
 function session(role: UiSession['role'], adminName = 'op-admin'): UiSession {
   return { adminName, role, csrfToken: 'csrf-token-value-123456' }
@@ -88,6 +110,7 @@ beforeEach(() => {
   audit = []
   accessEdits = []
   handlers = createAgentsHandlers({
+    serveAddress: SERVE_ADDRESS,
     agentsStore: store,
     groups,
     registry,
@@ -138,7 +161,7 @@ describe('agent matrix rendering', () => {
       grants: { 'srv"<x>': { tools: ['t<img>'] } },
     } as AgentRecord
 
-    const html = renderAgentsPage({ agents: [evil], session: session('owner') })
+    const html = renderAgentsPage({ serveAddress: SERVE_ADDRESS, agents: [evil], session: session('owner') })
 
     expect(html).not.toContain('<script>')
     expect(html).not.toContain('<img>')
@@ -232,6 +255,94 @@ describe('create issues a one-time token', () => {
     expect(JSON.stringify(audit)).not.toContain(token)
   })
 
+  test('the token page carries the client config with the SAME token inside, in env (phase 4)', async () => {
+    const revealed = bodyOf(await handlers.agentsCreate(postCtx({ name: 'research-bot' }, session('owner'))))
+    const token = (revealed.match(/data-token>([^<]+)</) as RegExpMatchArray)[1] as string
+
+    const entry = clientConfigIn(revealed, 'stdio').mcpServers.mcpcut as StdioClientEntry
+
+    expect(entry.env).toEqual({ MCP_AGENT_TOKEN: token })
+    expect(entry.args).toEqual(['connect', '--url', 'https://plane.example:8090'])
+    // Exactly one element carries `data-token`: the reveal regex above must
+    // keep finding the token box, not the block.
+    expect(revealed.match(/data-token/g)).toHaveLength(1)
+  })
+
+  test('the block on the page is byte-for-byte the generator\'s — the CLI prints the same bytes', async () => {
+    const revealed = bodyOf(await handlers.agentsCreate(postCtx({ name: 'research-bot' }, session('owner'))))
+    const token = (revealed.match(/data-token>([^<]+)</) as RegExpMatchArray)[1] as string
+    const pre = /<pre class="ag-config" data-client-config="stdio">([^<]*)<\/pre>/.exec(revealed)?.[1] as string
+
+    expect(unescapeHtml(pre)).toBe(
+      renderClientConfig({ serveUrl: SERVE_ADDRESS.url, token, form: 'stdio' }),
+    )
+  })
+
+  test('the HTTP form sits in a drawer that opens without JS, with the token as a Bearer header', async () => {
+    const revealed = bodyOf(await handlers.agentsCreate(postCtx({ name: 'research-bot' }, session('owner'))))
+    const token = (revealed.match(/data-token>([^<]+)</) as RegExpMatchArray)[1] as string
+
+    expect(revealed).toMatch(/<details class="drawer"><summary>HTTP client form/)
+    expect(clientConfigIn(revealed, 'http').mcpServers.mcpcut as HttpClientEntry).toEqual({
+      url: 'https://plane.example:8090/mcp',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+  })
+
+  test('a derived serve address earns the note on the token page; a remembered one does not (C2)', async () => {
+    const derived = createAgentsHandlers({
+      serveAddress: { url: 'http://127.0.0.1:8090', source: 'derived' },
+      agentsStore: store,
+      groups,
+      registry,
+    })
+
+    const page = bodyOf(await derived.agentsCreate(postCtx({ name: 'bot' }, session('owner'))))
+    const remembered = bodyOf(await handlers.agentsCreate(postCtx({ name: 'bot2' }, session('owner'))))
+
+    expect(page).toContain('address derived from the serve bind')
+    expect(remembered).not.toContain('address derived from the serve bind')
+  })
+
+  test('a dropped agent.create record puts the H4 warning on the token page, which still shows the token (C6)', async () => {
+    const dropping = createAgentsHandlers({
+      serveAddress: SERVE_ADDRESS,
+      agentsStore: store,
+      groups,
+      registry,
+      journalAccessEdit: async () => ({ written: false }),
+    })
+
+    const page = bodyOf(await dropping.agentsCreate(postCtx({ name: 'bot' }, session('owner'))))
+
+    expect(page).toContain(AUDIT_RECORD_DROPPED_WARNING)
+    expect(page).toContain('class="notice-warning"')
+    expect(page).toMatch(/<pre class="token" data-token>[^<]+<\/pre>/)
+  })
+
+  test('the access-edit record carries no token, block or no block', async () => {
+    const revealed = bodyOf(await handlers.agentsCreate(postCtx({ name: 'bot' }, session('owner'))))
+    const token = (revealed.match(/data-token>([^<]+)</) as RegExpMatchArray)[1] as string
+
+    expect(accessEdits).toEqual([expect.objectContaining({ action: 'agent.create', agent: 'bot' })])
+    expect(JSON.stringify(accessEdits)).not.toContain(token)
+  })
+
+  test('/agents gives every card a client config drawer with <token>, for any role, and no token', async () => {
+    const revealed = bodyOf(await handlers.agentsCreate(postCtx({ name: 'bot' }, session('owner'))))
+    const token = (revealed.match(/data-token>([^<]+)</) as RegExpMatchArray)[1] as string
+
+    for (const role of ['owner', 'operator', 'viewer'] as const) {
+      const page = bodyOf(await handlers.agentsPage(getCtx(session(role))))
+
+      expect(page).toMatch(/<details class="drawer ag-config-drawer"><summary>client config<\/summary>/)
+      const entry = clientConfigIn(page, 'stdio').mcpServers.mcpcut as StdioClientEntry
+      expect(entry.env).toEqual({ MCP_AGENT_TOKEN: '<token>' })
+      expect(page).toContain('mcpcut agent config bot --http')
+      expect(page).not.toContain(token)
+    }
+  })
+
   test('the end-to-end "issue a scoped key" flow works from the panel', async () => {
     await seedServer('github')
     await handlers.agentsCreate(postCtx({ name: 'scoped-bot' }, session('owner')))
@@ -295,6 +406,7 @@ describe('error handling and attribution', () => {
   test('a registry that throws on the existence check is contained, not a crash (review of S1)', async () => {
     await store.createAgent('bot')
     const broken = createAgentsHandlers({
+    serveAddress: SERVE_ADDRESS,
       agentsStore: store,
       groups,
       registry: {
@@ -330,9 +442,9 @@ describe('CSRF and owner-only nav link', () => {
   })
 
   test('the admins nav link shows for owner only', () => {
-    const asOwner = renderAgentsPage({ agents: [], session: session('owner') })
-    const asOperator = renderAgentsPage({ agents: [], session: session('operator') })
-    const asViewer = renderAgentsPage({ agents: [], session: session('viewer') })
+    const asOwner = renderAgentsPage({ serveAddress: SERVE_ADDRESS, agents: [], session: session('owner') })
+    const asOperator = renderAgentsPage({ serveAddress: SERVE_ADDRESS, agents: [], session: session('operator') })
+    const asViewer = renderAgentsPage({ serveAddress: SERVE_ADDRESS, agents: [], session: session('viewer') })
     expect(asOwner).toContain('/admins')
     expect(asOperator).not.toContain('/admins')
     expect(asViewer).not.toContain('/admins')
@@ -353,7 +465,8 @@ describe('store failures are classified, not flattened to 400 (T-2)', () => {
 
   test('an unrecognized store error is a detail-free 500, not a 400 echoing it', async () => {
     const secretish = 'EACCES: /home/alice/.mcpcut/data/agents.json.lock held by pid 4242'
-    const failing = createAgentsHandlers({ agentsStore: brokenStore(new Error(secretish)), groups, registry })
+    const failing = createAgentsHandlers({
+    serveAddress: SERVE_ADDRESS, agentsStore: brokenStore(new Error(secretish)), groups, registry })
     const admin = session('owner')
     await seedServer('github')
 
@@ -371,6 +484,7 @@ describe('store failures are classified, not flattened to 400 (T-2)', () => {
 
   test('a corrupt agents.json is infrastructure (500), not operator error (400)', async () => {
     const failing = createAgentsHandlers({
+    serveAddress: SERVE_ADDRESS,
       agentsStore: brokenStore(
         new AgentsFileInvalidError(new ZodError([{ code: 'custom', path: [], message: 'corrupt' }])),
       ),
@@ -383,7 +497,8 @@ describe('store failures are classified, not flattened to 400 (T-2)', () => {
 
   test('a capped write (StoreWriteRejectedError) is a readable 400, not a 500 (U6)', async () => {
     const rejected = new StoreWriteRejectedError('/tmp/agents.json', new Error('too many agents'))
-    const failing = createAgentsHandlers({ agentsStore: brokenStore(rejected), groups, registry })
+    const failing = createAgentsHandlers({
+    serveAddress: SERVE_ADDRESS, agentsStore: brokenStore(rejected), groups, registry })
 
     const result = await failing.agentsCreate(postCtx({ name: 'bot' }, session('owner')))
 
@@ -491,6 +606,7 @@ describe('ungrant of an overriding personal grant (U1)', () => {
       grants: { github: { tools: ['t<img>'] } },
     } as GroupRecord
     const forgedHandlers = createAgentsHandlers({
+    serveAddress: SERVE_ADDRESS,
       agentsStore: store,
       groups: { listGroups: async () => [forged] },
       registry,
@@ -518,7 +634,7 @@ describe('McpCut agents page structure', () => {
     }) as AgentRecord
 
   test('the create and grant forms are drawers above the list, opened by the nav "+"', () => {
-    const html = renderAgentsPage({ agents: [], session: session('owner') })
+    const html = renderAgentsPage({ serveAddress: SERVE_ADDRESS, agents: [], session: session('owner') })
     expect(html).toContain('<details class="drawer" id="create-agent">')
     expect(html).toContain('<details class="drawer" id="grant-server">')
     expect(html).toContain('data-open-details="create-agent"')
@@ -529,7 +645,7 @@ describe('McpCut agents page structure', () => {
   })
 
   test('the tab-bar meta counts agents and active agents', () => {
-    const html = renderAgentsPage({
+    const html = renderAgentsPage({ serveAddress: SERVE_ADDRESS,
       agents: [bot('a'), bot('b', { revokedAt: '2026-08-12T00:00:00.000Z' })],
       session: session('owner'),
     })
@@ -537,7 +653,7 @@ describe('McpCut agents page structure', () => {
   })
 
   test('each agent is a card; "all" is an on-pill, an absent dimension is faint, revoked agents lose the revoke form', () => {
-    const html = renderAgentsPage({
+    const html = renderAgentsPage({ serveAddress: SERVE_ADDRESS,
       agents: [
         bot('live', { grants: { gh: { tools: '*' } } }),
         bot('dead', { revokedAt: '2026-08-12T00:00:00.000Z', grants: { gh: { tools: ['x'] } } }),
@@ -554,7 +670,7 @@ describe('McpCut agents page structure', () => {
   })
 
   test('the owner-only Manage admins link sits in the panel header as a ghost link', () => {
-    const html = renderAgentsPage({ agents: [], session: session('owner') })
+    const html = renderAgentsPage({ serveAddress: SERVE_ADDRESS, agents: [], session: session('owner') })
     expect(html).toMatch(/<a class="btn-ghost" href="\/admins">Manage admins<\/a>/)
   })
 
@@ -676,8 +792,8 @@ describe('group-derived rows and the by-group drawer (M5.5 п.2, Task 14)', () =
       agents: [bot('live'), bot('dead', { revokedAt: '2026-08-12T00:00:00.000Z' })],
       groups: [group('analytics')],
     }
-    const asOwner = renderAgentsPage({ ...view, session: session('owner') })
-    const asOperator = renderAgentsPage({ ...view, session: session('operator') })
+    const asOwner = renderAgentsPage({ serveAddress: SERVE_ADDRESS, ...view, session: session('owner') })
+    const asOperator = renderAgentsPage({ serveAddress: SERVE_ADDRESS, ...view, session: session('operator') })
 
     expect(asOwner).toContain('<details class="drawer" id="grant-group">')
     expect(asOwner).toContain('action="/groups/join"')
@@ -690,7 +806,7 @@ describe('group-derived rows and the by-group drawer (M5.5 п.2, Task 14)', () =
   })
 
   test('with no groups the owner drawer explains where to create one and offers no select', () => {
-    const html = renderAgentsPage({ agents: [bot('live')], groups: [], session: session('owner') })
+    const html = renderAgentsPage({ serveAddress: SERVE_ADDRESS, agents: [bot('live')], groups: [], session: session('owner') })
 
     expect(html).toContain('id="grant-group"')
     expect(html).toContain('no groups yet')
@@ -699,7 +815,7 @@ describe('group-derived rows and the by-group drawer (M5.5 п.2, Task 14)', () =
 
   test('a hostile group name is escaped everywhere it appears', () => {
     const evil = group('g<script>', { grants: { srv: { tools: ['t'] } }, members: ['bot'] })
-    const html = renderAgentsPage({
+    const html = renderAgentsPage({ serveAddress: SERVE_ADDRESS,
       agents: [bot('bot')],
       groups: [evil],
       session: session('owner'),
@@ -883,6 +999,7 @@ describe('personal grant edits are journalled (T1)', () => {
   test('a journal port that rejects cannot turn a completed write into a 500', async () => {
     // Arrange
     const failing = createAgentsHandlers({
+    serveAddress: SERVE_ADDRESS,
       agentsStore: store,
       groups,
       registry,
@@ -902,6 +1019,7 @@ describe('personal grant edits are journalled (T1)', () => {
   test('a writer answering written: false → the grant stands and the 200 notice carries the warning (audit F1)', async () => {
     // Arrange
     const dropping = createAgentsHandlers({
+    serveAddress: SERVE_ADDRESS,
       agentsStore: store,
       groups,
       registry,
@@ -938,7 +1056,8 @@ describe('personal grant edits are journalled (T1)', () => {
 
   test('without the port the handlers still work (a plane wired before T1)', async () => {
     // Arrange
-    const portless = createAgentsHandlers({ agentsStore: store, groups, registry })
+    const portless = createAgentsHandlers({
+    serveAddress: SERVE_ADDRESS, agentsStore: store, groups, registry })
 
     // Act
     const result = await portless.agentsCreate(postCtx({ name: 'bot' }, admin()))

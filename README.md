@@ -213,6 +213,12 @@ differ on purpose. The wizard asks the same two questions (`UI URL`,
 `Agent URL`, both optional), and a rerun over an existing install adds the
 entries and keeps everything else; restart the services afterwards.
 
+`--serve-public-url` is also **remembered**, as `serve.publicUrl` in the
+config (the wizard's `Agent URL` opens with it): it becomes the `--url` in
+every client config `agent create` and `agent config` print. Without it the
+block carries the loopback address of the bind (`http://127.0.0.1:8090`) and
+says so in a note — right on this machine, wrong for any other.
+
 Plain `http://` to a public address works, and `setup` says what it costs:
 admin tokens (and, on `serve`, agent keys and every tool call) cross the
 network in clear text. Two ways out, neither of which mcpcut can supply for
@@ -419,7 +425,8 @@ entrypoint, taking its answers from the environment — `MCPCUT_DATA_DIR`,
 `MCPCUT_UI_HOST`/`MCPCUT_UI_PORT` (default `0.0.0.0:8091`),
 `MCPCUT_SERVE_HOST`/`MCPCUT_SERVE_PORT` (default `0.0.0.0:8090`), and the
 optional `MCPCUT_UI_PUBLIC_URL`/`MCPCUT_SERVE_PUBLIC_URL` — set them in an `environment:` block to
-change the install. `0.0.0.0` inside the container is the only way a
+change the install. `MCPCUT_SERVE_PUBLIC_URL` is also the address every
+generated client config carries (`agent create`, `agent config`). `0.0.0.0` inside the container is the only way a
 published port reaches it; the ports are published to host loopback only
 (`127.0.0.1:8091`, `127.0.0.1:8090`), and `Host` screening still admits only
 localhost names, so reach the console at `http://localhost:8091`. **Do not set
@@ -831,9 +838,9 @@ mcpcut server list | show <name> | remove <name> [--prune-grants]
                                                   # add/remove need MCP_ADMIN_TOKEN (owner); list and show do not
 mcpcut vault init | set <name> | list | remove <name> | rekey
                                                   # set/remove/rekey need MCP_ADMIN_TOKEN (owner); init and list do not
-mcpcut agent create <name> | list | revoke <name>
+mcpcut agent create <name> | list | revoke <name> | config <name> [--http]
 mcpcut agent grant <agent> <server> [--tools a,b,prefix*] | ungrant <agent> <server>
-                                                  # every agent mutation needs MCP_ADMIN_TOKEN (owner); list does not
+                                                  # every agent mutation needs MCP_ADMIN_TOKEN (owner); list and config do not
 mcpcut group create <name> | remove <name> | list | show <name>
 mcpcut group grant <group> <server> --tools a,b,prefix*|* [--resources ...|*] [--prompts ...|*]
 mcpcut group ungrant <group> <server>
@@ -1037,19 +1044,50 @@ Step by step:
    `group *` and `policy set` get. The agent token itself never reaches the
    journal.
 
-Then point the agent's own client config at `connect`:
+`agent create` prints the rest of the job too — the whole client config,
+with the token already inside, right under the token:
 
-```json
+```
+agent: research-bot
+token: mcpj_…
+Save this token now: it cannot be recovered or shown again.
+
+Client config — paste into the agent's client (the token is inside):
 {
   "mcpServers": {
-    "github": {
+    "mcpcut": {
       "command": "mcpcut",
-      "args": ["connect", "github", "--agent", "research-bot"],
-      "env": { "MCP_AGENT_TOKEN": "<the token agent create printed>" }
+      "args": [
+        "connect",
+        "--url",
+        "https://plane.example:8090"
+      ],
+      "env": {
+        "MCP_AGENT_TOKEN": "mcpj_…"
+      }
     }
   }
 }
+HTTP client instead? mcpcut agent config research-bot --http
 ```
+
+Paste it into the agent's client (`.mcp.json`, Claude Desktop, Cursor…) once.
+The one entry, `mcpcut`, is the agent's **pool**: every server it is granted
+— today and after any later `agent grant` — behind one address, with tool names
+prefixed by their server, so the client config never changes again. The
+address is `serve.publicUrl` (see *Reaching it by IP (or name) and port*);
+plain `http://` to another host gets `--allow-http` in `args` automatically,
+exactly when the bridge would refuse without it. A second agent on the same
+client needs its own entry: rename the key.
+
+`mcpcut agent config research-bot` prints the same block again, any time and
+without an admin token, with `<token>` where the token was — the token itself
+is never shown twice. `--http` prints the form for a client that speaks HTTP
+natively: `url` (the pool path `/mcp` included) and an
+`Authorization: Bearer <token>` header; add `"type": "http"` where your client
+asks for it. The web console shows both forms on the page `create` answers
+with, and the `<token>` block in every agent card on `/agents`; the console
+shows the CLI's output as is.
 
 The token is the only secret left in the agent's config, and it grants access
 to exactly what that agent was granted — never to the server's own
@@ -1320,18 +1358,25 @@ an HTTP agent.
 ```json
 {
   "mcpServers": {
-    "github": {
+    "mcpcut": {
       "command": "mcpcut",
       "args": [
         "connect",
         "--url",
-        "https://plane.example:8090/agents/research-bot/servers/github"
+        "https://plane.example:8090"
       ],
-      "env": { "MCP_AGENT_TOKEN": "mcpj_…" }
+      "env": {
+        "MCP_AGENT_TOKEN": "mcpj_…"
+      }
     }
   }
 }
 ```
+
+This is the block `agent create` prints: a base address, which means the
+agent's pool (`/mcp`). The per-server form stays available for a client that
+must see one server's tool names verbatim — give the full path,
+`https://plane.example:8090/agents/research-bot/servers/github`, as `--url`.
 
 The token comes from the environment and only from the environment: a token in
 `argv` is refused outright, because every process on the machine can read

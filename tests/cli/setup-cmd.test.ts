@@ -333,6 +333,27 @@ describe('setup --yes: the overlay rule', () => {
     expect(String(written.serve.port)).toBe(args[args.indexOf('--serve-port') + 1])
   })
 
+  test('--serve-public-url is written to the file as serve.publicUrl and survives a rerun that does not type it', async () => {
+    // Arrange: an https address keeps the bind on loopback, so the preflight stays green.
+    expect(
+      await runSetupCommand(await fullRunArgs(['--serve-public-url', 'https://mcp.example.com']), fakeIo(), {
+        env,
+        home,
+      }),
+    ).toBe(0)
+    expect(installConfigSchema.parse(await readConfig()).serve.publicUrl).toBe('https://mcp.example.com')
+
+    // Act: a rerun about something else entirely.
+    const exitCode = await runSetupCommand(['--yes', '--serve-port', String(await freePort())], fakeIo(), {
+      env,
+      home,
+    })
+
+    // Assert
+    expect(exitCode).toBe(0)
+    expect(installConfigSchema.parse(await readConfig()).serve.publicUrl).toBe('https://mcp.example.com')
+  })
+
   test('a rerun with --no-behind-tls writes the false that takes the claim back', async () => {
     // Arrange: an install that once claimed TLS in front of it.
     expect(await runSetupCommand(await fullRunArgs(['--behind-tls']), fakeIo(), { env, home })).toBe(0)

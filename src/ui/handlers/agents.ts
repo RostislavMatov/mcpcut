@@ -16,6 +16,7 @@ import type { GroupsStore } from '../../groups/store.js'
 import type { AccessEditInfo } from '../../journal/record.js'
 import { StoreWriteRejectedError } from '../../policy/store.js'
 import type { RegistryStore } from '../../registry/store.js'
+import type { ServeAddress } from '../../setup/serve-address.js'
 import type { UiSession } from '../auth.js'
 import { displayName } from '../display-name.js'
 import {
@@ -82,6 +83,12 @@ export interface AgentsHandlersDeps {
    * the registry cannot refuse, and refusing is the point.
    */
   readonly registry: Pick<RegistryStore, 'listServers' | 'getServer'>
+  /**
+   * The address the client config on the token page and in every card dials
+   * (ADR-0015, phase 4) — resolved once by `cli/ui-cmd.ts` from the install
+   * config of the host this daemon runs on.
+   */
+  readonly serveAddress: ServeAddress
   readonly audit?: UiAuditSink
   /**
    * Journal port for access changes (owner decision T1, 2026-09-01), injected
@@ -216,7 +223,10 @@ export function createAgentsHandlers(deps: AgentsHandlersDeps): AgentsHandlers {
     const session = ctx.session
     if (session === undefined) return FORBIDDEN
     const [agents, groupList] = await Promise.all([agentsStore.listAgents(), groups.listGroups()])
-    return htmlResult(HTTP_STATUS_OK, renderAgentsPage({ agents, groups: groupList, session }))
+    return htmlResult(
+      HTTP_STATUS_OK,
+      renderAgentsPage({ agents, groups: groupList, session, serveAddress: deps.serveAddress }),
+    )
   }
 
   async function agentsCreate(ctx: UiRequestContext): Promise<UiResult> {
@@ -229,11 +239,18 @@ export function createAgentsHandlers(deps: AgentsHandlersDeps): AgentsHandlers {
       record(session, 'agents.create', name)
       // `created.token` is deliberately NOT passed on: the record says the
       // agent exists, the reveal page is the only place the key is rendered.
-      // That page has no warning slot yet, so a dropped `agent.create` record
-      // is still reported on the process's stderr only — the reveal cannot be
-      // swapped for a notice without losing the one-time token.
-      await journal(session, { action: 'agent.create', agent: created.agent.name })
-      return htmlResult(HTTP_STATUS_OK, renderAgentTokenOnce({ agent: created.agent.name, token: created.token, session }))
+      // A dropped record is reported ON that page (C6, audit H4).
+      const journaled = await journal(session, { action: 'agent.create', agent: created.agent.name })
+      return htmlResult(
+        HTTP_STATUS_OK,
+        renderAgentTokenOnce({
+          agent: created.agent.name,
+          token: created.token,
+          session,
+          serveAddress: deps.serveAddress,
+          ...(journaled.written ? {} : { warning: AUDIT_RECORD_DROPPED_WARNING }),
+        }),
+      )
     } catch (error) {
       return storeFailure(error, session)
     }

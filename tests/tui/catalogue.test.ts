@@ -274,6 +274,7 @@ const CATALOGUE_PAIR_KEYS: readonly string[] = [
   'vault rekey',
   'agent list',
   'agent create',
+  'agent config',
   'agent grant',
   'agent ungrant',
   'agent revoke',

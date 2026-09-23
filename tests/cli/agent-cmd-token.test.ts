@@ -9,6 +9,7 @@ import { runAgentCommand, type AgentCliOptions } from '../../src/cli/agent-cmd.j
 import { createGroupsStore } from '../../src/groups/store.js'
 import { ACCESS_EDIT_SESSION_ID } from '../../src/journal/access-edit-record.js'
 import { createRegistryStore } from '../../src/registry/store.js'
+import type { InstallConfigLoad } from '../../src/setup/load.js'
 import { readJournalRecords } from '../support/journal-rows.js'
 
 /**
@@ -53,13 +54,16 @@ function fakeIo(): {
 
 /** Options with NO token: the reading subcommand and every refusal case. */
 function anonOpts(): AgentCliOptions {
-  return { journalDir, env: {} }
+  return { journalDir, env: {}, install: NO_INSTALL }
 }
+
+/** No install config, so the developer's own `~/.mcpcut/config.json` never shapes the client config. */
+const NO_INSTALL: InstallConfigLoad = { kind: 'absent', path: '/nonexistent/.mcpcut/config.json' }
 
 /** Mints an admin through the production store and returns options carrying its token. */
 async function optsForAdmin(name: string, role: AdminRole): Promise<AgentCliOptions> {
   const { token } = await createAdminStore({ journalDir }).createAdmin(name, role)
-  return { journalDir, env: { [ADMIN_TOKEN_ENV_VAR]: token } }
+  return { journalDir, env: { [ADMIN_TOKEN_ENV_VAR]: token }, install: NO_INSTALL }
 }
 
 async function ownerOpts(): Promise<AgentCliOptions> {
@@ -189,12 +193,15 @@ describe('agent mutations are attributed and journalled (T4/T1)', () => {
     // Act
     const code = await runAgentCommand(['create', 'research-bot'], io, opts)
 
-    // Assert — the token is printed exactly once, on stdout, and reaches
-    // neither the audit line nor the journal: the record has no field for a
-    // secret and must never grow one.
+    // Assert — the token is printed on stdout in exactly two places, its
+    // token: line and the client config's env (C5), and reaches neither the
+    // audit line nor the journal: the record has no field for a secret and
+    // must never grow one — the block does not widen it either.
     expect(code).toBe(0)
     const token = /^token: (\S+)$/m.exec(io.out())?.[1]
     expect(token).toMatch(/^mcpj_/)
+    const lines = io.out().split('\n').filter((line) => line.includes(token as string))
+    expect(lines).toEqual([`token: ${token}`, `        "MCP_AGENT_TOKEN": "${token}"`])
     expect(io.err()).toContain('[audit] agent create by alice (owner): research-bot')
     expect(io.err()).not.toContain(token as string)
     const records = await accessRecords()

@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest'
+import { overlaySetupArgs, parseSetupArgs } from '../../src/cli/setup-args.js'
 import { TOKEN_ONCE_NOTICE } from '../../src/cli/ui-constants.js'
 import { SUPERVISORS } from '../../src/setup/constants.js'
 import { defaultInstallConfig } from '../../src/setup/defaults.js'
@@ -338,6 +339,44 @@ describe('the two optional addresses (2026-09-19)', () => {
       '--serve-public-url',
       'https://agents.example.com',
     ])
+  })
+
+  test('the agent address opens with the remembered serve.publicUrl (phase 4): an edit does not look empty', () => {
+    const config = defaultInstallConfig(DATA_DIR)
+    const remembered = { ...config, serve: { ...config.serve, publicUrl: 'https://agents.example.com' } }
+
+    const values = valuesFor(prefillOf(remembered))
+
+    expect(values[WIZARD_FIELD.servePublicUrl]).toBe('https://agents.example.com')
+    expect(values[WIZARD_FIELD.uiPublicUrl]).toBe('')
+    expect(setupArgvOf(values).slice(-2)).toEqual(['--serve-public-url', 'https://agents.example.com'])
+  })
+
+  test('without a remembered address the agent field opens empty and adds no flag', () => {
+    const values = valuesFor()
+
+    expect(values[WIZARD_FIELD.servePublicUrl]).toBe('')
+    expect(setupArgvOf(values)).not.toContain('--serve-public-url')
+  })
+
+  test('a wizard pass that changes nothing leaves the serve config exactly as it was', () => {
+    // The prefilled address goes back out as `--serve-public-url <same>`:
+    // `applyPublicUrl` deduplicates the Host entry and the typed `--serve-host`
+    // keeps the bind, so the round trip is a no-op.
+    const config = defaultInstallConfig(DATA_DIR)
+    const earlier: InstallConfig = {
+      ...config,
+      serve: {
+        host: '0.0.0.0',
+        port: 8090,
+        allowedHosts: ['203.0.113.7:8090'],
+        publicUrl: 'http://203.0.113.7:8090',
+      },
+    }
+    const parsed = parseSetupArgs(setupArgvOf(valuesFor(prefillOf(earlier))).slice(1))
+    if (!parsed.ok) throw new Error(parsed.message)
+
+    expect(overlaySetupArgs(earlier, parsed.args, '/').serve).toEqual(earlier.serve)
   })
 
   test('they open empty, are not required, and refuse what `setup` would refuse — in its words', () => {

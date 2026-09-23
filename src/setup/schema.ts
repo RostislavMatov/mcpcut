@@ -6,6 +6,7 @@ import {
   MAX_CONFIG_STRING_LENGTH,
   MAX_HOST_LENGTH,
   MAX_LIST_ENTRIES,
+  PUBLIC_ORIGIN_PATTERN,
   REJECTED_ORIGIN_VALUE,
   SUPERVISORS,
 } from './constants.js'
@@ -48,6 +49,16 @@ const bindSchema = z.strictObject({ host: hostSchema, port: portSchema })
  */
 const probeHostSchema = hostSchema.optional()
 
+/**
+ * The address agents dial `serve` at, as an origin (ADR-0015, phase 4, C1):
+ * `agent create` puts it into the client config it prints. Only `serve` has
+ * one — nothing reads a `ui` counterpart.
+ */
+const publicOriginSchema = boundedString.regex(
+  PUBLIC_ORIGIN_PATTERN,
+  'must be an origin: http(s)://host[:port], no path',
+)
+
 export const installConfigSchema = z.strictObject({
   version: z.literal(INSTALL_CONFIG_VERSION),
   dataDir: boundedString.refine(isAbsolute, 'dataDir must be an absolute path'),
@@ -64,6 +75,7 @@ export const installConfigSchema = z.strictObject({
     allowedOrigins: originList.optional(),
     failClosed: z.boolean().optional(),
     policy: boundedString.optional(),
+    publicUrl: publicOriginSchema.optional(),
   }),
   supervisor: z.enum(SUPERVISORS).optional(),
 })

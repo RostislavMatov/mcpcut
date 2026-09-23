@@ -1,5 +1,6 @@
 import type { AgentRecord } from '../../agents/schema.js'
 import type { GroupRecord } from '../../groups/schema.js'
+import type { ServeAddress } from '../../setup/serve-address.js'
 import type { UiSession } from '../auth.js'
 import { roleSatisfies } from '../authz.js'
 import { html, type Html, join, safeUrl } from '../html.js'
@@ -9,6 +10,7 @@ import {
   renderGrantDrawer,
   renderGroupGrantDrawer,
 } from './agents-parts.js'
+import { renderTokenPageConfig } from './agents-config.js'
 import { type CurrentAdmin, renderLayout } from './layout.js'
 import { plural } from './plural.js'
 
@@ -79,11 +81,13 @@ export function renderAgentsPage(view: {
   readonly agents: readonly AgentRecord[]
   readonly groups?: readonly GroupRecord[]
   readonly session: UiSession
+  /** The address every card's client config dials (ADR-0015, phase 4). */
+  readonly serveAddress: ServeAddress
 }): string {
-  const { agents, session } = view
+  const { agents, session, serveAddress } = view
   const groups = view.groups ?? []
   const canManage = roleSatisfies(session.role, 'owner')
-  const cards = agents.map((agent) => renderAgentCard({ agent, groups, canManage, session }))
+  const cards = agents.map((agent) => renderAgentCard({ agent, groups, canManage, session, serveAddress }))
   const list =
     agents.length === 0
       ? html`<p class="empty">no agents yet</p>`
@@ -113,17 +117,26 @@ export function renderAgentsPage(view: {
  * The one-time token reveal after `create`. The plaintext token is interpolated
  * ONLY here, in the direct HTTP response to the create action, with a loud
  * warning; it is never persisted, logged or re-rendered on a later page load.
+ * The client config under it carries the same token (ADR-0015, phase 4);
+ * `warning` is the H4 slot for a dropped `agent.create` record (C6) — the
+ * reveal cannot be swapped for a notice without losing the token.
  */
 export function renderAgentTokenOnce(view: {
   readonly agent: string
   readonly token: string
   readonly session: UiSession
+  readonly serveAddress: ServeAddress
+  readonly warning?: string
 }): string {
+  const warning =
+    view.warning === undefined ? html`` : html`<p class="notice-warning" role="alert">${view.warning}</p>`
   const content = html`<section class="panel panel-strong ag-token token-reveal" aria-label="Agent token">
     <div class="panel-hd"><h1>Agent “${view.agent}” created</h1><span class="label">shown once</span></div>
     <div class="panel-bd">
       <p class="callout">Save this token now — it is shown once and cannot be recovered.</p>
       <pre class="token" data-token>${view.token}</pre>
+      ${warning}
+      ${renderTokenPageConfig(view.serveAddress, view.token)}
       <p><a href="${safeUrl('/agents')}">Back to agents</a></p>
     </div>
   </section>`

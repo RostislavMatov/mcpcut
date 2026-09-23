@@ -102,6 +102,8 @@ const MIRRORED_ROUTES: readonly MirroredRoute[] = [
   // (decision T4, 2026-09-01).
   { sectionId: 'agents', actionId: 'list', method: 'GET', pattern: '/agents' },
   { sectionId: 'agents', actionId: 'create', method: 'POST', pattern: '/agents/create' },
+  // The web shows the same block, with <token>, in every agent card of /agents.
+  { sectionId: 'agents', actionId: 'config', method: 'GET', pattern: '/agents' },
   { sectionId: 'agents', actionId: 'grant', method: 'POST', pattern: '/agents/grant' },
   { sectionId: 'agents', actionId: 'ungrant', method: 'POST', pattern: '/agents/ungrant' },
   { sectionId: 'agents', actionId: 'revoke', method: 'POST', pattern: '/agents/revoke' },

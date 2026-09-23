@@ -13,6 +13,7 @@ import {
   type UiServiceDefaults,
 } from '../setup/bind.js'
 import { loadInstallConfigSync } from '../setup/load.js'
+import { resolveServeAddress, type ServeAddress } from '../setup/serve-address.js'
 import { preflightDatabases } from '../store/preflight.js'
 import { createSessionManager } from '../ui/auth.js'
 import { formatReadableField } from '../journal/format.js'
@@ -99,6 +100,13 @@ export interface UiCommandOptions {
    * caller that already read the config.
    */
   readonly bindDefaults?: UiServiceDefaults
+  /**
+   * The serve address the agent pages put into client configs (ADR-0015,
+   * phase 4). Defaults to the install config's, resolved by the rules
+   * `agent create` uses (C2); injected by tests so a developer's own
+   * `~/.mcpcut/config.json` never reaches a page.
+   */
+  readonly serveAddress?: ServeAddress
   /**
    * The dispatcher the remote console API (ADR-0014, wave 1) runs commands
    * through — the same value `cli.ts` hands `runTui` for the local console.
@@ -295,6 +303,9 @@ function buildRuntime(flags: UiFlags, io: UiCliIo, opts: UiCommandOptions): UiRu
     vault,
     hub,
     stderr: io.stderr,
+    // An unusable MCPCUT_SERVE_PORT is "unknown" here, never a refused
+    // start: it is the other service's variable.
+    serveAddress: opts.serveAddress ?? resolveServeAddress(),
     ...(opts.clock !== undefined ? { clock: opts.clock } : {}),
   })
 

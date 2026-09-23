@@ -55,6 +55,14 @@ export const CSS_PAGE_MATRIX = `
 .ag-matrix td.ag-server { font-family: var(--font-pixel); font-size: 11px; letter-spacing: 0.04em; }
 .ag-matrix td code { margin: 1px 0; display: inline-block; }
 .ag-foot { display: flex; justify-content: flex-end; align-items: center; gap: 10px; }
+/* The client config block (ADR-0015, phase 4). No wrapping inside a line — a
+ * wrapped JSON line pasted back is still JSON, but it no longer LOOKS like the
+ * file it goes into; one click selects the whole block. The card drawer takes
+ * the free space left of Revoke: qualified with details.drawer because that
+ * rule in components.ts (0,1,1) would beat a bare class. */
+pre.ag-config { white-space: pre; word-break: normal; overflow-x: auto; user-select: all; color: var(--fg); }
+details.drawer.ag-config-drawer { margin-right: auto; flex: 1 1 320px; min-width: 0; }
+.ag-foot:has(.ag-config-drawer) { flex-wrap: wrap; }
 .ag-notice, .ad-notice { display: flex; flex-direction: column; gap: 10px; padding: 16px; }
 .ag-notice p, .ad-notice p { font-size: 12px; }
 

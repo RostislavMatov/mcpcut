@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import { z } from 'zod'
-import { INSTALL_CONFIG_VERSION, MAX_LIST_ENTRIES } from '../../src/setup/constants.js'
+import { INSTALL_CONFIG_VERSION, MAX_CONFIG_STRING_LENGTH, MAX_LIST_ENTRIES } from '../../src/setup/constants.js'
 import { defaultInstallConfig } from '../../src/setup/defaults.js'
 import { formatInstallConfigErrors, installConfigSchema } from '../../src/setup/schema.js'
 
@@ -170,6 +170,58 @@ describe('installConfigSchema: the refusals', () => {
 
   test('names the root when the whole document is not an object', () => {
     expect(problemsOf('nope').join('\n')).toContain('(root):')
+  })
+})
+
+describe('installConfigSchema: serve.publicUrl (phase 4, C1)', () => {
+  // The address `agent create` puts into every client config. `setup` writes the
+  // WHATWG origin of a parsed `--serve-public-url`; the pattern only keeps a
+  // hand-edited config from smuggling a path, a query, credentials or a space
+  // into the block an operator pastes.
+  function withServePublicUrl(publicUrl: unknown): Record<string, unknown> {
+    return { ...validConfig(), serve: { host: '127.0.0.1', port: 8090, publicUrl } }
+  }
+
+  test.each(['http://127.0.0.1:8090', 'https://mcp.example.com', 'http://[::1]:8090', 'HTTPS://MCP.EXAMPLE.COM'])(
+    'accepts the origin %s',
+    (publicUrl) => {
+      expect(installConfigSchema.safeParse(withServePublicUrl(publicUrl)).success).toBe(true)
+    },
+  )
+
+  test.each([
+    'https://h/mcp',
+    'http://h:8090/',
+    'ftp://h',
+    'h:8090',
+    'http://u:p@h',
+    ' http://h',
+    'http://h ',
+    'http://h?x=1',
+    'http://h#x',
+    // WHATWG reads a backslash as a slash in special schemes: a path in disguise.
+    'https://good.example\\x',
+    '',
+  ])('refuses %j and names the field', (publicUrl) => {
+    expect(problemsOf(withServePublicUrl(publicUrl)).join('\n')).toContain('serve.publicUrl:')
+  })
+
+  test('says what an origin is when it refuses a path', () => {
+    expect(problemsOf(withServePublicUrl('https://h/mcp'))).toContain(
+      'serve.publicUrl: must be an origin: http(s)://host[:port], no path',
+    )
+  })
+
+  test('refuses a publicUrl longer than the free-form string bound', () => {
+    const long = `https://${'a'.repeat(MAX_CONFIG_STRING_LENGTH)}`
+
+    expect(problemsOf(withServePublicUrl(long)).join('\n')).toContain('serve.publicUrl:')
+  })
+
+  test('refuses publicUrl on the ui: nothing reads it there (C1)', () => {
+    expect(
+      problemsOf({ ...validConfig(), ui: { host: '127.0.0.1', port: 8091, publicUrl: 'https://h' } }),
+    ).toContain('ui: unknown key "publicUrl"')
   })
 })
 

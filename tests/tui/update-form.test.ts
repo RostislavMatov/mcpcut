@@ -1,4 +1,6 @@
 import { describe, expect, test } from 'vitest'
+import { AGENT_TOKEN_MARKER } from '../../src/cli/connect-bridge-messages.js'
+import { AGENTS_SECTION } from '../../src/tui/catalogue/agents.js'
 import type { ActionSpec } from '../../src/tui/catalogue/types.js'
 import { SECRET_DISPLAY_MASK } from '../../src/tui/constants.js'
 import type { Effect, Model, RunRequest, Step } from '../../src/tui/model.js'
@@ -358,6 +360,20 @@ describe('update: what a run carries besides its argv', () => {
  * visible only on a remote console, dispatches nothing, and ends the console
  * on `['--connect', <the address it was connected to>]`.
  */
+describe('the equivalent command of Agents ▸ create has nothing to mask (ADR-0015, phase 4)', () => {
+  test('its display is its argv and carries no agent token: the token is born in stdout, not in the form', () => {
+    // The PRD asked whether the console must mask the agent token in the
+    // "equivalent command" line. It need not: only `secret` fields are masked,
+    // and the token never enters argv. This pins that it stays that way.
+    const create = AGENTS_SECTION.actions.find((action) => action.id === 'create') as ActionSpec
+
+    const request = requestOf(create, { name: 'research-bot' })
+
+    expect(request.display).toEqual(request.argv)
+    expect(request.argv.some((part) => part.includes(AGENT_TOKEN_MARKER))).toBe(false)
+  })
+})
+
 describe('update: Home’s disconnect action', () => {
   const REMOTE: Model['install'] = {
     supervisor: 'mcpcut',
