@@ -1,0 +1,29 @@
+# TLS in front of the agent front (`serve`) with Caddy and Let's Encrypt.
+# Exactly what the phase-5 smoke ran on a VPS (docs/smoke-agent-pool.md), with
+# the host name replaced: put your DNS name where <your-host> stands, and point
+# that name at the host first -- the certificate is issued over HTTP-01 on :80.
+#
+# Why https_port is not 443: on the smoke host 443 already belonged to another
+# service. Any free port works; the agent's address then carries it
+# (https://<your-host>:8443). If 443 is free, drop both global options below
+# and the ":8443" from the site address.
+#
+# Why disable_tlsalpn_challenge: the TLS-ALPN challenge is answered on 443,
+# which Caddy does not own here; HTTP-01 on :80 is the one it can answer.
+#
+# reverse_proxy keeps the Host header, so `serve` sees the public host name --
+# which is why `serve.publicUrl` (MCPCUT_SERVE_PUBLIC_URL) must be exactly this
+# address: `setup` derives the Host allow-list from it.
+{
+	http_port 80
+	https_port 8443
+}
+
+<your-host>:8443 {
+	tls {
+		issuer acme {
+			disable_tlsalpn_challenge
+		}
+	}
+	reverse_proxy serve:8090
+}

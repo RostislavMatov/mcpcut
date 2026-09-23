@@ -8,6 +8,32 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Audit reports name the pool sessions.** `summary.md` gains a "Pool
+  sessions" section: for each pool session, its agent, which child session each
+  server attached as (a server that left and came back appears twice), which
+  servers did not attach and why, which left and why, and how many frames the
+  pool refused by reason. Each child session's decision table is headed with
+  its server and pool session, and every decision table gains a `server` column
+  (the agent called `<server>__<tool>`; the record keeps the bare tool name).
+  `export --report` prints `Pool sessions: <n>`, and a `--session` export of a
+  pool session prints a `Note:` naming how many child sessions — where its
+  decisions are — it leaves out. `report.json` is unchanged (format v1),
+  `verify --report` runs the same seven checks, and the binding stays
+  re-derivable from the `kind:"pool"` records in `records.jsonl` (README gives
+  the `jq` line). ADR-0015 phase 5 amendment; ADR-0007 note on `summary.md`.
+- **The server card marks tools whose pool name is too long.** On `/servers`, a
+  tool whose `<server>__<tool>` exceeds 64 characters is marked `not in pool ·
+  <length>` (it is left out of every agent pool and stays reachable at the
+  per-server address) and the card's tools row counts them; past 47 it is
+  marked `long pool name · <length>`. The thresholds are the pool's own.
+- **An example of TLS in front of `serve` on a VPS** (`docs/deploy/caddy/`): a
+  `Caddyfile` and a compose override — Caddy with a Let's Encrypt certificate,
+  the UI left on host loopback — exactly the stand the pool's live smoke ran
+  (`docs/smoke-agent-pool.md`: official SDK v1/v2, Inspector CLI and Claude Code
+  headless through `connect --url` against a VPS). README now advises
+  registering pooled servers by an installed binary rather than `npx -y`: a
+  pool starts them in parallel, and several cold `npx` launches on a small host
+  exceed the 10-second start budget.
 - **`agent create` prints the agent's client config; `agent config <name>` prints it again with `<token>`.**
   Right under the one-time token, `agent create` — CLI, web console and
   console alike, the remote console included — now shows the whole
@@ -112,6 +138,21 @@ All notable changes to this project are documented here. The format follows
   loopback; the first owner is created with the setup code, as on `/setup`.
   Plain `http` to a non-loopback host is a loud warning, not a refusal.
   ADR-0014; README "A console for a service on another host".
+
+### Security
+
+- **A pool forwards a member's notification only when it is that member's to
+  send.** Before, every notification of every server in an agent's pool reached
+  the agent unscoped. Now `notifications/progress` passes only from the server
+  whose in-flight call carries that `progressToken` (the token is bound to the
+  call when the agent sends it and released with its answer, or when the server
+  leaves); a member's `tools/list_changed` / `prompts/list_changed` reaches the
+  agent as the pool's own notification, without the member's params; and
+  everything the pool never declared — log lines, resource updates, cancels,
+  anything new — is not passed on. The pool journals each such kind once per
+  server (`dropped`, reason `unscoped-notification` or `unsupported-method`,
+  at most 256 kinds per session); every notification stays in that server's own
+  session traffic. ADR-0015 phase 5 amendment (N1–N4).
 
 ### Fixed
 

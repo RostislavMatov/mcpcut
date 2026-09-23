@@ -5,7 +5,10 @@
 A transparent stdio proxy for MCP (Model Context Protocol) servers. It sits
 between an AI agent and a real MCP server, forwards traffic byte-for-byte in
 both directions, and writes a persistent, secret-redacted journal of the
-messages and stderr lines it observes, into `journal.db` (SQLite).
+messages and stderr lines it observes, into `journal.db` (SQLite). (At the
+pool address, where one agent reaches all its servers, the plane rewrites
+exactly what an address needs — the `<server>__` prefix on tool and prompt
+names — and nothing else: see [the pool](#one-address-for-every-server-an-agent-has-the-pool).)
 
 When enforcement is enabled, every observed `tools/call` is classified before
 forwarding. Without a policy file, the proxy is journaling-only and forwards
@@ -38,6 +41,9 @@ other text about the project may claim more than it does.
 | explicit retention pruning (`prune`) | shipped, **no defaults** | prune + marker tests |
 | admin UI / approval queue | shipped | e2e + UI test suites, TS + security reviews, manual browser smoke (`docs/smoke-m4.md`), `docs/adr/0004-admin-ui-architecture.md` |
 | named admin accounts (owner/operator/viewer) | shipped | admin CLI + role-enforcement tests |
+| one address per agent (the pool, `/mcp`) | shipped, tools and prompts, sessionful agents | pool unit + e2e tests, `docs/smoke-agent-pool.md` (live clients — official SDK v1/v2, Inspector CLI, Claude Code headless — against a VPS over TLS) |
+| `connect --url` bridge for agents on another machine | shipped | `docs/smoke-connect-bridge.md`, `docs/smoke-agent-pool.md` |
+| ready-made client config at `agent create` | shipped | `docs/smoke-agent-config.md`, `docs/smoke-agent-pool.md` |
 | whole-product security audit | passed 2026-09-02, **internal** | `docs/security-audit-2026-09.md` — 0 CRITICAL, 4 HIGH fixed in the same wave; no independent pass has been done (ADR-0011), reports via `SECURITY.md` |
 
 The journal is a persistent, append-oriented, secret-redacted SQLite database
@@ -435,6 +441,14 @@ every command, `setup` refuses the run as a data-directory conflict, and under
 `set -eu` with `restart: unless-stopped` the container crash-loops. Do not
 bind-mount a checkout over `/app` either: a `.mcpcut-project/policy.json` in it
 would shadow the volume's policy (ADR-0005).
+
+**TLS in front, on a VPS.** `docs/deploy/caddy/` holds a `Caddyfile` and a
+compose override that put Caddy with a Let's Encrypt certificate in front of
+`serve` and leave the UI on host loopback (reach it through an SSH tunnel) —
+exactly the stand the pool's live smoke ran (`docs/smoke-agent-pool.md`). Set
+`MCPCUT_SERVE_PUBLIC_URL` to the `https://` address in the override before the
+first start: it is the Host allow-list, the TLS flag, and the address every
+generated client config carries.
 
 The entrypoint passes `--no-admin`: the image creates **no admin**, so no
 token ever reaches `docker compose logs`. You create the first owner yourself,
@@ -1303,6 +1317,10 @@ What the plane does behind that address:
   the bare tool name, so a pooled call and a per-server call produce
   indistinguishable decision records. The prefix is an address, not a rename.
 
+A member server's own `notifications/tools/list_changed` (or the prompts one)
+reaches the agent as the **pool's** notification — "read the merged list
+again" — without anything the server attached to it.
+
 **Access changes reach a connected agent.** Grant a server while the agent holds
 its session and it receives `notifications/tools/list_changed`; the next
 `tools/list` contains the new server. Withdraw one and it leaves the pool while
@@ -1330,12 +1348,30 @@ Limits and refusals worth knowing about:
 | a request id already in flight | `-32602` — two live requests under one id have no single answer |
 | more requests than the pool tracks | `-32006` — retry once one has answered |
 | a POST with no session and no `initialize` | 400 `{"error":"pool-sessionful-only"}` — the pool is sessionful-only for now |
+| `notifications/progress` from a server on a token the agent did not give **that server's** call — or after the call was answered | not passed on; the pool journals it once per server (`unscoped-notification`) |
+| a server's log lines, resource updates, or any other notification the pool never declared | not passed on — at a pool address a log line could not be told apart from another server's; each kind is journaled once per server (`unsupported-method`) and every one of them stays in that server's own session traffic |
 
 A tool whose pooled name would exceed 64 characters is **left out of the merged
 list** rather than listed: one name a client rejects breaks that client's whole
 request. It stays reachable at its per-server address, and the names left out
-are recorded in the journal. One pool holds at most 32 servers, and those child
+are recorded in the journal. The server card on `/servers` marks such tools
+(`not in pool · <length>`, and the count in the card's tools row), and names
+past 47 characters too (`long pool name · <length>`) — clients that add a
+prefix of their own may shorten or refuse those. One pool holds at most 32 servers, and those child
 sessions count against `serve`'s process-wide session ceiling.
+
+**Register pooled servers by an installed binary, not `npx -y …`.** A pool
+starts its servers **in parallel**, on the agent's first `tools/list`, and each
+gets 10 seconds from its start to answer the plane's handshake and the list.
+On a small host several `npx -y` launches at once take longer than that (four
+at once took ~14 s each on a 2-CPU VPS in the smoke), so those servers are
+absent from the first list (journaled as `attach-refused`,
+`handshake-failed`); parallel `npx -y` of one package into a cold cache can
+also corrupt npm's own `_npx` cache. Install the server (`npm i -g
+@scope/server`, or into your image) and register its binary:
+`mcpcut server add memory --transport stdio --command mcp-server-memory`.
+The per-server address is not affected — there the agent's client waits for
+one process by itself.
 
 An upstream registered with the stateless revision `2026-07-28` cannot join a
 pool: the plane opens a handshake of its own to each server, and that revision
@@ -1760,8 +1796,36 @@ The private key never leaves this host and is never part of the handoff.
 |---|---|
 | `report.json` | The manifest: scope, record counts, chain state, the as-of contract text, and (if signed) the signing key's fingerprint. |
 | `records.jsonl` | Every exported record, verbatim, one JSON object per line — the same `doc` bytes `journal.db` stores, never re-serialized or re-redacted. |
-| `summary.md` | A human-readable rendering of the manifest plus a decision table, for reading without tooling. |
+| `summary.md` | A human-readable rendering of the manifest, the pool sessions (which child session carried each server, for which agent), and a decision table with a `server` column — for reading without tooling. |
 | `signature.json` | Present **only** when a signing key exists at export time. Its absence means the export is UNSIGNED — never "verified" by default. |
+
+### Pool sessions in a report
+
+An agent connected at the pool address (`/mcp`) is recorded as a **pool
+session** of its own, and every server it reached as an ordinary per-server
+**child** session — each decision is recorded by the child, under the bare
+tool name the server published (the agent called it `<server>__<tool>`).
+`summary.md` ties the two together: a "Pool sessions" section names each pool
+session's agent, which child session each server attached as (twice, if it
+left and came back), which servers did not attach and why, and what the pool
+refused to pass on; each child's decision table says which server and pool
+session it belongs to.
+
+That section is attested by `summary.sha256` like the rest of the summary, but
+`verify --report` does **not** recompute it — `report.json` is unchanged
+(format v1), and the binding is read from the `kind:"pool"` records in
+`records.jsonl`. An auditor can re-derive it independently:
+
+```
+jq -c 'select(.kind == "pool" and .payload.event == "attach")
+       | {pool: .sessionId, server: .payload.serverName, child: .payload.childSessionId}' records.jsonl
+```
+
+`export --report` prints `Pool sessions: <n>`. Exporting a pool session alone
+(`--session <pool session id>`) gives that session's own records only — its
+decisions live in its children — so the command prints a `Note:` and the
+summary names the child sessions the export leaves out. Export the whole
+journal to include them.
 
 ### Checking a report offline
 
@@ -1909,6 +1973,15 @@ consistent as exported" — never "was never rewritten."
   session's own order, so folding them can never reproduce the attested
   chain head. `verify --report` reports the chain-refold check as SKIPPED
   and names every reason why — it does not pretend the check ran.
+- **A pool session exported alone carries none of its decisions.** They
+  are recorded by its child sessions, which `--session <pool>` does not
+  include; the export says so (`Note:` on stdout, "Not in this export" in
+  `summary.md`). Export the whole journal for the full picture.
+- **A child session exported alone does not say it belonged to a pool.** The
+  binding lives in the pool session's own records, which `--session <child>`
+  does not include, so that summary reads like any per-server session's
+  (bare tool names, no pool note). Export the whole journal to see which pool
+  and agent a child served.
 - **The report is history, not a statement of anyone's current rights.** It
   attests to what happened as of the `asOf` instant in `report.json`. A
   grant that was valid when a decision was made may have been revoked
@@ -1994,6 +2067,10 @@ prune** (`verify --sign`, or a previous report's `chain.head`): compare it
 against what the journal claims afterwards. Take one before you prune.
 
 ## Wiring into `.mcp.json`
+
+An agent the plane manages needs no hand wiring: `agent create` prints its
+block, ready to paste — see [Onboarding an agent](#onboarding-an-agent). What
+follows is for wrapping a server of your own, outside the registry.
 
 Wrap a real server by replacing its `command`/`args` with `mcpcut wrap --`
 followed by the original command:
