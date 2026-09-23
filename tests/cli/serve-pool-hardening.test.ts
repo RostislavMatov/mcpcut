@@ -394,3 +394,126 @@ describe('the agent token', () => {
     expect(fixture.io.outText()).not.toContain(fixture.token)
   })
 })
+
+/**
+ * Everything the pool pushes to the agent outside a reply -- the GET stream a
+ * sessionful agent holds open. Whole messages, so a test can tell WHOSE
+ * progress arrived, not just that some did.
+ */
+function openAgentStream(fixture: ServeFixture, sessionId: string): { messages: Record<string, unknown>[]; close(): void } {
+  const controller = new AbortController()
+  const messages: Record<string, unknown>[] = []
+  void fetch(`${fixture.baseUrl}${POOL}`, {
+    headers: { authorization: `Bearer ${fixture.token}`, 'mcp-session-id': sessionId },
+    signal: controller.signal,
+  })
+    .then(async (response) => {
+      if (response.body === null) return
+      const decoder = new TextDecoder()
+      let pending = ''
+      for await (const chunk of response.body) {
+        pending += decoder.decode(chunk as Uint8Array, { stream: true })
+        const lines = pending.split('\n')
+        pending = lines.pop() ?? ''
+        for (const line of lines) {
+          if (line.startsWith('data:')) messages.push(JSON.parse(line.slice('data:'.length).trim()) as Record<string, unknown>)
+        }
+      }
+    })
+    .catch(() => undefined)
+  return { messages, close: () => controller.abort() }
+}
+
+function poolDrops(records: readonly { kind: string; payload: unknown }[], reason: string) {
+  return records
+    .filter((record) => record.kind === 'pool')
+    .map((record) => record.payload as { event?: string; reason?: string; serverName?: string; method?: string })
+    .filter((payload) => payload.event === 'dropped' && payload.reason === reason)
+}
+
+describe('an upstream that reports progress on another server\'s call (ADR-0015 phase 5, N2)', () => {
+  test('is kept from the agent and noted once; the real progress still arrives', async () => {
+    const fixture = await startServe()
+    await fixture.registry.addServer({
+      name: 'good',
+      transport: 'stdio',
+      command: process.execPath,
+      args: [POOL_SERVER, 'slow_echo'],
+      // Long enough that the other call certainly lands while this one lives.
+      env: { POOL_FIXTURE_NAME: 'good', POOL_FIXTURE_DELAY_MS: '1500' },
+    })
+    await fixture.agents.grantServer(AGENT, 'good', '*')
+    await addHostile(fixture, 'evil', 'foreign-progress')
+    const pool = await openPool(fixture)
+    await pool.call({ jsonrpc: '2.0', id: 2, method: 'tools/list' })
+    const stream = openAgentStream(fixture, pool.sessionId)
+
+    const slow = pool.call({
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'tools/call',
+      params: { name: 'good__slow_echo', arguments: {}, _meta: { progressToken: 'victim' } },
+    })
+    await pool.call({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'evil__ok', arguments: {} } })
+    await slow
+
+    await waitUntil(async () => poolDrops(await fixture.journalRecords(), 'unscoped-notification').length > 0, 'the drop record')
+    const progress = stream.messages.filter((message) => message['method'] === 'notifications/progress')
+    stream.close()
+    expect(progress.map((message) => (message['params'] as { message: string }).message)).toEqual(['good'])
+    const drops = poolDrops(await fixture.journalRecords(), 'unscoped-notification')
+    expect(drops).toEqual([expect.objectContaining({ serverName: 'evil', method: 'notifications/progress' })])
+  })
+})
+
+describe('an upstream that logs to the agent (ADR-0015 phase 5, N1/N3)', () => {
+  test('never reaches the agent, is noted once per kind, and stays in its own traffic', async () => {
+    const fixture = await startServe()
+    await addHostile(fixture, 'chatty', 'chatty-log')
+    const pool = await openPool(fixture)
+    const stream = openAgentStream(fixture, pool.sessionId)
+    await pool.call({ jsonrpc: '2.0', id: 2, method: 'tools/list' })
+    await pool.call({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'chatty__ok', arguments: {} } })
+
+    const childLogLines = async (): Promise<number> =>
+      (await fixture.journalRecords()).filter(
+        (record) => record.kind !== 'pool' && record.method === 'notifications/message',
+      ).length
+    // Two requests after the handshake, two log lines each: the evidence is
+    // not lost, it is where it belongs -- in the child session's traffic.
+    await waitUntil(async () => (await childLogLines()) >= 4, 'the log lines in the child traffic')
+    await waitUntil(async () => poolDrops(await fixture.journalRecords(), 'unsupported-method').length >= 2, 'the drop notes')
+    stream.close()
+
+    expect(stream.messages.filter((message) => message['method'] === 'notifications/message')).toEqual([])
+    const notes = poolDrops(await fixture.journalRecords(), 'unsupported-method')
+    expect(notes.map((note) => [note.serverName, note.method]).sort()).toEqual([
+      ['chatty', 'notifications/message'],
+      ['chatty', 'notifications/resources/updated'],
+    ])
+  })
+})
+
+describe('an upstream that dies in the middle of a call', () => {
+  test('answers the agent exactly once, through the front own detach wiring (phase-3 CRITICAL, verified in phase 5)', async () => {
+    // The multiplexer's unit tests wire `detach -> releaseServer` in their own
+    // harness, so removing it from `serve-pool.ts` failed nothing. This pins
+    // the PRODUCT wiring: the child session ends on its own, and only that
+    // edge answers the call that was in flight there.
+    const fixture = await startServe()
+    await addHostile(fixture, 'fragile', 'die-on-call')
+    const pool = await openPool(fixture)
+    await pool.call({ jsonrpc: '2.0', id: 2, method: 'tools/list' })
+
+    const answered = pool.call({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'fragile__ok', arguments: {} } })
+    const outcome = await Promise.race([
+      answered,
+      new Promise<'unanswered'>((resolve) => setTimeout(() => resolve('unanswered'), 3_000)),
+    ])
+
+    expect(outcome).not.toBe('unanswered')
+    const reply = outcome as Record<string, unknown>
+    expect(reply['id']).toBe(3)
+    expect((reply['error'] as { code: number }).code).toBe(-32005)
+  })
+})

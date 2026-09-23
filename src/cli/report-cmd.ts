@@ -10,6 +10,7 @@ import {
   type ReportManifest,
   type ReportRecordSink,
 } from '../journal/report.js'
+import { childrenOutsideExport, type ReportPoolTally } from '../journal/report-pools.js'
 import { signReportManifest, type ReportSignatureFile } from '../journal/report-signing.js'
 import { isValidSessionId } from '../journal/session-id.js'
 import { loadSigningPrivateKey } from '../journal/signing.js'
@@ -129,7 +130,7 @@ async function writeReport(
     // files the directory does not list (wave-5 review, MEDIUM).
     await syncDirectory(outDir.path)
 
-    io.stdout.write(successSummary(outDir.realPath, manifest, signature))
+    io.stdout.write(successSummary(outDir.realPath, manifest, signature, report.pools))
     return EXIT_OK
   } catch (error: unknown) {
     await discardPartialExport(outDir, written)
@@ -289,6 +290,7 @@ function successSummary(
   outDirRealPath: string,
   manifest: ReportManifest,
   signature: ReportSignatureFile | null,
+  pools: ReportPoolTally,
 ): string {
   const files: string[] = [REPORT_FILES.manifest, REPORT_FILES.records, REPORT_FILES.summary]
   if (signature !== null) files.push(REPORT_FILES.signature)
@@ -300,6 +302,7 @@ function successSummary(
     `Files: ${files.join(', ')}\n`,
     `Scope: ${manifest.scope.session === null ? 'whole journal' : `session ${manifest.scope.session}`}\n`,
     `Records: ${manifest.counts.records}  Decisions: ${manifest.counts.decisions}\n`,
+    ...poolLines(manifest, pools),
     head === null
       ? 'Chain head: no attested head\n'
       : `Chain head: seq ${head.seq} (${head.recordHash})\n`,
@@ -307,6 +310,28 @@ function successSummary(
     ...chainWarningLines(manifest),
     `Key fingerprint: ${manifest.keyFingerprint ?? 'UNSIGNED'}\n`,
   ].join('')
+}
+
+/**
+ * How many pool sessions the export saw -- stated even when zero -- and, for a
+ * `--session` export of a pool session, where its decisions are (ADR-0015
+ * phase 5, R3): a pool session records no decisions of its own, so an export
+ * of it alone would otherwise read as "the agent did nothing". Only counts
+ * and the operator's own `--session` value are printed; child ids are
+ * journal strings and stay in `summary.md`, which escapes them.
+ */
+function poolLines(manifest: ReportManifest, pools: ReportPoolTally): readonly string[] {
+  const more = pools.omittedRecordCount > 0 ? ' (more are in records.jsonl)' : ''
+  const lines = [`Pool sessions: ${pools.sessions.length}${more}\n`]
+  const outside = childrenOutsideExport(pools, manifest)
+  if (outside.length > 0 && manifest.scope.session !== null) {
+    lines.push(
+      `Note: session ${manifest.scope.session} is a pool session; its decisions are in ` +
+        `${outside.length} child session(s) this export does not include. Export the whole ` +
+        'journal (no --session) to include them.\n',
+    )
+  }
+  return lines
 }
 
 /**

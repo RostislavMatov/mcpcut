@@ -2,6 +2,7 @@ import type { SqliteHandle } from '../store/sqlite.js'
 import { numberOf, textOf } from './db-row.js'
 import { parseJournalLine } from './line-source.js'
 import type { PersistedDecisionInfo } from './record.js'
+import { createPoolLedger, type ReportPoolTally } from './report-pools.js'
 import { MAX_SUMMARY_DECISION_ROWS, type ReportDecisionRow } from './report-summary.js'
 
 /**
@@ -112,6 +113,8 @@ export interface StreamTally {
   readonly seqRange: { readonly firstSeq: number; readonly lastSeq: number } | null
   /** Sessions present in the export, ascending. */
   readonly sessionIds: readonly string[]
+  /** What the pass learned from `kind:'pool'` records (ADR-0015, phase 5). */
+  readonly pools: ReportPoolTally
 }
 
 /** Digest interface, narrowed to what the pass uses; `policy/hash.ts` owns the implementation. */
@@ -158,6 +161,7 @@ export async function streamRecords(
   const outcomeCounts = new Map<string, number>()
   const sessionIds = new Set<string>()
   const decisions: ReportDecisionRow[] = []
+  const ledger = createPoolLedger()
   let lineCount = 0
   let decisionCount = 0
   let unparsableRows = 0
@@ -184,6 +188,9 @@ export async function streamRecords(
       unparsableRows += 1
       continue
     }
+    // Before the decision filter: pool records are not decisions, and the
+    // ledger ignores everything that is not one.
+    ledger.take(record)
     const decision = record.decision
     if (record.kind !== 'decision' || decision === undefined) continue
     decisionCount += 1
@@ -207,6 +214,7 @@ export async function streamRecords(
     omittedDecisionCount,
     seqRange: lineCount === 0 ? null : { firstSeq, lastSeq },
     sessionIds: [...sessionIds].sort(),
+    pools: ledger.tally(),
   }
 }
 
@@ -247,6 +255,9 @@ function decisionRowOf(
     outcome: decision.outcome,
     rule: decision.rule,
     toolName: decision.toolName,
+    // Like `argsHash`, never validated by `isDecisionShape`: taken only when
+    // it is a string.
+    ...(typeof decision.serverName === 'string' ? { serverName: decision.serverName } : {}),
     // `argsHash` is NOT validated by `isDecisionShape` (`line-source.ts`
     // checks outcome/rule/toolName only), so a record read back from disk can
     // legitimately lack it. It is carried through as absent rather than

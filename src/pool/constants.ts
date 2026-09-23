@@ -125,3 +125,23 @@ export const ERROR_CODE_POOL_METHOD_NOT_FOUND = -32601
 
 /** JSON-RPC "Invalid params": a `cursor` the pool never issued (P6). */
 export const ERROR_CODE_POOL_INVALID_PARAMS = -32602
+
+/**
+ * Distinct (server, reason, method) keys one pool session journals a dropped
+ * NOTIFICATION under (ADR-0015 phase 5, N3). Each one is recorded once for the
+ * life of the session: every such notification is already in the child
+ * session's own traffic, so the pool's record adds only the fact that the pool
+ * did not pass it on -- once. A chatty upstream (a log line every second)
+ * would otherwise double the journal. Past this many keys nothing more is
+ * noted; the child's traffic still holds all of it.
+ */
+export const MAX_POOL_NOTIFICATION_DROP_NOTES = 256
+
+/**
+ * How much of a dropped notification's `method` the pool keeps -- as the
+ * once-per-kind key and in the record. The method is chosen by the upstream,
+ * so without a bound 256 notes of several kilobytes each would sit in memory
+ * for the life of the session (phase-5 security review, LOW). Two methods
+ * sharing this long a prefix are one kind, which is all a note says.
+ */
+export const MAX_POOL_DROP_NOTE_METHOD_CHARS = 128

@@ -34,8 +34,12 @@ export type SettleOutcome =
   | { readonly kind: 'unexpected' }
 
 export interface PoolCorrelator {
-  /** Records one agent request as in flight at `server`. */
-  trackClient(id: SynthesizableId, server: string): TrackOutcome
+  /**
+   * Records one agent request as in flight at `server`, and binds the
+   * `progressToken` the agent put on it to that request -- unless a live
+   * request already holds the token (first wins, ADR-0015 phase 5 N2).
+   */
+  trackClient(id: SynthesizableId, server: string, progressToken?: SynthesizableId): TrackOutcome
   /**
    * Allocates an id in the plane's own namespace for a request it sends to
    * `server`. `null` at capacity — see the implementation for why fan-out is
@@ -46,6 +50,12 @@ export interface PoolCorrelator {
   settle(server: string, id: JsonRpcId): SettleOutcome
   /** Which child holds this in-flight client id (routes `notifications/cancelled`). */
   serverOf(id: SynthesizableId): string | undefined
+  /**
+   * Which server may report progress on this token right now: the one whose
+   * in-flight client request carries it. `undefined` once that request is
+   * answered or its server dropped (`notifications/progress`, N2).
+   */
+  progressServerOf(token: SynthesizableId): string | undefined
   /** Forgets everything in flight for `server`; returns the CLIENT ids now needing an error. */
   dropServer(server: string): readonly SynthesizableId[]
   readonly pending: number
@@ -58,7 +68,13 @@ export interface PoolCorrelator {
  * already rules out.
  */
 type PendingRequest =
-  | { readonly origin: 'client'; readonly server: string; readonly id: SynthesizableId }
+  | {
+      readonly origin: 'client'
+      readonly server: string
+      readonly id: SynthesizableId
+      /** `idKeyOf` of the progress token this request owns, when it owns one. */
+      readonly progressKey?: string
+    }
   | {
       readonly origin: 'fanout'
       readonly server: string
@@ -68,7 +84,24 @@ type PendingRequest =
 
 export function createPoolCorrelator(maxPending: number): PoolCorrelator {
   const pending = new Map<string, PendingRequest>()
+  /**
+   * Progress token key -> key of the request that owns it. No cap of its own:
+   * at most one token per live client entry, and those are capped.
+   */
+  const progressOwners = new Map<string, string>()
   let fanoutCounter = 0
+
+  /**
+   * THE one way an entry leaves the table, with everything it owns. `take`
+   * and `dropServer` both come here, so a token cannot outlive its request
+   * on a path that forgot it. The owner check keeps a request that lost the
+   * first-wins race from releasing the winner's token.
+   */
+  function forget(key: string, entry: PendingRequest): void {
+    pending.delete(key)
+    if (entry.origin !== 'client' || entry.progressKey === undefined) return
+    if (progressOwners.get(entry.progressKey) === key) progressOwners.delete(entry.progressKey)
+  }
 
   /** Settles `key` only if the reply came from the server that owns it. */
   function take(server: string, key: string): PendingRequest | null {
@@ -76,12 +109,12 @@ export function createPoolCorrelator(maxPending: number): PoolCorrelator {
     // Deliberately no delete on a mismatch: one server must not be able to
     // burn another server's in-flight id by answering it.
     if (entry === undefined || entry.server !== server) return null
-    pending.delete(key)
+    forget(key, entry)
     return entry
   }
 
   return {
-    trackClient(id: SynthesizableId, server: string): TrackOutcome {
+    trackClient(id: SynthesizableId, server: string, progressToken?: SynthesizableId): TrackOutcome {
       if (typeof id === 'string' && id.startsWith(POOL_FANOUT_ID_PREFIX)) {
         return { ok: false, reason: 'reserved-id' }
       }
@@ -91,7 +124,14 @@ export function createPoolCorrelator(maxPending: number): PoolCorrelator {
       // to go, so the caller answers the NEW request with an error instead.
       if (pending.size >= maxPending) return { ok: false, reason: 'at-capacity' }
 
-      pending.set(key, { server, origin: 'client', id })
+      // Bound only AFTER every refusal above, so a refused request owns
+      // nothing. A token a live request already holds stays with it (first
+      // wins): the spec makes tokens unique among active requests, so a reuse
+      // is the agent's error, and the reused request simply gets no progress.
+      const progressKey = progressToken === undefined ? undefined : idKeyOf(progressToken)
+      const ownsToken = progressKey !== undefined && !progressOwners.has(progressKey)
+      pending.set(key, { server, origin: 'client', id, ...(ownsToken ? { progressKey } : {}) })
+      if (ownsToken) progressOwners.set(progressKey, key)
       return { ok: true }
     },
 
@@ -121,11 +161,17 @@ export function createPoolCorrelator(maxPending: number): PoolCorrelator {
       return entry?.origin === 'client' ? entry.server : undefined
     },
 
+    progressServerOf(token: SynthesizableId): string | undefined {
+      const owner = progressOwners.get(idKeyOf(token))
+      const entry = owner === undefined ? undefined : pending.get(owner)
+      return entry?.origin === 'client' ? entry.server : undefined
+    },
+
     dropServer(server: string): readonly SynthesizableId[] {
       const orphaned: SynthesizableId[] = []
       for (const [key, entry] of [...pending]) {
         if (entry.server !== server) continue
-        pending.delete(key)
+        forget(key, entry)
         // Only client ids are orphans: nobody outside the plane waits on a
         // fan-out id, so synthesizing an error for one would invent a reply.
         if (entry.origin === 'client') orphaned.push(entry.id)

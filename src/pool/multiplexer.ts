@@ -16,15 +16,16 @@ import { clientMessage, type McpMessage } from '../transport/message.js'
 import {
   cancelledRequestIdOf,
   emptyListFrame,
-  fanoutTagOf,
   hasCursor,
   LIST_KIND_BY_METHOD_NAME,
   notificationFrame,
   poolNameOf,
+  progressTokenOfRequest,
   refusalFor,
 } from './multiplexer-frames.js'
 import type { PoolRecordInfo } from '../journal/pool-record.js'
 import type { PoolCatalog } from './catalog.js'
+import { createChildFrameHandler } from './child-frames.js'
 import type { PoolChildren } from './children.js'
 import type { PoolCorrelator } from './correlator.js'
 import type { PoolFanout } from './fanout.js'
@@ -138,6 +139,16 @@ export function createPoolMultiplexer(deps: PoolMultiplexerDeps): PoolMultiplexe
     }
   }
 
+  // The child side of the dispatch (`child-frames.ts`), built once.
+  const handleChildFrame = createChildFrameHandler({
+    correlator: deps.correlator,
+    fanout: deps.fanout,
+    send,
+    record,
+    onError: deps.onError,
+    isClosed: () => isClosed,
+  })
+
   /**
    * The id a synthesized reply can be addressed to, or `null`. `null` excludes
    * itself: a request with a `null` id has no return address, so such a frame
@@ -204,7 +215,10 @@ export function createPoolMultiplexer(deps: PoolMultiplexerDeps): PoolMultiplexe
       return
     }
 
-    const tracked = deps.correlator.trackClient(id, routed.server)
+    // The token is read from the AGENT's own frame: it is the agent's to give,
+    // and the entry that holds it is the only thing that lets progress on it
+    // through (`child-frames.ts`, ADR-0015 phase 5 N2).
+    const tracked = deps.correlator.trackClient(id, routed.server, progressTokenOfRequest(raw) ?? undefined)
     if (!tracked.ok) {
       // The pool answers THIS request rather than accepting an id it could
       // not settle. Each reason gets its own code, because they send the
@@ -308,61 +322,6 @@ export function createPoolMultiplexer(deps: PoolMultiplexerDeps): PoolMultiplexe
       record({ event: 'dropped', reason: 'unreadable' })
     } catch (error: unknown) {
       // Fail closed: the frame is already fully handled (dropped).
-      deps.onError(error)
-    }
-  }
-
-  function handleChildFrame(server: string, message: McpMessage): void {
-    if (isClosed) return
-    try {
-      const classified = classify(message.bytes.toString('utf8'))
-      if (classified.kind === 'response') {
-        const settled = deps.correlator.settle(server, classified.id)
-        if (settled.kind === 'client') {
-          // Byte for byte: the reply names no tool, so there is nothing in it
-          // to rewrite (ADR-0015 §9).
-          send(message.bytes)
-          return
-        }
-        if (settled.kind === 'fanout') {
-          // A reply that arrived after its own timeout has no waiter left: it
-          // is journaled as an uncorrelated drop rather than lost in silence.
-          if (!deps.fanout.settle(server, fanoutTagOf(classified.id), classified.raw)) {
-            record({ event: 'dropped', serverName: server, reason: 'uncorrelated-reply' })
-          }
-          return
-        }
-        record({ event: 'dropped', serverName: server, reason: 'uncorrelated-reply' })
-        return
-      }
-      if (classified.kind === 'request') {
-        // PE3: upstreams are told of no sampling, elicitation or roots, so a
-        // request from one is unsolicited. It is dropped rather than shown to
-        // an agent that never offered to answer it.
-        record({
-          event: 'dropped',
-          serverName: server,
-          reason: 'server-request',
-          method: classified.method,
-        })
-        return
-      }
-      if (classified.kind === 'notification') {
-        // Progress, logs, a server's own `list_changed`: the agent's to read.
-        //
-        // Unscoped, and deliberately so for this version: a `progressToken` is
-        // the AGENT's, and nothing here checks that the server reporting on it
-        // is the one the agent gave it to. Verifying that needs a second
-        // token → server table, which is its own decision (ROADMAP pool tail).
-        // What bounds it: an upstream is told of no client capabilities (PE3),
-        // so it can only MISREPORT informational traffic — it can neither
-        // obtain anything nor answer a request, since responses stay
-        // correlator-checked per server.
-        send(message.bytes)
-        return
-      }
-      record({ event: 'dropped', serverName: server, reason: 'unreadable' })
-    } catch (error: unknown) {
       deps.onError(error)
     }
   }

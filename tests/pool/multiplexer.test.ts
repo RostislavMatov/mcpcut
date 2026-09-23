@@ -521,12 +521,102 @@ describe('frames from a child', () => {
     expect(dropped?.method).toBe('sampling/createMessage')
   })
 
-  test("a server's own notification reaches the agent", () => {
+  test('progress on no call of this server does NOT reach the agent (N1/N2)', () => {
+    // Before phase 5 every member notification passed unscoped, and this test
+    // pinned that. The token is the AGENT's, chosen for one call: progress
+    // naming none, or a token no call of this server holds, is a member
+    // speaking about work it was never given (ADR-0015 phase-5 amendment).
     harness.servers
       .get('fs')
       ?.emit('{"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":1}}')
 
-    expect(harness.toAgent[0]?.['method']).toBe('notifications/progress')
+    expect(harness.toAgent).toEqual([])
+    expect(harness.records.filter((r) => r.reason === 'unscoped-notification')).toHaveLength(1)
+  })
+})
+
+describe('frames from a child: notifications (ADR-0015 phase 5, N1-N3)', () => {
+  beforeEach(async () => {
+    harness = createHarness(['fs', 'github'])
+    await listOnce(harness, { fs: ['read'], github: ['create_issue'] })
+  })
+
+  function callWithToken(id: number, name: string, token: string | number): void {
+    harness.mux.handleAgentFrame(
+      request(id, 'tools/call', { name, arguments: {}, _meta: { progressToken: token } }),
+    )
+  }
+
+  function progress(token: string | number, message: string): string {
+    return JSON.stringify({ jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: token, progress: 1, message } })
+  }
+
+  test('passes progress byte for byte from the server running the call', () => {
+    callWithToken(70, 'fs__read', 'p-70')
+    const line = progress('p-70', 'fs')
+    const before = harness.rawToAgent.length
+
+    harness.servers.get('fs')?.emit(line)
+
+    expect(harness.rawToAgent.slice(before).map((bytes) => bytes.toString('utf8'))).toEqual([line])
+  })
+
+  test('drops progress another server sends on that token, and notes it once', () => {
+    callWithToken(71, 'fs__read', 'victim')
+
+    harness.servers.get('github')?.emit(progress('victim', 'github'))
+    harness.servers.get('github')?.emit(progress('victim', 'github'))
+    harness.servers.get('fs')?.emit(progress('victim', 'fs'))
+
+    expect(harness.toAgent.map((body) => (body['params'] as { message: string }).message)).toEqual(['fs'])
+    const notes = harness.records.filter((r) => r.reason === 'unscoped-notification')
+    expect(notes).toEqual([
+      expect.objectContaining({ event: 'dropped', serverName: 'github', method: 'notifications/progress' }),
+    ])
+  })
+
+  test('drops progress once the call is answered', () => {
+    callWithToken(72, 'fs__read', 'p-72')
+    harness.servers.get('fs')?.emit(JSON.stringify({ jsonrpc: '2.0', id: 72, result: { content: [] } }))
+    harness.toAgent.length = 0
+
+    harness.servers.get('fs')?.emit(progress('p-72', 'late'))
+
+    expect(harness.toAgent).toEqual([])
+  })
+
+  test('drops progress once the server is released, even before it detaches', () => {
+    callWithToken(73, 'fs__read', 'p-73')
+    harness.mux.releaseServer('fs')
+    harness.toAgent.length = 0
+
+    harness.servers.get('fs')?.emit(progress('p-73', 'orphan'))
+
+    expect(harness.toAgent).toEqual([])
+  })
+
+  test('keeps a member log line away from the agent, noting the kind once', () => {
+    const log = '{"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"hi"}}'
+
+    harness.servers.get('fs')?.emit(log)
+    harness.servers.get('fs')?.emit(log)
+    harness.servers.get('fs')?.emit(log)
+    harness.servers.get('github')?.emit('{"jsonrpc":"2.0","method":"notifications/resources/updated","params":{"uri":"x"}}')
+
+    expect(harness.toAgent).toEqual([])
+    const notes = harness.records.filter((r) => r.event === 'dropped' && r.reason === 'unsupported-method')
+    expect(notes.map((r) => [r.serverName, r.method])).toEqual([
+      ['fs', 'notifications/message'],
+      ['github', 'notifications/resources/updated'],
+    ])
+  })
+
+  test("re-issues a member's list_changed as the pool's own frame", () => {
+    harness.servers
+      .get('github')
+      ?.emit('{"jsonrpc":"2.0","method":"notifications/tools/list_changed","params":{"forged":"by github"}}')
+
+    expect(harness.toAgent).toEqual([{ jsonrpc: '2.0', method: 'notifications/tools/list_changed' }])
   })
 })
 
@@ -810,6 +900,28 @@ describe('a child that leaves outside a membership change', () => {
     harness.toAgent.length = 0
 
     stale?.emit('{"jsonrpc":"2.0","id":73,"result":{"forged":true}}')
+
+    expect(harness.toAgent).toEqual([])
+  })
+
+  test("a predecessor cannot answer a call in flight at its successor (the second lock alone)", async () => {
+    // The test above is also held by the FIRST lock (`releaseServer` dropped
+    // id 73 before the stale frame arrived). Here the id is live at the NEW
+    // instance, so only the current-instance check in `children.ts` stands
+    // between a dead child's frame and a fabricated result. Removing that
+    // check failed nothing before phase 5's verification added this.
+    const stale = harness.servers.get('fs')
+    stale?.end()
+    harness.mux.handleAgentFrame(request(76, 'tools/list'))
+    await Promise.all([
+      answerList(harness, 'fs', ['read']),
+      answerList(harness, 'github', ['create_issue']),
+    ])
+    await vi.waitFor(() => expect(harness.toAgent.length).toBeGreaterThan(0))
+    harness.toAgent.length = 0
+    harness.mux.handleAgentFrame(request(77, 'tools/call', { name: 'fs__read', arguments: {} }))
+
+    stale?.emit('{"jsonrpc":"2.0","id":77,"result":{"forged":true}}')
 
     expect(harness.toAgent).toEqual([])
   })

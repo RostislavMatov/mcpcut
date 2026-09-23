@@ -22,6 +22,7 @@ import {
   signReportManifest,
   verifyReportManifestSignature,
 } from '../../src/journal/report-signing.js'
+import { buildPoolRecord, type PoolRecordInfo } from '../../src/journal/pool-record.js'
 import { pruneRecordsOlderThan } from '../../src/journal/prune.js'
 import { generateAndWriteSigningKeyPair } from '../../src/journal/signing.js'
 import { sha256Hex } from '../../src/policy/hash.js'
@@ -717,5 +718,46 @@ describe('report manifest signing: the stated algorithm is derived, not asserted
     const report = await buildJournalReport(handle, { now: () => AS_OF }, collectingSink())
 
     expect(() => signReportManifest(rsa.privateKey, report.manifest)).toThrow(/ed25519/i)
+  })
+})
+
+/**
+ * ADR-0015 phase 5 (R1): the export's single pass also feeds the pool ledger,
+ * so what `summary.md` says about pool sessions comes from the same rows, in
+ * the same read view, as everything else in the report.
+ */
+describe('buildJournalReport: pool sessions', () => {
+  function poolRowOf(sessionId: string, pool: PoolRecordInfo): JournalRecordRow {
+    const record = buildPoolRecord({ sessionId, pool })
+    return rowOf(JSON.stringify(record), { sessionId, recordId: record.id, kind: 'pool', method: null })
+  }
+
+  const rows = (): readonly JournalRecordRow[] => [
+    poolRowOf('pool-p', { agentName: 'bot', event: 'open' }),
+    rowOf(decisionDoc({ sessionId: 'child-1' }), { sessionId: 'child-1', kind: 'decision' }),
+    poolRowOf('pool-p', { agentName: 'bot', event: 'attach', serverName: 'files', childSessionId: 'child-1' }),
+    poolRowOf('pool-p', { agentName: 'bot', event: 'close' }),
+  ]
+
+  test('carries the pool ledger of the rows it exported', async () => {
+    const handle = await openHandle()
+    handle.transaction((db) => insertRecordRows(db, rows()))
+
+    const report = await buildJournalReport(handle, { now: () => AS_OF }, collectingSink())
+
+    expect(report.pools.sessions.map((session) => session.sessionId)).toEqual(['pool-p'])
+    expect(report.pools.sessions[0]?.children).toEqual([
+      expect.objectContaining({ serverName: 'files', childSessionId: 'child-1' }),
+    ])
+    expect(report.manifest.formatVersion).toBe(REPORT_FORMAT_VERSION)
+  })
+
+  test('a session-scoped export sees only that session pool records', async () => {
+    const handle = await openHandle()
+    handle.transaction((db) => insertRecordRows(db, rows()))
+
+    const scoped = await buildJournalReport(handle, { now: () => AS_OF, session: 'child-1' }, collectingSink())
+
+    expect(scoped.pools.sessions).toEqual([])
   })
 })

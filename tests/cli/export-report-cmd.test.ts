@@ -21,6 +21,7 @@ import { journalDbPathFor, openJournalDbShared } from '../../src/journal/db.js'
 import { AS_OF_CONTRACT, REPORT_FILES, type ReportManifest } from '../../src/journal/report.js'
 import { verifyReportManifestSignature, type ReportSignatureFile } from '../../src/journal/report-signing.js'
 import type { JournalRecord } from '../../src/journal/record.js'
+import { buildPoolRecord } from '../../src/journal/pool-record.js'
 import { createJournalSink } from '../../src/journal/sink.js'
 import { loadSigningPublicKey, publicKeyFingerprint } from '../../src/journal/signing.js'
 
@@ -568,5 +569,73 @@ describe('writeAllBytes: short writes are never ignored (P5)', () => {
     }
 
     await expect(writeAllBytes(sink, 'anything')).rejects.toThrow(/write stalled/)
+  })
+})
+
+/**
+ * ADR-0015 phase 5 (R3): the export names how many pool sessions it saw, and
+ * an export of a pool session alone says where that session's decisions are.
+ */
+describe('export --report: pool sessions on stdout', () => {
+  async function writePoolSession(): Promise<void> {
+    await writeRecordsViaSink('pool-p', [
+      buildPoolRecord({ sessionId: 'pool-p', pool: { agentName: 'bot', event: 'open', members: ['alpha', 'beta'] } }),
+      buildPoolRecord({
+        sessionId: 'pool-p',
+        pool: { agentName: 'bot', event: 'attach', serverName: 'alpha', childSessionId: 'child-a' },
+      }),
+      buildPoolRecord({
+        sessionId: 'pool-p',
+        pool: { agentName: 'bot', event: 'attach', serverName: 'beta', childSessionId: 'child-b' },
+      }),
+    ])
+    await writeRecordsViaSink('child-a', [recordOf('child-a', '01AAAAAAAAAAAAAAAAAAAAAAA0', 'tools/call')])
+  }
+
+  test('states a zero count on a journal without pools', async () => {
+    await writeRecordsViaSink('session-a', [recordOf('session-a', '01AAAAAAAAAAAAAAAAAAAAAAA0', 'tools/list')])
+    const io = fakeIo()
+
+    expect(await run(['--report', '--out', outDir], io)).toBe(0)
+
+    expect(io.out()).toContain('Pool sessions: 0\n')
+    expect(io.out()).not.toContain('Note:')
+  })
+
+  test('counts the pool sessions of a whole-journal export without a note', async () => {
+    await writePoolSession()
+    const io = fakeIo()
+
+    expect(await run(['--report', '--out', outDir], io)).toBe(0)
+
+    expect(io.out()).toContain('Pool sessions: 1\n')
+    expect(io.out()).not.toContain('Note:')
+  })
+
+  test('says where the decisions are when only the pool session is exported', async () => {
+    await writePoolSession()
+    const io = fakeIo()
+
+    expect(await run(['--report', '--session', 'pool-p', '--out', outDir], io)).toBe(0)
+
+    expect(io.out()).toContain('Pool sessions: 1\n')
+    expect(io.out()).toContain(
+      'Note: session pool-p is a pool session; its decisions are in 2 child session(s) this export ' +
+        'does not include. Export the whole journal (no --session) to include them.\n',
+    )
+    const summary = await readFile(join(outDir, REPORT_FILES.summary), 'utf8')
+    expect(summary).toContain('- Not in this export: child session(s) child-a, child-b')
+  })
+
+  test('keeps report.json free of any pool field', async () => {
+    await writePoolSession()
+
+    expect(await run(['--report', '--out', outDir])).toBe(0)
+
+    const manifest = await readManifest()
+    expect(Object.keys(manifest).sort()).toEqual(
+      ['asOf', 'chain', 'contract', 'counts', 'formatVersion', 'records', 'scope', 'seqRange', 'sessionIds', 'summary'],
+    )
+    expect(manifest.formatVersion).toBe(1)
   })
 })

@@ -9,6 +9,7 @@ import { runKeygenCommand } from '../../src/cli/keygen-cmd.js'
 import { runPruneCommand } from '../../src/cli/prune-cmd.js'
 import { REDACTED_PLACEHOLDER } from '../../src/config.js'
 import { journalDbPathFor, openJournalDbShared } from '../../src/journal/db.js'
+import { buildPoolRecord } from '../../src/journal/pool-record.js'
 import { latestPruneMarker } from '../../src/journal/prune.js'
 import { createRecordBuilder } from '../../src/journal/record.js'
 import {
@@ -159,6 +160,46 @@ describe('export --report: no secret reaches the artifacts that leave the host',
       expect(recordsJsonl).toContain(foreignPublicBody)
     } finally {
       await rm(foreignKeyDir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('export --report: a secret in a pool record reaches no artifact (ADR-0015 phase 5)', () => {
+  test('a vault value an upstream echoed into a refusal reason appears nowhere in the export', async () => {
+    // The pool section of summary.md renders `reason` from the journal. The
+    // guarantee is that the value never got INTO the journal -- the pool
+    // builder matches server-influenced fields against the pool's known
+    // secrets -- and that nothing on the way out re-derives it.
+    const vaultValue = 'vault-value-7f3a9c2e5b1d4f60'
+    const sink = createJournalSink('pool-sweep', { dir: journalDir })
+    sink.write(
+      buildPoolRecord({
+        sessionId: 'pool-sweep',
+        knownSecrets: [vaultValue],
+        pool: {
+          agentName: 'bot',
+          event: 'attach-refused',
+          serverName: 'files',
+          reason: `upstream said: token ${vaultValue} rejected`,
+        },
+      }),
+    )
+    await sink.close()
+    const io = capturingIo()
+    expect(await runKeygenCommand([], io, { journalDir })).toBe(0)
+
+    const outDir = join(outParent, 'report')
+    expect(await runExportCommand(['--report', '--out', outDir], io, { journalDir })).toBe(0)
+
+    const fileNames = (await readdir(outDir)).sort()
+    const artifacts = await Promise.all(
+      fileNames.map(async (name) => [name, await readFile(join(outDir, name), 'utf8')] as const),
+    )
+    // Positive sentinel: the pool section really rendered this record.
+    const summary = artifacts.find(([name]) => name === 'summary.md')?.[1] ?? ''
+    expect(summary).toContain('- Did not attach: files (upstream said: token')
+    for (const [name, text] of [...artifacts, ['stdout+stderr', io.text()] as const]) {
+      expect(text, `${name} must not carry the vault value`).not.toContain(vaultValue)
     }
   })
 })
