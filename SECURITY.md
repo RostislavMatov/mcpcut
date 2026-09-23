@@ -3,10 +3,11 @@
 ## Reporting a vulnerability
 
 Please do not open a public issue for a suspected vulnerability. Use GitHub's
-private vulnerability reporting on this repository ("Security" tab → "Report a
-vulnerability"). Include the version (`git rev-parse HEAD` or the package
-version), the entry point involved (`wrap`, `connect`, `serve`, `ui`, CLI), a
-reproduction, and what an attacker gains.
+private vulnerability reporting on this repository:
+<https://github.com/RostislavMatov/mcpcut/security/advisories/new>. Include
+the version (`git rev-parse HEAD` or the package version), the entry point
+involved (`wrap`, `connect`, `serve`, `ui`, CLI), a reproduction, and what an
+attacker gains.
 
 You will get an acknowledgement within 7 days. Fixes ship as a normal commit on
 `main` with a `fix(security):` subject and an entry in `CHANGELOG.md`; there is
@@ -35,6 +36,38 @@ The journal is **tamper-evident with an external anchor**. It is not
 whether an auditor accepts a report is their judgement. A pull request that
 introduces either phrase will be asked to remove it.
 
+## Preview features
+
+Two features are **preview** (see README, "What preview means here"):
+
+- the remote console (`mcpcut --remote`, `mcpcut --connect`, ADR-0014) — an
+  admin token crosses the network on every request;
+- the `connect --url` bridge (ADR-0015) — an agent token crosses the network on
+  every request.
+
+Both work and are covered by tests and live smokes over TLS, but their network
+surface has had only the internal audit above, no independent one, and their
+interface may change within 0.x. Reports about them are especially welcome.
+
+## Versions and the supply chain
+
+1. The block `agent create` prints pins the **exact** version
+   (`npx -y mcpcut@<version of the service>`) and never writes `@latest`: the
+   bridge process holds the agent's token, and `@latest` would mean "run any
+   future code from npm every time the client starts".
+2. The package carries only compiled JavaScript, the licences, the changelog
+   and this file. There are two runtime dependencies, `ulid` and `zod`.
+3. Every version is built from the tag `vX.Y.Z` of this repository. 0.1.0 was
+   published by the maintainer by hand from that tag: it carries the registry's
+   signature and no provenance attestation. From the next version on, releases
+   are staged by GitHub Actions through npm trusted publishing (no npm token is
+   stored anywhere) and reach the registry only after a maintainer approves them
+   with 2FA; npm provenance is expected with it — this line will say so
+   outright once the first such release has been checked.
+4. To check what you installed: `npm audit signatures` in a project that
+   depends on `mcpcut`. The release procedure is `docs/release.md`.
+
 ## Supported versions
 
-Only the current `main` branch receives security fixes.
+The latest version on npm and the current `main` branch receive security
+fixes.

@@ -6,7 +6,49 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] — 2026-09-24
+
+First public release, under the Apache License 2.0; published to npm as
+`mcpcut@0.1.0`. The first list sums up what the release contains; the entries
+after it record what changed between the internal cut of 2026-09-03 and this
+publication — several are security fixes, so they are kept.
+
 ### Added
+
+- **Journaling proxy** for stdio MCP servers (`wrap`): byte-identical
+  passthrough, secret-redacted journal in SQLite (`journal.db`).
+- **Policies**: allow / deny / require-approval per tool, read/write/destructive
+  classification, quarantine of new and changed tools with a structural
+  `inputSchema` diff, fail-closed enforcement, `tools/list` filtering.
+- **Registry, agents, vault**: MCP server registry, AES-256-GCM credential
+  vault with `vault:` references, agent identities with per-server grants
+  (tools, resources, prompts), server groups with per-server override
+  semantics, streamable-HTTP front (`serve`) supporting both session models.
+- **Admin UI** (no dependencies, works without JavaScript): approval queue with
+  live updates, quarantine review, grant matrix, registry with live server
+  status, journal with search and filters; named admins with `owner` /
+  `operator` / `viewer` roles; policy rules editable from the server card
+  with hot reload.
+- **Evidentiary journal**: sha256 hash chain, Ed25519-signed chain head,
+  `export --report` and offline `verify --report`, explicit retention pruning
+  with a signed marker. The journal is tamper-evident **with an external
+  anchor**.
+- **Security audit** of the whole product before release
+  (`docs/security-audit-2026-09.md`): 0 critical, 4 high findings, all fixed
+  in the same wave.
+- **Terminal console and services** (`mcpcut`): a first-run wizard, `ui` and
+  `serve` as detached services (`start` / `stop` / `status` / `logs`), and the
+  whole plane from a terminal, without a browser.
+- **First owner from the browser or the console**: `/setup` with a one-time
+  code from a file, or the console's first-owner screen; starting a service no
+  longer mints a token.
+- **Remote console** (`mcpcut --remote`, *preview*): the console as a client of
+  a service on another host, over HTTPS with a personal admin token.
+- **One address per agent** (the pool, `/mcp`), the `connect --url` bridge
+  (*preview*) and a ready-made client block at `agent create` that runs the
+  bridge through `npx`, pinned to the service's own version.
+- **Resident stdio servers**: every stdio server an agent is granted stays
+  running for it, with bounded, spaced restarts.
 
 - **stdio servers granted to an agent keep running.** `serve` starts every
   stdio server an agent is granted (personally or through a group) in the
@@ -35,6 +77,128 @@ All notable changes to this project are documented here. The format follows
   covered by the export's digest or chain; stdout prints only a count.
   `report.json` stays v1. A server kept running across many connections reads
   as "attached by N pool sessions", not as a forgery.
+
+- **`setup --ui-public-url <url>` / `--serve-public-url <url>`**: state the
+  address you will reach the service at (`http://<ip>:8091`,
+  `https://mcp.example.com`) and `setup` derives the rest — the `Host`
+  allow-list entry, for the UI the `Origin` entry, `behindTls` for `https`,
+  and for plain `http` to a public address over a loopback bind, the bind.
+  Until now an install opened by IP answered 403 until `--allowed-host` was
+  found, and then opened pages whose every form was a 403 until
+  `--allowed-origin` was found too. Also the wizard's optional `UI URL` /
+  `Agent URL` fields and Docker's `MCPCUT_UI_PUBLIC_URL` /
+  `MCPCUT_SERVE_PUBLIC_URL`. Plain `http` to a public address is a loud
+  warning in the transcript, not a refusal.
+
+- **The console creates the first owner too.** Opened over an install with no
+  admin, `mcpcut` shows a first-owner screen instead of a sign-in nobody holds
+  a token for: a name, then `admin add <name> --role owner` run without a
+  session (the CLI accepts that only while the store is empty), the token held
+  on screen until `y` — `q` asks first — and a sign-in with it. No setup code
+  is asked: the console runs under the account that owns the data directory.
+
+- **First-run wizard**: a bare `mcpcut` on a terminal with no install config,
+  and `mcpcut setup` without `--yes`, open an interactive setup — prefilled data
+  directory, `ui`/`serve` binds, the first admin's name and who starts the
+  services; a non-loopback bind asks for confirmation before anything is
+  written; the wizard then deploys step by step (the same `setup --yes …`, then
+  `start ui`, `start serve`) with a live progress ladder, reports that the
+  services run in the background, shows the one-time owner token once and,
+  after you confirm you saved it, hands over to the sign-in screen. Over a data directory that already has admins the final screen says so and points at `admin rotate <name> --recover` instead of showing a token. `setup`
+  without `--yes` outside a terminal refuses with a hint.
+- **Interactive console** (`mcpcut tui`, or a bare `mcpcut` on a terminal that
+  has an install config): sign in with an admin token and work the whole
+  catalogue from eleven sections — Home, Admins, Servers, Vault, Agents,
+  Groups, Policy, Quarantine, Approvals, Journal, Audit — each action a form
+  that runs the same CLI command it shows you; the session token travels in
+  the environment seam, never in argv; a vault secret goes from the form to
+  the command's stdin and appears in no argv, frame or model; `export` writes
+  its JSONL to a file you name (created exclusively, mode 0600) and the pane
+  shows a one-line receipt; wide output scrolls sideways with `[`/`]`. A bare
+  `mcpcut` in a pipe still prints the usage; without a config on a terminal it
+  points at `setup --yes`.
+- **Console: Services section** (`status · start · stop · logs · setup`) as
+  data over the same `start|stop|status|logs` commands; `setup` leaves the
+  console and reopens the wizard in a child process on the same terminal.
+  Under `supervisor: external` (Docker, systemd, launchd) `start`/`stop` are
+  not offered, `mcpcut status` names the external supervisor in its detail,
+  and the header draws such a service `◉` — answering, but not our pid.
+- **Console: live Approvals queue** — the section re-reads `approvals list`
+  every 3 s while you are on its action list, counted from the previous
+  answer, without blocking the keyboard; a poll never overwrites the output of
+  another command that failed, and an answer that arrives after you left the
+  section is dropped.
+- **Console: one-time token hold** — the output of `admin add`, `admin rotate`
+  and `agent create` stays on screen under a banner until you press `y` to say
+  you saved the token; `q` asks first; `Ctrl-C` still quits at once.
+- **Console: services banner on the sign-in screen** — the screen asks
+  `status --json` (without a session) and shows `services: ui ● … · serve ○ …`
+  with a hint to start them from Services; nothing starts on its own.
+- **Console: stacked layout below 60 columns** — the action list becomes a
+  strip on top and the output pane takes the full width beneath it; the list
+  keeps the active action in view in both layouts; `resize` switches on the
+  fly.
+- **Console: `NO_COLOR` and `TERM=dumb`** — a non-empty `NO_COLOR`, or
+  `TERM=dumb`, turns every colour/weight escape sequence off (the alternate
+  screen stays: a terminal without cursor movement cannot run the console).
+- **Console: full-width `?` help** — the help covers the whole body in both
+  layouts; a line too wide for the terminal wraps as "keys, then the
+  description indented"; any key closes it.
+- **Console: keys pressed during a command are queued** (up to 32) and
+  replayed in order once the command answers — unless the answer is a
+  one-time token, in which case the queue is dropped so nothing acknowledges
+  the token unread. The queue is also dropped when the session is lost and on
+  quit; `Ctrl-C` is never queued.
+- **Wizard step counter** — the «Starting ui»/«Starting serve» steps count
+  `waiting for the service to answer (N s of up to 15 s)` once a second.
+- **Unit-file examples** for systemd (user units) and launchd in
+  `docs/deploy/`, with install steps in `docs/deploy/README.md`; they are
+  examples to adapt, not something `mcpcut` installs. README gained «First
+  run», «Services» and «Docker» sections.
+- **Install config** `~/.mcpcut/config.json` (path overridable with
+  `MCPCUT_CONFIG`): the data directory and the `ui` / `serve` bindings, resolved
+  at process start with the priority **flag > environment variable > config >
+  default**. `MCPCUT_DATA_DIR` overrides the data directory without a config
+  file; with neither, the directory is `$HOME/.mcpcut/data`. A
+  config that cannot be read or does not validate makes every command except
+  `--help` and `setup` refuse, naming the file and the problems.
+- **`setup --yes`**: non-interactive install — writes the config, prepares the
+  data directory, runs the checks (directory, bindings, databases, policy,
+  network exposure), initialises the vault and the signing key, and mints the
+  first `owner` admin before the first `ui` start, so the one-time token never
+  lands in a daemon log. Flags are overlaid on the config a previous run wrote,
+  so a rerun keeps what it was not asked about; `--no-behind-tls` is how the
+  `--behind-tls` claim is taken back without hand-editing the file.
+- **`start` / `stop` / `status` / `logs`**: `ui` and `serve` run as detached
+  services that survive the terminal, with pid and log files under
+  `<data dir>/run/`. `status` reports `running` only when the pid is alive
+  **and** the service answers on its port. `run/` and the files in it stay
+  owner-only: a start refuses otherwise, and `setup` reports the same condition
+  as a `run dir` row in its preflight.
+- **`MCPCUT_DATA_DIR` must be an absolute path**, and it is honoured by every
+  command including the service ones. `setup --yes` refuses when the exported
+  value and the data directory it would write disagree, rather than preparing
+  one directory while the daemons serve another.
+- **`mcpcut status` warns about a network-reachable bind** — for every
+  service bound to anything but loopback it writes
+  `<service>: warning: <detail>` to stderr, the same finding and ADR-0004
+  pointer `setup` prints; stdout and the exit code are unchanged, and a
+  stopped service is warned about too. `status --json` writes nothing to
+  stderr and instead adds `"exposure": {"level": "warn", "detail": …}` to the
+  exposed service's object; a loopback install's JSON is unchanged. In the
+  console the warning shows in the panel under `— stderr —`.
+- **`probeHost` per service** (`ui.probeHost`, `serve.probeHost`; flags
+  `setup --ui-probe-host H` / `--serve-probe-host H`, kept by a rerun without
+  them) — the address `status` dials for a service with no pid file, so under
+  compose each container sees its neighbour instead of reporting it
+  `stopped`. `docker-compose.yml` sets `MCPCUT_UI_PROBE_HOST=ui` and
+  `MCPCUT_SERVE_PROBE_HOST=serve`; the entrypoint passes the flags only when
+  those are set. The bind in `status` is unchanged and the detail names the
+  dialled address. Existing compose installs: `docker compose run --rm ui
+  setup --yes --ui-probe-host ui --serve-probe-host serve`, then restart. The
+  UI probe now sends `Host: localhost:<port>` so it passes the UI's `Host`
+  screening under a wildcard bind. Under `supervisor: external` the console's
+  Home no longer suggests `Services ▸ start`.
 
 ### Changed
 
@@ -177,38 +341,6 @@ All notable changes to this project are documented here. The format follows
   Plain `http` to a non-loopback host is a loud warning, not a refusal.
   ADR-0014; README "A console for a service on another host".
 
-### Security
-
-- **A pool forwards a member's notification only when it is that member's to
-  send.** Before, every notification of every server in an agent's pool reached
-  the agent unscoped. Now `notifications/progress` passes only from the server
-  whose in-flight call carries that `progressToken` (the token is bound to the
-  call when the agent sends it and released with its answer, or when the server
-  leaves); a member's `tools/list_changed` / `prompts/list_changed` reaches the
-  agent as the pool's own notification, without the member's params; and
-  everything the pool never declared — log lines, resource updates, cancels,
-  anything new — is not passed on. The pool journals each such kind once per
-  server (`dropped`, reason `unscoped-notification` or `unsupported-method`,
-  at most 256 kinds per session); every notification stays in that server's own
-  session traffic. ADR-0015 phase 5 amendment (N1–N4).
-
-### Fixed
-
-- **A host that merely LOOKS like a loopback address is no longer treated as
-  one.** `isLoopbackHost` matched the `127.0.0.0/8` block with a string
-  prefix, so an ordinary DNS name such as `127.evil.com` — which URL parsing
-  leaves as a hostname rather than folding into an address — counted as
-  "unreachable from the network". Every caller that asks the question about an
-  address arriving from outside was affected: `connect --url` (agent token,
-  where owner decision PE8 turns the answer into a refusal), `--remote` (admin
-  token) and the `--*-public-url` flags all sent a bearer token over plain
-  `http` to such a host with no warning and no flag. The block is now matched
-  against a real IPv4 literal; the decimal, octal and hex spellings of the
-  real loopback address are unaffected, since the URL parser normalizes them
-  first. Found by the security review of the bridge, 2026-09-21.
-
-### Changed
-
 - **`setup --serve-public-url` now remembers the address** as `serve.publicUrl`
   in `~/.mcpcut/config.json` (an origin: scheme, host, optional port — no
   path). It still adds the `Host` allow-list entry and, for plain `http`, opens
@@ -252,132 +384,6 @@ All notable changes to this project are documented here. The format follows
   `~/.mcp-journal` is opened by pointing `dataDir` (or `MCPCUT_DATA_DIR`) at
   it, and its vault secrets have to be set again, because the AAD label is
   part of what AES-GCM authenticates.
-
-### Added
-
-- **`setup --ui-public-url <url>` / `--serve-public-url <url>`**: state the
-  address you will reach the service at (`http://<ip>:8091`,
-  `https://mcp.example.com`) and `setup` derives the rest — the `Host`
-  allow-list entry, for the UI the `Origin` entry, `behindTls` for `https`,
-  and for plain `http` to a public address over a loopback bind, the bind.
-  Until now an install opened by IP answered 403 until `--allowed-host` was
-  found, and then opened pages whose every form was a 403 until
-  `--allowed-origin` was found too. Also the wizard's optional `UI URL` /
-  `Agent URL` fields and Docker's `MCPCUT_UI_PUBLIC_URL` /
-  `MCPCUT_SERVE_PUBLIC_URL`. Plain `http` to a public address is a loud
-  warning in the transcript, not a refusal.
-
-- **The console creates the first owner too.** Opened over an install with no
-  admin, `mcpcut` shows a first-owner screen instead of a sign-in nobody holds
-  a token for: a name, then `admin add <name> --role owner` run without a
-  session (the CLI accepts that only while the store is empty), the token held
-  on screen until `y` — `q` asks first — and a sign-in with it. No setup code
-  is asked: the console runs under the account that owns the data directory.
-
-- **First-run wizard**: a bare `mcpcut` on a terminal with no install config,
-  and `mcpcut setup` without `--yes`, open an interactive setup — prefilled data
-  directory, `ui`/`serve` binds, the first admin's name and who starts the
-  services; a non-loopback bind asks for confirmation before anything is
-  written; the wizard then deploys step by step (the same `setup --yes …`, then
-  `start ui`, `start serve`) with a live progress ladder, reports that the
-  services run in the background, shows the one-time owner token once and,
-  after you confirm you saved it, hands over to the sign-in screen. Over a data directory that already has admins the final screen says so and points at `admin rotate <name> --recover` instead of showing a token. `setup`
-  without `--yes` outside a terminal refuses with a hint.
-- **Interactive console** (`mcpcut tui`, or a bare `mcpcut` on a terminal that
-  has an install config): sign in with an admin token and work the whole
-  catalogue from eleven sections — Home, Admins, Servers, Vault, Agents,
-  Groups, Policy, Quarantine, Approvals, Journal, Audit — each action a form
-  that runs the same CLI command it shows you; the session token travels in
-  the environment seam, never in argv; a vault secret goes from the form to
-  the command's stdin and appears in no argv, frame or model; `export` writes
-  its JSONL to a file you name (created exclusively, mode 0600) and the pane
-  shows a one-line receipt; wide output scrolls sideways with `[`/`]`. A bare
-  `mcpcut` in a pipe still prints the usage; without a config on a terminal it
-  points at `setup --yes`.
-- **Console: Services section** (`status · start · stop · logs · setup`) as
-  data over the same `start|stop|status|logs` commands; `setup` leaves the
-  console and reopens the wizard in a child process on the same terminal.
-  Under `supervisor: external` (Docker, systemd, launchd) `start`/`stop` are
-  not offered, `mcpcut status` names the external supervisor in its detail,
-  and the header draws such a service `◉` — answering, but not our pid.
-- **Console: live Approvals queue** — the section re-reads `approvals list`
-  every 3 s while you are on its action list, counted from the previous
-  answer, without blocking the keyboard; a poll never overwrites the output of
-  another command that failed, and an answer that arrives after you left the
-  section is dropped.
-- **Console: one-time token hold** — the output of `admin add`, `admin rotate`
-  and `agent create` stays on screen under a banner until you press `y` to say
-  you saved the token; `q` asks first; `Ctrl-C` still quits at once.
-- **Console: services banner on the sign-in screen** — the screen asks
-  `status --json` (without a session) and shows `services: ui ● … · serve ○ …`
-  with a hint to start them from Services; nothing starts on its own.
-- **Console: stacked layout below 60 columns** — the action list becomes a
-  strip on top and the output pane takes the full width beneath it; the list
-  keeps the active action in view in both layouts; `resize` switches on the
-  fly.
-- **Console: `NO_COLOR` and `TERM=dumb`** — a non-empty `NO_COLOR`, or
-  `TERM=dumb`, turns every colour/weight escape sequence off (the alternate
-  screen stays: a terminal without cursor movement cannot run the console).
-- **Console: full-width `?` help** — the help covers the whole body in both
-  layouts; a line too wide for the terminal wraps as "keys, then the
-  description indented"; any key closes it.
-- **Console: keys pressed during a command are queued** (up to 32) and
-  replayed in order once the command answers — unless the answer is a
-  one-time token, in which case the queue is dropped so nothing acknowledges
-  the token unread. The queue is also dropped when the session is lost and on
-  quit; `Ctrl-C` is never queued.
-- **Wizard step counter** — the «Starting ui»/«Starting serve» steps count
-  `waiting for the service to answer (N s of up to 15 s)` once a second.
-- **Unit-file examples** for systemd (user units) and launchd in
-  `docs/deploy/`, with install steps in `docs/deploy/README.md`; they are
-  examples to adapt, not something `mcpcut` installs. README gained «First
-  run», «Services» and «Docker» sections.
-- **Install config** `~/.mcpcut/config.json` (path overridable with
-  `MCPCUT_CONFIG`): the data directory and the `ui` / `serve` bindings, resolved
-  at process start with the priority **flag > environment variable > config >
-  default**. `MCPCUT_DATA_DIR` overrides the data directory without a config
-  file; with neither, the directory is `$HOME/.mcpcut/data`. A
-  config that cannot be read or does not validate makes every command except
-  `--help` and `setup` refuse, naming the file and the problems.
-- **`setup --yes`**: non-interactive install — writes the config, prepares the
-  data directory, runs the checks (directory, bindings, databases, policy,
-  network exposure), initialises the vault and the signing key, and mints the
-  first `owner` admin before the first `ui` start, so the one-time token never
-  lands in a daemon log. Flags are overlaid on the config a previous run wrote,
-  so a rerun keeps what it was not asked about; `--no-behind-tls` is how the
-  `--behind-tls` claim is taken back without hand-editing the file.
-- **`start` / `stop` / `status` / `logs`**: `ui` and `serve` run as detached
-  services that survive the terminal, with pid and log files under
-  `<data dir>/run/`. `status` reports `running` only when the pid is alive
-  **and** the service answers on its port. `run/` and the files in it stay
-  owner-only: a start refuses otherwise, and `setup` reports the same condition
-  as a `run dir` row in its preflight.
-- **`MCPCUT_DATA_DIR` must be an absolute path**, and it is honoured by every
-  command including the service ones. `setup --yes` refuses when the exported
-  value and the data directory it would write disagree, rather than preparing
-  one directory while the daemons serve another.
-- **`mcpcut status` warns about a network-reachable bind** — for every
-  service bound to anything but loopback it writes
-  `<service>: warning: <detail>` to stderr, the same finding and ADR-0004
-  pointer `setup` prints; stdout and the exit code are unchanged, and a
-  stopped service is warned about too. `status --json` writes nothing to
-  stderr and instead adds `"exposure": {"level": "warn", "detail": …}` to the
-  exposed service's object; a loopback install's JSON is unchanged. In the
-  console the warning shows in the panel under `— stderr —`.
-- **`probeHost` per service** (`ui.probeHost`, `serve.probeHost`; flags
-  `setup --ui-probe-host H` / `--serve-probe-host H`, kept by a rerun without
-  them) — the address `status` dials for a service with no pid file, so under
-  compose each container sees its neighbour instead of reporting it
-  `stopped`. `docker-compose.yml` sets `MCPCUT_UI_PROBE_HOST=ui` and
-  `MCPCUT_SERVE_PROBE_HOST=serve`; the entrypoint passes the flags only when
-  those are set. The bind in `status` is unchanged and the detail names the
-  dialled address. Existing compose installs: `docker compose run --rm ui
-  setup --yes --ui-probe-host ui --serve-probe-host serve`, then restart. The
-  UI probe now sends `Host: localhost:<port>` so it passes the UI's `Host`
-  screening under a wildcard bind. Under `supervisor: external` the console's
-  Home no longer suggests `Services ▸ start`.
-
-### Changed
 
 - **`quarantine approve|reject` now need a personal admin token** of role
   `operator` or `owner` in `MCP_ADMIN_TOKEN` — the same bar the admin UI's own
@@ -489,6 +495,19 @@ All notable changes to this project are documented here. The format follows
 
 ### Security
 
+- **A pool forwards a member's notification only when it is that member's to
+  send.** Before, every notification of every server in an agent's pool reached
+  the agent unscoped. Now `notifications/progress` passes only from the server
+  whose in-flight call carries that `progressToken` (the token is bound to the
+  call when the agent sends it and released with its answer, or when the server
+  leaves); a member's `tools/list_changed` / `prompts/list_changed` reaches the
+  agent as the pool's own notification, without the member's params; and
+  everything the pool never declared — log lines, resource updates, cancels,
+  anything new — is not passed on. The pool journals each such kind once per
+  server (`dropped`, reason `unscoped-notification` or `unsupported-method`,
+  at most 256 kinds per session); every notification stays in that server's own
+  session traffic. ADR-0015 phase 5 amendment (N1–N4).
+
 - **`server add` and `server remove` are owner-only** (breaking for scripts).
   Both now need `MCP_ADMIN_TOKEN` set to an owner's personal token — the role
   the admin UI's `/servers` write routes have always required — and refuse
@@ -545,33 +564,20 @@ All notable changes to this project are documented here. The format follows
   `--admin`, so `setup` mints the owner and the token goes to the container's
   stdout as before.
 
-## [0.1.0] — 2026-09-03
+### Fixed
 
-First public release, under the Apache License 2.0.
+- **A host that merely LOOKS like a loopback address is no longer treated as
+  one.** `isLoopbackHost` matched the `127.0.0.0/8` block with a string
+  prefix, so an ordinary DNS name such as `127.evil.com` — which URL parsing
+  leaves as a hostname rather than folding into an address — counted as
+  "unreachable from the network". Every caller that asks the question about an
+  address arriving from outside was affected: `connect --url` (agent token,
+  where owner decision PE8 turns the answer into a refusal), `--remote` (admin
+  token) and the `--*-public-url` flags all sent a bearer token over plain
+  `http` to such a host with no warning and no flag. The block is now matched
+  against a real IPv4 literal; the decimal, octal and hex spellings of the
+  real loopback address are unaffected, since the URL parser normalizes them
+  first. Found by the security review of the bridge, 2026-09-21.
 
-### Added
-
-- **Journaling proxy** for stdio MCP servers (`wrap`): byte-identical
-  passthrough, secret-redacted journal in SQLite (`journal.db`).
-- **Policies**: allow / deny / require-approval per tool, read/write/destructive
-  classification, quarantine of new and changed tools with a structural
-  `inputSchema` diff, fail-closed enforcement, `tools/list` filtering.
-- **Registry, agents, vault**: MCP server registry, AES-256-GCM credential
-  vault with `vault:` references, agent identities with per-server grants
-  (tools, resources, prompts), server groups with per-server override
-  semantics, streamable-HTTP front (`serve`) supporting both session models.
-- **Admin UI** (no dependencies, works without JavaScript): approval queue with
-  live updates, quarantine review, grant matrix, registry with live server
-  status, journal with search and filters; named admins with `owner` /
-  `operator` / `viewer` roles; policy rules editable from the server card
-  with hot reload.
-- **Evidentiary journal**: sha256 hash chain, Ed25519-signed chain head,
-  `export --report` and offline `verify --report`, explicit retention pruning
-  with a signed marker. The journal is tamper-evident **with an external
-  anchor**.
-- **Security audit** of the whole product before release
-  (`docs/security-audit-2026-09.md`): 0 critical, 4 high findings, all fixed
-  in the same wave.
-
-[Unreleased]: https://example.invalid/compare/v0.1.0...HEAD
-[0.1.0]: https://example.invalid/releases/tag/v0.1.0
+[Unreleased]: https://github.com/RostislavMatov/mcpcut/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/RostislavMatov/mcpcut/releases/tag/v0.1.0
