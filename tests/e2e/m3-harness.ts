@@ -6,6 +6,7 @@ import { dispatch, type CliIo, type DispatchOptions } from '../../src/cli.js'
 import type { ConnectDeps } from '../../src/cli/connect-cmd.js'
 import type { ServeCommandOptions, ServeHandle } from '../../src/cli/serve-cmd.js'
 import type { JournalRecord } from '../../src/journal/record.js'
+import { POOL_ROUTE_PATH } from '../../src/transport/http/server-constants.js'
 import { INVENTORY_FILE_NAME } from '../../src/policy/inventory.js'
 import { createConnectStdio, type ConnectStdio } from '../cli/connect-harness.js'
 import { waitUntil } from '../proxy/harness.js'
@@ -24,6 +25,13 @@ import { waitUntil } from '../proxy/harness.js'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
 export const POLICY_SERVER_FIXTURE = join(__dirname, '../fixtures/policy-server.mjs')
+/**
+ * The stdio fixture that answers a SESSIONFUL revision. A pool opens a
+ * handshake of its own to every upstream (ADR-0015 §4), which the older
+ * fixtures — all of which answer with the revision that REMOVED the handshake
+ * — cannot complete. Its tool names come from argv.
+ */
+export const POOL_SERVER_FIXTURE = join(__dirname, '../fixtures/pool-server.mjs')
 export const ENV_ECHO_FIXTURE = join(__dirname, '../fixtures/env-echo-server.mjs')
 export const HTTP_STATELESS_FIXTURE = join(__dirname, '../fixtures/http-server-stateless.mjs')
 
@@ -424,6 +432,8 @@ export interface ServeRun {
   readonly port: number
   /** The URL an HTTP agent posts to for one (agent, server) pair. */
   endpoint(agent: string, server: string): string
+  /** The pool address: one URL per agent, with the agent named by its token (PE5). */
+  poolEndpoint(): string
   /** Shuts the front down and resolves with the `serve` command's own result. */
   shutdown(): Promise<CliRun>
 }
@@ -452,6 +462,7 @@ export async function startServe(
     port: started.port,
     endpoint: (agent, server) =>
       `http://127.0.0.1:${started.port}/agents/${agent}/servers/${server}`,
+    poolEndpoint: () => `http://127.0.0.1:${started.port}${POOL_ROUTE_PATH}`,
     shutdown: async () => {
       if (!isShutDown) {
         isShutDown = true

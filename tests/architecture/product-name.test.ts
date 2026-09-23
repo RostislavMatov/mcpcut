@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, test } from 'vitest'
+import { PRODUCT_VERSION } from '../../src/brand.js'
 import { PROJECT_POLICY_SUBDIR } from '../../src/policy/load.js'
 import { CONFIG_DIR_NAME, DEFAULT_DATA_DIR_NAME } from '../../src/setup/constants.js'
 
@@ -77,5 +78,18 @@ describe('the product name (ADR-0013)', () => {
     const paths = SCANNED_FILES.map((file) => join(PROJECT_ROOT, file))
 
     expect(offendersIn(paths)).toEqual([])
+  })
+})
+
+describe('the product version', () => {
+  test('is the same string the package declares', () => {
+    // `src/brand.ts` holds a literal on purpose (the plane must not read its
+    // own `package.json` at runtime — see the constant's own doc). This test
+    // is what stops the two drifting apart at the next release bump.
+    const manifest = JSON.parse(
+      readFileSync(join(PROJECT_ROOT, 'package.json'), 'utf8'),
+    ) as { version: string }
+
+    expect(PRODUCT_VERSION).toBe(manifest.version)
   })
 })

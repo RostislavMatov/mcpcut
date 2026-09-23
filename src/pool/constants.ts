@@ -77,3 +77,51 @@ export const ERROR_CODE_UNKNOWN_POOL_TARGET = -32602
 
 /** Upper bound on the name echoed back in an unknown-target error message. */
 export const MAX_ERROR_NAME_CHARS = 128
+
+/**
+ * How long one upstream may take to answer one fan-out list request before
+ * it is detached (plan decision P4). Leaving the request hanging would pile
+ * correlation entries up against `MAX_POOL_PENDING_REQUESTS`; detaching frees
+ * them all with one `dropServer` and gives the agent an honest reason to read
+ * the list again.
+ */
+export const POOL_FANOUT_TIMEOUT_MS = 10_000
+
+/**
+ * Pages of ONE upstream's catalog the pool drains before giving up on the
+ * rest. A server that pages further than this is either enormous or looping;
+ * either way the merge has long since outgrown what a client will accept.
+ */
+export const MAX_POOL_LIST_PAGES = 50
+
+/**
+ * Child sessions ONE pool session may hold. The process-wide ceiling already
+ * counts them (`MAX_CONCURRENT_SESSIONS` via `extraSessions`); this one stops
+ * a single agent with broad grants from taking all of it. A pool past this
+ * size has also outgrown what client tool limits hold (PRD research: Cursor
+ * caps active tools around 40).
+ */
+export const MAX_POOL_CHILD_SESSIONS = 32
+
+/**
+ * "The server serving this call has left the pool." Next free code after the
+ * proxy's own (-32001 policy, -32002 approval, -32003 quarantine) and the
+ * bridge's transport code (-32004, `src/bridge/constants.ts`). Distinct on
+ * purpose: an agent may retry this one against a re-granted server, which is
+ * not true of any decision the plane made.
+ */
+export const ERROR_CODE_POOL_MEMBER_GONE = -32005
+
+/**
+ * "The pool is tracking as many requests as it will." Deliberately NOT
+ * -32005: that one says the server left, which an agent may reasonably retry
+ * against a re-granted server. This one says "try again shortly", and a code
+ * that conflated the two would send agents to the wrong remedy.
+ */
+export const ERROR_CODE_POOL_AT_CAPACITY = -32006
+
+/** JSON-RPC "Method not found": the pool declares only tools and prompts (PE3). */
+export const ERROR_CODE_POOL_METHOD_NOT_FOUND = -32601
+
+/** JSON-RPC "Invalid params": a `cursor` the pool never issued (P6). */
+export const ERROR_CODE_POOL_INVALID_PARAMS = -32602

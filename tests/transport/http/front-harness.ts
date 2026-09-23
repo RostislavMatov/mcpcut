@@ -17,6 +17,7 @@ import {
 import type {
   OpenSession,
   OpenedSession,
+  ResponseCorrelation,
   SessionContext,
 } from '../../../src/transport/http/session.js'
 
@@ -72,6 +73,8 @@ export interface FakeFactoryOptions {
   readonly refuseWith?: string
   /** Throw from `openSession` (drives the 500 branch). */
   readonly throwError?: Error
+  /** Opt into id correlation, the way a pool session does (plan P1). */
+  readonly correlate?: ResponseCorrelation
 }
 
 export interface FakeSessionFactory {
@@ -148,6 +151,7 @@ export function createFakeSessionFactory(options: FakeFactoryOptions = {}): Fake
     const opened: OpenedSession = {
       sink,
       source,
+      ...(options.correlate !== undefined ? { correlate: options.correlate } : {}),
       close: () => {
         isClosed = true
         return Promise.resolve()

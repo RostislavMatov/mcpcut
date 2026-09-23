@@ -1,8 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { IncomingHttpHeaders, ServerResponse } from 'node:http'
-import { clientMessage } from '../message.js'
 import {
-  HTTP_STATUS_ACCEPTED,
   HTTP_STATUS_METHOD_NOT_ALLOWED,
   HTTP_STATUS_NOT_FOUND,
   MCP_SESSION_ID_HEADER,
@@ -10,17 +8,16 @@ import {
 import {
   BODY_BAD_REQUEST,
   BODY_METHOD_NOT_ALLOWED,
-  BODY_REQUEST_IN_FLIGHT,
   BODY_SESSION_NOT_FOUND,
   BODY_TOO_MANY_SESSIONS,
   HTTP_STATUS_BAD_REQUEST,
-  HTTP_STATUS_CONFLICT,
   HTTP_STATUS_NO_CONTENT,
   HTTP_STATUS_OK,
   HTTP_STATUS_TOO_MANY_REQUESTS,
   MAX_BUFFERED_SERVER_BYTES,
   MAX_BUFFERED_SERVER_MESSAGES,
   MAX_CONCURRENT_SESSIONS,
+  MAX_CORRELATED_IN_FLIGHT,
   SESSION_IDLE_TTL_MS,
   SESSION_SWEEP_INTERVAL_MS,
   SSE_HEARTBEAT_INTERVAL_MS,
@@ -29,7 +26,6 @@ import {
 import { createStatelessRunner } from './session-stateless.js'
 import {
   appendBuffered,
-  createDeferred,
   createSlotCounter,
   EMPTY_BUFFER,
   jsonPlan,
@@ -38,10 +34,7 @@ import {
   SessionTornDownError,
   type BufferedMessages,
   type Deferred,
-  type DetectInitialize,
-  type ExpectsResponse,
   type OpenedSession,
-  type OpenSession,
   type PostOptions,
   type ResponsePlan,
   type SessionContext,
@@ -49,9 +42,16 @@ import {
   type SessionManagerOptions,
   type SessionSlot,
   type StatelessValidation,
-  type ValidateStatelessHeaders,
 } from './session-support.js'
+import { createExchangeRules, rejectAllWaiting } from './session-exchange.js'
 import { openSseStream, type SseStream } from './sse.js'
+
+/**
+ * Label a correlation-hook failure is reported under. The hooks belong to a
+ * session's FACTORY, not to one request, so no session id would be the honest
+ * answer here.
+ */
+const CORRELATION_ERROR_LABEL = 'correlation'
 
 /**
  * Downstream session manager: both HTTP session models of ADR-0002 behind
@@ -73,6 +73,12 @@ import { openSseStream, type SseStream } from './sse.js'
  *   per-server and MCP traffic through the plane is sequential; a queue
  *   would only hide upstream slowness and complicate correlation (the
  *   response to a POST is "the next message the session emits").
+ *   A session MAY opt out by declaring `correlate` (ADR-0015 phase 3, plan
+ *   decision P1): the manager then keys waiting requests by whatever the
+ *   injected hooks return and holds up to `maxCorrelatedInFlight` of them.
+ *   One pool address fans an agent's calls across several upstreams, and one
+ *   call held by a human approval would otherwise 409 every other. Sessions
+ *   that declare nothing take the branch above, unchanged.
  * - Server-initiated routing: `source.onMessage` receives everything; a
  *   message arriving while a POST request is in flight IS that request's
  *   response; otherwise it goes to the open GET stream, or into a buffer
@@ -89,7 +95,9 @@ import { openSseStream, type SseStream } from './sse.js'
  * - `maxSessions` counts BOTH models and is reserved synchronously, before
  *   any hook runs and before the `openSession` await — a check that
  *   straddled the await would let N parallel initializes all pass it, and
- *   a cap that ignored one-shots would not be a cap at all.
+ *   a cap that ignored one-shots would not be a cap at all. `extraSessions`
+ *   adds sessions this manager did not open but which cost the same process
+ *   resources (a pool session's children).
  */
 
 // Contracts live in session-support.ts (file-size split); public surface stays here.
@@ -103,6 +111,7 @@ export {
   type OpenSession,
   type OpenSessionRefusal,
   type PostOptions,
+  type ResponseCorrelation,
   type ResponsePlan,
   type SessionContext,
   type SessionManager,
@@ -119,6 +128,8 @@ interface ActiveSession {
   readonly handle: OpenedSession
   lastActivityMs: number
   inFlight: Deferred<Buffer> | null
+  /** Requests keyed by `correlate`; always empty for a session without it. */
+  readonly waiting: Map<string, Deferred<Buffer>>
   buffered: BufferedMessages
   stream: SseStream | null
 }
@@ -134,10 +145,24 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
   const maxBuffered = opts.maxBufferedMessages ?? MAX_BUFFERED_SERVER_MESSAGES
   const maxBufferedBytes = opts.maxBufferedBytes ?? MAX_BUFFERED_SERVER_BYTES
   const statelessTimeoutMs = opts.statelessTimeoutMs ?? STATELESS_RESPONSE_TIMEOUT_MS
+  const maxCorrelatedInFlight = opts.maxCorrelatedInFlight ?? MAX_CORRELATED_IN_FLIGHT
   const uuid = opts.uuid ?? randomUUID
   const now = opts.now ?? Date.now
 
   const sessions = new Map<string, ActiveSession>()
+  /**
+   * Both POST pairing rules and the inbound-payload cascade, in one module so
+   * they cannot drift apart (`session-exchange.ts`).
+   */
+  const rules = createExchangeRules({
+    expectsResponse,
+    maxCorrelatedInFlight,
+    now,
+    buffer: (current, payload) => appendBuffered(current, payload, maxBuffered, maxBufferedBytes),
+    // The hooks belong to a session's FACTORY, not to one request, so no
+    // session id would be the honest answer here.
+    onHookError: (error) => opts.onSessionError?.(CORRELATION_ERROR_LABEL, error),
+  })
   const stateless = createStatelessRunner({
     openSession: opts.openSession,
     validateStatelessHeaders,
@@ -145,7 +170,9 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
     timeoutMs: statelessTimeoutMs,
     onOpenAbandoned: opts.onOpenAbandoned,
   })
-  const slots = createSlotCounter(maxSessions, () => sessions.size)
+  /** Registered sessions plus whatever else shares this manager's budget (P5). */
+  const countRegistered = (): number => sessions.size + (opts.extraSessions?.() ?? 0)
+  const slots = createSlotCounter(maxSessions, countRegistered)
   let isManagerClosed = false
 
   const sweeper = setInterval(sweepIdleSessions, opts.sweepIntervalMs ?? SESSION_SWEEP_INTERVAL_MS)
@@ -161,22 +188,6 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
     }
   }
 
-  /** Routes one server-origin message: in-flight response > GET stream > bounded buffer. */
-  function routeServerPayload(session: ActiveSession, payload: Buffer): void {
-    if (session.inFlight !== null) {
-      const pending = session.inFlight
-      session.inFlight = null
-      session.lastActivityMs = now()
-      pending.resolve(payload)
-      return
-    }
-    if (session.stream !== null && session.stream.isOpen()) {
-      session.stream.send(payload)
-      return
-    }
-    session.buffered = appendBuffered(session.buffered, payload, maxBuffered, maxBufferedBytes)
-  }
-
   async function teardownSession(session: ActiveSession): Promise<void> {
     if (!sessions.has(session.id)) {
       return
@@ -184,6 +195,9 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
     sessions.delete(session.id)
     session.inFlight?.reject(new SessionTornDownError())
     session.inFlight = null
+    // Every correlated waiter becomes the same 404 the single positional one
+    // has always become (matrix §1.5: a terminated session answers 404).
+    rejectAllWaiting(session.waiting, () => new SessionTornDownError())
     session.stream?.close()
     session.stream = null
     session.handle.source.dispose()
@@ -215,45 +229,15 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
       handle,
       lastActivityMs: now(),
       inFlight: null,
+      waiting: new Map(),
       buffered: EMPTY_BUFFER,
       stream: null,
     }
     sessions.set(session.id, session)
-    handle.source.onMessage((message) => routeServerPayload(session, message.bytes))
+    handle.source.onMessage((message) => rules.deliver(session, message.bytes))
     handle.source.onError((error: unknown) => opts.onSessionError?.(session.id, error))
     handle.source.onEnd(() => void teardownSession(session))
     return session
-  }
-
-  /** Writes `body` into the session and answers with the session's next message. */
-  async function exchange(session: ActiveSession, body: Buffer): Promise<ResponsePlan> {
-    if (!expectsResponse(body)) {
-      await session.handle.sink.write(clientMessage(body))
-      return Object.freeze({ status: HTTP_STATUS_ACCEPTED })
-    }
-    const pending = createDeferred<Buffer>()
-    session.inFlight = pending
-    try {
-      await session.handle.sink.write(clientMessage(body))
-      const payload = await pending.promise
-      return jsonPlan(HTTP_STATUS_OK, payload)
-    } catch (error: unknown) {
-      if (session.inFlight === pending) {
-        session.inFlight = null
-      }
-      if (error instanceof SessionTornDownError) {
-        return jsonPlan(HTTP_STATUS_NOT_FOUND, BODY_SESSION_NOT_FOUND)
-      }
-      throw error
-    }
-  }
-
-  async function handleSessionPost(session: ActiveSession, body: Buffer): Promise<ResponsePlan> {
-    if (session.inFlight !== null) {
-      return jsonPlan(HTTP_STATUS_CONFLICT, BODY_REQUEST_IN_FLIGHT)
-    }
-    session.lastActivityMs = now()
-    return exchange(session, body)
   }
 
   async function handleInitializePost(
@@ -270,7 +254,7 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
     slot.release()
     let plan: ResponsePlan
     try {
-      plan = await exchange(session, body)
+      plan = await rules.exchange(session, body)
     } catch (error: unknown) {
       // A broken handshake must not leave a half-alive session behind.
       await teardownSession(session)
@@ -299,7 +283,7 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
       if (session === undefined) {
         return jsonPlan(HTTP_STATUS_NOT_FOUND, BODY_SESSION_NOT_FOUND)
       }
-      return handleSessionPost(session, body)
+      return rules.post(session, body)
     }
     // A POST without a session id opens one, in either model. Take the slot
     // BEFORE the hooks run: the cap must not straddle an await, and a
@@ -384,7 +368,7 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
     handlePost,
     handleGet,
     handleDelete,
-    activeSessionCount: () => sessions.size + slots.reserved(),
+    activeSessionCount: () => countRegistered() + slots.reserved(),
     close,
   })
 }

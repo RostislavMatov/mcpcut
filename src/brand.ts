@@ -11,3 +11,16 @@
  * still one edit.
  */
 export const BRAND_NAME = 'McpCut'
+
+/**
+ * The product version the plane reports for ITSELF — today only in the
+ * `serverInfo` of a pool address, where the plane is the server (ADR-0015 §4,
+ * PE12) and the spec requires a version string.
+ *
+ * A literal rather than a read of `package.json`, because the plane must not
+ * depend on its own package layout at runtime: `connect --url` already runs
+ * from a machine with no install at all, and a missing file is not an answer
+ * `initialize` can give. It is kept honest by a test that fails the moment
+ * this and `package.json` disagree, so the duplication cannot drift silently.
+ */
+export const PRODUCT_VERSION = '0.1.0'

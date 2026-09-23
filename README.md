@@ -1179,13 +1179,22 @@ Agents that speak streamable HTTP instead of stdio connect through the front:
 
 ```
 mcpcut serve --port 8090
-# agent endpoint: http://127.0.0.1:8090/agents/research-bot/servers/github
-# authentication: Authorization: Bearer <the agent's token>
+# one server:      http://127.0.0.1:8090/agents/research-bot/servers/github
+# every server:    http://127.0.0.1:8090/mcp
+# authentication:  Authorization: Bearer <the agent's token>
 ```
 
-One endpoint per (agent, server) pair — the plane does not aggregate several
-servers behind one URL, so tool names and request ids stay exactly as the
-server produced them.
+There are two shapes of address, and both stay available:
+
+- **one endpoint per (agent, server) pair** — tool names and request ids reach
+  the server exactly as the agent produced them;
+- **one endpoint per agent** (`/mcp`, the *pool*) — every server that agent was
+  granted, behind a single URL, with tool names prefixed by their server.
+
+A pool is the right default for an agent with more than one server, because it
+moves the source of truth about access out of a config file on the agent's
+machine and into the service. The per-server address is the right choice when a
+client must see a server's tool names verbatim.
 
 The refusals an agent can get while opening a session, and what each one means:
 
@@ -1220,6 +1229,84 @@ matrix of both revisions, is in `docs/adr/0002-http-dual-version.md`.
 plain HTTP is not acceptable, so any `--host` beyond localhost prints a loud
 warning: terminate TLS in a reverse proxy in front of `serve` and let it keep
 listening on loopback. `serve` has no TLS of its own.
+
+#### One address for every server an agent has (the pool)
+
+`POST http://<host>:<port>/mcp` serves the agent its whole pool. There is no
+agent name in the path: the bearer token names the agent, so the address is the
+same for everyone and reveals nothing.
+
+```
+$ curl -s http://127.0.0.1:8090/mcp \
+    -H "Authorization: Bearer $MCP_AGENT_TOKEN" \
+    -H 'content-type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"initialize",
+         "params":{"protocolVersion":"2025-11-25","capabilities":{}}}'
+# → 200, Mcp-Session-Id: <id>, serverInfo.name: "mcpcut"
+
+$ # then, on that session:
+$ # {"jsonrpc":"2.0","id":2,"method":"tools/list"}
+$ # → {"tools":[{"name":"github__create_issue",...},{"name":"fs__read",...}]}
+$ # {"jsonrpc":"2.0","id":3,"method":"tools/call",
+$ #  "params":{"name":"github__create_issue","arguments":{...}}}
+```
+
+What the plane does behind that address:
+
+- **answers `initialize` itself** — at a pool address the plane *is* the server,
+  and reports itself as `mcpcut`;
+- **brings one ordinary per-server session up per granted server**, on the first
+  `tools/list` and not before, so connecting costs nothing until the agent
+  actually looks;
+- **merges their catalogs**, naming each tool `<server>__<tool>` — servers in
+  alphabetical order, so two connections of the same agent see the same list;
+- **strips the prefix before the frame reaches that server's session.** This is
+  the load-bearing part: policy, quarantine, approvals and the journal all see
+  the bare tool name, so a pooled call and a per-server call produce
+  indistinguishable decision records. The prefix is an address, not a rename.
+
+**Access changes reach a connected agent.** Grant a server while the agent holds
+its session and it receives `notifications/tools/list_changed`; the next
+`tools/list` contains the new server. Withdraw one and it leaves the pool while
+the session lives on — a call in flight at it gets exactly one answer
+(`-32005`, "the server left this pool"). No config edit, no restart:
+
+```
+$ mcpcut agent grant research-bot postgres --tools '*'
+# the connected agent is told, and finds postgres on its next tools/list
+```
+
+**A server that will not come up does not take the pool with it.** Unknown to
+the registry, registered as stateless-only, or unable to complete the plane's
+own handshake — it is simply absent, and the reason is journaled. The same goes
+for one that answers a catalog fan-out too slowly: it is detached rather than
+allowed to hold up everyone else's list. Less access, never a refusal.
+
+Limits and refusals worth knowing about:
+
+| Situation | What the agent gets |
+|---|---|
+| `resources/*` or any other method | `-32601` — a pool serves tools and prompts |
+| a `cursor` in `tools/list` | `-32602` — the pool drains upstream pages itself and issues none |
+| a tool name the pool does not hold | `-32602`, with the same text whether the server is unknown or outside this agent's grants |
+| a request id already in flight | `-32602` — two live requests under one id have no single answer |
+| more requests than the pool tracks | `-32006` — retry once one has answered |
+| a POST with no session and no `initialize` | 400 `{"error":"pool-sessionful-only"}` — the pool is sessionful-only for now |
+
+A tool whose pooled name would exceed 64 characters is **left out of the merged
+list** rather than listed: one name a client rejects breaks that client's whole
+request. It stays reachable at its per-server address, and the names left out
+are recorded in the journal. One pool holds at most 32 servers, and those child
+sessions count against `serve`'s process-wide session ceiling.
+
+An upstream registered with the stateless revision `2026-07-28` cannot join a
+pool: the plane opens a handshake of its own to each server, and that revision
+removed the handshake. Such a server works unchanged at its per-server address,
+where the plane forwards the agent's handshake instead of conducting one.
+
+`mcpcut show <sessionId> --kind pool` shows a pool session's own record — when it opened,
+which servers attached (each with the child session id its decisions are under),
+what changed, and when it closed.
 
 #### From another machine: `mcpcut connect --url`
 

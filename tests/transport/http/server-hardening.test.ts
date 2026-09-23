@@ -34,6 +34,7 @@ describe('parseRoute (unit)', () => {
   test('parses each supported method on the canonical path', () => {
     for (const method of ['POST', 'GET', 'DELETE'] as const) {
       expect(parseRoute(method, '/agents/bot/servers/github')).toEqual({
+        kind: 'server',
         method,
         agentName: 'bot',
         serverName: 'github',

@@ -199,23 +199,40 @@ describe('e2e: what the bridge does when the service says no', () => {
     }
   })
 
-  test('a pool address against a service that has none explains the 404 (phase 3 is not here yet)', async () => {
-    const token = await onboard()
+  test('a pool address now reaches the pool this service serves (phase 3)', async () => {
+    // This test used to assert the opposite: until phase 3 the base address
+    // honestly answered 404 and the bridge said so. The pool endpoint exists
+    // now, so the same invocation gets a live session — and the bridge needed
+    // no change at all to get it, which is the point of PE5's "the path is an
+    // internal detail".
+    const token = await onboard('echo,special_*')
     const serve = await startServe(plane)
 
     try {
-      // The base URL: PE5's form, which this service does not serve yet.
       const driver = startBridge(`http://127.0.0.1:${serve.port}`, token)
-      driver.stdio.clientOutbox.write(requestLine(1, 'tools/list'))
-      const run = await driver.done
+      const outcome = await runLines(driver, [
+        requestLine(1, 'initialize', {
+          protocolVersion: '2025-06-18',
+          capabilities: {},
+          clientInfo: { name: 'e2e-bridge', version: '0.0.1' },
+        }),
+        requestLine(2, 'tools/list'),
+      ])
 
-      expect(run.code).toBe(1)
-      expect(run.err).toContain('agent pool endpoint')
-      expect(driver.stdio.stdoutText()).toBe('')
+      expect(outcome.code).toBe(0)
+      const handshake = outcome.messages[0]?.['result'] as { serverInfo: { name: string } }
+      // The plane answered for itself: at a pool address it IS the server.
+      expect(handshake.serverInfo.name).toBe('mcpcut')
+      const listed = outcome.messages[1]?.['result'] as { tools: Array<{ name: string }> }
+      // The stdio fixture this suite registers answers `initialize` with the
+      // revision that has no handshake, so the pool's own handshake cannot
+      // negotiate with it and opens without it (PE6). An empty catalog is the
+      // honest result, not an error.
+      expect(Array.isArray(listed.tools)).toBe(true)
     } finally {
       await serve.shutdown()
     }
-  })
+  }, 30_000)
 
   test('the service going away mid-session ends the bridge with exit 4, not a hang', async () => {
     const token = await onboard()

@@ -35,10 +35,17 @@ export async function waitUntilAsync(predicate: () => Promise<boolean>): Promise
   }
 }
 
-/** Polls until `predicate` is true or the timeout elapses. */
-export async function waitUntil(predicate: () => boolean): Promise<void> {
+/**
+ * Polls until `predicate` is true or the timeout elapses.
+ *
+ * The predicate may be async. A version that only accepted `boolean` silently
+ * returned at once when handed an `async` one — a Promise is always truthy —
+ * so every assertion after it raced the thing it was waiting for. Awaiting is
+ * a no-op for a sync predicate.
+ */
+export async function waitUntil(predicate: () => boolean | Promise<boolean>): Promise<void> {
   const deadline = Date.now() + POLL_TIMEOUT_MS
-  while (!predicate()) {
+  while (!(await predicate())) {
     if (Date.now() > deadline) {
       throw new Error('waitUntil: timed out waiting for condition')
     }

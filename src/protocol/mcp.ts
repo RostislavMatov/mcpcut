@@ -225,6 +225,21 @@ export const TOOLS_LIST_CHANGED_NOTIFICATION = 'notifications/tools/list_changed
 export const PROMPTS_LIST_CHANGED_NOTIFICATION = 'notifications/prompts/list_changed'
 
 /**
+ * The spec's liveness request. A pool address answers it itself: the plane is
+ * the server there (PE12), and forwarding one ping to N upstreams would turn
+ * a keepalive into a fan-out.
+ */
+export const PING_METHOD = 'ping'
+
+/**
+ * "Stop working on this request." Its `params.requestId` names an id the
+ * CLIENT issued, so at a pool address it is the one notification that has to
+ * be routed rather than broadcast — it belongs to whichever upstream holds
+ * that id.
+ */
+export const CANCELLED_NOTIFICATION = 'notifications/cancelled'
+
+/**
  * Sessionful revisions the plane can answer `initialize` for ITSELF, oldest
  * first, so the tail is "latest supported" (ADR-0015 §4: at a pool address the
  * plane is the server, and ADR-0002 §4's "forward, never substitute" does not

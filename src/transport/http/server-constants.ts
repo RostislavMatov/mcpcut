@@ -114,6 +114,31 @@ export const MAX_BUFFERED_SERVER_BYTES = 8 * 1024 * 1024
 export const ROUTE_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/
 
 /**
+ * Path of the agent pool endpoint (PE5). The operator is handed a base
+ * address and never types this; `connect --url` appends it on their behalf,
+ * so it must equal `BRIDGE_POOL_PATH` — a test pins the pair.
+ */
+export const POOL_ROUTE_PATH = '/mcp'
+
+/**
+ * The opaque `serverName` a pool session carries in its `SessionContext`.
+ * A leading `_` is unrepresentable in `ROUTE_NAME_PATTERN`, so this can never
+ * collide with a registry server name — the same construction that keeps
+ * `plane_probe` out of the server namespace (`src/probe/constants.ts`).
+ */
+export const POOL_ROUTE_TARGET = '_pool'
+
+/**
+ * Requests one session may hold in flight at once WHEN it declares response
+ * correlation. A pool session fans one agent's calls out to several
+ * upstreams, and a `tools/call` waiting on a human approval holds its slot
+ * for minutes; without a cap, an agent could open as many waits as it can
+ * write POSTs. Sessions that declare no correlation keep the older, stricter
+ * rule of exactly one (409).
+ */
+export const MAX_CORRELATED_IN_FLIGHT = 64
+
+/**
  * Shape a session-factory refusal code must have to reach an agent
  * verbatim. A factory may return an explanatory refusal ("protocol-
  * mismatch: server X is registered as ..."); only the leading code token
@@ -146,6 +171,16 @@ export const BODY_SESSION_NOT_FOUND = Buffer.from('{"error":"session-not-found"}
 export const BODY_REQUEST_IN_FLIGHT = Buffer.from('{"error":"request-in-flight"}', 'utf8')
 export const BODY_PAYLOAD_TOO_LARGE = Buffer.from('{"error":"payload-too-large"}', 'utf8')
 export const BODY_TOO_MANY_SESSIONS = Buffer.from('{"error":"too-many-sessions"}', 'utf8')
+/**
+ * 429 body for a correlating session holding `MAX_CORRELATED_IN_FLIGHT`
+ * requests already. Distinct from `BODY_TOO_MANY_SESSIONS`: the agent has
+ * not run out of sessions, it has run out of room in the one it holds, and
+ * the remedy is to wait for an answer rather than to open another session.
+ */
+export const BODY_TOO_MANY_REQUESTS_IN_FLIGHT = Buffer.from(
+  '{"error":"too-many-requests-in-flight"}',
+  'utf8',
+)
 /**
  * 504 body: the request was abandoned without an answer — the upstream
  * stayed silent past `STATELESS_RESPONSE_TIMEOUT_MS`, or the agent's own
