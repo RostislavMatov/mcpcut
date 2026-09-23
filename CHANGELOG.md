@@ -8,6 +8,44 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **stdio servers granted to an agent keep running.** `serve` starts every
+  stdio server an agent is granted (personally or through a group) in the
+  background — at the grant, or when `serve` starts — at most two at once and
+  never two of one command line together, and the agent's pool attaches to
+  the running server, so its first `tools/list` answers at once. It is
+  restarted after a pause if it dies (given up after five failed starts in a
+  row), restarted when its registry record or a vault secret it uses changes,
+  stopped within ~5 s of the grant going, and never handed to another agent.
+  Up to 32 (agent, server) pairs; past that a server starts on demand and stays
+  warm 10 minutes after its agent leaves, yielding its slot first when the
+  service runs short. `serve.log` shows each start, restart and stop; pool
+  `attach` records carry `lifetime` (`pool`, `warm`, `resident`). ADR-0016.
+- **Servers of the stateless revision `2026-07-28` join a pool**, stdio and
+  HTTP, next to older ones: the plane tries its handshake first and asks
+  `server/discover` when it is refused, then stamps every frame to such a
+  member with the `_meta` the revision requires (`clientCapabilities: {}` in
+  the plane's own name). A member's 4xx error body is an answer, not the end of
+  it; a result that is not finished (`input_required`) reaches the agent as
+  `-32007`. The status probe speaks both revisions too, so `/servers` shows
+  such a server `alive via tools/list`.
+- **A child session exported alone names its pool.** `export --report
+  --session <child>` adds "Pool membership of session … (from records outside
+  this export)" to `summary.md` — each pool session that attached it, with its
+  agent, server and time — read from the same snapshot and marked as not
+  covered by the export's digest or chain; stdout prints only a count.
+  `report.json` stays v1. A server kept running across many connections reads
+  as "attached by N pool sessions", not as a forgery.
+
+### Changed
+
+- **A pool waits up to 40 s for a server to start** (spawn and handshake
+  together), separately from the 10 s list budget; servers start at once, so
+  five wait as long as the slowest. One that dies during its start is given up
+  on immediately. `attach-refused` says which: `start-timeout`,
+  `ended-during-start`, `handshake-failed` or `start-failed`.
+- **A withdrawn grant always leaves the pool as `ungranted`**, whichever of the
+  two watches notices first (it read `child-ended` about a third of the time).
+
 - **Audit reports name the pool sessions.** `summary.md` gains a "Pool
   sessions" section: for each pool session, its agent, which child session each
   server attached as (a server that left and came back appears twice), which
