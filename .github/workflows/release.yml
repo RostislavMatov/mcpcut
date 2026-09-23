@@ -1,0 +1,62 @@
+name: Release
+
+# A tag vX.Y.Z runs CI, then stages the package on npm for a maintainer's
+# 2FA approval (plan R4). No npm token exists anywhere: the publish job
+# authenticates with GitHub's OIDC token (npm trusted publishing). Third-party
+# actions are pinned by full SHA — this job holds `id-token: write`.
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Job-level only: a top-level group would share its name with the called
+    # CI workflow's group and cancel it.
+    concurrency:
+      group: npm-publish
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      - name: npm with staged publishing (>= 11.15.0)
+        run: npm install -g npm@11.20.0
+
+      - name: The tag names the package version
+        run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
+
+      - name: Already on npm? (0.1.0 was published by hand)
+        id: registry
+        run: |
+          if npm view "mcpcut@${GITHUB_REF_NAME#v}" version > /dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install
+        if: steps.registry.outputs.published != 'true'
+        run: npm ci
+
+      - name: Stage for a maintainer's 2FA approval
+        if: steps.registry.outputs.published != 'true'
+        run: npm stage publish

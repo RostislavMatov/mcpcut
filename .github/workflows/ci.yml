@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Release (release.yml) runs this same CI before it stages a version.
+  workflow_call:
 
 permissions:
   contents: read

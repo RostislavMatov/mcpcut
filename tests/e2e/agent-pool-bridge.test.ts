@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import type { ClientConfigDocument, StdioClientEntry } from '../../src/agents/client-config.js'
+import { PRODUCT_VERSION } from '../../src/brand.js'
 import type { DispatchOptions } from '../../src/cli/dispatch-types.js'
 import { INSTALL_CONFIG_VERSION } from '../../src/setup/constants.js'
 import type { InstallConfigLoad } from '../../src/setup/load.js'
@@ -30,6 +31,9 @@ import {
 
 const AGENT = 'bot'
 const POLL_MS = 25
+
+/** `npx -y mcpcut@<version>` — what npx consumes before handing argv to the binary. */
+const NPX_PACKAGE_ARGS = 2
 
 let tempDir: string
 let plane: Plane
@@ -126,14 +130,17 @@ describe('e2e: one pasted block outlives three changes of access (PRD metric)', 
       const block = blockOf(created.out)
       const pasted = JSON.stringify(block)
       const entry = block.mcpServers.mcpcut as StdioClientEntry
-      expect(entry.args).toEqual(['connect', '--url', publicUrl])
+      expect(entry.command).toBe('npx')
+      expect(entry.args.slice(0, NPX_PACKAGE_ARGS)).toEqual(['-y', `mcpcut@${PRODUCT_VERSION}`])
+      const bridgeArgv = entry.args.slice(NPX_PACKAGE_ARGS)
+      expect(bridgeArgv).toEqual(['connect', '--url', publicUrl])
       expect(Object.keys(entry.env)).toEqual(['MCP_AGENT_TOKEN'])
       await owned(['agent', 'grant', AGENT, 'alpha', '--tools', '*'])
       await owned(['agent', 'grant', AGENT, 'beta', '--tools', '*'])
 
       // Act — the agent's process runs exactly what the block says.
       const stdio = createConnectStdio()
-      const bridge = plane.run([...entry.args], {
+      const bridge = plane.run([...bridgeArgv], {
         connectBridge: {
           env: { ...entry.env },
           stdin: stdio.clientOutbox,

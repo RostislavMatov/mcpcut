@@ -22,6 +22,11 @@ const PROJECT_ROOT = process.cwd()
 /** Spelled in pieces so this file does not trip its own scan. */
 const RETIRED_NAME = new RegExp(['mcp', 'journal'].join('[-_]'), 'i')
 
+/** Documents that tell a reader which published version to run. */
+const VERSION_PINNED_FILES: readonly string[] = ['README.md', 'SECURITY.md']
+
+const VERSION_PIN = /mcpcut@(\d+\.\d+\.\d+)/g
+
 const SCANNED_DIRS: readonly string[] = ['src', 'docker', 'docs/deploy']
 
 const SCANNED_FILES: readonly string[] = [
@@ -91,5 +96,14 @@ describe('the product version', () => {
     ) as { version: string }
 
     expect(PRODUCT_VERSION).toBe(manifest.version)
+  })
+
+  test.each(VERSION_PINNED_FILES)('every mcpcut@x.y.z in %s is the product version', (file) => {
+    // The README tells people to run `npx -y mcpcut@<version>`; a pin left
+    // behind at the next bump would send them to an older release. The
+    // CHANGELOG is not scanned: past versions belong there.
+    const pins = [...readFileSync(join(PROJECT_ROOT, file), 'utf8').matchAll(VERSION_PIN)].map((match) => match[1])
+
+    expect(pins.filter((pin) => pin !== PRODUCT_VERSION)).toEqual([])
   })
 })

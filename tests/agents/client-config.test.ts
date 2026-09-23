@@ -72,6 +72,32 @@ describe('renderClientConfig: the exact bytes', () => {
     )
   })
 
+  test('stdio form, default launcher: npx of the exact running version (PE9, PE10)', () => {
+    // What `agent create` prints and the README shows since phase 6.
+    expect(renderClientConfig({ serveUrl: 'https://plane.example:8090', token: TOKEN, form: 'stdio' })).toBe(
+      [
+        '{',
+        '  "mcpServers": {',
+        '    "mcpcut": {',
+        '      "command": "npx",',
+        '      "args": [',
+        '        "-y",',
+        `        "mcpcut@${PRODUCT_VERSION}",`,
+        '        "connect",',
+        '        "--url",',
+        '        "https://plane.example:8090"',
+        '      ],',
+        '      "env": {',
+        `        "MCP_AGENT_TOKEN": "${TOKEN}"`,
+        '      }',
+        '    }',
+        '  }',
+        '}',
+        '',
+      ].join('\n'),
+    )
+  })
+
   test('ends with exactly one newline and carries no TAB (the console pane renders TAB as ?)', () => {
     const text = renderClientConfig({ serveUrl: 'https://h', token: TOKEN, form: 'http' })
 
@@ -88,14 +114,21 @@ describe('renderClientConfig: the exact bytes', () => {
 })
 
 describe('clientConfigOf: the stdio form', () => {
-  test('phase 4 launches the installed binary (PE10) and the token rides in env, never argv', () => {
+  test('phase 6 launches npx of the exact running version (PE9, PE10); the token rides in env, never argv', () => {
     const entry = stdioEntry('https://plane.example:8090')
 
-    expect(CLIENT_CONFIG_LAUNCHER).toBe('binary')
-    expect(entry.command).toBe('mcpcut')
-    expect(entry.args).toEqual(['connect', '--url', 'https://plane.example:8090'])
+    expect(CLIENT_CONFIG_LAUNCHER).toBe('npx')
+    expect(entry.command).toBe(NPX_COMMAND)
+    expect(entry.args).toEqual(['-y', `mcpcut@${PRODUCT_VERSION}`, 'connect', '--url', 'https://plane.example:8090'])
     expect(entry.env).toEqual({ MCP_AGENT_TOKEN: TOKEN })
     expect(entry.args.join(' ')).not.toContain(TOKEN)
+  })
+
+  test('the binary launcher stays for an owner who installed mcpcut on the agent machine (R9)', () => {
+    const entry = stdioEntry('https://plane.example:8090', 'binary')
+
+    expect(entry.command).toBe('mcpcut')
+    expect(entry.args).toEqual(['connect', '--url', 'https://plane.example:8090'])
   })
 
   test('the npx launcher pins the exact running version (PE9), never @latest', () => {
@@ -118,7 +151,7 @@ describe('clientConfigOf: the stdio form', () => {
   })
 
   test('plain http to another host carries --allow-http last; https and loopback do not', () => {
-    expect(stdioEntry('http://203.0.113.7:8090').args).toEqual([
+    expect(stdioEntry('http://203.0.113.7:8090', 'binary').args).toEqual([
       'connect',
       '--url',
       'http://203.0.113.7:8090',
@@ -182,8 +215,8 @@ describe('clientConfigOf: placeholders and immutability', () => {
     const document = clientConfigOf({ serveUrl: SERVE_URL_PLACEHOLDER, token: TOKEN_PLACEHOLDER, form: 'stdio' })
 
     expect(document.mcpServers.mcpcut).toEqual({
-      command: 'mcpcut',
-      args: ['connect', '--url', '<serve-url>'],
+      command: 'npx',
+      args: ['-y', `mcpcut@${PRODUCT_VERSION}`, 'connect', '--url', '<serve-url>'],
       env: { MCP_AGENT_TOKEN: '<token>' },
     })
   })
