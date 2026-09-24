@@ -8,13 +8,13 @@ See every tool call your AI agent makes over MCP, hold the risky ones for your a
 
 ## Quick start
 
-Requires **Node.js 24+** (`node -v`); on older Node, mcpcut prints one line and exits. Nothing else to install.
+Requires **Node.js 24+** (`node -v`); on older Node, mcpcut prints one line and exits — install Node 24 with nvm, fnm or volta. Nothing else to install.
 
 **See.** Put mcpcut in front of a server — here for Claude Code; in any other client, the server's command becomes `npx -y mcpcut@0.1.0 wrap -- <your server>`:
 
     claude mcp add fs -- npx -y mcpcut@0.1.0 wrap -- npx -y @modelcontextprotocol/server-filesystem ~/project
 
-Let the agent work, then `npx -y mcpcut@0.1.0 sessions` and `npx -y mcpcut@0.1.0 show <id>`: every request, response and decision, secrets redacted.
+The first start downloads mcpcut and the server; if your client gives up on it, start it once more. Let the agent work, then `npx -y mcpcut@0.1.0 sessions` and `npx -y mcpcut@0.1.0 show <id>`: every request, response and decision, secrets redacted.
 
 **Stop.** Save this as `policy.json` — reads pass, everything else waits for you (quarantine of new tools is off, so the first minute shows one gate: see [Quarantine](#quarantine)) — and re-add the server with `--policy "$PWD/policy.json"` right after `wrap` (`claude mcp remove fs` first):
 
