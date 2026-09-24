@@ -1,8 +1,9 @@
 // The mechanical checks of plan R14, run by export-public.mjs over the
 // filtered clone before anything reaches the public one, and the dead-rule
 // check run over the source before filtering. A finding names the rule, the
-// commit and the path — never the string that matched: the export may run in
-// a terminal that is being recorded.
+// commit and the path. Content and message findings never quote what matched
+// (the export may run in a terminal that is being recorded); a path finding
+// has to name the path, or nobody could fix it.
 //
 // The history is read by export-history.mjs (full trees, NUL-separated), not
 // from git's human-readable output.
@@ -21,19 +22,40 @@ const MAX_PATHS_PER_FINDING = 5
  * them; `glob:` is refused rather than half-supported. `#` lines are comments
  * only where filter-repo also skips them (paths, forbidden).
  */
-export function matchersOf(text, fileName, { hasArrow, hasComments }) {
+export function matchersOf(text, fileName, { hasArrow, hasComments, ignoreCase = false }) {
   return text.split('\n').flatMap((line, index) => {
     if (line.trim() === '' || (hasComments && line.startsWith('#'))) return []
     const left = hasArrow ? line.split(REPLACE_ARROW)[0] : line
-    return [{ rule: `${fileName}:${index + 1}`, ...patternOf(left, `${fileName}:${index + 1}`) }]
+    const rule = `${fileName}:${index + 1}`
+    return [{ rule, ...patternOf(left, rule, ignoreCase) }]
   })
 }
 
-function patternOf(left, rule) {
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function patternOf(left, rule, ignoreCase) {
   if (left.startsWith('glob:')) throw new Error(`${rule} uses glob:, which the export cannot check — use regex:`)
-  if (left.startsWith('regex:')) return { regex: new RegExp(left.slice('regex:'.length)) }
+  if (left.startsWith('regex:')) return { regex: new RegExp(left.slice('regex:'.length), ignoreCase ? 'i' : '') }
   const literal = left.startsWith('literal:') ? left.slice('literal:'.length) : left
-  return { literal: Buffer.from(literal, 'utf8') }
+  return ignoreCase ? { regex: new RegExp(escapeRegExp(literal), 'i') } : { literal: Buffer.from(literal, 'utf8') }
+}
+
+/**
+ * The five rules files, as the export reads them. Replacements match exactly
+ * as filter-repo applies them; forbidden.txt is a detector, not a rewrite, so
+ * it matches in any letter case — a sentence-initial or upper-case spelling
+ * of a name is the same leak.
+ */
+export function rulesFromTexts(texts) {
+  return {
+    paths: matchersOf(texts['paths.txt'], 'paths.txt', { hasArrow: false, hasComments: true }),
+    text: matchersOf(texts['replace-text.txt'], 'replace-text.txt', { hasArrow: true, hasComments: false }),
+    message: matchersOf(texts['replace-message.txt'], 'replace-message.txt', { hasArrow: true, hasComments: false }),
+    forbidden: matchersOf(texts['forbidden.txt'], 'forbidden.txt', { hasArrow: false, hasComments: true, ignoreCase: true }),
+    canonicalEmails: canonicalEmailsOf(texts['mailmap']),
+  }
 }
 
 function matchesBuffer(matcher, buffer) {

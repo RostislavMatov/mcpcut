@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
-import { deadRules, historyFindings, matchersOf } from '../../tools/release/export-checks.mjs'
+import { deadRules, historyFindings, rulesFromTexts } from '../../tools/release/export-checks.mjs'
 
 /**
  * The R14 checks on their own, over plain repositories — no `filter-repo`
@@ -23,13 +23,13 @@ interface Rules {
 }
 
 function rulesOf(files: Readonly<Partial<Record<'paths' | 'text' | 'message' | 'forbidden', string>>>): Rules {
-  return {
-    paths: matchersOf(files.paths ?? '', 'paths.txt', { hasArrow: false, hasComments: true }),
-    text: matchersOf(files.text ?? '', 'replace-text.txt', { hasArrow: true, hasComments: false }),
-    message: matchersOf(files.message ?? '', 'replace-message.txt', { hasArrow: true, hasComments: false }),
-    forbidden: matchersOf(files.forbidden ?? '', 'forbidden.txt', { hasArrow: false, hasComments: true }),
-    canonicalEmails: new Set([EMAIL]),
-  }
+  return rulesFromTexts({
+    'paths.txt': files.paths ?? '',
+    'replace-text.txt': files.text ?? '',
+    'replace-message.txt': files.message ?? '',
+    'forbidden.txt': files.forbidden ?? '',
+    mailmap: `Public <${EMAIL}> <private@corp.example>\n`,
+  }) as Rules
 }
 
 function git(cwd: string, args: readonly string[]): string {
@@ -116,6 +116,18 @@ describe('historyFindings: paths git would quote, and merges', () => {
 
     expect(findings).toHaveLength(2)
     expect(findings.join('\n')).not.toMatch(/LEAK/)
+  })
+
+  test('forbidden strings are found in any letter case, in files and in messages', () => {
+    // forbidden.txt detects, it does not rewrite: a sentence-initial or
+    // upper-case spelling of a name is the same leak.
+    const root = repo()
+    commit(root, { 'a.txt': 'thanks MALLORY\n' }, 'docs: thanks mallory')
+
+    const findings = historyFindings(root, rulesOf({ forbidden: 'Mallory\n' }))
+
+    expect(findings).toHaveLength(2)
+    expect(findings.join('\n')).not.toMatch(/mallory/i)
   })
 
   test('a clean history has no findings', () => {
