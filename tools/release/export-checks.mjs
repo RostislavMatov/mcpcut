@@ -1,21 +1,20 @@
 // The mechanical checks of plan R14, run by export-public.mjs over the
-// filtered clone before anything reaches the public one. A finding names the
-// rule, the commit and the path — never the string that matched: the export
-// may run in a terminal that is being recorded.
-import { execFileSync, spawnSync } from 'node:child_process'
+// filtered clone before anything reaches the public one, and the dead-rule
+// check run over the source before filtering. A finding names the rule, the
+// commit and the path — never the string that matched: the export may run in
+// a terminal that is being recorded.
+//
+// The history is read by export-history.mjs (full trees, NUL-separated), not
+// from git's human-readable output.
+import { spawnSync } from 'node:child_process'
+import { blobContents, identitiesOf, indexHistory, messagesOf } from './export-history.mjs'
 
-/** Every blob of the history fits in memory many times over (≈ 45 MB on 2026-09-24). */
-const GIT_MAX_BUFFER = 1024 * 1024 * 1024
+export { gitIn } from './export-history.mjs'
 
 const REPLACE_ARROW = '==>'
 
-/** Text without `input`; with it (a batch of object ids), the raw bytes git printed. */
-export function gitIn(repo, args, input) {
-  const options = { maxBuffer: GIT_MAX_BUFFER }
-  return input === undefined
-    ? execFileSync('git', ['-C', repo, ...args], { ...options, encoding: 'utf8' })
-    : execFileSync('git', ['-C', repo, ...args], { ...options, input })
-}
+/** A finding lists at most this many paths of one blob, then says how many more. */
+const MAX_PATHS_PER_FINDING = 5
 
 /**
  * One matcher per non-blank line. `regex:` and `literal:` as filter-repo reads
@@ -43,76 +42,53 @@ function matchesBuffer(matcher, buffer) {
 
 function matchesPath(matcher, path) {
   if (matcher.regex) return matcher.regex.test(path)
-  const literal = matcher.literal.toString('utf8')
-  const bare = literal.replace(/\/$/, '')
+  const bare = matcher.literal.toString('utf8').replace(/\/$/, '')
   return path === bare || path.startsWith(`${bare}/`)
 }
 
-/** (a) No commit carries a path the filter removes. */
-function pathFindings(repo, pathMatchers) {
-  const findings = []
-  let commit = ''
-  for (const line of gitIn(repo, ['log', '--all', '--name-only', '--format=%x00%h']).split('\n')) {
-    if (line.startsWith('\0')) commit = line.slice(1)
-    const matcher = line === '' || line.startsWith('\0') ? undefined : pathMatchers.find((m) => matchesPath(m, line))
-    if (matcher) findings.push(`commit ${commit} still carries ${line} (${matcher.rule})`)
+/** A path as a finding may print it: control characters (a newline in a name) become `?`. */
+function printable(path) {
+  return path.replace(/[\u0000-\u001f\u007f]/g, '?')
+}
+
+function pathList(paths) {
+  const all = [...paths].map(printable)
+  const more = all.length - MAX_PATHS_PER_FINDING
+  return all.slice(0, MAX_PATHS_PER_FINDING).join(', ') + (more > 0 ? ` (+${more} more)` : '')
+}
+
+/** (a) No commit's tree carries a path the filter removes. */
+function pathFindings(index, pathMatchers) {
+  return [...index.paths].flatMap(([path, commit]) => {
+    const matcher = pathMatchers.find((m) => matchesPath(m, path))
+    return matcher ? [`commit ${commit} still carries ${printable(path)} (${matcher.rule})`] : []
+  })
+}
+
+/** Blob id → the matchers its content matches, for every blob of the index. */
+function blobMatches(repo, blobIds, matchers) {
+  const matched = []
+  for (const [id, content] of blobContents(repo, blobIds)) {
+    const hits = matchers.filter((m) => matchesBuffer(m, content))
+    if (hits.length > 0) matched.push([id, hits])
   }
-  return findings
-}
-
-/** Blob id → the first path it was seen at, for every blob of every commit. */
-function blobPaths(repo) {
-  const entries = gitIn(repo, ['rev-list', '--objects', '--all'])
-    .split('\n')
-    .filter((line) => line.includes(' '))
-    .map((line) => [line.slice(0, line.indexOf(' ')), line.slice(line.indexOf(' ') + 1)])
-  const types = gitIn(repo, ['cat-file', '--batch-check=%(objecttype)'], entries.map(([id]) => id).join('\n') + '\n')
-    .toString('utf8')
-    .split('\n')
-  return new Map(entries.filter((_, index) => types[index] === 'blob'))
-}
-
-/** `git cat-file --batch` output, split back into one buffer per blob. */
-function* blobContents(repo, ids) {
-  const output = gitIn(repo, ['cat-file', '--batch'], ids.join('\n') + '\n')
-  let offset = 0
-  for (const id of ids) {
-    const headerEnd = output.indexOf(0x0a, offset)
-    const size = Number(output.toString('utf8', offset, headerEnd).split(' ')[2])
-    yield [id, output.subarray(headerEnd + 1, headerEnd + 1 + size)]
-    offset = headerEnd + 1 + size + 1
-  }
-}
-
-function commitOfBlob(repo, id) {
-  return gitIn(repo, ['log', '--all', '-1', '--format=%h', `--find-object=${id}`]).trim() || 'unknown'
+  return matched
 }
 
 /** (b) No blob of any commit carries a left side of replace-text or a forbidden string. */
-function blobFindings(repo, matchers) {
-  const paths = blobPaths(repo)
-  const findings = []
-  for (const [id, content] of blobContents(repo, [...paths.keys()])) {
-    for (const matcher of matchers.filter((m) => matchesBuffer(m, content))) {
-      findings.push(`commit ${commitOfBlob(repo, id)}: ${paths.get(id)} matches ${matcher.rule}`)
-    }
-  }
-  return findings
+function blobFindings(repo, index, matchers) {
+  return blobMatches(repo, [...index.blobs.keys()], matchers).flatMap(([id, hits]) => {
+    const { commit, paths } = index.blobs.get(id)
+    return hits.map((m) => `commit ${commit}: ${pathList(paths)} matches ${m.rule}`)
+  })
 }
 
 /** (c) No commit message carries a left side of replace-message or a forbidden string. */
 function messageFindings(repo, matchers) {
-  return gitIn(repo, ['log', '--all', '--format=%h%x00%B%x1e'])
-    .split('\x1e')
-    .map((entry) => entry.replace(/^\n/, ''))
-    .filter((entry) => entry.includes('\0'))
-    .flatMap((entry) => {
-      const [commit, message] = entry.split('\0')
-      const body = Buffer.from(message, 'utf8')
-      return matchers
-        .filter((m) => matchesBuffer(m, body))
-        .map((m) => `message of commit ${commit} matches ${m.rule}`)
-    })
+  return messagesOf(repo, ['--all']).flatMap(({ commit, message }) => {
+    const body = Buffer.from(message, 'utf8')
+    return matchers.filter((m) => matchesBuffer(m, body)).map((m) => `message of commit ${commit} matches ${m.rule}`)
+  })
 }
 
 /** The canonical addresses of a mailmap: the first `<…>` of every line. */
@@ -127,25 +103,43 @@ export function canonicalEmailsOf(mailmapText) {
 
 /** (d) Every author and committer is one of the mailmap's public identities. */
 function identityFindings(repo, canonical) {
-  return gitIn(repo, ['log', '--all', '--format=%h%x00%ae%x00%ce'])
-    .split('\n')
-    .filter((line) => line !== '')
-    .flatMap((line) => {
-      const [commit, author, committer] = line.split('\0')
-      return [author, committer].some((email) => !canonical.has(email))
-        ? [`commit ${commit} has an author or committer that is not a mailmap identity`]
-        : []
-    })
+  return identitiesOf(repo, ['--all']).flatMap(({ commit, emails }) =>
+    emails.some((email) => !canonical.has(email))
+      ? [`commit ${commit} has an author or committer that is not a mailmap identity`]
+      : [],
+  )
 }
 
-/** Checks (a)–(d); (e), determinism, needs a second filter and lives with the caller. */
+/** Checks (a)–(d) over every ref of `repo`; (e), determinism, needs a second filter and lives with the caller. */
 export function historyFindings(repo, rules) {
+  const index = indexHistory(repo, ['--all'])
   return [
-    ...pathFindings(repo, rules.paths),
-    ...blobFindings(repo, [...rules.text, ...rules.forbidden]),
+    ...pathFindings(index, rules.paths),
+    ...blobFindings(repo, index, [...rules.text, ...rules.forbidden]),
     ...messageFindings(repo, [...rules.message, ...rules.forbidden]),
     ...identityFindings(repo, rules.canonicalEmails),
   ]
+}
+
+/**
+ * The replacement rules that match nothing in `branch` of the source, outside
+ * the excluded paths. Such a rule is a typo or a leftover, and a typo is the
+ * one mistake the checks above cannot see: the filter leaves the real string
+ * in place, and a check built from the same misspelled rule looks for the
+ * misspelling. Blobs stored only at excluded paths do not count — the rules
+ * files themselves live there and name every left side.
+ */
+export function deadRules(sourceRepo, branch, rules) {
+  const index = indexHistory(sourceRepo, [branch])
+  const kept = [...index.blobs]
+    .filter(([, { paths }]) => [...paths].some((path) => !rules.paths.some((m) => matchesPath(m, path))))
+    .map(([id]) => id)
+  const textHit = new Set(blobMatches(sourceRepo, kept, rules.text).flatMap(([, hits]) => hits.map((m) => m.rule)))
+  const bodies = messagesOf(sourceRepo, [branch]).map(({ message }) => Buffer.from(message, 'utf8'))
+  return [
+    ...rules.text.filter((m) => !textHit.has(m.rule)),
+    ...rules.message.filter((m) => !bodies.some((body) => matchesBuffer(m, body))),
+  ].map((m) => m.rule)
 }
 
 export function hasFilterRepo() {

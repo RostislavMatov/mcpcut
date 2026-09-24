@@ -33,8 +33,10 @@ describe('release.yml', () => {
     expect(RELEASE).not.toContain(text)
   })
 
-  test('every third-party action is pinned by a 40-character SHA', () => {
-    const uses = RELEASE.split('\n').filter((line) => /^\s*(- )?uses: /.test(line))
+  test.each(['release.yml', 'ci.yml'])('every third-party action in %s is pinned by a 40-character SHA', (name) => {
+    // ci.yml too: the release job runs it first, and a floating tag there
+    // could still tamper with the build a maintainer later approves.
+    const uses = workflow(name).split('\n').filter((line) => /^\s*(- )?uses: /.test(line))
     const thirdParty = uses.filter((line) => !line.includes('uses: ./'))
 
     expect(thirdParty.length).toBeGreaterThan(0)
