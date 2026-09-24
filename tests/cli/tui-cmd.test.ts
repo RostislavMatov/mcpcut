@@ -248,7 +248,9 @@ describe('runTui: the install config', () => {
       ...consoleOptions(fake, absentInstall),
       entry: 'explicit',
     })
-    await waitForScreen(fake, (screen) => screen.includes('Sign in'), 'the sign-in screen')
+    // The suite's home is a fresh temp dir, so the default data directory
+    // holds no admin: the console opens over it with the first-owner form.
+    await waitForScreen(fake, (screen) => screen.includes(FIRST_OWNER_TITLE), 'the first-owner form')
     fake.type('\x03')
 
     expect(await running).toBe(0)

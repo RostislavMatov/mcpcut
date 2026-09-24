@@ -673,6 +673,7 @@ describe('sink write ordering', () => {
         // start dispatching while this is stalling.
         req.pause()
         setTimeout(() => {
+          events.push('first-read-resumed')
           req.resume()
           req.on('data', () => undefined)
           req.on('end', () => {
@@ -706,9 +707,14 @@ describe('sink write ordering', () => {
 
     await waitUntil(() => events.includes('second-arrived'))
 
-    // The second POST only reached the server after the first's body was
-    // fully drained — never while it was still being withheld.
-    expect(events).toEqual(['first-arrived', 'first-body-drained', 'second-arrived'])
+    // The second POST never reached the server while the first's body was
+    // still being withheld. The sink's promise is "dispatched once the first
+    // body is handed to the socket" ('finish'), not "once the server read it":
+    // with Linux's multi-megabyte loopback buffers the server may still be
+    // draining the tail of the first body when the second arrives, so
+    // 'first-body-drained' is deliberately not part of the order.
+    expect(events.slice(0, 2)).toEqual(['first-arrived', 'first-read-resumed'])
+    expect(events.indexOf('second-arrived')).toBeGreaterThan(events.indexOf('first-read-resumed'))
     // The second write resolved even though the first is still in flight,
     // stuck on its still-open SSE response.
     await secondWrite
