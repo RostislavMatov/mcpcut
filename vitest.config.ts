@@ -1,6 +1,19 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { defineConfig } from 'vitest/config'
 
 const COVERAGE_THRESHOLD_PERCENT = 80
+
+/**
+ * A fresh home for every run. The default data directory is built from
+ * `homedir()`, and a console opened without a `journalDir` seam reads — and
+ * creates — `~/.mcpcut/data`: on the developer's machine that was the owner's
+ * real install (a sign-in screen, green), on a clean CI runner an empty one
+ * (the first-owner screen, red). Guarded by `tests/architecture/test-home.test.ts`.
+ */
+const TEST_HOME = mkdtempSync(join(tmpdir(), 'mcpcut-test-home-'))
+process.on('exit', () => rmSync(TEST_HOME, { recursive: true, force: true }))
 
 export default defineConfig({
   test: {
@@ -14,6 +27,7 @@ export default defineConfig({
      * env seam here reads as "not set".
      */
     env: {
+      HOME: TEST_HOME,
       MCPCUT_CONFIG: '/nonexistent/mcpcut-test/config.json',
       MCPCUT_DATA_DIR: '',
     },

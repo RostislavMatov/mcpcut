@@ -19,7 +19,7 @@ import { createJournalSink } from '../../src/journal/sink.js'
 import { TUI_NOT_A_TTY } from '../../src/cli/tui-constants.js'
 import { plainStyle } from '../../src/tui/ansi.js'
 import { WIZARD_TITLE_FIRST_RUN } from '../../src/tui/constants.js'
-import { WELCOME_TITLE } from '../../src/tui/constants-live.js'
+import { FIRST_OWNER_TITLE, WELCOME_TITLE } from '../../src/tui/constants-live.js'
 import { createClientHarness } from '../proxy/harness.js'
 import { createFakeTerminal, waitForScreen } from '../tui/support/fake-terminal.js'
 
@@ -664,13 +664,15 @@ describe('dispatch: a bare invocation', () => {
         isTty: true,
         env: {},
         install,
+        journalDir: join(tempDir, 'data'),
         terminal: fake.terminal,
         style: plainStyle,
         processEvents: new EventEmitter(),
         escapeCodeTimeoutMs: 10,
       },
     })
-    await waitForScreen(fake, (screen) => screen.includes('Sign in'), 'the sign-in screen')
+    // A fresh data dir holds no admin: the console opens with the first-owner form.
+    await waitForScreen(fake, (screen) => screen.includes(FIRST_OWNER_TITLE), 'the first-owner form')
     fake.type('\x03')
 
     expect(await running).toBe(0)
