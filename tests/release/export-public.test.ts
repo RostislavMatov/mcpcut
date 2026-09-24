@@ -246,6 +246,23 @@ describe.skipIf(!hasFilterRepo)('export-public.mjs: the filtered history', () =>
   )
 
   test(
+    'a replacement rule that matches nothing in the exported history stops the export, named but not quoted',
+    async () => {
+      // A misspelled name: the filter would leave the real one in place.
+      const from = source({ 'replace-text.txt': 'SECRET-HOME==>HOME\nSECERT-HOME==>HOME\n' })
+      const to = target()
+
+      const result = await runExport(from, [to])
+
+      expect(result.code).toBe(1)
+      expect(result.stderr).toMatch(/replace-text\.txt:2 matches nothing/)
+      expect(result.stderr).not.toContain('SECERT')
+      expect(git(to, ['rev-list', '--all']).length).toBe(0)
+    },
+    EXPORT_TIMEOUT_MS,
+  )
+
+  test(
     'a missing rules file is named, and nothing is filtered',
     async () => {
       const from = source()
@@ -277,3 +294,13 @@ describe.skipIf(!existsSync(join(PROJECT_ROOT, RULES_DIR, 'paths.txt')))('the ru
     expect(new Set(canonical)).toEqual(new Set(['96149587+RostislavMatov@users.noreply.github.com']))
   })
 })
+
+describe('export-public.mjs: arguments', () => {
+  test('--branch followed by another flag is refused, not taken for a branch name', async () => {
+    const result = await runExport(PROJECT_ROOT, [tmpdir(), '--branch', '--allow-rewrite'])
+
+    expect(result.code).toBe(1)
+    expect(result.stderr).toMatch(/^error: --branch needs a name/m)
+  })
+})
+

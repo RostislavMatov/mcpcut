@@ -13,7 +13,7 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative, isAbsolute } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { canonicalEmailsOf, gitIn, hasFilterRepo, historyFindings, matchersOf } from './export-checks.mjs'
+import { canonicalEmailsOf, deadRules, gitIn, hasFilterRepo, historyFindings, matchersOf } from './export-checks.mjs'
 
 const RULES_DIR = '.claude/release/filter'
 
@@ -38,11 +38,9 @@ function parseArgs(argv) {
   const [target, ...rest] = argv
   if (!target || target.startsWith('-')) fail('usage: export-public.mjs <public clone> [--allow-rewrite] [--branch <name>]')
   const branchAt = rest.indexOf('--branch')
-  return {
-    target,
-    allowRewrite: rest.includes('--allow-rewrite'),
-    branch: branchAt === -1 ? DEFAULT_BRANCH : (rest[branchAt + 1] ?? fail('--branch needs a name')),
-  }
+  const branch = branchAt === -1 ? DEFAULT_BRANCH : rest[branchAt + 1]
+  if (branch === undefined || branch.startsWith('-')) fail('--branch needs a name')
+  return { target, allowRewrite: rest.includes('--allow-rewrite'), branch }
 }
 
 /** A git query whose "not there" is an exit code, not an error. */
@@ -144,6 +142,10 @@ function checkFastForward({ targetRoot, hasOrigin }, head, allowRewrite) {
 
 function exportTo(args) {
   const context = preflight(args.target)
+  const dead = deadRules(context.sourceRoot, args.branch, context.rules)
+  if (dead.length > 0) {
+    fail(`${dead.join(', ')} matches nothing in the history being exported — a typo would leave the real string in place; fix or delete the rule`)
+  }
   const work = mkdtempSync(join(tmpdir(), 'mcpcut-export-'))
   try {
     const repo = join(work, 'repo')
