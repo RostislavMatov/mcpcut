@@ -13,7 +13,7 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative, isAbsolute } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { canonicalEmailsOf, deadRules, gitIn, hasFilterRepo, historyFindings, matchersOf } from './export-checks.mjs'
+import { deadRules, gitIn, hasFilterRepo, historyFindings, rulesFromTexts } from './export-checks.mjs'
 
 const RULES_DIR = '.claude/release/filter'
 
@@ -62,7 +62,7 @@ function isInside(child, parent) {
 }
 
 function readRules(sourceRoot) {
-  const text = Object.fromEntries(
+  const texts = Object.fromEntries(
     RULE_FILES.map((name) => {
       try {
         return [name, readFileSync(join(sourceRoot, RULES_DIR, name), 'utf8')]
@@ -71,13 +71,7 @@ function readRules(sourceRoot) {
       }
     }),
   )
-  return {
-    paths: matchersOf(text['paths.txt'], 'paths.txt', { hasArrow: false, hasComments: true }),
-    text: matchersOf(text['replace-text.txt'], 'replace-text.txt', { hasArrow: true, hasComments: false }),
-    message: matchersOf(text['replace-message.txt'], 'replace-message.txt', { hasArrow: true, hasComments: false }),
-    forbidden: matchersOf(text['forbidden.txt'], 'forbidden.txt', { hasArrow: false, hasComments: true }),
-    canonicalEmails: canonicalEmailsOf(text['mailmap']),
-  }
+  return rulesFromTexts(texts)
 }
 
 /** Checks 1–3 of the plan: all of them before anything is cloned, filtered or moved. */
@@ -155,6 +149,9 @@ function exportTo(args) {
     if (filteredClone(context.sourceRoot, args.branch, join(work, 'again')) !== head) {
       fail('filter is not deterministic — the public history could not grow by fast-forward')
     }
+    // Only `main` crosses into the public clone: tags and notes of the filtered
+    // clone never do, which is why the checks walk commits and not tag objects.
+    // Widen this fetch and the checks have to widen with it.
     gitIn(context.targetRoot, ['fetch', '-q', repo, DEFAULT_BRANCH])
     checkFastForward(context, head, args.allowRewrite)
     gitIn(context.targetRoot, ['checkout', '-q', '-B', DEFAULT_BRANCH, head])
