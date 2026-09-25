@@ -6,7 +6,7 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.1.0] — 2026-09-24
+## [0.1.0] — 2026-09-25
 
 First public release, under the Apache License 2.0; published to npm as
 `mcpcut@0.1.0`. The first list sums up what the release contains; the entries

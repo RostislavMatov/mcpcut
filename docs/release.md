@@ -43,8 +43,9 @@ repository, the rest in the public clone.
 ## 0.1.0, the first version
 
 npm cannot bind a trusted publisher to a package that does not exist yet, so
-0.1.0 was published by hand from the tag `v0.1.0`, with a fresh clone and a
-two-hour `npm login` session:
+0.1.0 was published by hand from the tag `v0.1.0`, with a fresh clone, an npm
+account with two-factor authentication turned on (without it the registry
+answers `403`), and a two-hour `npm login` session:
 
 ```
 npm ci
@@ -53,9 +54,16 @@ npm login
 npm publish
 ```
 
+The rehearsal must print no `npm warn publish` line. `npm publish` (not
+`npm pack`) "auto-corrects" the manifest it uploads: the first attempt at 0.1.0
+had `"bin": { "mcpcut": "./dist/cli.js" }`, and npm dropped the whole `bin` as an
+invalid script name — the package would have installed no `mcpcut` command.
+`No bin file found at dist/cli.js` is harmless: npm reads the manifest before
+`prepack` builds `dist/`.
+
 `prepublishOnly` (`tools/release/check-release.mjs`) refuses a real publish
-from a tree with uncommitted changes or a `HEAD` that is not tagged
-`v<version>`. The workflow's "Already on npm?" step skips a version that is
+from a tree with uncommitted changes, a `HEAD` that is not tagged
+`v<version>`, or a missing or `./`-prefixed `bin`. The workflow's "Already on npm?" step skips a version that is
 already published, so the tag push after a hand-published version is a CI run
 and nothing more.
 

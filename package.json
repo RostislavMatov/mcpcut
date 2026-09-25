@@ -26,7 +26,7 @@
   },
   "type": "module",
   "bin": {
-    "mcpcut": "./dist/cli.js"
+    "mcpcut": "dist/cli.js"
   },
   "files": [
     "dist/**/*.js",

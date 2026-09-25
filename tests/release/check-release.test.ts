@@ -20,10 +20,31 @@ const SPAWN_TIMEOUT_MS = 20_000
 const LEAKY_ENV: readonly string[] = ['GITHUB_REF_TYPE', 'GITHUB_REF_NAME', 'npm_config_dry_run']
 
 describe('releaseProblems', () => {
-  const base = { version: '0.1.0', isClean: true, tagsAtHead: ['v0.1.0'], ciTag: undefined }
+  const base = {
+    version: '0.1.0',
+    isClean: true,
+    tagsAtHead: ['v0.1.0'],
+    ciTag: undefined,
+    bin: { mcpcut: 'dist/cli.js' },
+  }
 
   test('a clean tree tagged with the version is fine', () => {
     expect(releaseProblems(base)).toEqual([])
+  })
+
+  test('a bin path written ./… is one finding: npm 11 publish drops such a bin', () => {
+    const problems = releaseProblems({ ...base, bin: { mcpcut: './dist/cli.js' } })
+
+    expect(problems).toHaveLength(1)
+    expect(problems[0]).toContain('bin.mcpcut')
+    expect(problems[0]).toContain('./dist/cli.js')
+  })
+
+  test('a missing bin is one finding: the package would install no command', () => {
+    const problems = releaseProblems({ ...base, bin: undefined })
+
+    expect(problems).toHaveLength(1)
+    expect(problems[0]).toContain('bin')
   })
 
   test('a dirty tree is one finding', () => {
@@ -79,10 +100,10 @@ function git(cwd: string, args: readonly string[]): void {
   execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args], { cwd, stdio: 'ignore' })
 }
 
-function committedRepo(): string {
+function committedRepo(bin: Record<string, string> = { x: 'dist/cli.js' }): string {
   const dir = mkdtempSync(join(tmpdir(), 'mcpcut-guard-'))
   git(dir, ['init', '-q', '-b', 'main'])
-  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'x', version: '0.1.0' }))
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'x', version: '0.1.0', bin }))
   git(dir, ['add', '.'])
   git(dir, ['commit', '-q', '-m', 'init'])
   return dir
@@ -95,8 +116,8 @@ describe('check-release.mjs as npm runs it', () => {
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
   })
 
-  function repo(): string {
-    const dir = committedRepo()
+  function repo(bin?: Record<string, string>): string {
+    const dir = committedRepo(bin)
     dirs.push(dir)
     return dir
   }
@@ -112,6 +133,20 @@ describe('check-release.mjs as npm runs it', () => {
       expect(result.code).toBe(1)
       expect(result.stderr).toMatch(/^error: .*uncommitted/m)
       expect(result.stderr).toMatch(/^error: HEAD is not tagged v0\.1\.0/m)
+    },
+    SPAWN_TIMEOUT_MS,
+  )
+
+  test(
+    'a clean, tagged tree with a ./-prefixed bin still stops the publish',
+    async () => {
+      const dir = repo({ x: './dist/cli.js' })
+      git(dir, ['tag', '-a', 'v0.1.0', '-m', 'mcpcut 0.1.0'])
+
+      const result = await runGuard(dir)
+
+      expect(result.code).toBe(1)
+      expect(result.stderr).toMatch(/^error: bin\.x is "\.\/dist\/cli\.js"/m)
     },
     SPAWN_TIMEOUT_MS,
   )
