@@ -2,10 +2,11 @@
 // Export the private history to the public clone (ADR-0011, decision D1; plan
 // R5, R8, R14). A fresh clone of the private `main` goes through
 // `git filter-repo` with the rules in `.claude/release/filter/` — excluded
-// paths, text and message replacements, a mailmap — then through the R14
-// checks, then through the same filter a second time to prove it lands on the
-// same commit. Only then does `main` of the public clone move, and only
-// forward unless `--allow-rewrite` is given. Nothing is pushed.
+// paths, text and message replacements, English texts for messages written in
+// Russian, a mailmap — then through the R14 checks, then through the same
+// filter a second time to prove it lands on the same commit. Only then does
+// `main` of the public clone move, and only forward unless `--allow-rewrite`
+// is given. Nothing is pushed.
 //
 // Usage (from the root of the private repository, with a clean tree):
 //   node tools/release/export-public.mjs <public clone> [--allow-rewrite] [--branch <name>]
@@ -13,11 +14,45 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative, isAbsolute } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { deadRules, gitIn, hasFilterRepo, historyFindings, rulesFromTexts } from './export-checks.mjs'
+import {
+  TRANSLATIONS_FILE,
+  deadRules,
+  deadTranslations,
+  gitIn,
+  hasFilterRepo,
+  historyFindings,
+  rulesFromTexts,
+  translationsFromText,
+} from './export-checks.mjs'
 
 const RULES_DIR = '.claude/release/filter'
 
-const RULE_FILES = ['paths.txt', 'replace-text.txt', 'replace-message.txt', 'forbidden.txt', 'mailmap']
+const RULE_FILES = ['paths.txt', 'replace-text.txt', 'replace-message.txt', 'forbidden.txt', 'mailmap', TRANSLATIONS_FILE]
+
+/**
+ * filter-repo's --commit-callback body: the English text of
+ * translate-message.json replaces the message of the commit it names, and the
+ * commit ids that text cites are renamed the way filter-repo renames them in
+ * every other message (its own renaming ran before this callback). filter-repo
+ * hands the callback its metadata as a second argument whose name it keeps to
+ * itself, so the body finds it by what it holds, and stops the filter rather
+ * than publish a stale id if it is not there. The file is read once per run.
+ */
+function translationCallback(file) {
+  return [
+    'import json, re',
+    "table = globals().get('mcpcut_translations')",
+    'if table is None:',
+    `  with open(${JSON.stringify(file)}, encoding='utf-8') as source:`,
+    "    table = globals()['mcpcut_translations'] = json.load(source)",
+    "english = table.get((commit.original_id or b'').decode('ascii'))",
+    'if english is not None:',
+    "  found = [v for v in list(locals().values()) if isinstance(v, dict) and 'commit_rename_func' in v]",
+    '  if not found:',
+    "    raise SystemExit('export: git filter-repo gave --commit-callback no commit_rename_func')",
+    "  commit.message = re.sub(br'(\\b[0-9a-f]{7,40}\\b)', found[0]['commit_rename_func'], english.encode('utf-8'))",
+  ].join('\n')
+}
 
 /** The only remotes the public clone may have: the export must never fill someone else's repository. */
 const PUBLIC_REMOTES = new Set([
@@ -71,7 +106,11 @@ function readRules(sourceRoot) {
       }
     }),
   )
-  return rulesFromTexts(texts)
+  try {
+    return { ...rulesFromTexts(texts), translations: translationsFromText(texts[TRANSLATIONS_FILE]) }
+  } catch (error) {
+    return fail(error.message)
+  }
 }
 
 /** Checks 1–3 of the plan: all of them before anything is cloned, filtered or moved. */
@@ -107,6 +146,7 @@ function filteredClone(sourceRoot, branch, into) {
     '--replace-text', join(rules, 'replace-text.txt'),
     '--replace-message', join(rules, 'replace-message.txt'),
     '--mailmap', join(rules, 'mailmap'),
+    '--commit-callback', translationCallback(join(rules, TRANSLATIONS_FILE)),
   ])
   if (branch !== DEFAULT_BRANCH) gitIn(into, ['branch', '-q', '-M', branch, DEFAULT_BRANCH])
   return gitIn(into, ['rev-parse', DEFAULT_BRANCH]).trim()
@@ -130,7 +170,7 @@ function checkFastForward({ targetRoot, hasOrigin }, head, allowRewrite) {
   )
   const rewritten = published.filter((ref) => ref !== undefined && !isAncestor(targetRoot, ref, head))
   if (rewritten.length > 0 && !allowRewrite) {
-    fail('the published history would be rewritten — a filter rule now touches published commits (--allow-rewrite only while the repository is private)')
+    fail('the published history would be rewritten — a filter rule now touches published commits (--allow-rewrite only on the maintainer\'s explicit decision: every existing clone has to be made again)')
   }
 }
 
@@ -139,6 +179,10 @@ function exportTo(args) {
   const dead = deadRules(context.sourceRoot, args.branch, context.rules)
   if (dead.length > 0) {
     fail(`${dead.join(', ')} matches nothing in the history being exported — a typo would leave the real string in place; fix or delete the rule`)
+  }
+  const ghosts = deadTranslations(context.sourceRoot, context.rules.translations)
+  if (ghosts.length > 0) {
+    fail(`${TRANSLATIONS_FILE}: ${ghosts.join(', ')} ${ghosts.length === 1 ? 'is not a commit' : 'are not commits'} of the source — fix or delete the entry`)
   }
   const work = mkdtempSync(join(tmpdir(), 'mcpcut-export-'))
   try {

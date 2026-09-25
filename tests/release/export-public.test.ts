@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
+import { translationsFromText } from '../../tools/release/export-checks.mjs'
 
 /**
  * Plan R5, R8, R14 (ADR-0011, decision D1): the public repository carries the
@@ -31,6 +32,7 @@ const RULES: Readonly<Record<string, string>> = {
   'replace-message.txt': 'AcmeCorp==>an outreach company\n',
   'forbidden.txt': '# nothing below may survive the filter\nregex:corp\\.example\n',
   mailmap: `Public Name <${PUBLIC_EMAIL}> <${PRIVATE_EMAIL}>\n`,
+  'translate-message.json': '{}\n',
 }
 
 interface ChildResult {
@@ -263,6 +265,76 @@ describe.skipIf(!hasFilterRepo)('export-public.mjs: the filtered history', () =>
   )
 
   test(
+    'a message in Cyrillic letters without an English text stops the export, named by both ids, never quoted',
+    async () => {
+      const from = source()
+      commit(from, { 'd.txt': 'd\n' }, 'docs: заметки о выпуске')
+      const to = target()
+
+      const result = await runExport(from, [to])
+
+      expect(result.code).toBe(1)
+      expect(result.stderr).toMatch(/message of commit [0-9a-f]{7,} \(source [0-9a-f]{7,}\) is in Cyrillic letters/)
+      expect(result.stderr).not.toMatch(/[Ѐ-ӿ]/)
+      expect(git(to, ['rev-list', '--all']).length).toBe(0)
+    },
+    EXPORT_TIMEOUT_MS,
+  )
+
+  test(
+    'an English text replaces the message, and a commit id it cites becomes the public one',
+    async () => {
+      const from = source()
+      const firstPrivate = git(from, ['rev-list', '--max-parents=0', 'main']).slice(0, 7)
+      commit(from, { 'd.txt': 'd\n' }, `docs: заметки к ${firstPrivate}`)
+      const russian = git(from, ['rev-parse', 'HEAD'])
+      const english = `docs: notes on ${firstPrivate}\n\nThe body stays a body.\n`
+      commit(from, rulesFiles({ 'translate-message.json': JSON.stringify({ [russian]: english }) }), 'docs: an English text')
+      const to = target()
+
+      const result = await runExport(from, [to])
+
+      expect(result.stderr).toBe('')
+      expect(result.code).toBe(0)
+      const firstPublic = git(to, ['rev-list', '--max-parents=0', 'main']).slice(0, 7)
+      expect(firstPublic).not.toBe(firstPrivate)
+      expect(git(to, ['log', '-1', '--format=%B', 'main'])).toBe(`docs: notes on ${firstPublic}\n\nThe body stays a body.`)
+    },
+    EXPORT_TIMEOUT_MS,
+  )
+
+  test(
+    'an English text for a commit the source does not have stops the export, named by id',
+    async () => {
+      const ghost = 'f'.repeat(40)
+      const from = source({ 'translate-message.json': JSON.stringify({ [ghost]: 'docs: ghost\n' }) })
+      const to = target()
+
+      const result = await runExport(from, [to])
+
+      expect(result.code).toBe(1)
+      expect(result.stderr).toMatch(new RegExp(`translate-message\\.json: ${ghost} is not a commit of the source`))
+      expect(git(to, ['rev-list', '--all']).length).toBe(0)
+    },
+    EXPORT_TIMEOUT_MS,
+  )
+
+  test(
+    'a missing translate-message.json is named like any other rules file',
+    async () => {
+      const from = source()
+      git(from, ['rm', '-q', `${RULES_DIR}/translate-message.json`])
+      git(from, ['commit', '-q', '-m', 'drop translations'])
+
+      const result = await runExport(from, [target()])
+
+      expect(result.code).toBe(1)
+      expect(result.stderr).toMatch(/missing rules file .*translate-message\.json/)
+    },
+    EXPORT_TIMEOUT_MS,
+  )
+
+  test(
     'a missing rules file is named, and nothing is filtered',
     async () => {
       const from = source()
@@ -292,6 +364,12 @@ describe.skipIf(!existsSync(join(PROJECT_ROOT, RULES_DIR, 'paths.txt')))('the ru
       .map((line) => /<([^>]+)>/.exec(line)?.[1])
 
     expect(new Set(canonical)).toEqual(new Set(['96149587+RostislavMatov@users.noreply.github.com']))
+  })
+
+  test('give every translated commit an English message the export can read', () => {
+    const text = readFileSync(join(PROJECT_ROOT, RULES_DIR, 'translate-message.json'), 'utf8')
+
+    expect(() => translationsFromText(text)).not.toThrow()
   })
 })
 

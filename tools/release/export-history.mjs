@@ -72,9 +72,9 @@ export function* blobContents(repo, ids) {
   }
 }
 
-/** Commit messages; `-z` ends each record with NUL, which a message cannot contain. */
+/** Full commit ids and messages; `-z` ends each record with NUL, which a message cannot contain. */
 export function messagesOf(repo, revs) {
-  return gitIn(repo, ['log', '-z', '--format=%h%n%B', ...revs])
+  return gitIn(repo, ['log', '-z', '--format=%H%n%B', ...revs])
     .split(NUL)
     .filter((record) => record !== '')
     .map((record) => {

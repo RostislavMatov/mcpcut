@@ -27,8 +27,8 @@
 
 ## Commits and pull requests
 
-- Conventional commits: `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`.
-  Security fixes use `fix(security):`.
+- Conventional commits, in English: `feat:`, `fix:`, `docs:`, `test:`,
+  `refactor:`, `chore:`. Security fixes use `fix(security):`.
 - Security-sensitive changes (auth, vault, policy evaluation, journal, HTTP
   fronts) get a security-focused review before merge. Browser-facing changes
   are smoke-tested in a real browser — the admin UI works without JavaScript,

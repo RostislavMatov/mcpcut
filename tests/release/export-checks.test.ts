@@ -3,7 +3,13 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
-import { deadRules, historyFindings, rulesFromTexts } from '../../tools/release/export-checks.mjs'
+import {
+  deadRules,
+  deadTranslations,
+  historyFindings,
+  rulesFromTexts,
+  translationsFromText,
+} from '../../tools/release/export-checks.mjs'
 
 /**
  * The R14 checks on their own, over plain repositories — no `filter-repo`
@@ -136,6 +142,48 @@ describe('historyFindings: paths git would quote, and merges', () => {
 
     expect(historyFindings(root, rulesOf({ paths: '.claude/\n', forbidden: 'LEAK\n' }))).toEqual([])
   })
+
+  test('a message in Cyrillic letters is found, named by commit and never quoted', () => {
+    // The public history is English: a Russian message reaches the public
+    // repository only if nobody gave it an English text.
+    const root = repo()
+    commit(root, { 'a.txt': 'a\n' }, 'feat: english')
+    const russian = commit(root, { 'b.txt': 'b\n' }, 'docs: заметки о выпуске')
+
+    const findings = historyFindings(root, rulesOf({}))
+
+    expect(findings).toEqual([expect.stringMatching(new RegExp(`^message of commit ${russian} is in Cyrillic letters`))])
+    expect(findings.join('\n')).not.toMatch(/[Ѐ-ӿ]/)
+  })
+})
+
+describe('translationsFromText: the English messages that replace Russian ones', () => {
+  const ID = 'a'.repeat(40)
+
+  test('reads commit ids to messages', () => {
+    const table = translationsFromText(JSON.stringify({ [ID]: 'fix: english\n' }))
+
+    expect(table.get(ID)).toBe('fix: english\n')
+    expect(table.size).toBe(1)
+  })
+
+  test('an empty object is an empty table', () => {
+    expect(translationsFromText('{}\n').size).toBe(0)
+  })
+
+  test.each([
+    ['not JSON', '{', /not valid JSON/],
+    ['an array', '[]', /must be a JSON object/],
+    ['a short id', JSON.stringify({ abc1234: 'fix: x\n' }), /abc1234 is not a full commit id/],
+    ['an upper-case id', JSON.stringify({ ['A'.repeat(40)]: 'fix: x\n' }), /is not a full commit id/],
+    ['an empty message', JSON.stringify({ [ID]: '' }), /empty/],
+    ['a message that is not a string', JSON.stringify({ [ID]: 1 }), /not a string/],
+    ['a message without the final newline', JSON.stringify({ [ID]: 'fix: x' }), /newline/],
+    ['a message still in Cyrillic letters', JSON.stringify({ [ID]: 'fix: заметки\n' }), /Cyrillic/],
+  ])('refuses %s, naming the file', (_name, text, reason) => {
+    expect(() => translationsFromText(text)).toThrow(reason)
+    expect(() => translationsFromText(text)).toThrow(/translate-message\.json/)
+  })
 })
 
 describe('deadRules: a replacement that replaces nothing is a typo or a leftover', () => {
@@ -169,5 +217,39 @@ describe('deadRules: a replacement that replaces nothing is a typo or a leftover
     })
 
     expect(deadRules(source(), 'main', rules)).toEqual(['replace-text.txt:1', 'replace-text.txt:2', 'replace-message.txt:1'])
+  })
+})
+
+describe('deadTranslations: an English message must belong to a commit of the source', () => {
+  const dirs: string[] = []
+
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+  })
+
+  function source(): string {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'mcpcut-dead-tr-')))
+    dirs.push(dir)
+    git(dir, ['init', '-q', '-b', 'main'])
+    commit(dir, { 'a.txt': 'a\n' }, 'docs: заметки')
+    return dir
+  }
+
+  test('an entry for a commit of the source is alive; a typo and a blob id are dead', () => {
+    const root = source()
+    const commitId = git(root, ['rev-parse', 'HEAD'])
+    const blobId = git(root, ['rev-parse', 'HEAD:a.txt'])
+    const typo = `${commitId.slice(0, 39)}${commitId.endsWith('0') ? '1' : '0'}`
+    const table = new Map([
+      [commitId, 'docs: notes\n'],
+      [typo, 'docs: notes\n'],
+      [blobId, 'docs: notes\n'],
+    ])
+
+    expect(deadTranslations(root, table)).toEqual([typo, blobId])
+  })
+
+  test('no entries, nothing dead', () => {
+    expect(deadTranslations(source(), new Map())).toEqual([])
   })
 })
