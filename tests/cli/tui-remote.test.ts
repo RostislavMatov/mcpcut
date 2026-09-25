@@ -2,14 +2,26 @@ import { EventEmitter } from 'node:events'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { runRemoteTui } from '../../src/cli/tui-remote.js'
+import { defaultReopen } from '../../src/cli/tui-wizard.js'
 import type { UiCliIo } from '../../src/cli/ui-constants.js'
 import { readSavedRemote, savedRemotePathFor, writeSavedRemote } from '../../src/tui/remote/saved.js'
 import { parseRemoteUrl } from '../../src/tui/remote/url.js'
 import type { FetchLike } from '../../src/tui/remote/client.js'
 import { plainStyle } from '../../src/tui/ansi.js'
 import { createFakeTerminal, waitForScreen, type FakeTerminal } from '../tui/support/fake-terminal.js'
+
+/**
+ * `defaultReopen` spawns this build with the terminal inherited — under vitest
+ * that is `node src/cli.js`, which does not exist, and the child printed
+ * `Cannot find module` straight into the test log. What it does with a child is
+ * `tui-wizard.test.ts`'s job (with a fake spawn); here only the wiring matters.
+ */
+vi.mock('../../src/cli/tui-wizard.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/cli/tui-wizard.js')>()),
+  defaultReopen: vi.fn(async () => 0),
+}))
 
 /**
  * `mcpcut --remote <url>` (ADR-0014, plan wave 2 task 4): opening the SAME
@@ -290,18 +302,17 @@ describe('runRemoteTui: disconnect', () => {
     expect(reopened).toEqual(['--connect', 'http://127.0.0.1:8091'])
   })
 
-  test('the default reopen is a real spawn seam: without one this still resolves with an exit code, never hangs', async () => {
+  test('without a reopen seam the console reopens through defaultReopen, on its own stderr, and exits with its code', async () => {
     const io = fakeIo()
     const fake = createFakeTerminal()
     const good = parseRemoteUrl('http://127.0.0.1:8091')
+    vi.mocked(defaultReopen).mockClear().mockResolvedValueOnce(7)
 
     const running = runRemoteTui(good, io, {}, { ...remoteConsoleOpts(fake, stateOnlyFetch()), home })
     await waitForScreen(fake, (screen) => screen.includes('Sign in'), 'the sign-in screen')
     fake.type('\x04')
 
-    // No real `mcpcut` binary at `DEFAULT_CLI_PATH` in the test environment,
-    // so the default spawn fails and resolves EXIT_INTERRUPTED — the point of
-    // this test is only that it settles, with the file already forgotten.
-    await expect(running).resolves.toEqual(expect.any(Number))
+    expect(await running).toBe(7)
+    expect(vi.mocked(defaultReopen).mock.calls).toEqual([[['--connect', 'http://127.0.0.1:8091'], io.stderr]])
   })
 })
