@@ -1,27 +1,21 @@
 import type { AgentRecord } from '../agents/schema.js'
-import type { PoolMemberDiscipline } from '../pool/handshake.js'
-import { residentKeyOf, type DesiredResidents, type ResidentPair } from '../pool/residents.js'
+import type { DesiredResidents, ResidentPair } from '../pool/residents.js'
 import type { StdioServerRecord } from '../registry/schema.js'
 import type { SessionEndReason } from '../session/core.js'
 import type { ResolveVaultRefsResult } from '../vault/resolve.js'
 import type { ServeWritable } from './serve-constants.js'
-import { createHeldSession, type HeldAttachment, type HeldSession } from './serve-held.js'
+import { createHeldSession, type HeldSession } from './serve-held.js'
+import { acquireWith, type AcquireOps, type AcquireResult } from './serve-residents-acquire.js'
 import { applyDesiredTo, type DesiredOps } from './serve-residents-desired.js'
 import {
   backoffDelayMs,
   bare,
-  busy,
   idleWarmOf,
   isStale,
   jobOf,
-  newEntry,
   recordHashOf,
-  refusalOfStart,
   startableAgent,
-  vaultRefusal,
-  within,
   type Entry,
-  type Lifetime,
 } from './serve-residents-entry.js'
 import { createResidentStarter, type ProcessSlot, type ResidentStarterDeps, type StartResult } from './serve-residents-start.js'
 
@@ -31,8 +25,8 @@ import { createResidentStarter, type ProcessSlot, type ResidentStarterDeps, type
  * per (agent, stdio server) pair (`serve-held.ts`); this file decides every
  * transition of it — start, attach, release, restart after a pause, retire,
  * evict — and the start queue (`serve-residents-start.ts`) only their order.
- * `acquire` gives a pool session an attachment, `busy` (another pool session
- * of the same agent holds it), or a refusal with a reason (BU3).
+ * The steps of `acquire` live in `serve-residents-acquire.ts`, those of a
+ * reconcile in `serve-residents-desired.ts`; both run on this file's state.
  *
  * Budget (RS7): every live or starting process counts in `processCount`, and
  * the count drops SYNCHRONOUSLY when the supervisor decides to close. An
@@ -41,16 +35,7 @@ import { createResidentStarter, type ProcessSlot, type ResidentStarterDeps, type
  * acquired but not resident is warm: kept `idleMs` after its last release.
  */
 
-export type AcquireResult =
-  | {
-      readonly status: 'attached'
-      readonly attachment: HeldAttachment
-      readonly discipline: PoolMemberDiscipline
-      readonly lifetime: Lifetime
-      readonly knownSecrets: readonly string[]
-    }
-  | { readonly status: 'busy' }
-  | { readonly status: 'refused'; readonly reason: string }
+export type { AcquireResult }
 
 export interface ResidentSupervisorDeps {
   readonly openStart: ResidentStarterDeps['openStart']
@@ -87,9 +72,6 @@ export interface ResidentSupervisor {
   /** Closes everything, and waits for it. */
   closeAll(): Promise<void>
 }
-
-/** Steps one acquire may take before it gives up: a never-settling fingerprint cannot loop. */
-const MAX_ACQUIRE_STEPS = 8
 
 export function createResidentSupervisor(deps: ResidentSupervisorDeps): ResidentSupervisor {
   const entries = new Map<string, Entry>()
@@ -307,59 +289,21 @@ export function createResidentSupervisor(deps: ResidentSupervisorDeps): Resident
     retryLater(entry, reason ?? 'closed')
   }
 
-  async function attachReady(entry: Entry, record: StdioServerRecord): Promise<AcquireResult | 'again'> {
-    const values = await deps.resolveDeclared(record)
-    if (values.status !== 'resolved') return { status: 'refused', reason: vaultRefusal(values) }
-    const current = entries.get(entry.key)
-    if (current !== entry || current.state !== 'ready') return 'again'
-    if (deps.fingerprintOf(record, values.values) !== current.fingerprint || isStale(current)) {
-      // RS4: a rotated secret or an edited record. Close first, THEN start:
-      // two of one command line never run at once (BU4).
-      start({ ...current, record }, true, shutDown(current))
-      return 'again'
-    }
-    const held = current.held
-    const attachment = held?.attach() ?? null
-    if (held === undefined || attachment === null) return 'again'
-    clearTimer(current.key)
-    put({ ...busy(current), state: 'attached' })
-    return {
-      status: 'attached',
-      attachment,
-      discipline: held.info.discipline,
-      lifetime: current.lifetime,
-      knownSecrets: current.knownSecrets ?? [],
-    }
+  const acquireOps: AcquireOps = {
+    get: (key) => entries.get(key),
+    put,
+    start,
+    shutDown,
+    clearTimer,
+    prioritize: (key) => starter.prioritize(key),
+    isSealed: () => isSealed,
+    now: deps.now,
+    resolveDeclared: deps.resolveDeclared,
+    fingerprintOf: deps.fingerprintOf,
   }
 
-  async function acquire(pair: ResidentPair, record: StdioServerRecord, deadline: number): Promise<AcquireResult> {
-    const key = residentKeyOf(pair)
-    for (let step = 0; step < MAX_ACQUIRE_STEPS; step += 1) {
-      if (isSealed) return { status: 'refused', reason: 'pool-full' }
-      const known = entries.get(key)
-      const entry =
-        known === undefined
-          ? start(newEntry(key, pair, record, 'warm'), true)
-          : recordHashOf(known.record) === recordHashOf(record)
-            ? known
-            : put({ ...known, record })
-      if (entry.state === 'attached') return { status: 'busy' }
-      if (entry.state === 'failed') return { status: 'refused', reason: 'start-failed' }
-      if (entry.state === 'backoff') {
-        start(entry, true)
-        continue
-      }
-      if (entry.state === 'starting') {
-        starter.prioritize(key)
-        const result = await within(entry.startPromise, deadline - deps.now())
-        if (result === null) return { status: 'refused', reason: 'start-timeout' }
-        if (!result.ok) return { status: 'refused', reason: refusalOfStart(result.reason) }
-        continue
-      }
-      const attached = await attachReady(entry, record)
-      if (attached !== 'again') return attached
-    }
-    return { status: 'refused', reason: 'start-failed' }
+  function acquire(pair: ResidentPair, record: StdioServerRecord, deadline: number): Promise<AcquireResult> {
+    return acquireWith(acquireOps, pair, record, deadline)
   }
 
   const ops: DesiredOps = {
