@@ -61,6 +61,20 @@ function routedFetch(
 }
 
 /** The seams a test opens a remote console on: a fake terminal, no real signals. */
+const SAVED_FILE_SETTLE_MS = 2_000
+const SAVED_FILE_POLL_MS = 10
+
+/** Polls the saved-address file until it is gone or the budget runs out; returns what it last read. */
+async function savedRemoteOnceSettled(path: string): Promise<Awaited<ReturnType<typeof readSavedRemote>>> {
+  const deadline = Date.now() + SAVED_FILE_SETTLE_MS
+  let last = await readSavedRemote(path)
+  while (last.kind !== 'absent' && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, SAVED_FILE_POLL_MS))
+    last = await readSavedRemote(path)
+  }
+  return last
+}
+
 function remoteConsoleOpts(fake: FakeTerminal, fetchImpl: FetchLike) {
   return {
     terminal: fake.terminal,
@@ -249,7 +263,10 @@ describe('runRemoteTui: disconnect', () => {
 
     expect(await running).toBe(0)
     expect(reopened).toEqual(['--connect', 'http://127.0.0.1:8091'])
-    expect(await readSavedRemote(path)).toEqual({ kind: 'absent' })
+    // The runtime forgets the address fire-and-forget (src/tui/runtime.ts:
+    // handing the terminal back must not wait on the unlink), so the file may
+    // still be there the instant the console returns — wait for it to go.
+    expect(await savedRemoteOnceSettled(path)).toEqual({ kind: 'absent' })
   })
 
   test('an absent saved file is not an error: it still reopens', async () => {
