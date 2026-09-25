@@ -3,6 +3,7 @@ import { JOURNAL_DIR } from '../config.js'
 import { loadPolicy, type LoadPolicyOptions, type PolicyLoadResult } from '../policy/load.js'
 import type { PolicyProvider } from '../policy/reload.js'
 import { resolvePolicySource } from '../policy/source.js'
+import { autoServerName } from '../proxy/wire-policy.js'
 import { runWrap, type RunWrapOptions } from '../proxy/wrap.js'
 import { preflightDatabases } from '../store/preflight.js'
 import { createReloadingPolicy } from './policy-reload.js'
@@ -84,6 +85,13 @@ export async function runWrapCommand(
   const policyOutcome = await resolvePolicy(flags, io, opts.loadPolicy ?? {})
   if (policyOutcome.exitCode !== undefined) {
     return policyOutcome.exitCode
+  }
+
+  if (flags.server === undefined) {
+    // The hash is the key of this server's rules and approved tools, so it
+    // stays; the line only says what the approval queue will show (owner
+    // decision 2026-09-25, first-minute friction).
+    io.stderr.write(`wrap: server name is ${autoServerName(childCommand, childArgs)}; pass --server <name> for a readable one\n`)
   }
 
   return runWrap(childCommand, childArgs, {

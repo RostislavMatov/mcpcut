@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { runWrapCommand } from '../../src/cli/wrap-cmd.js'
+import { autoServerName } from '../../src/proxy/wire-policy.js'
 import { writeCorruptDatabase, writeUnopenableDatabase } from '../support/corrupt-db.js'
 
 /**
@@ -77,5 +78,40 @@ describe('runWrapCommand: startup integrity preflight', () => {
 
     expect(exitCode).toBe(0)
     expect(io.err()).not.toContain('integrity_check')
+  })
+})
+
+describe('runWrapCommand: the auto: server name', () => {
+  const child = [process.execPath, '-e', 'process.exit(0)'] as const
+
+  test('without --server it says, once, which name the queue and the journal will show and how to pick one', async () => {
+    const io = fakeIo()
+
+    const exitCode = await runWrapCommand(['--no-policy', '--', ...child], io, { runWrap: { dir: journalDir } })
+
+    const name = autoServerName(child[0], child.slice(1))
+    expect(exitCode).toBe(0)
+    expect(io.err()).toContain(`wrap: server name is ${name}; pass --server <name> for a readable one\n`)
+    expect(io.err().split(name)).toHaveLength(2)
+  })
+
+  test('with --server there is nothing to say', async () => {
+    const io = fakeIo()
+
+    const exitCode = await runWrapCommand(['--no-policy', '--server', 'memory', '--', ...child], io, {
+      runWrap: { dir: journalDir },
+    })
+
+    expect(exitCode).toBe(0)
+    expect(io.err()).not.toContain('auto:')
+  })
+
+  test('a wrap refused before it runs does not name a server it never started', async () => {
+    await writeCorruptDatabase(join(journalDir, 'state.db'))
+    const io = fakeIo()
+
+    await runWrapCommand(['--no-policy', '--', ...child], io, { runWrap: { dir: journalDir } })
+
+    expect(io.err()).not.toContain('auto:')
   })
 })
