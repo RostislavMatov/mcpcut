@@ -72,6 +72,16 @@ from a tree with uncommitted changes, a `HEAD` that is not tagged
 already published, so the tag push after a hand-published version is a CI run
 and nothing more.
 
+## The one rewrite of the public history
+
+On 2026-09-26 the public history was rewritten once, by the maintainer's
+decision: the commit messages written in Russian got English texts
+(`translate-message.json`), no file changed, and the tags `v0.1.0` and
+`v0.1.1` moved to the rewritten commits. The history as first published stays
+reachable at `refs/archive/pre-english-history`, because npm's provenance for
+0.1.1 names a commit of it (`f4f2af5`). Every export since then is a
+fast-forward again; `--allow-rewrite` is not for routine use.
+
 ## If the workflow cannot publish
 
 The fallback is the 0.1.0 procedure above, run by the maintainer from the tag.
