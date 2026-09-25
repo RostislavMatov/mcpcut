@@ -102,8 +102,10 @@ publisher настроен (G5: `release.yml`, только stage, «2FA + disal
 отчёт фазы — в рабочем репозитории.
 
 Хвосты фазы 6:
-- **Выпуск через OIDC + stage не проверен сквозь.** Первая настоящая проверка — 0.1.1: тег → CI → версия в
-  Staged Packages → одобрение владельцем 2FA → provenance на npmjs.com (`docs/release.md`).
+- ~~**Выпуск через OIDC + stage не проверен сквозь.**~~ — **проверен 2026-09-25 выпуском 0.1.1**: тег → CI →
+  `npm stage publish` через OIDC (provenance SLSA v1 в Sigstore) → одобрение владельцем 2FA на npmjs.com →
+  `npm audit signatures` подтверждает аттестацию `mcpcut`. Одобрять удобнее на сайте (Staged Packages): `npm stage`
+  есть только с npm 11.15.
 - **Windows** (`npx.cmd`, shim'ы): `engines` ОС не ограничивает, смок и CI — только Linux и macOS.
 - **Синхронизация PR из публичного репозитория** в приватный рабочий: выгрузка односторонняя
   (`tools/release/export-public.mjs`, публичный `main` растёт только fast-forward). Первый внешний PR
