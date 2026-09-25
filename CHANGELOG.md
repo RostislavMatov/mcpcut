@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `mcpcut --version` (and `-v`) prints `mcpcut <version>` — until now it answered
+  `Unknown command`. It works over a broken install config, like `--help`.
+
+### Fixed
+
+- The build leaves `dist/cli.js` executable, so an `npm link` of a source checkout
+  keeps working after a rebuild (a registry install was never affected).
+
 ## [0.1.0] — 2026-09-25
 
 First public release, under the Apache License 2.0; published to npm as
