@@ -304,6 +304,28 @@ describe.skipIf(!hasFilterRepo)('export-public.mjs: the filtered history', () =>
   )
 
   test(
+    'an English text citing a later commit stops the export: that id has no public counterpart',
+    async () => {
+      const from = source()
+      commit(from, { 'd.txt': 'd\n' }, 'docs: заметки')
+      const russian = git(from, ['rev-parse', 'HEAD'])
+      commit(from, { 'e.txt': 'e\n' }, 'feat: later')
+      const later = git(from, ['rev-parse', 'HEAD']).slice(0, 7)
+      const english = `docs: notes, followed up in ${later}\n`
+      commit(from, rulesFiles({ 'translate-message.json': JSON.stringify({ [russian]: english }) }), 'docs: an English text')
+      const to = target()
+
+      const result = await runExport(from, [to])
+
+      expect(result.code).toBe(1)
+      expect(result.stderr).toMatch(/message of commit [0-9a-f]{7,} \(source [0-9a-f]{7,}\) cites 1 commit id of the source/)
+      expect(result.stderr).not.toContain(later)
+      expect(git(to, ['rev-list', '--all']).length).toBe(0)
+    },
+    EXPORT_TIMEOUT_MS,
+  )
+
+  test(
     'an English text for a commit the source does not have stops the export, named by id',
     async () => {
       const ghost = 'f'.repeat(40)

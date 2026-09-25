@@ -15,6 +15,12 @@ const PROJECT_ROOT = process.cwd()
 
 const GUIDE_DIR = 'docs/guide'
 
+const GUIDE_PAGES: readonly string[] = existsSync(join(PROJECT_ROOT, GUIDE_DIR))
+  ? readdirSync(join(PROJECT_ROOT, GUIDE_DIR))
+      .filter((name) => name.endsWith('.md'))
+      .map((name) => `${GUIDE_DIR}/${name}`)
+  : []
+
 const CHECKED_FILES: readonly string[] = [
   'README.md',
   'SECURITY.md',
@@ -23,23 +29,29 @@ const CHECKED_FILES: readonly string[] = [
   'docs/ARCHITECTURE.md',
   'docs/release.md',
   'docs/deploy/README.md',
-  ...readdirSync(join(PROJECT_ROOT, GUIDE_DIR))
-    .filter((name) => name.endsWith('.md'))
-    .map((name) => `${GUIDE_DIR}/${name}`),
+  ...GUIDE_PAGES,
 ]
 
-const HEADING = /^#{1,6} (.*?)\s*#*\s*$/
+/** An ATX heading; CommonMark allows up to three spaces before the `#`. */
+const HEADING = /^ {0,3}#{1,6} (.*?)\s*#*\s*$/
 
 const LINK = /\]\(([^)\s]+)\)/g
 
-const FENCE = '```'
+/** A code fence: three or more backticks or tildes, possibly indented inside a list. */
+const FENCE = /^\s*(`{3,}|~{3,})/
 
-/** A link with a scheme (`https:`, `mailto:`) leaves the repository; this test does not follow it. */
-const EXTERNAL = /^[a-z]+:/
+/** A link with a scheme (`https:`, `mailto:`) or a protocol-relative one leaves the repository; this test does not follow it. */
+const EXTERNAL = /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i
 
 interface Line {
   readonly number: number
   readonly text: string
+}
+
+interface FenceScan {
+  /** The fence that opened the code block the scan is in, if it is in one. */
+  readonly open: string | undefined
+  readonly prose: readonly Line[]
 }
 
 /** GitHub's anchor for a heading: lower case, punctuation dropped (hyphens and underscores kept), spaces to hyphens. */
@@ -50,13 +62,25 @@ function anchorOf(heading: string): string {
     .replaceAll(' ', '-')
 }
 
+/** Whether `line` closes a block opened by `open`: the same character, at least as many, nothing after. */
+function closes(open: string, line: string): boolean {
+  const fence = FENCE.exec(line)?.[1]
+  return fence !== undefined && fence[0] === open[0] && fence.length >= open.length && line.trim() === fence
+}
+
 /** Lines outside fenced code: a `# comment` inside a code block is not a heading, a `](x)` there is not a link. */
 function proseLines(text: string): readonly Line[] {
-  const lines = text.split('\n')
-  const fenceAt = lines.map((line) => line.startsWith(FENCE))
-  return lines
-    .map((line, index) => ({ number: index + 1, text: line }))
-    .filter((_line, index) => !fenceAt[index] && fenceAt.slice(0, index).filter(Boolean).length % 2 === 0)
+  const scan = text.split('\n').reduce<FenceScan>(
+    (state, line, index) => {
+      if (state.open !== undefined) return closes(state.open, line) ? { ...state, open: undefined } : state
+      const opening = FENCE.exec(line)?.[1]
+      return opening === undefined
+        ? { ...state, prose: [...state.prose, { number: index + 1, text: line }] }
+        : { ...state, open: opening }
+    },
+    { open: undefined, prose: [] },
+  )
+  return scan.prose
 }
 
 /** Every anchor a file offers; a repeated heading gets `-1`, `-2` … as GitHub numbers it. */
@@ -78,7 +102,9 @@ function brokenLinks(root: string, file: string): readonly string[] {
     [...text.matchAll(LINK)].flatMap(([, target = '']) => {
       if (EXTERNAL.test(target)) return []
       const [path = '', fragment = ''] = target.split('#')
-      const destination = path === '' ? source : resolve(dirname(source), path)
+      // A leading `/` is GitHub's repository root, not the filesystem's.
+      const fromRoot = path.startsWith('/') ? resolve(root, `.${path}`) : resolve(dirname(source), path)
+      const destination = path === '' ? source : fromRoot
       if (!existsSync(destination)) return [`${file}:${number}: no file ${target}`]
       if (fragment === '' || !destination.endsWith('.md')) return []
       return anchorsOf(destination).has(fragment) ? [] : [`${file}:${number}: no anchor ${target}`]
@@ -107,23 +133,35 @@ describe('brokenLinks: the check itself', () => {
   test('names a missing file and a missing anchor, and ignores headings and links inside code', () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'mcpcut-links-')))
     dirs.push(root)
-    writeFileSync(join(root, 'other.md'), '# Other\n\n## Kept\n\n```\n## Not a heading\n```\n')
+    writeFileSync(join(root, 'other.md'), '# Other\n\n## Kept\n\n   ## Indented\n\n```\n## Not a heading\n```\n')
     writeFileSync(
       join(root, 'page.md'),
       [
         '# Page',
-        '[ok](other.md#kept) [ok](#page) [out](https://example.com/x#y)',
+        '[ok](other.md#kept) [ok](#page) [out](https://example.com/x#y) [root](/other.md#indented) [proto](//example.com/z)',
         '[gone](missing.md) [renamed](other.md#not-a-heading) [dup](#page-1)',
         '```',
         '[inside code](missing-too.md)',
         '```',
+        '~~~',
+        '[inside tildes](missing-three.md)',
+        '~~~',
+        '````markdown',
+        '```',
+        '[inside a four-backtick fence](missing-four.md)',
+        '```',
+        '````',
+        '[after the fences](missing-five.md)',
       ].join('\n'),
     )
 
+    // The last line proves the fences closed where they should: a fence
+    // miscounted would hide every link after it.
     expect(brokenLinks(root, 'page.md')).toEqual([
       'page.md:3: no file missing.md',
       'page.md:3: no anchor other.md#not-a-heading',
       'page.md:3: no anchor #page-1',
+      'page.md:15: no file missing-five.md',
     ])
   })
 })

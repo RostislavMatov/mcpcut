@@ -22,6 +22,7 @@ import {
   hasFilterRepo,
   historyFindings,
   rulesFromTexts,
+  sourceIdFindings,
   translationsFromText,
 } from './export-checks.mjs'
 
@@ -29,14 +30,21 @@ const RULES_DIR = '.claude/release/filter'
 
 const RULE_FILES = ['paths.txt', 'replace-text.txt', 'replace-message.txt', 'forbidden.txt', 'mailmap', TRANSLATIONS_FILE]
 
+/** A line a filter callback prints to stderr before stopping the filter; the export reports it as its own error. */
+const CALLBACK_ERROR = 'export: '
+
 /**
  * filter-repo's --commit-callback body: the English text of
  * translate-message.json replaces the message of the commit it names, and the
  * commit ids that text cites are renamed the way filter-repo renames them in
- * every other message (its own renaming ran before this callback). filter-repo
- * hands the callback its metadata as a second argument whose name it keeps to
- * itself, so the body finds it by what it holds, and stops the filter rather
- * than publish a stale id if it is not there. The file is read once per run.
+ * every other message (its own renaming ran before this callback). An id it
+ * has not rewritten yet — a later commit, one the filter drops — stays as
+ * written, and check (f) (sourceIdFindings) then stops the export; one whose
+ * short prefix filter-repo knows but cannot resolve trips its own assertion,
+ * which the body turns into a CALLBACK_ERROR line. filter-repo hands the
+ * callback its metadata as a second argument whose name it keeps to itself,
+ * so the body finds it by what it holds, and stops the filter rather than
+ * publish a stale id if it is not there. The file is read once per run.
  */
 function translationCallback(file) {
   return [
@@ -49,9 +57,23 @@ function translationCallback(file) {
     'if english is not None:',
     "  found = [v for v in list(locals().values()) if isinstance(v, dict) and 'commit_rename_func' in v]",
     '  if not found:',
-    "    raise SystemExit('export: git filter-repo gave --commit-callback no commit_rename_func')",
-    "  commit.message = re.sub(br'(\\b[0-9a-f]{7,40}\\b)', found[0]['commit_rename_func'], english.encode('utf-8'))",
+    `    raise SystemExit('${CALLBACK_ERROR}git filter-repo gave --commit-callback no commit_rename_func')`,
+    '  try:',
+    "    commit.message = re.sub(br'(\\b[0-9a-f]{7,40}\\b)', found[0]['commit_rename_func'], english.encode('utf-8'))",
+    '  except AssertionError:',
+    `    raise SystemExit('${CALLBACK_ERROR}the English text of source commit ' + commit.original_id.decode('ascii')[:7] + ' cites a commit id git filter-repo cannot rename')`,
   ].join('\n')
+}
+
+/** Runs the filter; a callback's own refusal becomes the export's error instead of a git command line. */
+function runFilter(into, args) {
+  try {
+    gitIn(into, ['filter-repo', ...args])
+  } catch (error) {
+    const reason = String(error.stderr ?? '').split('\n').find((line) => line.startsWith(CALLBACK_ERROR))
+    if (reason !== undefined) fail(reason.slice(CALLBACK_ERROR.length))
+    throw error
+  }
 }
 
 /** The only remotes the public clone may have: the export must never fill someone else's repository. */
@@ -140,8 +162,8 @@ function preflight(target) {
 function filteredClone(sourceRoot, branch, into) {
   const rules = join(sourceRoot, RULES_DIR)
   gitIn(tmpdir(), ['clone', '-q', '--no-local', '--single-branch', '--branch', branch, sourceRoot, into])
-  gitIn(into, [
-    'filter-repo', '--quiet', '--invert-paths',
+  runFilter(into, [
+    '--quiet', '--invert-paths',
     '--paths-from-file', join(rules, 'paths.txt'),
     '--replace-text', join(rules, 'replace-text.txt'),
     '--replace-message', join(rules, 'replace-message.txt'),
@@ -188,7 +210,7 @@ function exportTo(args) {
   try {
     const repo = join(work, 'repo')
     const head = filteredClone(context.sourceRoot, args.branch, repo)
-    const findings = historyFindings(repo, context.rules)
+    const findings = [...historyFindings(repo, context.rules), ...sourceIdFindings(repo, context.sourceRoot)]
     if (findings.length > 0) fail(`the filtered history is not clean:\n  ${findings.join('\n  ')}`)
     if (filteredClone(context.sourceRoot, args.branch, join(work, 'again')) !== head) {
       fail('filter is not deterministic — the public history could not grow by fast-forward')

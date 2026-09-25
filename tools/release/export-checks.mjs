@@ -23,6 +23,9 @@ const CYRILLIC = /[Ѐ-ӿ]/
 
 const FULL_COMMIT_ID = /^[0-9a-f]{40}$/
 
+/** A word of 7–40 hex digits: what git and filter-repo take for a commit id in a message. */
+const HEX_WORD = /\b[0-9a-f]{7,40}\b/g
+
 const SHORT_ID_LENGTH = 7
 
 /** A finding lists at most this many paths of one blob, then says how many more. */
@@ -130,8 +133,9 @@ function sourceIdsOf(repo) {
   let text
   try {
     text = readFileSync(join(repo, '.git', 'filter-repo', 'commit-map'), 'utf8')
-  } catch {
-    return new Map()
+  } catch (error) {
+    if (error.code === 'ENOENT') return new Map()
+    throw error
   }
   return new Map(
     text
@@ -154,11 +158,43 @@ function languageFindings(repo) {
   const sources = sourceIdsOf(repo)
   return messagesOf(repo, ['--all'])
     .filter(({ message }) => CYRILLIC.test(message))
-    .map(({ commit }) => {
-      const source = sources.get(commit)
-      const origin = source === undefined ? '' : ` (source ${source})`
-      return `message of commit ${commit.slice(0, SHORT_ID_LENGTH)}${origin} is in Cyrillic letters — give it an English text in ${TRANSLATIONS_FILE}`
-    })
+    .map(({ commit }) => `message of commit ${named(commit, sources)} is in Cyrillic letters — give it an English text in ${TRANSLATIONS_FILE}`)
+}
+
+/** A filtered commit as a finding names it: its short id, and the source commit it came from when known. */
+function named(commit, sources) {
+  const source = sources.get(commit)
+  return `${commit.slice(0, SHORT_ID_LENGTH)}${source === undefined ? '' : ` (source ${source})`}`
+}
+
+/** The words among `words` that name a commit of `repo`; replace refs are not followed. */
+function commitIdsAmong(repo, words) {
+  if (words.length === 0) return new Set()
+  const types = gitIn(repo, ['--no-replace-objects', 'cat-file', '--batch-check=%(objecttype)'], `${words.join('\n')}\n`)
+    .toString('utf8')
+    .split('\n')
+  return new Set(words.filter((_word, index) => types[index] === 'commit'))
+}
+
+/**
+ * (f) Every commit id a message cites exists in the history it is published
+ * in. filter-repo renames only the ids of commits it has already rewritten:
+ * an English text citing a later commit, or any message citing a commit the
+ * filter drops, keeps the private id — dangling, and from the private
+ * history. The finding counts such ids and never quotes one. Needs the
+ * source, so the caller runs it beside historyFindings.
+ */
+export function sourceIdFindings(repo, sourceRepo) {
+  const messages = messagesOf(repo, ['--all'])
+  const words = [...new Set(messages.flatMap(({ message }) => message.match(HEX_WORD) ?? []))]
+  const published = commitIdsAmong(repo, words)
+  const foreign = new Set([...commitIdsAmong(sourceRepo, words)].filter((word) => !published.has(word)))
+  const sources = sourceIdsOf(repo)
+  return messages.flatMap(({ commit, message }) => {
+    const cited = new Set((message.match(HEX_WORD) ?? []).filter((word) => foreign.has(word))).size
+    if (cited === 0) return []
+    return [`message of commit ${named(commit, sources)} cites ${cited} commit id${cited === 1 ? '' : 's'} of the source with no public counterpart`]
+  })
 }
 
 /** The canonical addresses of a mailmap: the first `<…>` of every line. */
@@ -231,11 +267,8 @@ export function translationsFromText(text) {
  */
 export function deadTranslations(sourceRepo, translations) {
   const ids = [...translations.keys()]
-  if (ids.length === 0) return []
-  const types = gitIn(sourceRepo, ['cat-file', '--batch-check=%(objecttype)'], `${ids.join('\n')}\n`)
-    .toString('utf8')
-    .split('\n')
-  return ids.filter((_id, index) => types[index] !== 'commit')
+  const commits = commitIdsAmong(sourceRepo, ids)
+  return ids.filter((id) => !commits.has(id))
 }
 
 /**

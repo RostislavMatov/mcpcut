@@ -8,6 +8,7 @@ import {
   deadTranslations,
   historyFindings,
   rulesFromTexts,
+  sourceIdFindings,
   translationsFromText,
 } from '../../tools/release/export-checks.mjs'
 
@@ -217,6 +218,48 @@ describe('deadRules: a replacement that replaces nothing is a typo or a leftover
     })
 
     expect(deadRules(source(), 'main', rules)).toEqual(['replace-text.txt:1', 'replace-text.txt:2', 'replace-message.txt:1'])
+  })
+})
+
+describe('sourceIdFindings: a commit id a message cites must exist in the history it is published in', () => {
+  const dirs: string[] = []
+
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+  })
+
+  function repo(): string {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'mcpcut-ids-')))
+    dirs.push(dir)
+    git(dir, ['init', '-q', '-b', 'main'])
+    return dir
+  }
+
+  test('a source id with no counterpart is found, named by commit and never quoted', () => {
+    // filter-repo renames only the ids of commits it has already rewritten:
+    // an id of a later commit, or of one the filter drops, stays the private
+    // one — a dangling id from the private history in the public one.
+    const source = repo()
+    const privateId = commit(source, { 'a.txt': 'a\n' }, 'feat: first')
+    const published = repo()
+    const own = commit(published, { 'b.txt': 'b\n' }, 'feat: own')
+    commit(published, { 'c.txt': 'c\n' }, `fix: follow-up to ${own}; bump deadbeef`)
+    const citing = commit(published, { 'd.txt': 'd\n' }, `docs: see ${privateId}`)
+
+    const findings = sourceIdFindings(published, source)
+
+    expect(findings).toEqual([expect.stringMatching(new RegExp(`^message of commit ${citing} cites 1 commit id of the source`))])
+    expect(findings.join('\n')).not.toContain(privateId)
+  })
+
+  test('messages that cite nothing, or only their own history, have no findings', () => {
+    const source = repo()
+    commit(source, { 'a.txt': 'a\n' }, 'feat: first')
+    const published = repo()
+    const own = commit(published, { 'b.txt': 'b\n' }, 'feat: own')
+    commit(published, { 'c.txt': 'c\n' }, `fix: follow-up to ${own}`)
+
+    expect(sourceIdFindings(published, source)).toEqual([])
   })
 })
 
