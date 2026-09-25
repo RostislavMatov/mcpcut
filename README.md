@@ -10,11 +10,11 @@ See every tool call your AI agent makes over MCP, hold the risky ones for your a
 
 Requires **Node.js 24+** (`node -v`); on older Node, mcpcut prints one line and exits — install Node 24 with nvm, fnm or volta. Nothing else to install.
 
-**See.** Put mcpcut in front of a server — here for Claude Code; in any other client, the server's command becomes `npx -y mcpcut@0.1.0 wrap -- <your server>`:
+**See.** Put mcpcut in front of a server — here for Claude Code; in any other client, the server's command becomes `npx -y mcpcut@0.1.1 wrap -- <your server>`:
 
-    claude mcp add fs -- npx -y mcpcut@0.1.0 wrap -- npx -y @modelcontextprotocol/server-filesystem ~/project
+    claude mcp add fs -- npx -y mcpcut@0.1.1 wrap -- npx -y @modelcontextprotocol/server-filesystem ~/project
 
-The first start downloads mcpcut and the server; if your client gives up on it, start it once more. Let the agent work, then `npx -y mcpcut@0.1.0 sessions` and `npx -y mcpcut@0.1.0 show <id>`: every request, response and decision, secrets redacted.
+The first start downloads mcpcut and the server; if your client gives up on it, start it once more. Let the agent work, then `npx -y mcpcut@0.1.1 sessions` and `npx -y mcpcut@0.1.1 show <id>`: every request, response and decision, secrets redacted.
 
 **Stop.** Save this as `policy.json` — reads pass, everything else waits for you (quarantine of new tools is off, so the first minute shows one gate: see [Quarantine](#quarantine)) — and re-add the server with `--policy "$PWD/policy.json"` right after `wrap` (`claude mcp remove fs` first):
 
@@ -23,15 +23,15 @@ The first start downloads mcpcut and the server; if your client gives up on it, 
 
 A write now waits. Mint your approver token once, and approve from another terminal within the agent's wait (60 s; after it, the agent's retry passes):
 
-    npx -y mcpcut@0.1.0 admin add me --role owner    # prints your token, once
+    npx -y mcpcut@0.1.1 admin add me --role owner    # prints your token, once
     export MCP_ADMIN_TOKEN=<that token>
-    npx -y mcpcut@0.1.0 approvals list
-    npx -y mcpcut@0.1.0 approvals approve <id>
+    npx -y mcpcut@0.1.1 approvals list
+    npx -y mcpcut@0.1.1 approvals approve <id>
 
 **Prove.** Sign the history, export it, and check it offline — with nothing but the directory:
 
-    npx -y mcpcut@0.1.0 keygen && npx -y mcpcut@0.1.0 export --report --out ./report
-    npx -y mcpcut@0.1.0 verify --report ./report
+    npx -y mcpcut@0.1.1 keygen && npx -y mcpcut@0.1.1 export --report --out ./report
+    npx -y mcpcut@0.1.1 verify --report ./report
 
 Record the chain head somewhere this host cannot rewrite — [the out-of-band anchor](#the-out-of-band-anchor) is what makes the journal tamper-evident, not the hashes alone.
 
@@ -62,7 +62,7 @@ other text about the project may claim more than it does.
 | `connect --url` bridge for agents on another machine | shipped, **[preview](#what-preview-means-here)** | `docs/smoke-connect-bridge.md`, `docs/smoke-agent-pool.md` |
 | remote console (`--remote`, `--connect`) | shipped, **[preview](#what-preview-means-here)** | `docs/smoke-remote-console.md`, `docs/adr/0014-remote-console.md` |
 | ready-made client config at `agent create` | shipped | `docs/smoke-agent-config.md`, `docs/smoke-agent-pool.md` |
-| npm package (`npm i -g mcpcut`, `npx mcpcut@0.1.0`) | shipped, 0.1.0 | `tests/release/*`, `docs/release.md`, `docs/smoke-npm-package.md` |
+| npm package (`npm i -g mcpcut`, `npx mcpcut@0.1.1`) | shipped, 0.1.0 | `tests/release/*`, `docs/release.md`, `docs/smoke-npm-package.md` |
 | whole-product security audit | passed 2026-09-02, **internal** | `docs/security-audit-2026-09.md` — 0 CRITICAL, 4 HIGH fixed in the same wave; no independent pass has been done (ADR-0011), reports via `SECURITY.md` |
 
 The journal is a persistent, append-oriented, secret-redacted SQLite database
@@ -105,7 +105,7 @@ Install it there rather than run it through `npx`: `Services ▸ start` (and
 and npx's cache is not a place a service should live in.
 
 On an agent's machine nothing is installed: the block `agent create` prints
-runs the bridge as `npx -y mcpcut@0.1.0 connect --url …`, pinned to the
+runs the bridge as `npx -y mcpcut@0.1.1 connect --url …`, pinned to the
 service's own version — never `@latest`, because that process holds the
 agent's token (see `SECURITY.md`, "Versions and the supply chain").
 
@@ -1123,7 +1123,7 @@ Client config — paste into the agent's client (the token is inside):
       "command": "npx",
       "args": [
         "-y",
-        "mcpcut@0.1.0",
+        "mcpcut@0.1.1",
         "connect",
         "--url",
         "https://plane.example:8090"
@@ -1494,7 +1494,7 @@ an HTTP agent.
       "command": "npx",
       "args": [
         "-y",
-        "mcpcut@0.1.0",
+        "mcpcut@0.1.1",
         "connect",
         "--url",
         "https://plane.example:8090"
@@ -2184,7 +2184,7 @@ block, ready to paste — see [Onboarding an agent](#onboarding-an-agent). What
 follows is for wrapping a server of your own, outside the registry.
 
 Wrap a real server by replacing its `command`/`args` with
-`npx -y mcpcut@0.1.0 wrap --` (or `mcpcut wrap --`, once installed) followed by
+`npx -y mcpcut@0.1.1 wrap --` (or `mcpcut wrap --`, once installed) followed by
 the original command:
 
 ```json
@@ -2192,7 +2192,7 @@ the original command:
   "mcpServers": {
     "some-server": {
       "command": "npx",
-      "args": ["-y", "mcpcut@0.1.0", "wrap", "--", "npx", "-y", "@some/mcp-server"]
+      "args": ["-y", "mcpcut@0.1.1", "wrap", "--", "npx", "-y", "@some/mcp-server"]
     }
   }
 }
