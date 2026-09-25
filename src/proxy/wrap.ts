@@ -12,6 +12,7 @@ import {
   type JournalFailureController,
 } from './journal-failure.js'
 import { logTapError, wireRelay, type RelayArgs } from './relay.js'
+import { buildWrapServerEnv } from './server-env.js'
 import {
   DEFAULT_FORWARDED_SIGNALS,
   installSignalForwarding,
@@ -149,7 +150,8 @@ export async function runWrap(
   const journalFailure = createJournalFailureController({ diagnostics, killEscalationMs })
   const sink = createJournalSink(sessionId, sinkOptionsOf(opts, isFailClosed, journalFailure))
 
-  const handle = spawnServer(command, args, opts.cwd !== undefined ? { cwd: opts.cwd } : {})
+  const env = buildWrapServerEnv(process.env)
+  const handle = spawnServer(command, args, opts.cwd !== undefined ? { cwd: opts.cwd, env } : { env })
   const signalHandle = installSignalForwarding(handle, DEFAULT_FORWARDED_SIGNALS, { killEscalationMs })
   const shutdown = createShutdownController(handle, { diagnostics, killEscalationMs })
   const wiring = wireRelay({

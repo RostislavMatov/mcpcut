@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { ulid } from 'ulid'
 import { runWrap } from '../../src/proxy/wrap.js'
 import { collectPersistedBytes } from '../support/persisted-bytes.js'
@@ -14,6 +14,7 @@ import {
 } from './harness.js'
 
 const STDERR_SETTLE_MS = 100
+const ENV_ECHO_SERVER_PATH = join(import.meta.dirname, '../fixtures/env-echo-server.mjs')
 
 describe('runWrap', () => {
   let journalDir: string
@@ -139,5 +140,31 @@ describe('runWrap', () => {
         stderr: harness.clientStderr,
       }),
     ).rejects.toThrow(/this-binary-should-not-exist-xyz-123/)
+  })
+
+  test('the child gets the shell environment minus npm_config_package, so a nested npx still works', async () => {
+    // `npx -p <pkg> mcpcut wrap -- npx -y <server>` leaves npm_config_package
+    // behind; the nested npx then runs the server's NAME as a command. Every
+    // other npm_config_* (a private registry, say) is the operator's own.
+    vi.stubEnv('npm_config_package', 'mcpcut@0.1.1')
+    vi.stubEnv('npm_config_registry', 'https://registry.example.test/')
+    const harness = createClientHarness()
+
+    try {
+      const exitCode = await runWrap('node', [ENV_ECHO_SERVER_PATH], {
+        dir: journalDir,
+        stdin: harness.clientOutbox,
+        stdout: harness.clientStdout,
+        stderr: harness.clientStderr,
+      })
+      const childEnv = JSON.parse(Buffer.concat(harness.clientInboxChunks).toString('utf8')) as Record<string, string>
+
+      expect(exitCode).toBe(0)
+      expect(childEnv).not.toHaveProperty('npm_config_package')
+      expect(childEnv.npm_config_registry).toBe('https://registry.example.test/')
+      expect(childEnv.PATH).toBe(process.env.PATH)
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 })

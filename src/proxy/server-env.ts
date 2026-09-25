@@ -65,3 +65,22 @@ function pickAllowlisted(
   }
   return picked
 }
+
+/**
+ * Variables an ad-hoc `wrap` child must NOT inherit. `npx -p <pkg> mcpcut
+ * wrap -- npx -y <server>` leaves `npm_config_package` set, and a nested
+ * `npx` then runs the server's name as a command. Only that one: the rest of
+ * `npm_config_*` (a private registry, a proxy) is the operator's own setting.
+ */
+const WRAP_ENV_DENYLIST: ReadonlySet<string> = new Set(['npm_config_package'])
+
+/**
+ * The ad-hoc `wrap` child's environment: the operator's shell as-is (the
+ * server was going to run there anyway), minus `WRAP_ENV_DENYLIST`.
+ */
+export function buildWrapServerEnv(processEnv: NodeJS.ProcessEnv): Readonly<Record<string, string>> {
+  const kept = Object.entries(processEnv).filter(
+    (entry): entry is [string, string] => entry[1] !== undefined && !WRAP_ENV_DENYLIST.has(entry[0]),
+  )
+  return Object.freeze(Object.fromEntries(kept))
+}
