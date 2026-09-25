@@ -43,9 +43,15 @@ const disconnectAction: ActionSpec = {
   hint: 'forget this service and connect to another',
 }
 
-/** The part of Home's intro that holds on every install, whoever supervises it. */
+/**
+ * The part of Home's intro that holds on every install, whoever supervises it.
+ * The pool comes first (ADR-0015): `Agents ▸ config` prints the client block
+ * that reaches every server the agent is granted at one address; the two
+ * commands after it are the per-server and local-command ways in.
+ */
 const RUN_AN_AGENT_LINES: readonly string[] = [
   'Run an agent through the plane (outside this console):',
+  '  Agents ▸ config — client config for all its servers',
   `  ${CLI_NAME} connect <server> --agent <name>`,
   `  ${CLI_NAME} wrap --server <name> -- <command…>`,
   'MCP_AGENT_TOKEN goes in the agent’s own environment.',

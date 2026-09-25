@@ -199,9 +199,15 @@ describe('the Home section', () => {
 
   test('its intro tells the operator how to run an agent, outside the console', () => {
     expect(home?.intro[0]).toBe('Run an agent through the plane (outside this console):')
+    expect(home?.intro.join('\n')).toContain('Agents ▸ config')
     expect(home?.intro.join('\n')).toContain('connect <server> --agent <name>')
     expect(home?.intro.join('\n')).toContain('wrap --server <name>')
     expect(home?.intro.join('\n')).toContain('MCP_AGENT_TOKEN')
+  })
+
+  test('every intro line fits the 54-column pane beside the action column', () => {
+    const lines = [...(home?.intro ?? []), ...(home?.externalIntro ?? [])]
+    expect(lines.filter((line) => [...line].length > 54)).toEqual([])
   })
 
   test('under an external supervisor the intro stops advising Services ▸ start (Q32)', () => {
@@ -211,6 +217,7 @@ describe('the Home section', () => {
 
     expect(external?.intro).toEqual([
       'Run an agent through the plane (outside this console):',
+      '  Agents ▸ config — client config for all its servers',
       '  mcpcut connect <server> --agent <name>',
       '  mcpcut wrap --server <name> -- <command…>',
       'MCP_AGENT_TOKEN goes in the agent’s own environment.',
