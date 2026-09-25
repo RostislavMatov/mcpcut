@@ -54,7 +54,7 @@ describe('the product name (ADR-0013)', () => {
   test('the package is named mcpcut and ships exactly one bin, mcpcut', () => {
     const manifest: unknown = JSON.parse(readFileSync(join(PROJECT_ROOT, 'package.json'), 'utf8'))
 
-    expect(manifest).toMatchObject({ name: 'mcpcut', bin: { mcpcut: './dist/cli.js' } })
+    expect(manifest).toMatchObject({ name: 'mcpcut', bin: { mcpcut: 'dist/cli.js' } })
     expect(Object.keys((manifest as { bin: Record<string, string> }).bin)).toEqual(['mcpcut'])
   })
 
@@ -63,7 +63,7 @@ describe('the product name (ADR-0013)', () => {
     // above cannot see one; the scripted rename left exactly that behind.
     const text = readFileSync(join(PROJECT_ROOT, 'package.json'), 'utf8')
 
-    expect(text.match(/"mcpcut": "\.\/dist\/cli\.js"/g)).toHaveLength(1)
+    expect(text.match(/"mcpcut": "dist\/cli\.js"/g)).toHaveLength(1)
   })
 
   test('the project-level policy directory can never be the install directory', () => {

@@ -48,7 +48,10 @@ describe('package.json: what npm publishes', () => {
 
   test('the one entry point is the mcpcut bin; there is no importable main', () => {
     // `main` would make the internal dispatcher look like a library API.
-    expect(manifest['bin']).toEqual({ mcpcut: './dist/cli.js' })
+    // No `./` prefix: npm 11 `publish` (not `pack`) calls `./dist/cli.js` an
+    // invalid script name and silently drops the whole `bin` from the manifest
+    // it uploads — found at the first real `npm publish` of 0.1.0 (25.09).
+    expect(manifest['bin']).toEqual({ mcpcut: 'dist/cli.js' })
     expect('main' in manifest).toBe(false)
   })
 
