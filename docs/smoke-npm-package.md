@@ -1,4 +1,4 @@
-# Smoke: the npm package on a clean machine (PRD pool phase 6, before publication)
+# Smoke: the npm package on a clean machine (PRD pool phase 6, before and after publication)
 
 Date: 2026-09-24. Tarball `mcpcut-0.1.0.tgz` packed from the public export (`~/mcpcut-public`,
 `main` = `e3a1dca`): 497 files, 936 898 bytes, sha256 `fd28036aa6c4fab836414ea715dd1d53ffbf37385553f9e8357102f420165553`.
@@ -53,7 +53,40 @@ ports) equals the one before. Left: Docker's build cache of A6 (~0.5 GB) — rem
    (its other service kept answering); the reruns were capped at 1 CPU / 1 GB and polled every few
    minutes.
 
+4. **`npm publish` is not `npm pack`: the first real publish would have shipped no command.** The tarball
+   of section A was made with `npm pack`, which keeps `"bin": { "mcpcut": "./dist/cli.js" }`. The first
+   `npm publish` of 0.1.0 (2026-09-25, stopped by a `403` — the npm account had no two-factor
+   authentication yet) printed `"bin[mcpcut]" script name dist/cli.js was invalid and removed`: npm 11
+   `publish` drops a `./`-prefixed bin from the manifest it uploads. Fixed before the second attempt —
+   `bin` is `dist/cli.js`, the `prepublishOnly` guard refuses a missing or `./` bin, and
+   `docs/release.md` asks for a rehearsal without a single `npm warn publish` line. The published
+   manifest was then checked with `npm view` (below).
+5. **`npx mcpcut@<v>` inside a checkout of mcpcut itself runs whatever `mcpcut` is on `PATH`.** npx takes
+   the current project, whose `package.json` *is* `mcpcut@<v>`, for the installed package. Only people
+   working on mcpcut meet this; the smoke runs its client from an empty directory.
+
 ## B. After publication
 
-Not yet run: needs `mcpcut@0.1.0` on npm (gate G3). Plan Task 20: the real `npx -y mcpcut@0.1.0` from a
-cold cache, Claude Code headless on a Mac against a service behind TLS, `npm audit signatures`.
+Date: 2026-09-25. `mcpcut@0.1.0` published by the owner from the tag `v0.1.0` (`c3626fd`).
+
+**Stand.** The service on `<S2>` from the **registry** package (`npm i -g mcpcut@0.1.0` in
+`node:24-bookworm-slim`, `--cpus 1 --memory 1g`), `setup --yes --no-admin --serve-host 0.0.0.0
+--serve-public-url https://<S2-dashed>.sslip.io:8443`, a stdio server
+`@modelcontextprotocol/server-everything@2026.8.31` installed as a binary, agent `smoke-npx` granted it.
+Caddy 2 in front (the shape of `docs/deploy/caddy/`, Let's Encrypt HTTP-01 on :80, HTTPS on :8443).
+The client: Claude Code 2.1.282 headless on a Mac, run from an empty directory, with an empty npm cache
+and an empty global prefix passed through the block's `env` (Claude Code hands a stdio server only a
+base environment plus the block's own `env`), so `mcpcut` could only come from the registry.
+
+| # | Step | Expected | Result |
+|---|---|---|---|
+| B1 | `npm view mcpcut@0.1.0` | the rehearsed tarball | ✅ shasum `fa0e4fad…` = `npm publish --dry-run` of the tag, 497 files, 3.0 MB unpacked, `bin` `{ mcpcut: dist/cli.js }`, Apache-2.0, `node >=24`, deps `ulid` + `zod` |
+| B2 | isolated `npm i mcpcut@0.1.0`, `mcpcut --help` | an executable command | ✅ `node_modules/.bin/mcpcut` → `dist/cli.js` with `+x`, usage printed |
+| B3 | `npm audit signatures` | registry signatures verified | ✅ "3 packages have verified registry signatures" (no attestation for 0.1.0 — published by hand, expected) |
+| B4 | release workflow on the tag | CI green, publish skipped | ✅ `ci` green; "Already on npm?" → `published=true`, install and stage skipped |
+| B5 | service from the registry package behind TLS | 401 without a token | ✅ `unauthenticated POST /mcp → 401`, certificate issued by Let's Encrypt within 5 s |
+| B6 | `agent create` on the service | the client block with the exact version | ✅ `npx -y mcpcut@0.1.0 connect --url https://<S2-dashed>.sslip.io:8443`, token in `env` |
+| B7 | Claude Code: "call `mcp__mcpcut__everything__echo`" with that block, cold cache | the echo | ✅ `Echo: npx-smoke-0.1.0`, **22 s** from start to answer including the cold `npx` download; the npx cache holds `mcpcut` 0.1.0 |
+| B8 | the bridge with a wrong token | refusal, exit 1 | ✅ exit 1, "the service … did not accept the agent token: it may have been revoked, mistyped, or issued by a different service." |
+| B9 | agent-token sweep: service logs, Caddy log, Claude Code output and its MCP logs | 0 | ✅ 0 in 2 files on `<S2>`, 0 in 13 files on the Mac (a control file holding the token on purpose was found) |
+| B10 | `verify` on the service, then teardown | chain intact, host as before | ✅ "Chain intact through seq 21"; containers, network, volume and the two images removed; `docker ps/images/volume ls` + `ss -ltn` identical to the snapshot taken before |
