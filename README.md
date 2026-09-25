@@ -940,6 +940,7 @@ mcpcut start|stop [ui|serve]                          # start/stop the services 
 mcpcut status [--json]                                # running = pid alive AND answering on its port
 mcpcut logs <ui|serve> [--lines N]                    # tail of a service log (default 50 lines)
 mcpcut tui                                            # the interactive console (a bare `mcpcut` on a terminal does the same)
+mcpcut --version                                      # print the installed version
 ```
 
 `serve`, `ui`, `connect` and `wrap` — the four long-lived entry points — run

@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { beforeAll, describe, expect, test } from 'vitest'
 
@@ -139,6 +139,12 @@ describe('npm pack: the tarball', () => {
     }
     paths = packedPaths()
   }, PACK_TIMEOUT_MS)
+
+  test('the built entry point is executable, so an `npm link` of the tree keeps working after a rebuild', () => {
+    // tsc writes 0644; npm makes a registry install's bin executable itself,
+    // but `npm link` chmods only once, at link time (found 2026-09-25).
+    expect(statSync(join(PROJECT_ROOT, 'dist/cli.js')).mode & 0o111).toBe(0o111)
+  })
 
   test('carries the entry point, the licences and the notices', () => {
     expect(REQUIRED_PATHS.filter((path) => !paths.includes(path))).toEqual([])

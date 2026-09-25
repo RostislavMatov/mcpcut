@@ -46,6 +46,8 @@ import { runVerifyCommand } from './cli/verify-cmd.js'
 import { runWrapCommand } from './cli/wrap-cmd.js'
 import { USAGE } from './cli/usage.js'
 import { JOURNAL_DIR_RESOLUTION } from './config.js'
+import { PRODUCT_VERSION } from './brand.js'
+import { CLI_NAME } from './setup/constants.js'
 import { describeDataDirProblem } from './setup/data-dir.js'
 import type { CliIo, DispatchOptions } from './cli/dispatch-types.js'
 
@@ -80,6 +82,11 @@ export type { CliIo, CliWritable, DispatchOptions } from './cli/dispatch-types.j
  */
 function isHelpFlag(command: string | undefined): boolean {
   return command === '--help' || command === '-h'
+}
+
+/** `mcpcut --version`: answered next to `--help`, so a broken config does not hide which build is installed. */
+function isVersionFlag(command: string | undefined): boolean {
+  return command === '--version' || command === '-v'
 }
 
 const DEFAULT_IO: CliIo = { stdout: process.stdout, stderr: process.stderr }
@@ -163,6 +170,11 @@ export async function dispatch(
   // unattended starts depending on a file it never needed.
   if (command === undefined && !isInteractiveTerminal(opts.tui)) {
     io.stdout.write(USAGE)
+    return 0
+  }
+
+  if (isVersionFlag(command)) {
+    io.stdout.write(`${CLI_NAME} ${PRODUCT_VERSION}\n`)
     return 0
   }
 

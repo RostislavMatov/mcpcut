@@ -41,7 +41,7 @@
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "prebuild": "npm run clean",
-    "build": "tsc -p tsconfig.json && node -e \"require('node:fs').cpSync('src/ui/assets/LICENSE-Silkscreen-OFL.txt', 'dist/ui/assets/LICENSE-Silkscreen-OFL.txt')\"",
+    "build": "tsc -p tsconfig.json && node -e \"const fs = require('node:fs'); fs.cpSync('src/ui/assets/LICENSE-Silkscreen-OFL.txt', 'dist/ui/assets/LICENSE-Silkscreen-OFL.txt'); fs.chmodSync('dist/cli.js', 0o755)\"",
     "prepack": "npm run build",
     "prepublishOnly": "node tools/release/check-release.mjs",
     "test": "vitest run --coverage",

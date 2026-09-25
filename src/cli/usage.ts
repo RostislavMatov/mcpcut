@@ -133,4 +133,5 @@ ${TUI_SYNOPSIS_LINES.join('\n')}
   mcpcut keygen                          Generate this installation's Ed25519 signing key
                                          (prints the public key once; needed for "verify --sign")
   mcpcut --help                         Show this message
+  mcpcut --version                      Print the installed version
 `
