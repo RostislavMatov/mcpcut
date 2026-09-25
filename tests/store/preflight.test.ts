@@ -112,6 +112,8 @@ describe('preflightDatabases()', () => {
     expect(stderr.text()).toContain('state.db failed PRAGMA integrity_check')
     expect(stderr.text()).toContain('Refusing to start.')
     expect(stderr.text()).toContain('Backup & restore')
+    // The npm package ships no guide, so the hint is an address, not a file name.
+    expect(stderr.text()).toContain('https://github.com/RostislavMatov/mcpcut/blob/main/docs/guide/operations.md')
   })
 
   test('returns false with the same restore guidance for an unopenable database', async () => {

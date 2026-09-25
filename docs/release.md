@@ -9,8 +9,8 @@ history through a filtered export (ADR-0011). Steps 1–3 happen in the private
 repository, the rest in the public clone.
 
 1. **Bump the version** in `package.json` and `src/brand.ts` (`PRODUCT_VERSION`),
-   and every `mcpcut@x.y.z` in `README.md` and `SECURITY.md`. The tests refuse a
-   mismatch between any two of them.
+   and every `mcpcut@x.y.z` in `README.md`, `SECURITY.md` and `docs/guide/`.
+   The tests refuse a mismatch between any two of them.
 2. **Changelog.** `## [Unreleased]` becomes `## [X.Y.Z] — YYYY-MM-DD`; a fresh
    empty `## [Unreleased]` goes on top; the links at the bottom get the new tag.
 3. **Export** to the public clone, then push and wait for a green CI:
@@ -19,7 +19,12 @@ repository, the rest in the public clone.
    git -C ~/mcpcut-public push origin main
    ```
    The export refuses to rewrite published history; a new commit always
-   arrives as a fast-forward.
+   arrives as a fast-forward. It also refuses a commit message in Cyrillic
+   letters and names the commit: the public history is English. Messages
+   written before that rule get their English text from
+   `.claude/release/filter/translate-message.json` (source commit id →
+   message), which the filter substitutes — an entry there is also the fix for
+   a message that slips through.
 4. **Tag** the release commit in the public clone and push the tag:
    ```
    git tag -a vX.Y.Z -m "mcpcut X.Y.Z"

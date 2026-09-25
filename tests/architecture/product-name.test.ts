@@ -22,12 +22,21 @@ const PROJECT_ROOT = process.cwd()
 /** Spelled in pieces so this file does not trip its own scan. */
 const RETIRED_NAME = new RegExp(['mcp', 'journal'].join('[-_]'), 'i')
 
+/** The manual the README links to; it carries the same `npx -y mcpcut@<version>` blocks the README did. */
+const GUIDE_DIR = 'docs/guide'
+
 /** Documents that tell a reader which published version to run. */
-const VERSION_PINNED_FILES: readonly string[] = ['README.md', 'SECURITY.md']
+const VERSION_PINNED_FILES: readonly string[] = [
+  'README.md',
+  'SECURITY.md',
+  ...readdirSync(join(PROJECT_ROOT, GUIDE_DIR))
+    .filter((name) => name.endsWith('.md'))
+    .map((name) => `${GUIDE_DIR}/${name}`),
+]
 
 const VERSION_PIN = /mcpcut@(\d+\.\d+\.\d+)/g
 
-const SCANNED_DIRS: readonly string[] = ['src', 'docker', 'docs/deploy']
+const SCANNED_DIRS: readonly string[] = ['src', 'docker', 'docs/deploy', GUIDE_DIR]
 
 const SCANNED_FILES: readonly string[] = [
   'package.json',

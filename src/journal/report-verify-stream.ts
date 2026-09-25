@@ -13,7 +13,7 @@ import { parseJournalLine } from './line-source.js'
  * opened the file with `{ encoding: 'utf8' }` and hashed the decoded chunks.
  * Decoding is lossy: every invalid byte becomes U+FFFD, so two files
  * differing at one byte (0x80 vs 0xff) digested identically and both passed
- * against one signature -- while the manifest, the CLI output and the README
+ * against one signature -- while the manifest, the CLI output and the guide
  * all promise "sha256 hex over the EXACT bytes". So chunks arrive as bytes,
  * the digest sees them verbatim, and lines are split on the BYTE 0x0A rather
  * than on a decoded '\n'.

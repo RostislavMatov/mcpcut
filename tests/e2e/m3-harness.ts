@@ -297,7 +297,7 @@ export interface OnboardingArgs {
 
 /**
  * The documented onboarding scenario, command for command (plan "Validation",
- * README "Registry, agents, vault"): `vault init` → `server add` →
+ * `docs/guide/agents.md`): `vault init` → `server add` →
  * `vault set` → `agent create` → `agent grant`. Returns the agent token,
  * which `agent create` prints exactly once.
  */

@@ -45,7 +45,7 @@ function httpEntry(serveUrl: string, token = TOKEN): HttpShape {
 
 describe('renderClientConfig: the exact bytes', () => {
   test('stdio form, binary launcher, https address', () => {
-    // A literal rather than a snapshot file: this text is what the README
+    // A literal rather than a snapshot file: this text is what the guide
     // shows and what an owner pastes, so a change to it should be a visible
     // change to this test.
     expect(
@@ -73,7 +73,7 @@ describe('renderClientConfig: the exact bytes', () => {
   })
 
   test('stdio form, default launcher: npx of the exact running version (PE9, PE10)', () => {
-    // What `agent create` prints and the README shows since phase 6.
+    // What `agent create` prints and the guide shows since phase 6.
     expect(renderClientConfig({ serveUrl: 'https://plane.example:8090', token: TOKEN, form: 'stdio' })).toBe(
       [
         '{',

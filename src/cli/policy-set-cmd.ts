@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { parseArgs } from 'node:util'
 import type { Role } from '../admin/authz.js'
 import { ADMIN_TOKEN_ENV_VAR } from '../admin/constants.js'
+import { GUIDE_URL } from '../brand.js'
 import { JOURNAL_DIR } from '../config.js'
 import { formatReadableField } from '../journal/format.js'
 import type { PolicyEditActor } from '../journal/policy-edit-record.js'
@@ -173,7 +174,7 @@ async function resolveTarget(journalDir: string, opts: PolicySetOptions): Promis
 function absentFileMessage(path: string): string {
   return (
     `no policy file at ${path} -- enforcement is off; create it by hand first ` +
-    `(see README, "policy.json example")\n`
+    `(see "policy.json example" in ${GUIDE_URL}/policies.md)\n`
   )
 }
 

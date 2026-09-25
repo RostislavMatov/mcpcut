@@ -105,7 +105,7 @@ export interface IncrementalSha256 {
    * byte decodes to U+FFFD, so two files differing at one byte (0x80 vs
    * 0xff) collapsed onto one digest and both passed against one signature.
    * That voids "sha256 hex over the EXACT bytes", the claim the manifest,
-   * the CLI output and the README all make. A consumer that must digest a
+   * the CLI output and the guide all make. A consumer that must digest a
    * file byte-for-byte therefore feeds bytes here and never decodes first.
    * The string form is unchanged, because the EXPORTING side builds each
    * line as a UTF-8 string and must keep producing the identical digest.

@@ -24,3 +24,10 @@ export const BRAND_NAME = 'McpCut'
  * this and `package.json` disagree, so the duplication cannot drift silently.
  */
 export const PRODUCT_VERSION = '0.1.1'
+
+/**
+ * Where a message sends an operator for the details: the guide in the public
+ * repository. An address rather than a file name, because the npm package
+ * ships the README and not `docs/`.
+ */
+export const GUIDE_URL = 'https://github.com/RostislavMatov/mcpcut/blob/main/docs/guide'

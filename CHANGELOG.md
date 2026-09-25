@@ -318,7 +318,7 @@ publication — several are security fixes, so they are kept.
   instead of a session (401, 403, 404 included), 4 when the session itself was
   lost, which tells a client to start a fresh bridge. A network blip is none of
   those — the request it hit gets a JSON-RPC `-32004` back and the bridge keeps
-  running. ADR-0015; README "From another machine: `mcpcut connect --url`".
+  running. ADR-0015; [the guide](docs/guide/serve-and-pool.md#from-another-machine-mcpcut-connect---url-preview).
 - **A runtime below Node 24 gets one line instead of a missing builtin.** Every
   command now prints `mcpcut needs Node 24 or newer (this is vX)` and exits 1,
   ahead of the import that used to fail with `ERR_UNKNOWN_BUILTIN_MODULE:
@@ -351,7 +351,7 @@ publication — several are security fixes, so they are kept.
   vault writes are refused unless `ui` is behind TLS or the caller is on
   loopback; the first owner is created with the setup code, as on `/setup`.
   Plain `http` to a non-loopback host is a loud warning, not a refusal.
-  ADR-0014; README "A console for a service on another host".
+  ADR-0014; [the guide](docs/guide/console.md#a-console-for-a-service-on-another-host---remote-preview).
 
 - **`setup --serve-public-url` now remembers the address** as `serve.publicUrl`
   in `~/.mcpcut/config.json` (an origin: scheme, host, optional port — no

@@ -38,7 +38,7 @@ introduces either phrase will be asked to remove it.
 
 ## Preview features
 
-Two features are **preview** (see README, "What preview means here"):
+Two features are **preview** (see [What preview means here](docs/guide/console.md#what-preview-means-here)):
 
 - the remote console (`mcpcut --remote`, `mcpcut --connect`, ADR-0014) — an
   admin token crosses the network on every request;

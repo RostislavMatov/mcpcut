@@ -32,7 +32,7 @@ import {
  * plus an out-of-band anchor taken earlier: a chain head recorded before the
  * prune, compared against the marker afterwards, is what turns "rows 1..N were
  * removed" from an assertion into something checkable. Said plainly wherever
- * this reaches an operator (`prune-cmd.ts`, `verify`, README).
+ * this reaches an operator (`prune-cmd.ts`, `verify`, the guide).
  *
  * PREFIX, NOT PREDICATE. Rows are deleted as a contiguous `seq` prefix whose
  * every row is older than the cutoff -- never "every row whose `ts` is old".

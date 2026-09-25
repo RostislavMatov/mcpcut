@@ -160,7 +160,7 @@ export interface MethodDenialErrorInfo {
  * {@link approvalTimeoutError}: the only reader of this string is the party
  * being gated, and a remediation command handed to it through the channel it
  * reads and trusts by default is a different thing from one an owner looks up
- * (README §"Registry, agents, vault" holds the `agent grant` form).
+ * (`docs/guide/agents.md` holds the `agent grant` form).
  */
 export function methodNotGrantedError(id: SynthesizableId, info: MethodDenialErrorInfo): Buffer {
   return synthesizeError(id, {

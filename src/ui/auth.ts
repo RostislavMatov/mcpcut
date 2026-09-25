@@ -524,8 +524,8 @@ export function createPenaltyGate(
  *
  * This is opt-in for a reason: trusting the header with no proxy in front (or
  * with one that forwards the client's copy unchanged) hands every caller a
- * free-form key and makes the window trivially evadable. README says so at the
- * flag.
+ * free-form key and makes the window trivially evadable. The guide says so at
+ * the flag (`docs/guide/admin-ui.md`).
  */
 export function loginRateLimitKey(
   req: Pick<IncomingMessage, 'headers' | 'socket'>,

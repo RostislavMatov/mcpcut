@@ -19,7 +19,7 @@ import { adminOf, recordHostOp, resolveHostOpActor } from './host-op-write.js'
  *
  * `-wal`/`-shm` are never copied directly — SQLite's own online backup folds
  * them into the destination file, which is the whole point of this command
- * over "copy the directory and hope" (README "Backup & restore").
+ * over "copy the directory and hope" (`docs/guide/operations.md`, "Backup & restore").
  *
  * NOT gated (owner decision Q17, 2026-09-08): a backup runs from cron, where
  * nobody is at a keyboard. But when a valid `MCP_ADMIN_TOKEN` IS present the

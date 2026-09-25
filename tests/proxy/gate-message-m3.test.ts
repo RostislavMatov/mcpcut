@@ -915,7 +915,7 @@ describe('message-level gate: method grants open the M3-denied methods (M4)', ()
     expect(ungrantedError.data.reason).toBe('agent_no_method_grant')
     // Never a ready-to-run remediation command in the channel the gated party
     // reads (the rule `approvalTimeoutError` states); the owner's `agent grant`
-    // form lives in the README.
+    // form lives in the guide (`docs/guide/agents.md`).
     expect(String(ungrantedError.message)).not.toContain('agent grant')
 
     const ungrantableError = JSON.parse(notGrantable.answered[0]!.bytes.toString('utf8')).error

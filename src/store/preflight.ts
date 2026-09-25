@@ -1,5 +1,6 @@
 import { stat } from 'node:fs/promises'
 import { basename, join } from 'node:path'
+import { GUIDE_URL } from '../brand.js'
 import { journalDbPathFor, openJournalDbShared } from '../journal/db.js'
 import { STATE_DB_FILE_NAME, openStateDbShared } from '../policy/store-backend.js'
 import {
@@ -64,8 +65,7 @@ export class DatabaseIntegrityError extends Error {
 }
 
 /** The second line of the refusal; the first is the error's own message. */
-const RESTORE_HINT =
-  'Refusing to start. Restore the database from a backup (see README "Backup & restore").\n'
+const RESTORE_HINT = `Refusing to start. Restore the database from a backup (see "Backup & restore" in ${GUIDE_URL}/operations.md).\n`
 
 /**
  * Both databases a journal directory can hold, each with the shared open its
