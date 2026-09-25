@@ -167,6 +167,11 @@ describe('brokenLinks: the check itself', () => {
 })
 
 describe('the links of the English documents', () => {
+  test('the guide is there to be checked', () => {
+    // Without it the checks below would pass over nothing.
+    expect(GUIDE_PAGES).toContain(`${GUIDE_DIR}/README.md`)
+  })
+
   test.each(CHECKED_FILES)('every relative link and anchor in %s resolves', (file) => {
     expect(brokenLinks(PROJECT_ROOT, file)).toEqual([])
   })

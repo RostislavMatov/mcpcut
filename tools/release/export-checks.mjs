@@ -181,7 +181,8 @@ function commitIdsAmong(repo, words) {
  * in. filter-repo renames only the ids of commits it has already rewritten:
  * an English text citing a later commit, or any message citing a commit the
  * filter drops, keeps the private id — dangling, and from the private
- * history. The finding counts such ids and never quotes one. Needs the
+ * history (the later commit does get a public id; the citation just was
+ * never renamed to it). The finding counts such ids and never quotes one. Needs the
  * source, so the caller runs it beside historyFindings.
  */
 export function sourceIdFindings(repo, sourceRepo) {
@@ -193,7 +194,7 @@ export function sourceIdFindings(repo, sourceRepo) {
   return messages.flatMap(({ commit, message }) => {
     const cited = new Set((message.match(HEX_WORD) ?? []).filter((word) => foreign.has(word))).size
     if (cited === 0) return []
-    return [`message of commit ${named(commit, sources)} cites ${cited} commit id${cited === 1 ? '' : 's'} of the source with no public counterpart`]
+    return [`message of commit ${named(commit, sources)} cites ${cited} commit id${cited === 1 ? '' : 's'} of the source that the filter could not rename`]
   })
 }
 
