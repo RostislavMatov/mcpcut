@@ -23,7 +23,7 @@ export const BRAND_NAME = 'McpCut'
  * `initialize` can give. It is kept honest by a test that fails the moment
  * this and `package.json` disagree, so the duplication cannot drift silently.
  */
-export const PRODUCT_VERSION = '0.1.1'
+export const PRODUCT_VERSION = '0.1.2'
 
 /**
  * Where a message sends an operator for the details: the guide in the public

@@ -23,7 +23,7 @@ other text about the project may claim more than it does.
 | `connect --url` bridge for agents on another machine | shipped, **[preview](console.md#what-preview-means-here)** | `docs/smoke-connect-bridge.md`, `docs/smoke-agent-pool.md` |
 | remote console (`--remote`, `--connect`) | shipped, **[preview](console.md#what-preview-means-here)** | `docs/smoke-remote-console.md`, `docs/adr/0014-remote-console.md` |
 | ready-made client config at `agent create` | shipped | `docs/smoke-agent-config.md`, `docs/smoke-agent-pool.md` |
-| npm package (`npm i -g mcpcut`, `npx mcpcut@0.1.1`) | shipped, 0.1.0 | `tests/release/*`, `docs/release.md`, `docs/smoke-npm-package.md` |
+| npm package (`npm i -g mcpcut`, `npx mcpcut@0.1.2`) | shipped, 0.1.0 | `tests/release/*`, `docs/release.md`, `docs/smoke-npm-package.md` |
 | whole-product security audit | passed 2026-09-02, **internal** | `docs/security-audit-2026-09.md` — 0 CRITICAL, 4 HIGH fixed in the same wave; no independent pass has been done (ADR-0011), reports via `SECURITY.md` |
 
 The journal is a persistent, append-oriented, secret-redacted SQLite database

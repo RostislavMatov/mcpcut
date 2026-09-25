@@ -211,7 +211,7 @@ an HTTP agent.
       "command": "npx",
       "args": [
         "-y",
-        "mcpcut@0.1.1",
+        "mcpcut@0.1.2",
         "connect",
         "--url",
         "https://plane.example:8090"

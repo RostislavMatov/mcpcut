@@ -12,11 +12,11 @@ Self-hosted · Apache-2.0 · Node.js 24+ · two runtime dependencies. Start with
 
 Requires **Node.js 24+** (`node -v`); on older Node, mcpcut prints one line and exits — install Node 24 with nvm, fnm or volta. Nothing else to install.
 
-**See.** Put mcpcut in front of a server — here for Claude Code; in any other client, the server's command becomes `npx -y mcpcut@0.1.1 wrap -- <your server>`:
+**See.** Put mcpcut in front of a server — here for Claude Code; in any other client, the server's command becomes `npx -y mcpcut@0.1.2 wrap -- <your server>`:
 
-    claude mcp add fs -- npx -y mcpcut@0.1.1 wrap -- npx -y @modelcontextprotocol/server-filesystem ~/project
+    claude mcp add fs -- npx -y mcpcut@0.1.2 wrap -- npx -y @modelcontextprotocol/server-filesystem ~/project
 
-The first start downloads mcpcut and the server; if your client gives up on it, start it once more. Let the agent work, then `npx -y mcpcut@0.1.1 sessions` and `npx -y mcpcut@0.1.1 show <id>`: every request, response and decision, secrets redacted.
+The first start downloads mcpcut and the server; if your client gives up on it, start it once more. Let the agent work, then `npx -y mcpcut@0.1.2 sessions` and `npx -y mcpcut@0.1.2 show <id>`: every request, response and decision, secrets redacted.
 
 **Stop.** Save this as `policy.json` — reads pass, everything else waits for you (quarantine of new tools is off, so the first minute shows one gate: see [Quarantine](docs/guide/policies.md#quarantine)) — and re-add the server with `--policy "$PWD/policy.json"` right after `wrap` (`claude mcp remove fs` first):
 
@@ -25,13 +25,13 @@ The first start downloads mcpcut and the server; if your client gives up on it, 
 
 A write now waits. Approve it from another terminal within the agent's wait (60 s; after it, the agent's retry passes) — no token needed until you add your first admin ([Approvals](docs/guide/policies.md#approval-scenario)):
 
-    npx -y mcpcut@0.1.1 approvals list
-    npx -y mcpcut@0.1.1 approvals approve <id>
+    npx -y mcpcut@0.1.2 approvals list
+    npx -y mcpcut@0.1.2 approvals approve <id>
 
 **Prove.** Sign the history, export it, and check it offline — with nothing but the directory:
 
-    npx -y mcpcut@0.1.1 keygen && npx -y mcpcut@0.1.1 export --report --out ./report
-    npx -y mcpcut@0.1.1 verify --report ./report
+    npx -y mcpcut@0.1.2 keygen && npx -y mcpcut@0.1.2 export --report --out ./report
+    npx -y mcpcut@0.1.2 verify --report ./report
 
 Record the chain head somewhere this host cannot rewrite — [the out-of-band anchor](docs/guide/audit-reports.md#the-out-of-band-anchor) is what makes the journal tamper-evident, not the hashes alone.
 

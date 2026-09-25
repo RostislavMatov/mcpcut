@@ -6,6 +6,44 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-09-26
+
+### Changed
+
+- **`approvals approve|deny` and `policy set` need no token until the install
+  has its first admin.** The first `admin add` already needed none there, so
+  the refusal stopped nobody — it only made the Quick start create an owner
+  for a single approval. The resolution is recorded as `cli:_unattributed`
+  (a `policy set` edit with `adminName: null`); a token that is set is still
+  checked, and the first admin turns the requirement back on. A data
+  directory without `state.db`, or with one that cannot be read, still
+  refuses.
+- **The README is a landing page; the manual moved to
+  [`docs/guide/`](docs/guide/README.md)**, eleven pages taken over verbatim.
+  The two CLI hints that named README sections (`policy set` with no policy
+  file, the database preflight refusal) now give the address of the guide
+  page.
+- **Commit messages are English.** The public history was rewritten once, on
+  2026-09-26: no file changed, and the tags `v0.1.0` and `v0.1.1` moved to
+  the rewritten commits. A clone made before that has to be made again; the
+  history as first published stays reachable at
+  `refs/archive/pre-english-history`.
+
+### Fixed
+
+- **`wrap` no longer passes `npm_config_package` to the server.** Run as
+  `npx -p <package> mcpcut wrap -- npx -y <server>`, the variable reached the
+  server's environment and the nested `npx` ran the server's name as a
+  command. Only that variable is removed; the other `npm_config_*` settings
+  are the operator's own (a private registry, for one).
+- **`wrap` without `--server` says which name it uses**: one stderr line
+  names the `auto:<hash>` identity the approval queue will show, and how to
+  give the server a readable one. The name itself is unchanged — rules and
+  the approved inventory are keyed on it.
+- **The console's Home names the pool first**: `Agents ▸ config` prints the
+  client config that reaches every server an agent is granted at one
+  address.
+
 ## [0.1.1] — 2026-09-25
 
 ### Added
@@ -591,6 +629,7 @@ publication — several are security fixes, so they are kept.
   real loopback address are unaffected, since the URL parser normalizes them
   first. Found by the security review of the bridge, 2026-09-21.
 
-[Unreleased]: https://github.com/RostislavMatov/mcpcut/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/RostislavMatov/mcpcut/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/RostislavMatov/mcpcut/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/RostislavMatov/mcpcut/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/RostislavMatov/mcpcut/releases/tag/v0.1.0

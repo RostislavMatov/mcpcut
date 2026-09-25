@@ -40,7 +40,7 @@ block, ready to paste — see [Onboarding an agent](agents.md#onboarding-an-agen
 follows is for wrapping a server of your own, outside the registry.
 
 Wrap a real server by replacing its `command`/`args` with
-`npx -y mcpcut@0.1.1 wrap --` (or `mcpcut wrap --`, once installed) followed by
+`npx -y mcpcut@0.1.2 wrap --` (or `mcpcut wrap --`, once installed) followed by
 the original command:
 
 ```json
@@ -48,7 +48,7 @@ the original command:
   "mcpServers": {
     "some-server": {
       "command": "npx",
-      "args": ["-y", "mcpcut@0.1.1", "wrap", "--", "npx", "-y", "@some/mcp-server"]
+      "args": ["-y", "mcpcut@0.1.2", "wrap", "--", "npx", "-y", "@some/mcp-server"]
     }
   }
 }

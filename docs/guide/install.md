@@ -22,7 +22,7 @@ Install it there rather than run it through `npx`: `Services ▸ start` (and
 and npx's cache is not a place a service should live in.
 
 On an agent's machine nothing is installed: the block `agent create` prints
-runs the bridge as `npx -y mcpcut@0.1.1 connect --url …`, pinned to the
+runs the bridge as `npx -y mcpcut@0.1.2 connect --url …`, pinned to the
 service's own version — never `@latest`, because that process holds the
 agent's token (see `SECURITY.md`, "Versions and the supply chain").
 
