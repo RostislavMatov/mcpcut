@@ -12,6 +12,7 @@ import {
 } from '../policy/approvals/queue.js'
 import { DEFAULT_GRANT_TTL_MS } from '../policy/constants.js'
 import { isExpectedAdminError } from './admin-cmd.js'
+import { adminStoreEmptiness, NO_ADMINS_YET_ACTOR, NO_ADMINS_YET_NOTICE } from './admin-token.js'
 
 /**
  * `approvals list|approve|deny`: the operator-facing half of the approvals
@@ -61,7 +62,8 @@ const USAGE = `Usage:
   approvals deny <id> [--reason TEXT]      Deny a pending request (needs ${ADMIN_TOKEN_ENV_VAR})
 
 ${ADMIN_TOKEN_ENV_VAR} is your personal admin token ("mcpcut admin add").
-It records WHICH admin resolved a request; listing needs no token.
+It records WHICH admin resolved a request; listing needs no token. Until the
+first admin exists, approve and deny need none either.
 `
 
 const MS_PER_MINUTE = 60_000
@@ -289,10 +291,7 @@ async function resolveCliActor(
 ): Promise<string | undefined> {
   const env = opts.env ?? process.env
   const token = env[ADMIN_TOKEN_ENV_VAR]
-  if (token === undefined || token === '') {
-    io.stderr.write(MISSING_TOKEN_MESSAGE)
-    return undefined
-  }
+  if (token === undefined || token === '') return actorWithoutToken(io, opts)
 
   const store = createAdminStore(
     opts.journalDir !== undefined ? { journalDir: opts.journalDir } : {},
@@ -325,6 +324,22 @@ async function resolveCliActor(
   // `admin.name` is schema-validated against ADMIN_NAME_PATTERN on read, so it
   // is safe to compose into a stored field without further escaping.
   return `${CLI_ACTOR_PREFIX}${admin.name}`
+}
+
+/**
+ * No token: the resolution may still go ahead while the install has NO admin
+ * (owner decision 2026-09-25) — the first `admin add` is token-free there, so
+ * refusing kept nobody out. It is recorded under `NO_ADMINS_YET_ACTOR`, never
+ * without an actor (ADR-0007 O3). An unreadable store refuses, fail closed.
+ */
+async function actorWithoutToken(io: ApprovalsCliIo, opts: ApprovalsCliOptions): Promise<string | undefined> {
+  const emptiness = await adminStoreEmptiness(opts.journalDir !== undefined ? { journalDir: opts.journalDir } : {})
+  if (emptiness.kind === 'empty') {
+    io.stderr.write(NO_ADMINS_YET_NOTICE)
+    return NO_ADMINS_YET_ACTOR
+  }
+  io.stderr.write(emptiness.kind === 'unreadable' ? storeUnreadableMessage(emptiness.detail) : MISSING_TOKEN_MESSAGE)
+  return undefined
 }
 
 /** Shared body of `approve <id>` and `deny <id>`: parse, resolve, report. */

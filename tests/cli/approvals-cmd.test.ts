@@ -433,8 +433,16 @@ describe('runApprovals: deny', () => {
  * threat model). These tests therefore pin WHO the record names and that a run
  * that cannot name anyone changes nothing at all, not that the token keeps
  * anybody out.
+ *
+ * Every refusal here runs with an admin already on the install: with NONE,
+ * no token is not a refusal (owner decision 2026-09-25) — that path is
+ * `approvals-cmd-no-admins.test.ts`.
  */
 describe('runApprovals: approve|deny require a personal admin token', () => {
+  beforeEach(async () => {
+    await createAdminStore({ journalDir: tempDir }).createAdmin('resident-owner', 'owner')
+  })
+
   test('no token in the environment: exit 1 and the request is STILL pending', async () => {
     const queue = createApprovalQueue({ baseDir })
     const { approvalId } = await queue.enqueue(baseRequest())

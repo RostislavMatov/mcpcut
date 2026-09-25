@@ -499,6 +499,16 @@ They are read from the same snapshot as the export, and are explicitly marked as
 `records.sha256` or by the chain. The `report.json` format stays v1, `verify --report` is
 unchanged.
 
+## Amendment 2026-09-25 (to O3: approval before the first admin)
+
+While an install has no admin at all, `approvals approve|deny` work without a token (owner decision;
+the reasoning is in the ADR-0004 amendment of the same day). O3's requirement that no resolution goes
+without a subject still holds: such a resolution carries `actor: 'cli:_unattributed'`, not an empty
+field. The value matches no `cli:<adminName>` (`_` is outside `ADMIN_NAME_PATTERN`) and not the
+pre-attribution constant `'cli'` of M2–M4, so a report can tell "from a shell, before the first admin"
+from "from a shell, before attribution". A `policy-edit` on the same install is written with
+`adminName: null`.
+
 ## When we revisit this
 
 - **Throughput gate**: a pilot complaint about write latency, or writer-lock wait exceeding 5%.

@@ -26,7 +26,8 @@ import {
 import { effectiveToolRule, type EffectiveToolRule } from '../policy/effective.js'
 import { INVENTORY_FILE_NAME } from '../policy/inventory.js'
 import { POLICY_OUTCOME_VALUES, type Policy, type PolicyOutcome } from '../policy/schema.js'
-import { requireAdminFromEnv, type AdminRefusalWording } from './admin-token.js'
+import { whoOf } from './access-cmd-write.js'
+import { requireAdminUnlessNone, type AdminRefusalWording } from './admin-token.js'
 import type { PolicyCliIo } from './policy-cmd.js'
 import { toolFactsForEffectiveRule } from './policy-set-facts.js'
 
@@ -65,7 +66,8 @@ const SET_USAGE = `Usage:
                                 policy file this shell resolves (the order of
                                 "policy show --entry-point ui"); prints the file
                                 and which entry points read it (personal admin
-                                token via ${ADMIN_TOKEN_ENV_VAR}, role ${POLICY_SET_MIN_ROLE})
+                                token via ${ADMIN_TOKEN_ENV_VAR}, role ${POLICY_SET_MIN_ROLE},
+                                once an admin exists)
 `
 
 /** How the shared token gate names this command's refusals (same lines as before it was hoisted). */
@@ -144,11 +146,16 @@ function ruleOf(word: string): PolicyOutcome | null | undefined {
   return POLICY_OUTCOME_VALUES.find((candidate) => candidate === word)
 }
 
-/** The owner behind `MCP_ADMIN_TOKEN`, or `undefined` with the refusal already printed. */
+/**
+ * The owner behind `MCP_ADMIN_TOKEN` — or nobody, on an install with no admin
+ * yet (owner decision 2026-09-25) — or `undefined` with the refusal already
+ * printed.
+ */
 async function resolveOwner(io: PolicyCliIo, opts: PolicySetOptions): Promise<PolicyEditActor | undefined> {
-  const admin = await requireAdminFromEnv(opts, POLICY_SET_MIN_ROLE, io, POLICY_SET_REFUSAL)
-  if (admin === undefined) return undefined
-  return { adminName: admin.adminName, role: admin.role, via: 'cli' }
+  const resolved = await requireAdminUnlessNone(opts, POLICY_SET_MIN_ROLE, io, POLICY_SET_REFUSAL)
+  if (resolved === undefined) return undefined
+  if (resolved.kind === 'no-admins-yet') return { adminName: null, role: null, via: 'cli' }
+  return { adminName: resolved.admin.adminName, role: resolved.admin.role, via: 'cli' }
 }
 
 /** The file this invocation would load, plus who else reads it. Never refuses: an edit reaches whoever loaded it. */
@@ -267,7 +274,7 @@ function ruleWordOf(rule: PolicyOutcome | null): string {
 function auditLineOf(actor: PolicyEditActor, args: SetArgs, edit: WrittenEdit): string {
   const target = `${formatReadableField(args.serverName)}/${formatReadableField(args.toolName)}`
   return (
-    `[audit] policy set by ${formatReadableField(actor.adminName)} (${actor.role}): ` +
+    `[audit] policy set by ${whoOf(actor)}: ` +
     `${target} = ${ruleWordOf(args.rule)}, ${previewOf(edit.hashBefore)} -> ${previewOf(edit.hashAfter)}\n`
   )
 }

@@ -162,8 +162,11 @@ export function auditLineOf(
   return `[audit] ${subject} ${op} by ${whoOf(actor)}: ${target}\n`
 }
 
-/** The actor as the audit line names them — the same word `server remove` uses for nobody. */
-function whoOf(actor: AccessActor): string {
+/**
+ * The actor as an audit line names them — the same word `server remove` uses
+ * for nobody. Shared with `policy set`, whose actor has the same nullable shape.
+ */
+export function whoOf(actor: { readonly adminName: string | null; readonly role: string | null }): string {
   if (actor.adminName === null) return 'unattributed'
   return `${formatReadableField(actor.adminName)} (${actor.role})`
 }

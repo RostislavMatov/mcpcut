@@ -36,10 +36,15 @@ const POLICY_EDIT_DIRECTION: ClientServerDirection = 'client→server'
 /** Which surface the admin used. */
 export type PolicyEditVia = 'ui' | 'cli'
 
-/** WHO made the edit: the authenticated admin, their role at the time, and the surface. */
+/**
+ * WHO made the edit: the authenticated admin, their role at the time, and the
+ * surface. Name and role are both `null` on the one path with nobody to name:
+ * `policy set` on an install that has no admin yet (owner decision
+ * 2026-09-25) — the same shape `access-edit` uses for its bootstrap paths.
+ */
 export interface PolicyEditActor {
-  readonly adminName: string
-  readonly role: AdminRole
+  readonly adminName: string | null
+  readonly role: AdminRole | null
   readonly via: PolicyEditVia
 }
 

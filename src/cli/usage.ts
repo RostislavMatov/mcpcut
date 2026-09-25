@@ -88,7 +88,8 @@ ${TUI_SYNOPSIS_LINES.join('\n')}
   mcpcut policy set <server> <tool> allow|require-approval|deny|clear [--json]
                                          Write (or clear) one exact per-tool rule in
                                          <journal dir>/policy.json (owner token via
-                                         MCP_ADMIN_TOKEN); running proxies reload rules
+                                         MCP_ADMIN_TOKEN once an admin exists); running
+                                         proxies reload rules
   mcpcut quarantine list [--server <name>] [--json]
                                          List quarantined tools
   mcpcut quarantine show <server> <tool>
@@ -103,8 +104,9 @@ ${TUI_SYNOPSIS_LINES.join('\n')}
   mcpcut approvals list [--json]        List pending approval requests (no token needed)
   mcpcut approvals approve <id> [--reason TEXT]
                                          Approve a pending request (personal admin token via
-                                         MCP_ADMIN_TOKEN, role operator or owner; the
-                                         resolution records which admin decided it)
+                                         MCP_ADMIN_TOKEN, role operator or owner, once an
+                                         admin exists; the resolution records which admin
+                                         decided it)
   mcpcut approvals deny <id> [--reason TEXT]
                                          Deny a pending request (same token, same record)
   mcpcut migrate                         Import legacy *.json state into state.db

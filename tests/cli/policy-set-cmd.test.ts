@@ -94,6 +94,9 @@ async function editRecords(): Promise<Array<Record<string, unknown>>> {
 
 describe('runPolicySet -- admin attribution', () => {
   test('refuses without a token: hint names the env var and the owner role, exit 1, file untouched', async () => {
+    // With an admin on the install; with none, no token is not a refusal
+    // (owner decision 2026-09-25, `policy-set-no-admins.test.ts`).
+    await createAdminStore({ journalDir }).createAdmin('alice', 'owner')
     await writePolicy(MINIMAL_POLICY)
     const io = fakeIo()
 

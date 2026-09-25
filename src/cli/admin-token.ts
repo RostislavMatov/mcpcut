@@ -1,6 +1,10 @@
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import { roleSatisfies, type Role } from '../admin/authz.js'
 import { ADMIN_TOKEN_ENV_VAR } from '../admin/constants.js'
 import { createAdminStore } from '../admin/store.js'
+import { JOURNAL_DIR } from '../config.js'
+import { STATE_DB_FILE_NAME } from '../policy/store-backend.js'
 import { formatReadableField } from '../journal/format.js'
 import { isExpectedAdminError } from './admin-cmd.js'
 
@@ -172,7 +176,16 @@ export async function requireAdminFromEnv(
   io: AdminTokenErrorIo,
   wording: AdminRefusalWording,
 ): Promise<RequiredAdmin | undefined> {
-  const resolved = await adminFromEnv(opts)
+  return admitResolved(await adminFromEnv(opts), minRole, io, wording)
+}
+
+/** The shared tail of both gates: every `TokenAdmin` either admits a named admin or prints its refusal. */
+function admitResolved(
+  resolved: TokenAdmin,
+  minRole: Role,
+  io: AdminTokenErrorIo,
+  wording: AdminRefusalWording,
+): RequiredAdmin | undefined {
   if (resolved.kind === 'missing') {
     io.stderr.write(missingTokenMessage(minRole, wording))
     return undefined
@@ -190,4 +203,83 @@ export async function requireAdminFromEnv(
     return undefined
   }
   return { adminName: resolved.name, role: resolved.role }
+}
+
+/**
+ * The `actor` of an approval resolved from a shell while NO admin exists
+ * (owner decision 2026-09-25). A subject is still recorded (ADR-0007 O3), and
+ * `_` lies outside `ADMIN_NAME_PATTERN`, so no admin can ever spell it.
+ */
+export const NO_ADMINS_YET_ACTOR = 'cli:_unattributed'
+
+/** Said once per action taken without a name because no name can exist yet. */
+export const NO_ADMINS_YET_NOTICE =
+  'note: no admins yet, so this is recorded without a name; ' +
+  'after the first "mcpcut admin add" a token is required\n'
+
+/**
+ * Whether the admin store holds no admin at all — `unreadable` when that
+ * cannot be told, `no-install` when the data directory has never held one.
+ */
+export type AdminStoreEmptiness =
+  | { readonly kind: 'empty' }
+  | { readonly kind: 'populated' }
+  | { readonly kind: 'no-install' }
+  | { readonly kind: 'unreadable'; readonly detail: string }
+
+/**
+ * The same question the token-free first `admin add` asks (`admin-cmd.ts`,
+ * `addActor`): is this install still before its first admin? A store that
+ * cannot be read answers `unreadable`, never `empty` — "cannot tell whether
+ * anyone exists" must not open what "nobody exists" opens.
+ *
+ * A data directory without `state.db` answers `no-install`, checked BEFORE
+ * the store is opened (opening creates it). That is a cron job or a unit file
+ * missing `MCPCUT_DATA_DIR`, not a fresh install — and `policy set` can still
+ * reach a real policy file through `MCPCUT_POLICY` or the project file
+ * (security review H1, 2026-09-25). Anything that ran through the plane has a
+ * `state.db`, so the first minute is unaffected.
+ */
+export async function adminStoreEmptiness(opts: AdminTokenOptions): Promise<AdminStoreEmptiness> {
+  if (!existsSync(join(opts.journalDir ?? JOURNAL_DIR, STATE_DB_FILE_NAME))) return { kind: 'no-install' }
+  const store = createAdminStore(opts.journalDir !== undefined ? { journalDir: opts.journalDir } : {})
+  try {
+    return (await store.listAdmins()).length === 0 ? { kind: 'empty' } : { kind: 'populated' }
+  } catch (error: unknown) {
+    if (!isExpectedAdminError(error)) throw error
+    return { kind: 'unreadable', detail: error.message }
+  }
+}
+
+/** A named admin, or nobody because the install has no admin yet. */
+export type AdminUnlessNone = { readonly kind: 'admin'; readonly admin: RequiredAdmin } | { readonly kind: 'no-admins-yet' }
+
+/**
+ * `requireAdminFromEnv`, except that with NO token on an install with NO
+ * admin the action goes ahead unattributed, with `NO_ADMINS_YET_NOTICE` on
+ * stderr (owner decision 2026-09-25, first-minute friction). That grants
+ * nothing new: the first `admin add` there is token-free already (ADR-0004).
+ * A token that IS set is checked as always — a stale one on an empty store is
+ * refused, not quietly ignored — and an unreadable store refuses.
+ */
+export async function requireAdminUnlessNone(
+  opts: AdminTokenOptions,
+  minRole: Role,
+  io: AdminTokenErrorIo,
+  wording: AdminRefusalWording,
+): Promise<AdminUnlessNone | undefined> {
+  const resolved = await adminFromEnv(opts)
+  if (resolved.kind === 'missing') {
+    const emptiness = await adminStoreEmptiness(opts)
+    if (emptiness.kind === 'empty') {
+      io.stderr.write(NO_ADMINS_YET_NOTICE)
+      return { kind: 'no-admins-yet' }
+    }
+    if (emptiness.kind === 'unreadable') {
+      io.stderr.write(unreadableStoreMessage(emptiness.detail, wording))
+      return undefined
+    }
+  }
+  const admin = admitResolved(resolved, minRole, io, wording)
+  return admin === undefined ? undefined : { kind: 'admin', admin }
 }

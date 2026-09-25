@@ -21,10 +21,8 @@ The first start downloads mcpcut and the server; if your client gives up on it, 
     { "version": 1, "defaultDecision": "require-approval", "classDefaults": { "read": "allow" },
       "quarantine": { "enabled": false } }
 
-A write now waits. Mint your approver token once, and approve from another terminal within the agent's wait (60 s; after it, the agent's retry passes):
+A write now waits. Approve it from another terminal within the agent's wait (60 s; after it, the agent's retry passes) — no token needed until you add your first admin ([Approval scenario](#approval-scenario)):
 
-    npx -y mcpcut@0.1.1 admin add me --role owner    # prints your token, once
-    export MCP_ADMIN_TOKEN=<that token>
     npx -y mcpcut@0.1.1 approvals list
     npx -y mcpcut@0.1.1 approvals approve <id>
 
@@ -746,7 +744,12 @@ A `require-approval` tool call does not reach the server immediately:
    same action. The resolution is then stored as `cli:<adminName>`, so the
    journal answers *who* approved a call and not only *that* someone did.
    `approvals list` needs no token: reading the queue is not an authorization
-   event.
+   event. Until the install has its first admin, `approve` and `deny` need no
+   token either — the first `mcpcut admin add` is token-free there anyway — and
+   the resolution is stored as `cli:_unattributed` (no admin name can contain
+   `_`). A token that *is* set is still checked; the first admin you add turns
+   the requirement on. The same holds for `policy set`, journaled with
+   `adminName: null`.
 
    Each pending line carries **two clocks**, and they mean different things:
 
@@ -917,8 +920,8 @@ mcpcut quarantine show <server> <tool>
 mcpcut quarantine approve <server> <tool> | --all --server <name>        # needs MCP_ADMIN_TOKEN (operator)
 mcpcut quarantine reject <server> <tool>                                 # needs MCP_ADMIN_TOKEN (operator)
 mcpcut approvals list [--json]
-mcpcut approvals approve <id> [--reason TEXT]        # needs MCP_ADMIN_TOKEN
-mcpcut approvals deny <id> [--reason TEXT]           # needs MCP_ADMIN_TOKEN
+mcpcut approvals approve <id> [--reason TEXT]        # needs MCP_ADMIN_TOKEN once an admin exists
+mcpcut approvals deny <id> [--reason TEXT]           # needs MCP_ADMIN_TOKEN once an admin exists
 mcpcut admin add <name> --role owner|operator|viewer                 # needs MCP_ADMIN_TOKEN (owner) once an admin exists
 mcpcut admin list | remove <name> | rotate <name> [--recover] | role <name> owner|operator|viewer
 mcpcut ui [--port 8091] [--host 127.0.0.1] [--behind-tls]
@@ -1031,7 +1034,8 @@ admin UI (Servers card) and `mcpcut policy set` are just two more writers
 of the same file: they set one tool's rule (`allow` / `deny` /
 `require-approval`, or clear it), validate the result before writing, write
 atomically, refuse if the file changed on disk since the page was rendered, and
-record every edit in the journal with the admin's name and the policy hash
+record every edit in the journal with the admin's name (`null` for a
+`policy set` made before the install has its first admin) and the policy hash
 before/after. They edit **the file that entry point itself loaded** — the first
 source of the resolution order above, resolved from the shell the UI or the
 command was started in — and they say which entry points read it, because
