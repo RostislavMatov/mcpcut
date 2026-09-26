@@ -1,0 +1,55 @@
+# mcpcut.com — the preview page and the agent front of one install, on a host
+# whose 443 belongs to another service. Exactly what runs on the project's own
+# host; put your names where mcpcut.com stands.
+#
+#   https://mcpcut.com        visitors hit Cloudflare's 443 (proxied record);
+#                             an Origin Rule sends HTTPS requests to :8443 here.
+#                             Certificate: Cloudflare Origin CA (trusted by
+#                             Cloudflare only), SSL mode Full (strict).
+#   https://mcp.mcpcut.com:8443
+#                             agents, DNS only (not proxied): Cloudflare cuts a
+#                             response idle for 100 s, an agent waiting on an
+#                             approval must not be cut. Let's Encrypt over
+#                             HTTP-01 on :80 (TLS-ALPN needs 443, which is not ours).
+#
+# The admin UI is NOT published: it stays on host loopback (127.0.0.1:8091).
+# Reach it through a tunnel:  ssh -N -L 8091:127.0.0.1:8091 <user>@<host>
+#
+# Issue the Origin CA certificate for mcpcut.com and www.mcpcut.com ONLY, not
+# *.mcpcut.com: Caddy takes a loaded certificate that matches a name as that
+# name's certificate and skips Let's Encrypt, so a wildcard would hand agents
+# on mcp.mcpcut.com a certificate only Cloudflare trusts. (`auto_https
+# ignore_loaded_certs` is not the fix: it sends the proxied names to Let's
+# Encrypt too, and HTTP-01 cannot pass through Cloudflare here.)
+{
+	http_port 80
+	https_port 8443
+}
+
+(page_headers) {
+	header {
+		Content-Security-Policy "default-src 'none'; style-src 'self'; font-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}
+
+mcpcut.com:8443, www.mcpcut.com:8443 {
+	tls /etc/caddy/origin/cert.pem /etc/caddy/origin/key.pem
+	@www host www.mcpcut.com
+	redir @www https://mcpcut.com{uri} 301
+	import page_headers
+	root * /srv/site
+	file_server
+}
+
+mcp.mcpcut.com:8443 {
+	tls {
+		issuer acme {
+			disable_tlsalpn_challenge
+		}
+	}
+	reverse_proxy serve:8090
+}

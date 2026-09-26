@@ -1,0 +1,44 @@
+# Override for the repository's docker-compose.yml: the preview page and the
+# agent front of one install behind Caddy (see the Caddyfile beside this file
+# for the routing and the certificates). Run from the repository root, with
+# this file, the Caddyfile, the page (`site/`) and the Origin CA pair
+# (`origin/cert.pem`, `origin/key.pem`, mode 0600) beside docker-compose.yml:
+#
+#   docker compose -p mcpcut-site -f docker-compose.yml -f docker-compose.site.yml up -d --build
+#
+# MCPCUT_SERVE_PUBLIC_URL is set on BOTH services before the first start: the
+# container that runs `setup` first writes it into the install config, and
+# `agent create` prints this address to agents.
+#
+# Limits: the host is shared and has two CPUs.
+x-limits: &limits
+  cpus: 1
+  mem_limit: 1g
+
+services:
+  ui:
+    <<: *limits
+    environment:
+      MCPCUT_SERVE_PUBLIC_URL: https://mcp.mcpcut.com:8443
+  serve:
+    <<: *limits
+    environment:
+      MCPCUT_SERVE_PUBLIC_URL: https://mcp.mcpcut.com:8443
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    cpus: 0.5
+    mem_limit: 256m
+    depends_on:
+      serve:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "8443:8443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./site:/srv/site:ro
+      - ./origin:/etc/caddy/origin:ro
+      - caddy-data:/data
+volumes:
+  caddy-data:

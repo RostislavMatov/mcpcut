@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mcpcut — a journal and an emergency brake for your AI agents</title>
+<meta name="description" content="See every tool call your AI agent makes over MCP, hold the risky ones for your approval, and keep a secret-redacted journal that is tamper-evident with an external anchor. Self-hosted, Apache-2.0.">
+<link rel="canonical" href="https://mcpcut.com/">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/site.css">
+<meta name="theme-color" content="#000000">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="mcpcut">
+<meta property="og:title" content="mcpcut — a journal and an emergency brake for your AI agents">
+<meta property="og:description" content="Every MCP tool call journaled with secrets redacted, risky ones held until you approve. Self-hosted, Apache-2.0.">
+<meta property="og:url" content="https://mcpcut.com/">
+<meta property="og:image" content="https://mcpcut.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="mcpcut: see every tool call, stop the risky ones, prove what happened.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="mcpcut — a journal and an emergency brake for your AI agents">
+<meta name="twitter:description" content="Every MCP tool call journaled with secrets redacted, risky ones held until you approve. Self-hosted, Apache-2.0.">
+<meta name="twitter:image" content="https://mcpcut.com/og.png">
+</head>
+<body>
+<a class="skip" href="#quick-start">Skip to the Quick start</a>
+
+<header class="top">
+  <a class="brand" href="/" aria-label="mcpcut home">mcpcut</a>
+  <nav class="nav" aria-label="Project">
+    <a class="pill" href="https://github.com/RostislavMatov/mcpcut/tree/main/docs/guide">Docs</a>
+    <a class="pill" href="https://github.com/RostislavMatov/mcpcut">GitHub</a>
+    <a class="pill" href="https://www.npmjs.com/package/mcpcut">npm</a>
+  </nav>
+</header>
+
+<main>
+  <section class="hero panel panel-strong" aria-labelledby="hero-title">
+    <p class="eyebrow"><span class="dot blink" aria-hidden="true"></span> MCP · self-hosted · Apache-2.0</p>
+    <h1 id="hero-title">A journal and an emergency brake for your AI agents</h1>
+    <p class="lede">See every tool call your agent makes over MCP, hold the risky ones until you say yes, and keep a secret-redacted journal that is tamper-evident with an external anchor.</p>
+    <div class="actions">
+      <a class="button button-primary" href="#quick-start">Quick start</a>
+      <a class="button" href="https://github.com/RostislavMatov/mcpcut">Source on GitHub</a>
+    </div>
+    <p class="meta">Node.js 24+ · two runtime dependencies · runs on your laptop, grows into a control plane for many agents</p>
+  </section>
+
+  <section class="tiles" aria-label="What it does">
+    <article class="tile panel">
+      <h2><span class="tile-index">01</span> See</h2>
+      <p>Every request, response and decision goes into a journal on your machine. Secrets are redacted before anything is written. Optionally fail-closed: no record, no call.</p>
+    </article>
+    <article class="tile panel">
+      <h2><span class="tile-index">02</span> Stop</h2>
+      <p>A policy per tool — <code>allow</code>, <code>deny</code> or <code>require-approval</code>. A risky call waits until you approve it from the CLI, the web UI or the terminal console. A new tool, or one whose schema changed after you trusted it, is quarantined with a diff.</p>
+    </article>
+    <article class="tile panel">
+      <h2><span class="tile-index">03</span> Prove</h2>
+      <p>A hash chain with a signed head. Export an audit report and verify it offline with a public key. Record the chain head somewhere this host cannot rewrite: the journal is tamper-evident with an external anchor, not by its hashes alone.</p>
+    </article>
+  </section>
+
+  <section id="quick-start" class="panel" aria-labelledby="quick-start-title">
+    <div class="panel-head">
+      <h2 id="quick-start-title">Quick start</h2>
+      <span class="panel-note">Node.js 24+, nothing else to install</span>
+    </div>
+    <div class="panel-body steps">
+      <div class="step">
+        <h3>See</h3>
+        <p>Put mcpcut in front of a server — here for Claude Code. In any other client, the server's command becomes <code>npx -y mcpcut@0.1.2 wrap -- &lt;your server&gt;</code>.</p>
+<pre data-from-readme>claude mcp add fs -- npx -y mcpcut@0.1.2 wrap -- npx -y @modelcontextprotocol/server-filesystem ~/project</pre>
+        <p>Let the agent work, then read what happened — every request, response and decision, secrets redacted:</p>
+<pre data-from-readme>npx -y mcpcut@0.1.2 sessions
+npx -y mcpcut@0.1.2 show &lt;id&gt;</pre>
+      </div>
+      <div class="step">
+        <h3>Stop</h3>
+        <p>Save this as <code>policy.json</code> and re-add the server with <code>--policy "$PWD/policy.json"</code> right after <code>wrap</code>: reads pass, everything else waits for you.</p>
+<pre data-from-readme>{ "version": 1, "defaultDecision": "require-approval", "classDefaults": { "read": "allow" },
+  "quarantine": { "enabled": false } }</pre>
+        <p>A write now waits. Approve it from another terminal within the agent's wait:</p>
+<pre data-from-readme>npx -y mcpcut@0.1.2 approvals list
+npx -y mcpcut@0.1.2 approvals approve &lt;id&gt;</pre>
+      </div>
+      <div class="step">
+        <h3>Prove</h3>
+        <p>Sign the history, export it, and check it offline — with nothing but the directory:</p>
+<pre data-from-readme>npx -y mcpcut@0.1.2 keygen &amp;&amp; npx -y mcpcut@0.1.2 export --report --out ./report
+npx -y mcpcut@0.1.2 verify --report ./report</pre>
+      </div>
+      <p class="more">The full walkthrough, with what each step prints: <a href="https://github.com/RostislavMatov/mcpcut#quick-start">README · Quick start</a>.</p>
+    </div>
+  </section>
+
+  <section class="panel" aria-labelledby="grow-title">
+    <div class="panel-head">
+      <h2 id="grow-title">Grow into a control plane</h2>
+      <span class="panel-note">one install, many agents</span>
+    </div>
+    <div class="panel-body">
+<pre data-from-readme>npm install -g mcpcut</pre>
+      <p>Then run <code>mcpcut</code>: a setup wizard, and after it everything a team of agents needs.</p>
+      <ul class="list">
+        <li><a href="https://github.com/RostislavMatov/mcpcut/blob/main/docs/guide/agents.md">Agents and grants</a> — a registry of servers, a key per agent, per-tool grants, groups, and an encrypted vault, so server credentials never sit in an agent's config.</li>
+        <li><a href="https://github.com/RostislavMatov/mcpcut/blob/main/docs/guide/serve-and-pool.md">One address per agent</a> — every server an agent is granted behind one endpoint; grant or revoke without touching the client.</li>
+        <li><a href="https://github.com/RostislavMatov/mcpcut/blob/main/docs/guide/admin-ui.md">Web UI</a> and <a href="https://github.com/RostislavMatov/mcpcut/blob/main/docs/guide/console.md">terminal console</a> — named admins with <code>owner</code>, <code>operator</code> and <code>viewer</code> roles; every change is attributed in the journal.</li>
+        <li><a href="https://github.com/RostislavMatov/mcpcut/blob/main/docs/guide/operations.md">Services and Docker</a> — start, stop and back up the service on your machine or a server of your own.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="panel" aria-labelledby="how-title">
+    <div class="panel-head">
+      <h2 id="how-title">How it works</h2>
+      <a class="panel-note" href="https://github.com/RostislavMatov/mcpcut/blob/main/docs/ARCHITECTURE.md">architecture</a>
+    </div>
+    <div class="panel-body">
+<pre class="diagram" aria-label="An AI agent talks to mcpcut over stdio or HTTP; mcpcut applies grants, policy, quarantine and approval, forwards to the MCP servers, and writes a redacted, hash-chained journal that exports to a report you verify offline.">
+ AI agent ── stdio or HTTP ──▶ mcpcut ──────────────────▶ MCP servers
+ (Claude Code,                 grants → policy →          (filesystem,
+  Cursor, …)                   quarantine → approval       GitHub, …)
+                                 │
+                                 ▼
+                     journal.db — redacted, hash-chained
+                                 │  export --report
+                                 ▼
+                     verify offline, anywhere</pre>
+      <ul class="list">
+        <li><code>wrap</code> — in front of one server, with no setup and no identity: the Quick start above.</li>
+        <li><code>connect</code> and <code>serve</code> — named servers from the registry, a key per agent, credentials from the vault.</li>
+        <li>The pool (<code>/mcp</code>) — one address per agent for every server it is granted.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="split" aria-label="Limits and status">
+    <article class="panel">
+      <div class="panel-head"><h2>What it is not</h2></div>
+      <div class="panel-body">
+        <ul class="list">
+          <li>Not a security scanner: it does not look for prompt injection. It controls what an agent may call and keeps the evidence.</li>
+          <li>Not a generic gateway and not a catalogue of public servers: it sits in front of the servers you choose.</li>
+          <li>Not proof against its own host: a process running as the same OS user can rewrite the journal and re-sign it. Only a chain head recorded somewhere this host cannot write exposes that. Whether a report satisfies an audit is the auditor's call.</li>
+        </ul>
+      </div>
+    </article>
+    <article class="panel">
+      <div class="panel-head"><h2>Status</h2><span class="panel-note">0.x</span></div>
+      <div class="panel-body">
+        <ul class="list">
+          <li>The core — proxy, policy, approvals, quarantine, journal, audit report, admin UI and console — is shipped and covered by tests. <a href="https://github.com/RostislavMatov/mcpcut/blob/main/docs/guide/status.md">Status</a> lists each capability with its evidence.</li>
+          <li>Preview: the remote console (<code>mcpcut --remote</code>). Preview: the <code>connect --url</code> bridge. Both put a token on the network and may change within 0.x.</li>
+          <li>Security: an internal audit of the whole product in September 2026, no independent audit yet. Report vulnerabilities privately — see <a href="https://github.com/RostislavMatov/mcpcut/blob/main/SECURITY.md">SECURITY.md</a>.</li>
+        </ul>
+      </div>
+    </article>
+  </section>
+</main>
+
+<footer class="foot">
+  <span class="brand brand-small">mcpcut</span>
+  <span>Apache-2.0</span>
+  <a href="https://github.com/RostislavMatov/mcpcut">GitHub</a>
+  <a href="https://www.npmjs.com/package/mcpcut">npm</a>
+  <a href="https://github.com/RostislavMatov/mcpcut/blob/main/CONTRIBUTING.md">Contributing</a>
+  <a href="/LICENSE-Silkscreen-OFL.txt">Font: Silkscreen, OFL</a>
+</footer>
+</body>
+</html>
