@@ -6,6 +6,9 @@ import {
   MAX_CONFIG_STRING_LENGTH,
   MAX_HOST_LENGTH,
   MAX_LIST_ENTRIES,
+  MAX_TENANT_AGENTS_BOUND,
+  MAX_TENANT_GROUPS_BOUND,
+  MAX_TENANT_SERVERS_BOUND,
   PUBLIC_ORIGIN_PATTERN,
   REJECTED_ORIGIN_VALUE,
   SUPERVISORS,
@@ -59,6 +62,24 @@ const publicOriginSchema = boundedString.regex(
   'must be an origin: http(s)://host[:port], no path',
 )
 
+/**
+ * `tenant`: the three switches a hosted install turns on (PRD
+ * `hosted-accounts`, phase 1, ADR-0017) — refuse stdio servers, reach only
+ * public `https` upstreams, and cap servers/agents/groups. Every field is
+ * `.optional()`: `resolveTenantSettings` (`src/tenant/settings.ts`) fills an
+ * omitted one with the STRICT value, not the permissive one, so `tenant: {}`
+ * is the fully locked-down preset rather than a no-op. The section itself is
+ * optional on `installConfigSchema` below, and an install that never writes
+ * it behaves exactly as it did before this section existed.
+ */
+const tenantSchema = z.strictObject({
+  stdioServers: z.enum(['allowed', 'refused']).optional(),
+  upstreams: z.enum(['any', 'public-https']).optional(),
+  maxServers: z.number().int().min(1).max(MAX_TENANT_SERVERS_BOUND).optional(),
+  maxAgents: z.number().int().min(1).max(MAX_TENANT_AGENTS_BOUND).optional(),
+  maxGroups: z.number().int().min(0).max(MAX_TENANT_GROUPS_BOUND).optional(),
+})
+
 export const installConfigSchema = z.strictObject({
   version: z.literal(INSTALL_CONFIG_VERSION),
   dataDir: boundedString.refine(isAbsolute, 'dataDir must be an absolute path'),
@@ -78,6 +99,7 @@ export const installConfigSchema = z.strictObject({
     publicUrl: publicOriginSchema.optional(),
   }),
   supervisor: z.enum(SUPERVISORS).optional(),
+  tenant: tenantSchema.optional(),
 })
 
 /** The whole `~/.mcpcut/config.json` document. */

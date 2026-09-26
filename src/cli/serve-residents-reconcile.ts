@@ -2,6 +2,7 @@ import type { EffectiveAgentLister } from '../agents/effective-reader.js'
 import { desiredResidentPairs } from '../pool/residents.js'
 import type { StdioServerRecord } from '../registry/schema.js'
 import type { RegistryStore } from '../registry/store.js'
+import { TENANT_SETTINGS, type TenantSettings } from '../tenant/settings.js'
 import type { ServeWritable } from './serve-constants.js'
 import type { ResidentSupervisor } from './serve-residents.js'
 
@@ -28,6 +29,12 @@ export interface ResidentReconcileDeps {
   /** How many pairs may be resident (`MAX_POOL_RESIDENTS`, or a test's). */
   readonly cap: number
   readonly stderr: ServeWritable
+  /**
+   * Tenant mode (ADR-0017 T3). With stdio refused, no stdio server is ever
+   * made resident: `openUpstream` would refuse each start and the supervisor
+   * would retry it with backoff until it gave up. Defaults to `TENANT_SETTINGS`.
+   */
+  readonly tenant?: TenantSettings
 }
 
 export interface ResidentReconcile {
@@ -42,11 +49,13 @@ export function startResidentReconcile(deps: ResidentReconcileDeps): ResidentRec
   let inFlight: Promise<void> | null = null
   /** Pairs past the cap at the last pass; a line only when it changes. */
   let overCapCount = 0
+  const refusesStdio = (deps.tenant ?? TENANT_SETTINGS).stdioServers === 'refused'
 
   async function pass(): Promise<void> {
     try {
-      const [agents, servers] = await Promise.all([deps.agents.listAgents(), deps.registry.listServers()])
+      const [agents, listed] = await Promise.all([deps.agents.listAgents(), deps.registry.listServers()])
       if (isStopped) return
+      const servers = refusesStdio ? listed.filter((server) => server.transport !== 'stdio') : listed
       const desired = desiredResidentPairs(agents, servers, deps.cap)
       const records = new Map(
         servers.flatMap((server): Array<[string, StdioServerRecord]> =>

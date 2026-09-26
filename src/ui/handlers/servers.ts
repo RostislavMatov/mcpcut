@@ -1,6 +1,7 @@
 import { formatPolicyErrors } from '../../policy/load.js'
 import { parseServerRecord } from '../../registry/schema.js'
 import type { RegistryStore } from '../../registry/store.js'
+import { TENANT_SETTINGS, type TenantSettings } from '../../tenant/settings.js'
 import type { VaultStore } from '../../vault/store.js'
 import type { InventoryStoreData } from '../../policy/inventory-store.js'
 import type { PolicyView } from '../../policy/edit/policy-view.js'
@@ -21,7 +22,8 @@ import {
   statusesViewOf,
   type ServerStatusPort,
 } from './servers-status.js'
-import { echoableServerForm, serverRecordToForm, splitKeyValueLine, EMPTY_SERVER_FORM } from '../server-form.js'
+import { echoableServerForm, serverRecordToForm, EMPTY_SERVER_FORM } from '../server-form.js'
+import { buildCandidate } from './servers-candidate.js'
 import {
   renderAddConfirm,
   renderServersPage,
@@ -88,6 +90,14 @@ export interface ServersHandlersDeps extends ServersRemoveDeps {
    * the rule controls; without it the page renders exactly as before.
    */
   readonly readPolicyView?: () => Promise<PolicyView>
+  /**
+   * Tenant mode settings (ADR-0017, task 8), injected by `cli/ui-wiring.ts`.
+   * Defaults to `TENANT_SETTINGS` — same optional-dependency shape as the
+   * registry/agents/groups stores and `serve-upstream.ts` use for the same
+   * setting, so a test can drive it directly without going through the
+   * install config.
+   */
+  readonly tenant?: TenantSettings
 }
 
 export interface ServersHandlers {
@@ -96,48 +106,6 @@ export interface ServersHandlers {
   readonly serversEdit: UiHandler
   readonly serversRemove: UiHandler
   readonly vaultPage: UiHandler
-}
-
-/** Parses a `K=V` per line block into a plain map; blank lines ignored. */
-function parseKeyValueLines(block: string | undefined): Record<string, string> | undefined {
-  if (block === undefined || block.trim() === '') return undefined
-  const map: Record<string, string> = Object.create(null) as Record<string, string>
-  for (const rawLine of block.split(/\r?\n/)) {
-    const pair = splitKeyValueLine(rawLine)
-    if (pair === null) continue
-    map[pair.key] = pair.value
-  }
-  return Object.keys(map).length > 0 ? map : undefined
-}
-
-/**
- * Assembles a raw candidate record from the add form. Every provided field is
- * included even if it does not belong to the chosen transport, so the strict
- * schema reports a precise "unrecognized key" instead of silently dropping it —
- * exactly the CLI's `buildCandidate` behaviour.
- */
-function buildCandidate(fields: Readonly<Record<string, string>>): Record<string, unknown> {
-  const candidate: Record<string, unknown> = { name: fields.name ?? '', transport: fields.transport ?? '' }
-  if (fields.command !== undefined && fields.command !== '') candidate.command = fields.command
-  if (fields.args !== undefined && fields.args.trim() !== '') {
-    candidate.args = fields.args
-      .split(/\r?\n/)
-      .map((arg) => arg.trim())
-      .filter((arg) => arg !== '')
-  }
-  const env = parseKeyValueLines(fields.env)
-  if (env !== undefined) candidate.env = env
-  if (fields.url !== undefined && fields.url !== '') candidate.url = fields.url
-  const headers = parseKeyValueLines(fields.headers)
-  if (headers !== undefined) candidate.headers = headers
-  // The protocol radios always post a value (a radio group has a default),
-  // so for a stdio submission the field is form plumbing, not operator input —
-  // including it would make EVERY stdio registration from the browser fail
-  // strict validation with "unrecognized key protocol". Only http owns it.
-  if (fields.transport === 'http' && fields.protocol !== undefined && fields.protocol !== '') {
-    candidate.protocol = fields.protocol
-  }
-  return candidate
 }
 
 export function createServersHandlers(deps: ServersHandlersDeps): ServersHandlers {
@@ -162,6 +130,7 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
       canRelease: ctx.session !== undefined && roleSatisfies(ctx.session.role, 'operator'),
       csrfToken: csrfTokenOf(ctx),
       currentAdmin: currentAdminOf(ctx),
+      tenant: deps.tenant ?? TENANT_SETTINGS,
       viewMode: ctx.query.get('view') === 'list' ? 'list' : 'grid',
       ...(inventory !== undefined ? { tools: toServerToolsByName(inventory, policy) } : {}),
       ...(policyView !== undefined ? { policyView } : {}),
@@ -343,7 +312,17 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
       })
       return { kind: 'response', status: HTTP_STATUS_OK, body }
     }
-    const result = await deps.registry.updateServer(parsed.record)
+    // Tenant mode (`registry/store.ts`) can refuse a record that passed
+    // schema validation above — a stdio edit while `stdioServers` is
+    // `refused`, or a non-`https` url while `upstreams` is `public-https` —
+    // so this write needs the same try/catch as `serversAdd`: a refusal is a
+    // rejected form, never an unhandled 500.
+    let result: Awaited<ReturnType<typeof deps.registry.updateServer>>
+    try {
+      result = await deps.registry.updateServer(parsed.record)
+    } catch (error: unknown) {
+      return rejectedEdit(ctx, fields, original, error instanceof Error ? error.message : String(error))
+    }
     if (result.status === 'not-found') {
       return { kind: 'response', status: HTTP_STATUS_NOT_FOUND, body: 'unknown server' }
     }

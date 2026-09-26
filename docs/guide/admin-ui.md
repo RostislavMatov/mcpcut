@@ -195,7 +195,9 @@ true.
   command line the plane will spawn on this host — the same power as the CLI's
   `server add`. The UI form therefore goes through a confirmation interstitial
   that echoes the validated record before anything is written; validation runs
-  before that step, so confirming is never a way past it.
+  before that step, so confirming is never a way past it. A hosted install
+  (tenant mode) drops the `stdio` choice from this form entirely — see
+  [Tenant mode (hosted)](install.md#tenant-mode-hosted).
 - **Confused deputy**: the browser is the threat, not just the network — any
   tab open to `127.0.0.1:8091` could otherwise fire a POST that approves a
   write call on an admin's behalf. `Origin`/`Host` validation, CSRF, and

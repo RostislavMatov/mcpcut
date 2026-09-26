@@ -5,6 +5,7 @@ import {
   type MessageSink,
   type MessageSource,
 } from '../message.js'
+import { UpstreamAddressRefusedError } from '../../net/upstream-guard.js'
 import {
   SessionExpiredError,
   SseStreamError,
@@ -38,6 +39,7 @@ import {
   SSE_RECONNECT_MAX_DELAY_MS,
   SSE_RETRY_MAX_DELAY_MS,
 } from './constants.js'
+import type { HttpUpstreamClient, HttpUpstreamClientOptions, HttpUpstreamRecord } from './client-types.js'
 
 /**
  * HTTP upstream client (M3 Task 9): connects the control plane to a remote
@@ -64,47 +66,12 @@ export {
   UpstreamResponseError,
 } from './client-errors.js'
 
-/** Session model pinned in (or defaulted by) the registry record. */
-export type HttpUpstreamProtocol = 'sessionful' | 'stateless' | 'auto'
-
-/**
- * The slice of a registry http-record the client needs. Header values must
- * already be dereferenced by the caller (vault refs resolved) — the client
- * treats them as opaque ready-to-send strings.
- */
-export interface HttpUpstreamRecord {
-  readonly url: string
-  readonly headers?: Readonly<Record<string, string>>
-  readonly protocol: HttpUpstreamProtocol
-}
-
-export interface HttpUpstreamClientOptions {
-  /** Value for `MCP-Protocol-Version` on every request (pass-through; unset → header not sent). */
-  readonly protocolVersionHeader?: string
-  /** Injected semantic hook: extra headers derived from the outgoing bytes (default: none). */
-  readonly perMessageHeaders?: (bytes: Buffer) => Record<string, string>
-  /** Injected timer (backoff waits, close drain bound). Default: unref'ed setTimeout. */
-  readonly delay?: (ms: number) => Promise<void>
-  readonly sseReconnectMaxAttempts?: number
-  readonly sseReconnectBaseDelayMs?: number
-  readonly sseReconnectMaxDelayMs?: number
-  readonly closeDrainTimeoutMs?: number
-  readonly maxResponseBytes?: number
-  /**
-   * Deliver a non-2xx POST's JSON body as a message instead of failing (RV4):
-   * 2026-07-28 answers method-level errors with 4xx + JSON-RPC body. Status
-   * and `content-type` only, nothing parsed; empty/non-JSON bodies and `404`
-   * on a live session fail as before. Only pool children and the probe ask.
-   */
-  readonly deliverErrorBodies?: boolean
-}
-
-export interface HttpUpstreamClient {
-  readonly source: MessageSource
-  readonly sink: MessageSink
-  /** DELETEs the session (if any), stops the GET stream, waits (bounded) for in-flight POSTs. Idempotent. */
-  close(): Promise<void>
-}
+export type {
+  HttpUpstreamClient,
+  HttpUpstreamClientOptions,
+  HttpUpstreamProtocol,
+  HttpUpstreamRecord,
+} from './client-types.js'
 
 /**
  * Creates one upstream HTTP client. The returned `sink` POSTs every message
@@ -225,7 +192,7 @@ export function createHttpUpstreamClient(
     isDetector: boolean,
     onDispatched: () => void,
   ): Promise<void> {
-    const { response, dispatched } = startRequest(url, 'POST', postHeaders(message), message.bytes, host)
+    const { response, dispatched } = startRequest(url, 'POST', postHeaders(message), message.bytes, host, opts.guard)
     void dispatched.then(onDispatched)
     const res = await response
     const status = res.statusCode ?? 0
@@ -300,7 +267,7 @@ export function createHttpUpstreamClient(
   /** Opens the GET stream once; `'unsupported'` means 405 (valid: no stream). */
   async function openGetOnce(): Promise<'unsupported' | Promise<void>> {
     const headers = { accept: ACCEPT_SSE_ONLY, ...baseHeaders() }
-    const { req, response } = startRequest(url, 'GET', headers, null, host)
+    const { req, response } = startRequest(url, 'GET', headers, null, host, opts.guard)
     currentGetRequest = req
     const res = await response
     const status = res.statusCode ?? 0
@@ -331,7 +298,9 @@ export function createHttpUpstreamClient(
         // Stream ended cleanly (server closed it): reconnect below.
       } catch (error: unknown) {
         if (isClosed) return
-        if (error instanceof SessionExpiredError) {
+        // Neither heals on a retry: an expired session is gone, and a guard
+        // refusal must reach the operator as itself, not as SseStreamError.
+        if (error instanceof SessionExpiredError || error instanceof UpstreamAddressRefusedError) {
           channel.emitError(error)
           return
         }
@@ -355,7 +324,7 @@ export function createHttpUpstreamClient(
   /** Best-effort session DELETE; any HTTP status (405 included) is acceptable. */
   async function sendSessionDelete(): Promise<void> {
     try {
-      const { response } = startRequest(url, 'DELETE', baseHeaders(), null, host)
+      const { response } = startRequest(url, 'DELETE', baseHeaders(), null, host, opts.guard)
       const res = await response
       res.resume()
     } catch (error: unknown) {

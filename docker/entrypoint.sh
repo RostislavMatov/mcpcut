@@ -37,6 +37,14 @@
 # Origin) allow-list entry and the TLS flag; without them a request by IP is a
 # 403 from the DNS-rebinding screen. Same `${VAR:+…}` rule as the probe hosts.
 # Publishing the port beyond host loopback is compose's half (`ports:`).
+#
+# `MCPCUT_TENANT=1` or `=true` (PRD hosted-accounts, phase 1, ADR-0017) adds
+# `--tenant`: the install refuses stdio servers, reaches only public https
+# upstreams, and caps servers/agents/groups at 5/5/2 — see
+# docs/guide/install.md. Unset or empty: no flag. ANY other value stops the
+# first start with an error instead of being read as "on" or "off" (security
+# review L2 — `${MCPCUT_TENANT:+…}` turned `MCPCUT_TENANT=0` into tenant mode):
+# the mode is fixed at `setup`, so a typo must not quietly pick one.
 set -eu
 
 # A function, not a string: an unquoted `$CLI` would word-split on whatever
@@ -53,6 +61,15 @@ case "${1:-}" in
     # `touch` leaves on the config volume, and treating it as an install would
     # skip `setup` forever while every start died on a config it cannot read.
     if [ ! -s "$CONFIG" ]; then
+      TENANT_FLAG=
+      case "${MCPCUT_TENANT:-}" in
+        '') ;;
+        1|true) TENANT_FLAG=--tenant ;;
+        *)
+          printf 'entrypoint: MCPCUT_TENANT must be 1 or true (tenant mode) or unset/empty (no tenant mode), got "%s"\n' \
+            "$MCPCUT_TENANT" >&2
+          exit 2 ;;
+      esac
       cli setup --yes --supervisor external \
         --data-dir "${MCPCUT_DATA_DIR:-/home/node/.mcpcut/data}" \
         --ui-host "${MCPCUT_UI_HOST:-0.0.0.0}" --ui-port "${MCPCUT_UI_PORT:-8091}" \
@@ -61,6 +78,7 @@ case "${1:-}" in
         ${MCPCUT_SERVE_PROBE_HOST:+--serve-probe-host "$MCPCUT_SERVE_PROBE_HOST"} \
         ${MCPCUT_UI_PUBLIC_URL:+--ui-public-url "$MCPCUT_UI_PUBLIC_URL"} \
         ${MCPCUT_SERVE_PUBLIC_URL:+--serve-public-url "$MCPCUT_SERVE_PUBLIC_URL"} \
+        ${TENANT_FLAG:+"$TENANT_FLAG"} \
         --no-admin
     fi ;;
 esac

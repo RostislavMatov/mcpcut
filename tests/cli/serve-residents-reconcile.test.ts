@@ -3,6 +3,7 @@ import type { AgentRecord } from '../../src/agents/schema.js'
 import { startResidentReconcile, type ResidentReconcile } from '../../src/cli/serve-residents-reconcile.js'
 import type { DesiredResidents } from '../../src/pool/residents.js'
 import type { ServerRecord, StdioServerRecord } from '../../src/registry/schema.js'
+import type { TenantSettings } from '../../src/tenant/settings.js'
 
 /**
  * The reconcile loop (RS4): stores in, the desired residents out to the
@@ -39,7 +40,7 @@ interface Harness {
 
 function createHarness(
   cap = 32,
-  initial: { agents?: readonly AgentRecord[]; servers?: readonly ServerRecord[] } = {},
+  initial: { agents?: readonly AgentRecord[]; servers?: readonly ServerRecord[]; tenant?: TenantSettings } = {},
 ): Harness {
   const harness = {
     agents: initial.agents ?? ([] as readonly AgentRecord[]),
@@ -57,6 +58,7 @@ function createHarness(
     intervalMs: 60_000,
     cap,
     stderr: { write: (line: string) => harness.stderr.push(line) },
+    ...(initial.tenant !== undefined ? { tenant: initial.tenant } : {}),
   })
   loops.push(loop)
   return Object.assign(harness, { loop })
@@ -127,5 +129,28 @@ describe('startResidentReconcile', () => {
     expect(lines).toEqual([
       '[serve] residents: 2 granted stdio server(s) over the cap of 1; they start when an agent asks\n',
     ])
+  })
+
+  test('tenant mode with stdio refused: no stdio server becomes resident, and nothing is reported over the cap', async () => {
+    // Otherwise the supervisor would start each one, have `openUpstream`
+    // refuse it, and retry with backoff until it gives up (ADR-0017 T3).
+    const tenant: TenantSettings = {
+      isTenant: true,
+      stdioServers: 'refused',
+      upstreams: 'public-https',
+      limits: { servers: 5, agents: 5, groups: 2 },
+    }
+    const harness = createHarness(1, {
+      agents: [agent('bot', ['a', 'b'])],
+      servers: [stdio('a'), stdio('b')],
+      tenant,
+    })
+
+    await harness.loop.tick()
+
+    expect(residentsOf(harness)).toEqual([])
+    expect(harness.applied.at(-1)?.desired.overCap ?? []).toEqual([])
+    expect([...(harness.applied.at(-1)?.records.keys() ?? [])]).toEqual([])
+    expect(harness.stderr.filter((line) => line.includes('over the cap'))).toEqual([])
   })
 })

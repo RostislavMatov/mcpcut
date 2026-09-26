@@ -1,4 +1,5 @@
 import { HTTP_PROTOCOL_VALUES } from '../../registry/constants.js'
+import type { StdioServersPolicy } from '../../tenant/settings.js'
 import { html, join, safeUrl, type Html } from '../html.js'
 import type { ServerFormValues } from '../server-form.js'
 import { csrfField } from './csrf-field.js'
@@ -19,7 +20,7 @@ import { csrfField } from './csrf-field.js'
  *    that grants, inventory and quarantine state all hang off — renaming
  *    would silently orphan them (`registry/store.ts updateServer`).
  *
- * Field NAMES stay the contract with `handlers/servers.ts` (`buildCandidate`).
+ * Field NAMES stay the contract with `handlers/servers-candidate.ts` (`buildCandidate`).
  * `args` is a textarea, ONE ARGUMENT PER LINE (the design's row model): an
  * argument may contain commas or spaces and stays one argument.
  */
@@ -92,6 +93,28 @@ function renderTransportNote(): Html {
     <span class="field-hint note-http">http asks for url, protocol and headers. command, args and env are not part of this shape.</span>`
 }
 
+/**
+ * The transport field (ADR-0017 task 8): a two-way pill choice on an ordinary
+ * install, fixed to the single `http` choice — always checked, regardless of
+ * the stored form value — on a `stdioServers: 'refused'` tenant install. No
+ * `value="stdio"` radio is emitted in that case at all, so there is nothing
+ * for a no-JS submit to post but `http`.
+ */
+function renderTransportField(form: ServerFormValues, stdioServers: StdioServersPolicy): Html {
+  if (stdioServers === 'refused') {
+    return html`<div class="field">
+      <span class="label">transport</span>
+      <div class="choices">${choice('transport', 'http', true)}</div>
+      <span class="field-hint">This install reaches only public https servers.</span>
+    </div>`
+  }
+  return html`<div class="field">
+    <span class="label">transport</span>
+    ${choices('transport', TRANSPORT_VALUES, form.transport, DEFAULT_TRANSPORT)}
+    ${renderTransportNote()}
+  </div>`
+}
+
 function renderNameField(form: ServerFormValues, options: ServerDrawerOptions): Html {
   if (options.mode === 'edit') {
     return html`<div class="field">
@@ -114,6 +137,8 @@ export function renderServerDrawer(
   csrfToken: string,
   form: ServerFormValues,
   options: ServerDrawerOptions,
+  /** ADR-0017 task 8: fixes the form to `http` alone and drops the stdio group. Defaults to `'allowed'`. */
+  stdioServers: StdioServersPolicy = 'allowed',
 ): Html {
   const openAttr = options.open ? html` open` : html``
   const alert = options.error !== undefined ? html`<p role="alert">${options.error}</p>` : html``
@@ -132,12 +157,8 @@ export function renderServerDrawer(
         ${csrfField(csrfToken)}
         ${original}
         ${renderNameField(form, options)}
-        <div class="field">
-          <span class="label">transport</span>
-          ${choices('transport', TRANSPORT_VALUES, form.transport, DEFAULT_TRANSPORT)}
-          ${renderTransportNote()}
-        </div>
-        ${renderStdioGroup(form)}
+        ${renderTransportField(form, stdioServers)}
+        ${stdioServers === 'refused' ? html`` : renderStdioGroup(form)}
         ${renderHttpGroup(form)}
         <div class="callout">No secrets here. Values may only reference the vault as <code>vault:&lt;name&gt;</code>. The schema rejects secret-looking literals — tokens, keys, long random strings — and the server is not saved.</div>
         <div class="form-actions">

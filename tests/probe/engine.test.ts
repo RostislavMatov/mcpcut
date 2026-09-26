@@ -20,6 +20,7 @@ import { probe } from '../../src/probe/engine.js'
 import type { ResolveEnvRefsFn } from '../../src/proxy/server-env.js'
 import { REGISTRY_SERVER_NAME_PATTERN } from '../../src/registry/constants.js'
 import { serverRecordSchema, type ServerRecord } from '../../src/registry/schema.js'
+import type { TenantSettings } from '../../src/tenant/settings.js'
 
 /**
  * Probe engine (M5.5 п.1, Task 1). What this file proves:
@@ -329,5 +330,69 @@ describe('probe over http', () => {
     expect(result.status).toBe('unreachable')
     if (result.status !== 'unreachable') return
     expect(result.message).not.toContain(SECRET_VALUE_MARKER)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// tenant mode (ADR-0017 T3/T4): refusals are `error` with the reason, no new status
+// ---------------------------------------------------------------------------
+
+const TENANT: TenantSettings = {
+  isTenant: true,
+  stdioServers: 'refused',
+  upstreams: 'public-https',
+  limits: { servers: 5, agents: 5, groups: 2 },
+}
+
+describe('probe in tenant mode', () => {
+  test('a stdio record → error naming the refusal, before the vault is read or anything spawned', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'mcpcut-probe-tenant-'))
+    const sentinel = join(dir, 'spawned.sentinel')
+    let vaultReads = 0
+    const record = stdioRecord(['-e', `require('node:fs').writeFileSync(${JSON.stringify(sentinel)}, 'x')`])
+
+    const result = await probe(record, {
+      processEnv: process.env,
+      resolveRefs: (declared) => {
+        vaultReads += 1
+        return resolvePassthrough(declared)
+      },
+      tenant: TENANT,
+      ...FAST_CHILD_TIMINGS,
+    })
+
+    expect(result).toEqual({
+      status: 'error',
+      message:
+        'server "probe-target" is stdio: this install refuses stdio servers (tenant mode) — register it over https',
+    })
+    expect(vaultReads).toBe(0)
+    expect(existsSync(sentinel)).toBe(false)
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  test('an https loopback literal → error with the guard reason, and no connection is made', async () => {
+    let connections = 0
+    const listener = createNetServer((socket) => {
+      connections += 1
+      socket.destroy()
+    })
+    await new Promise<void>((resolve) => listener.listen(0, '127.0.0.1', resolve))
+    const port = (listener.address() as AddressInfo).port
+
+    const result = await probe(httpRecord(`https://127.0.0.1:${port}/mcp`, 'auto'), {
+      ...baseDeps(),
+      tenant: TENANT,
+      timeoutMs: 2_000,
+    })
+    await new Promise<void>((resolve) => listener.close(() => resolve()))
+
+    expect(result).toEqual({
+      status: 'error',
+      message:
+        'refused to connect to 127.0.0.1: it is a loopback address; ' +
+        'this install reaches only public https servers (tenant mode)',
+    })
+    expect(connections).toBe(0)
   })
 })

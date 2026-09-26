@@ -6,6 +6,7 @@ import { createAgentsStore } from '../../src/agents/store.js'
 import { createGroupsStore } from '../../src/groups/store.js'
 import type { AccessEditInfo } from '../../src/journal/record.js'
 import { createRegistryStore } from '../../src/registry/store.js'
+import type { TenantSettings } from '../../src/tenant/settings.js'
 import { createVaultStore } from '../../src/vault/store.js'
 import type { InventoryStoreData } from '../../src/policy/inventory-store.js'
 import { AUDIT_RECORD_DROPPED_WARNING } from '../../src/ui/constants.js'
@@ -42,9 +43,9 @@ interface Harness {
  * `inventory` wires the OPTIONAL read port: with it the page lists each
  * server's tools; without it (the default) the page renders as before.
  */
-function makeHarness(inventory?: InventoryStoreData): Harness {
+function makeHarness(inventory?: InventoryStoreData, tenant?: TenantSettings): Harness {
   const dir = mkdtempSync(join(tmpdir(), 'mcp-ui-servers-'))
-  const registry = createRegistryStore(dir)
+  const registry = createRegistryStore(dir, tenant !== undefined ? { tenant } : undefined)
   const agents = createAgentsStore({ journalDir: dir })
   const groups = createGroupsStore({ journalDir: dir })
   const vault = createVaultStore({ journalDir: dir })
@@ -63,6 +64,7 @@ function makeHarness(inventory?: InventoryStoreData): Harness {
     },
     diagnostics: (line) => diagnostics.push(line),
     ...(inventory !== undefined ? { readInventory: async () => inventory } : {}),
+    ...(tenant !== undefined ? { tenant } : {}),
   })
   return {
     dir,
@@ -1401,5 +1403,82 @@ describe('serversPage — args row editor contract (servers.js)', () => {
     const body = String(asResponse(await h.handlers.serversPage(getCtx())).body)
     expect(body).toContain('<script src="/assets/servers.js" defer></script>')
     expect(body).toContain('class="field args-field"')
+  })
+})
+
+/** A `stdioServers: 'refused'` tenant with a 5-server ceiling (ADR-0017 T5's HA7 default). */
+const STDIO_REFUSED_TENANT: TenantSettings = {
+  isTenant: true,
+  stdioServers: 'refused',
+  upstreams: 'public-https',
+  limits: { servers: 5, agents: 5, groups: 2 },
+}
+
+describe('tenant mode (ADR-0017, task 8)', () => {
+  test('the register drawer has no stdio choice and shows the https-only note', async () => {
+    h = makeHarness(undefined, STDIO_REFUSED_TENANT)
+    const body = String(
+      asResponse(await h.handlers.serversPage(getCtx({ query: new URLSearchParams('add=1') }))).body,
+    )
+    expect(body).not.toContain('value="stdio"')
+    expect(body).toContain('value="http" checked')
+    expect(body).toContain('This install reaches only public https servers.')
+  })
+
+  test('an ordinary install keeps the two-way stdio/http choice', async () => {
+    h = makeHarness()
+    const body = String(
+      asResponse(await h.handlers.serversPage(getCtx({ query: new URLSearchParams('add=1') }))).body,
+    )
+    expect(body).toContain('value="stdio"')
+    expect(body).toContain('value="http"')
+    expect(body).not.toContain('This install reaches only public https servers.')
+  })
+
+  test('the servers counter divides by the tenant ceiling, not the unrestricted one', async () => {
+    h = makeHarness(undefined, STDIO_REFUSED_TENANT)
+    await h.registry.addServer({ name: 'srv', transport: 'http', url: 'https://example.com/mcp' })
+    const body = String(asResponse(await h.handlers.serversPage(getCtx())).body)
+    expect(body).toContain('1 / 5 servers')
+  })
+
+  test('POST /servers/add with transport=stdio is refused with the StdioServerRefusedError text, not a 500', async () => {
+    h = makeHarness(undefined, STDIO_REFUSED_TENANT)
+    const res = asResponse(
+      await h.handlers.serversAdd(
+        formPost({
+          csrf_token: OWNER.csrfToken,
+          name: 'legacy-fs',
+          transport: 'stdio',
+          command: 'npx',
+          confirm: 'true',
+        }),
+      ),
+    )
+    expect(res.status).toBe(400)
+    expect(String(res.body)).toContain('this install refuses stdio servers (tenant mode)')
+    expect(await h.registry.getServer('legacy-fs')).toBeUndefined()
+  })
+
+  test('POST /servers/edit with transport=stdio is refused the same way', async () => {
+    h = makeHarness(undefined, STDIO_REFUSED_TENANT)
+    await h.registry.addServer({ name: 'pg', transport: 'http', url: 'https://example.com/mcp' })
+    const res = asResponse(
+      await h.handlers.serversEdit(
+        formPost(
+          {
+            csrf_token: OWNER.csrfToken,
+            original: 'pg',
+            transport: 'stdio',
+            command: 'node',
+            confirm: 'true',
+          },
+          '/servers/edit',
+        ),
+      ),
+    )
+    expect(res.status).toBe(400)
+    expect(String(res.body)).toContain('this install refuses stdio servers (tenant mode)')
+    expect((await h.registry.getServer('pg'))?.transport).toBe('http')
   })
 })

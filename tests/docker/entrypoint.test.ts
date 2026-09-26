@@ -202,6 +202,62 @@ describe.skipIf(process.platform === 'win32')('docker/entrypoint.sh', () => {
     )
   })
 
+  test('MCPCUT_TENANT=1 adds --tenant to the setup call', () => {
+    runEntrypoint(['ui'], { MCPCUT_TENANT: '1' })
+
+    expect(loggedArgv()[0]).toContain(' --tenant')
+  })
+
+  test('without MCPCUT_TENANT the setup call carries no --tenant flag', () => {
+    runEntrypoint(['ui'])
+
+    expect(loggedArgv()[0]).toBe(SETUP_ARGV)
+  })
+
+  test('an empty MCPCUT_TENANT adds no flag, same rule as the probe-host variables', () => {
+    runEntrypoint(['ui'], { MCPCUT_TENANT: '' })
+
+    expect(loggedArgv()[0]).toBe(SETUP_ARGV)
+  })
+
+  /**
+   * Security review L2: `${MCPCUT_TENANT:+--tenant}` read ANY non-empty value
+   * as "on", so `MCPCUT_TENANT=0` built a hosted install in tenant mode. Only
+   * `1`/`true` turn it on; anything else that is not empty stops the first
+   * start loudly, before `setup` writes a config in either mode.
+   */
+  test.each(['1', 'true'])('MCPCUT_TENANT=%s puts --tenant just before --no-admin', (value) => {
+    const { status, stderr } = runEntrypoint(['ui'], { MCPCUT_TENANT: value })
+
+    expect(stderr).toBe('')
+    expect(status).toBe(0)
+    expect(loggedArgv()).toEqual([
+      SETUP_ARGV.replace(' --no-admin', ' --tenant --no-admin'),
+      '/app/dist/cli.js ui',
+    ])
+  })
+
+  test.each(['0', 'false', 'yes', 'TRUE', ' 1'])(
+    'MCPCUT_TENANT=%j is refused: stderr names the variable, non-zero exit, no setup, no exec',
+    (value) => {
+      const { status, stderr } = runEntrypoint(['ui'], { MCPCUT_TENANT: value })
+
+      expect(status).not.toBe(0)
+      expect(stderr).toContain('MCPCUT_TENANT')
+      expect(stderr).toContain('1 or true')
+      expect(loggedArgv()).toEqual([])
+      expect(existsSync(configPath)).toBe(false)
+    },
+  )
+
+  test.skipIf(DASH === undefined)('dash refuses MCPCUT_TENANT=0 too', () => {
+    const { status, stderr } = runEntrypoint(['serve'], { MCPCUT_TENANT: '0' }, DASH)
+
+    expect(status).not.toBe(0)
+    expect(stderr).toContain('MCPCUT_TENANT')
+    expect(loggedArgv()).toEqual([])
+  })
+
   test('a non-service command never triggers setup', () => {
     const { status } = runEntrypoint(['--help'])
 

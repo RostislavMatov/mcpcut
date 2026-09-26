@@ -227,20 +227,39 @@ describe('transport modules stay ignorant of JSON-RPC/MCP semantics', () => {
  * in M4) may import without pulling in transport machinery — which only holds
  * while it depends on nothing but the platform. Any project-internal import
  * would re-create the coupling the module exists to avoid.
+ *
+ * A SIBLING inside `src/net` (`./x.js`, same directory, no `..`) is allowed:
+ * every such file is held to this same rule, so the closure is still the
+ * platform alone. Tenant mode (ADR-0017 T4) needs it — the SSRF guard
+ * (`upstream-guard.ts`) is built on the address classifier
+ * (`address-class.ts`), and folding both into one file would only trade this
+ * clause for a file past the size budget.
  */
+function isNetSibling(specifier: string): boolean {
+  return /^\.\/[^/]+\.js$/.test(specifier)
+}
+
 describe('src/net stays dependency-free', () => {
   test.each(collectTransportFiles(PROJECT_ROOT, ['src/net'], new Set()))(
-    '%s imports only node:* modules',
+    '%s imports only node:* modules and src/net siblings',
     (relativePath) => {
       const source = readFileSync(join(PROJECT_ROOT, relativePath), 'utf8')
 
       const offending = importSpecifiersOf(source).filter(
-        (specifier) => !specifier.startsWith('node:'),
+        (specifier) => !specifier.startsWith('node:') && !isNetSibling(specifier),
       )
 
       expect(offending).toEqual([])
     },
   )
+
+  test('the sibling clause admits only same-directory modules', () => {
+    expect(isNetSibling('./address-class.js')).toBe(true)
+    expect(isNetSibling('../transport/http/client-errors.js')).toBe(false)
+    expect(isNetSibling('./../config.js')).toBe(false)
+    expect(isNetSibling('./sub/x.js')).toBe(false)
+    expect(isNetSibling('zod')).toBe(false)
+  })
 
   test('the net directory is present and covered (the rule is not vacuous)', () => {
     expect(collectTransportFiles(PROJECT_ROOT, ['src/net'], new Set())).toContain(

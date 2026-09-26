@@ -261,6 +261,66 @@ describe('overlaySetupArgs: the flags the operator typed, laid over the config t
   })
 })
 
+describe('--tenant: writes the strict hosted preset (PRD hosted-accounts, phase 1, task 2)', () => {
+  test('parses the bare flag', () => {
+    const parsed = parseSetupArgs(['--yes', '--tenant'])
+
+    expect(parsed).toEqual({
+      ok: true,
+      args: { yes: true, force: false, start: false, noAdmin: false, tenant: true },
+    })
+  })
+
+  test('without the flag, tenant is absent — not false', () => {
+    const parsed = parseSetupArgs(['--yes'])
+
+    expect(parsed.ok).toBe(true)
+    expect(parsed.ok && parsed.args).not.toHaveProperty('tenant')
+  })
+
+  test('overlays the explicit preset, not an empty section', () => {
+    const overlaid = overlaySetupArgs(defaultInstallConfig('/var/lib/mcpcut'), { ...NO_SETUP_ARGS, tenant: true }, '/work')
+
+    expect(overlaid.tenant).toEqual({
+      stdioServers: 'refused',
+      upstreams: 'public-https',
+      maxServers: 5,
+      maxAgents: 5,
+      maxGroups: 2,
+    })
+  })
+
+  test('NO_SETUP_ARGS (the flag not given) writes no tenant section at all', () => {
+    const base = defaultInstallConfig('/var/lib/mcpcut')
+
+    expect(overlaySetupArgs(base, NO_SETUP_ARGS, '/work').tenant).toBeUndefined()
+  })
+
+  test('a rerun without --tenant keeps the section an earlier run wrote', () => {
+    const base: InstallConfig = {
+      ...defaultInstallConfig('/var/lib/mcpcut'),
+      tenant: { stdioServers: 'refused', upstreams: 'public-https', maxServers: 5, maxAgents: 5, maxGroups: 2 },
+    }
+
+    const overlaid = overlaySetupArgs(base, { ...NO_SETUP_ARGS, uiPort: 9001 }, '/work')
+
+    expect(overlaid.tenant).toEqual(base.tenant)
+  })
+
+  test('never mutates the config it was handed', () => {
+    const base = defaultInstallConfig('/var/lib/mcpcut')
+    const snapshot = structuredClone(base)
+
+    overlaySetupArgs(base, { ...NO_SETUP_ARGS, tenant: true }, '/work')
+
+    expect(base).toEqual(snapshot)
+  })
+
+  test('the usage names the flag', () => {
+    expect(SETUP_USAGE).toContain('--tenant')
+  })
+})
+
 describe('SETUP_USAGE', () => {
   test('shows the synopsis the plan fixed, so a refusal tells the operator what to type', () => {
     expect(SETUP_USAGE).toContain('mcpcut setup --yes')

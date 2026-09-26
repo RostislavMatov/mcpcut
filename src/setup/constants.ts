@@ -177,3 +177,23 @@ export const CHECK_LEVEL_COLUMN = 4
  * the warning that matters.
  */
 export const LOOPBACK_IPV4_PREFIX = '127.'
+
+// ---------------------------------------------------------------------------
+// Tenant mode (PRD `hosted-accounts`, phase 1, task 1, ADR-0017): upper bounds
+// for the `tenant.maxServers`/`maxAgents`/`maxGroups` fields. These MIRROR
+// `MAX_SERVERS_IN_REGISTRY` (`registry/constants.ts`), `MAX_AGENTS`
+// (`agents/constants.ts`) and `MAX_GROUPS` (`groups/constants.ts`) rather than
+// importing them: those three modules import `../config.js`, which resolves
+// through this very chain (see the IMPORT INVARIANT at the top of this file),
+// so an import back here would close a cycle. `tests/setup/schema.test.ts`
+// pins the two sets of numbers equal.
+// ---------------------------------------------------------------------------
+
+/** Upper bound of `tenant.maxServers` — mirrors `MAX_SERVERS_IN_REGISTRY`. */
+export const MAX_TENANT_SERVERS_BOUND = 200
+
+/** Upper bound of `tenant.maxAgents` — mirrors `MAX_AGENTS`. */
+export const MAX_TENANT_AGENTS_BOUND = 200
+
+/** Upper bound of `tenant.maxGroups` — mirrors `MAX_GROUPS`. */
+export const MAX_TENANT_GROUPS_BOUND = 100

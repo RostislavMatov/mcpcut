@@ -3,6 +3,7 @@ import { compareAsText } from '../agents/effective.js'
 import type { MethodGrantsInput } from '../agents/grant-input.js'
 import { RESERVED_OBJECT_KEYS } from '../policy/constants.js'
 import { createJsonStore, type JsonStore } from '../policy/store.js'
+import { TENANT_SETTINGS, type TenantSettings } from '../tenant/settings.js'
 import { assertValidAgentName, assertValidServerName, buildGrant } from '../agents/grant-input.js'
 import { GROUP_NAME_PATTERN, groupsFilePath } from './constants.js'
 import { parseGroupsFile, type GroupRecord, type GroupsFile } from './schema.js'
@@ -48,6 +49,20 @@ export class InvalidGroupNameError extends Error {
   constructor(name: string) {
     super(`invalid group name "${name}": must match ${GROUP_NAME_PATTERN.source}`)
     this.name = 'InvalidGroupNameError'
+  }
+}
+
+/**
+ * Raised by `createGroup` (tenant mode) once the store already holds
+ * `tenant.limits.groups` records. Enforced on WRITE only, same GOTCHA as
+ * `TooManyServersError` (`src/registry/store.ts`): the read schema's own
+ * ceiling (`MAX_GROUPS`) is untouched, so a tenant mode turned on over an
+ * already-large install keeps reading fine.
+ */
+export class TooManyGroupsError extends Error {
+  constructor(max: number) {
+    super(`too many groups: max ${max} (tenant mode)`)
+    this.name = 'TooManyGroupsError'
   }
 }
 
@@ -136,6 +151,8 @@ export interface GroupsStoreOptions {
   readonly journalDir?: string
   /** Clock override for deterministic timestamps in tests. */
   readonly clock?: () => Date
+  /** Tenant settings this store enforces on write. Defaults to `TENANT_SETTINGS`. */
+  readonly tenant?: TenantSettings
 }
 
 const EMPTY_FILE: GroupsFile = { version: 1, groups: {} }
@@ -198,6 +215,7 @@ function withMember(members: readonly string[], agent: string): readonly string[
 
 export function createGroupsStore(opts: GroupsStoreOptions = {}): GroupsStore {
   const clock = opts.clock ?? (() => new Date())
+  const tenant = opts.tenant ?? TENANT_SETTINGS
   const store: JsonStore<GroupsFile> = createJsonStore(groupsFilePath(opts.journalDir), {
     validate: validateGroupsFile,
     defaultValue: EMPTY_FILE,
@@ -217,6 +235,9 @@ export function createGroupsStore(opts: GroupsStoreOptions = {}): GroupsStore {
 
     await store.update((current) => {
       if (ownGroup(current, name) !== undefined) throw new GroupExistsError(name)
+      if (tenant.isTenant && Object.keys(current.groups).length >= tenant.limits.groups) {
+        throw new TooManyGroupsError(tenant.limits.groups)
+      }
       return withGroup(current, record)
     })
 

@@ -121,6 +121,81 @@ back to the defaults: a command that silently succeeded against a different
 data directory would be the worst possible outcome. Fix the file (or point
 `MCPCUT_CONFIG` elsewhere), or let `setup --force` rewrite it.
 
+### Tenant mode (hosted)
+
+A `tenant` section in `config.json` turns this install into one meant to be
+handed to somebody who is not you — see
+[ADR-0017](../adr/0017-hosted-install-per-tenant.md) for the reasoning and
+what was rejected. No section: the install behaves exactly as everywhere
+else in this guide, byte for byte. A present section — even an empty
+`tenant: {}` — reads as **fully locked down**: every field it omits takes the
+strict default below, not the permissive one, so leaving a key out can never
+quietly reopen it.
+
+```json
+"tenant": {
+  "stdioServers": "refused",
+  "upstreams": "public-https",
+  "maxServers": 5,
+  "maxAgents": 5,
+  "maxGroups": 2
+}
+```
+
+| Key | Values | Strict default | What it does |
+|---|---|---|---|
+| `stdioServers` | `allowed` \| `refused` | `refused` | `refused` stops a `stdio` server from ever being registered, edited onto, or started — a `stdio` record is an arbitrary command run on this host on the owner's behalf. |
+| `upstreams` | `any` \| `public-https` | `public-https` | `public-https` allows only `https://` upstream URLs, and only to a resolved address that is public: loopback, private, link-local (including the `169.254.169.254` metadata address), CGNAT, unspecified, multicast, reserved and documentation ranges are all refused — checked on every connection, not only at registration. |
+| `maxServers` / `maxAgents` / `maxGroups` | integers (up to 200 / 200 / 100) | `5` / `5` / `2` | Ceilings on the three stores, enforced only on write — turning the mode on over an install that already holds more never breaks reading it. |
+
+Write the strict preset without typing every field: `mcpcut setup --yes --tenant`
+(the wizard has no equivalent question — this is a scripted-deploy flag).
+There is no `--no-tenant`: a hosted install's own `setup` reruns are how its
+owner adjusts a bind, not a lever a tenant could use to escape their own
+install, so the section survives every later run that does not repeat the
+flag. In Docker, `MCPCUT_TENANT=1` (or `true`) has the entrypoint add
+`--tenant` to its own first `setup --yes`; any other non-empty value, `0`
+included, stops the container with an error rather than guessing (see
+`docker-compose.yml`).
+
+What each refusal looks like, so a hosted owner's tools show a reason instead
+of an opaque failure:
+
+- Registering or editing a server as `stdio` — from the CLI, the web form,
+  the console or the remote console — refuses with `server "<name>" is stdio: this install refuses stdio
+  servers (tenant mode) — register it over https`. A `stdio` record written
+  *before* the mode was turned on is locked at start too: `connect`, the
+  probe and `serve` all refuse it the same way, so restarting cannot revive
+  it.
+- Registering a non-`https` URL refuses with `url: this install reaches only
+  https servers (tenant mode)`.
+- An `https` upstream that resolves to (or is literally) a non-public address
+  is refused with `refused to connect to <host>: it resolves to a <kind>
+  address; this install reaches only public https servers (tenant mode)` —
+  the address it actually resolved to is never named, so a hosted owner never
+  learns the host's internal DNS. A probe hits this the same way any other
+  request does: it comes back `error` with the reason, never a silent
+  `unreachable`.
+- A sixth server (or agent, or a third group) refuses with `too many servers:
+  max 5 (tenant mode)` (agents and groups word the same way).
+- The web server form drops the `stdio` choice entirely: one `http` pill,
+  already selected, with the note "This install reaches only public https
+  servers." — there is nothing to submit but `http`.
+- [The console](console.md), including [over the network](console.md#a-console-for-a-service-on-another-host---remote-preview),
+  additionally refuses any command that names a path on the machine running
+  the service — `backup`, `migrate`, `start`, `stop`, `logs`,
+  `policy validate`, or a flag such as `--policy`/`--out`/`--report`/`--pub` —
+  with "This command names a path on the server; a hosted install does not
+  run it (tenant mode)." A streamed `export` (no `--out`/`--report`) still
+  works: the file lands on the client, never on the server.
+
+What tenant mode does **not** give you: process, filesystem, network or
+memory isolation between installs sharing a host. It closes what the product
+itself would otherwise do on an owner's behalf; isolating one hosted install
+from the next — a data directory, a `ui`/`serve` pair and a vault per tenant,
+kept apart at the OS or container level — is a deployment concern this switch
+does not touch.
+
 ### The first owner
 
 `setup` (and the wizard) create the first `owner` admin and show its token

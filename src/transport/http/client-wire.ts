@@ -1,5 +1,6 @@
 import { request as httpRequest, type ClientRequest, type IncomingMessage } from 'node:http'
-import { request as httpsRequest } from 'node:https'
+import { request as httpsRequest, type RequestOptions } from 'node:https'
+import { UpstreamAddressRefusedError, type UpstreamGuard } from '../../net/upstream-guard.js'
 import type { McpMessage, MessageSource } from '../message.js'
 import { UpstreamConnectionError, UpstreamResponseError } from './client-errors.js'
 import { createSseParser, type SseItem } from './sse-parse.js'
@@ -116,7 +117,8 @@ export function createChannel(onDispose: () => void): Channel {
 }
 
 export interface StartedRequest {
-  readonly req: ClientRequest
+  /** `null` when the guard refused the URL: no request was ever created. */
+  readonly req: ClientRequest | null
   readonly response: Promise<IncomingMessage>
   /**
    * Resolves once this request's body has been fully handed off to the
@@ -134,6 +136,22 @@ export interface StartedRequest {
  * `UpstreamConnectionError` naming only method + host (error hygiene — see
  * `./client-errors.ts`). The `req` handle is exposed so a long-lived GET
  * stream can be destroyed on close.
+ *
+ * With a `guard` (tenant mode, ADR-0017 T4) the URL is checked BEFORE the
+ * request exists — `net.connect` never calls `lookup` for an IP literal, so
+ * this is the only place a literal is seen — and the guard's `lookup` resolves
+ * the socket's address, so the checked answer is the dialed one. Host header
+ * and TLS servername still come from the URL. The socket comes from the
+ * guard's own keep-alive pool (`guard.agent`), never from the process-wide
+ * `https.globalAgent`: a pooled socket is reused without a fresh lookup, so the
+ * only safe pool is one whose every socket was opened through the guard
+ * (security review M1 — the old reasoning "every client in a tenant install
+ * carries a guard" held only until one unguarded https client appeared).
+ *
+ * A refusal rejects with the guard's own `UpstreamAddressRefusedError`, NOT
+ * wrapped: its message is hygienic by construction (host as written + the
+ * category of address) and is the reason the operator must read — a wrapper
+ * would reduce it to its error code.
  */
 export function startRequest(
   url: URL,
@@ -141,18 +159,27 @@ export function startRequest(
   headers: Record<string, string>,
   body: Buffer | null,
   host: string,
+  guard?: UpstreamGuard,
 ): StartedRequest {
+  if (guard !== undefined) {
+    try {
+      guard.checkUrl(url)
+    } catch (error: unknown) {
+      return { req: null, response: Promise.reject(error), dispatched: Promise.resolve() }
+    }
+  }
   const requestFn = url.protocol === 'https:' ? httpsRequest : httpRequest
+  const options = requestOptionsOf(url, method, headers, guard)
   let req!: ClientRequest
   let resolveDispatched!: () => void
   const dispatched = new Promise<void>((resolve) => {
     resolveDispatched = resolve
   })
   const response = new Promise<IncomingMessage>((resolve, reject) => {
-    req = requestFn(url, { method, headers }, resolve)
+    req = requestFn(url, options, resolve)
     req.on('error', (error: unknown) => {
       resolveDispatched()
-      reject(new UpstreamConnectionError(method, host, error))
+      reject(connectionFailureOf(method, host, error))
     })
     req.once('finish', resolveDispatched)
     if (body !== null) {
@@ -162,6 +189,33 @@ export function startRequest(
     }
   })
   return { req, response, dispatched }
+}
+
+/**
+ * Request options, with the guard's pool and resolver when there is a guard.
+ * `lookup` rides on the request as well as inside the agent: the agent's copy
+ * wins (its options override the request's), the request's copy keeps the
+ * socket guarded should the agent ever lack one. The agent goes only on an
+ * `https:` request — an `https.Agent` refuses any other protocol, and a real
+ * guard lets nothing else through `checkUrl`, so an `http:` request with a
+ * guard exists only under a test stand-in guard.
+ */
+function requestOptionsOf(
+  url: URL,
+  method: string,
+  headers: Record<string, string>,
+  guard: UpstreamGuard | undefined,
+): RequestOptions {
+  if (guard === undefined) return { method, headers }
+  if (url.protocol !== 'https:') return { method, headers, lookup: guard.lookup }
+  return { method, headers, lookup: guard.lookup, agent: guard.agent }
+}
+
+/** A guard refusal travels as itself (see `startRequest`); anything else is wrapped. */
+function connectionFailureOf(method: string, host: string, error: unknown): Error {
+  return error instanceof UpstreamAddressRefusedError
+    ? error
+    : new UpstreamConnectionError(method, host, error)
 }
 
 /** Buffers a whole response body, failing (and dropping the socket) past `maxBytes`. */

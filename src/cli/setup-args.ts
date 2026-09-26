@@ -4,6 +4,7 @@ import { formatReadableField } from '../journal/format.js'
 import { SUPERVISORS, type Supervisor } from '../setup/constants.js'
 import { applyPublicUrl, parsePublicUrl, type PublicUrl } from '../setup/public-url.js'
 import type { InstallConfig } from '../setup/schema.js'
+import { STRICT_TENANT_SECTION } from '../tenant/settings.js'
 import { MAX_TCP_PORT } from './serve-constants.js'
 
 /**
@@ -54,6 +55,14 @@ export interface SetupArgs {
   readonly uiPublicUrl?: PublicUrl
   /** The address agents will dial `serve` at; its Host entry and (for plain http) the bind follow from it. */
   readonly servePublicUrl?: PublicUrl
+  /**
+   * Writes the strict hosted preset (PRD `hosted-accounts`, phase 1, task 2,
+   * ADR-0017) as the config's `tenant` section. Only ever `true` here — there
+   * is no `--no-tenant`: a rerun that omits the flag leaves whatever an
+   * earlier run wrote untouched (`withTenantPreset`), it never turns the mode
+   * back off.
+   */
+  readonly tenant?: true
 }
 
 /**
@@ -70,7 +79,28 @@ export const NO_SETUP_ARGS: SetupArgs = { yes: false, force: false, start: false
  * so every field that was not asked about is carried across untouched.
  */
 export function overlaySetupArgs(base: InstallConfig, args: SetupArgs, cwd: string): InstallConfig {
-  return withPublicUrls(overlayTypedFlags(base, args, cwd), args)
+  return withTenantPreset(withPublicUrls(overlayTypedFlags(base, args, cwd), args), args)
+}
+
+/**
+ * The preset `--tenant` writes: explicit values for every field, not an empty
+ * `tenant: {}` — `config.json` is read by a human, and a bare section would
+ * send them looking up what "empty" defaults to. The values are the same
+ * table a present-but-partial section falls back to (`STRICT_TENANT_SECTION`).
+ */
+const TENANT_PRESET: NonNullable<InstallConfig['tenant']> = { ...STRICT_TENANT_SECTION }
+
+/**
+ * `--tenant` writes the preset above; without it, whatever `tenant` section
+ * `base` already carries survives untouched (it is part of the `...config`
+ * spread every other field goes through). There is no way to remove the
+ * section from the CLI on purpose: a hosted install's own `setup` reruns are
+ * how an operator adjusts a bind, not a lever a tenant could use to escape
+ * their own install (`setup` itself is outside the remote console's
+ * allowlist — `console-run.ts`).
+ */
+function withTenantPreset(config: InstallConfig, args: SetupArgs): InstallConfig {
+  return args.tenant === true ? { ...config, tenant: TENANT_PRESET } : config
 }
 
 /**
@@ -155,6 +185,7 @@ interface SetupFlagValues {
   readonly supervisor?: string | undefined
   readonly 'ui-public-url'?: string | undefined
   readonly 'serve-public-url'?: string | undefined
+  readonly tenant?: boolean | undefined
 }
 
 /** Parses `setup` argv; every refusal is a sentence, never a bare `undefined`. */
@@ -201,6 +232,7 @@ export function parseSetupArgs(args: readonly string[]): SetupArgsResult {
       ...(supervisor.supervisor !== undefined ? { supervisor: supervisor.supervisor } : {}),
       ...(uiPublicUrl.url !== undefined ? { uiPublicUrl: uiPublicUrl.url } : {}),
       ...(servePublicUrl.url !== undefined ? { servePublicUrl: servePublicUrl.url } : {}),
+      ...(parsed.values.tenant === true ? { tenant: true as const } : {}),
     },
   }
 }
@@ -247,6 +279,7 @@ function parseFlags(args: readonly string[]): FlagsResult {
         supervisor: { type: 'string' },
         'ui-public-url': { type: 'string' },
         'serve-public-url': { type: 'string' },
+        tenant: { type: 'boolean' },
       },
       allowPositionals: true,
       strict: true,

@@ -13,6 +13,8 @@ import { splice } from '../proxy/splice.js'
 import { createOrderedWriter } from '../proxy/writer.js'
 import type { ServerRecord } from '../registry/schema.js'
 import type { SessionEndpoints } from '../session/core.js'
+import { StdioServerRefusedError } from '../tenant/errors.js'
+import { TENANT_SETTINGS, upstreamGuardFor, type TenantSettings } from '../tenant/settings.js'
 import { perMessageHeadersOptionOf } from '../session/per-message-headers.js'
 import {
   createHttpUpstreamClient,
@@ -88,8 +90,13 @@ export interface PreparedUpstream {
 
 export type PrepareUpstreamResult =
   | { readonly status: 'prepared'; readonly upstream: PreparedUpstream }
-  /** Vault/env resolution failed; `message` is the complete operator text. */
-  | { readonly status: 'refused'; readonly message: string }
+  /**
+   * Refused before anything was spawned or connected; `message` is the
+   * complete operator text. `reason` says who refused: the vault (env/header
+   * resolution) or tenant mode (a stdio record on an install that runs none —
+   * ADR-0017 T3). The probe reports the two differently.
+   */
+  | { readonly status: 'refused'; readonly reason: 'vault' | 'tenant'; readonly message: string }
 
 export interface PrepareUpstreamArgs {
   readonly record: ServerRecord
@@ -115,6 +122,8 @@ export interface PrepareUpstreamArgs {
    * body, which must reach the probe as an answer. `connect` asks for nothing.
    */
   readonly httpClient?: Pick<HttpUpstreamClientOptions, 'deliverErrorBodies'>
+  /** Tenant mode (ADR-0017): stdio lock and upstream guard. Defaults to `TENANT_SETTINGS`. */
+  readonly tenant?: TenantSettings
 }
 
 /** One operator line per resolution failure shape; every referenced-but-absent name is listed. */
@@ -143,40 +152,64 @@ export function formatVaultFailure(
 }
 
 export async function prepareUpstream(args: PrepareUpstreamArgs): Promise<PrepareUpstreamResult> {
-  if (args.record.transport === 'stdio') {
-    const built = await buildServerEnv({
-      processEnv: args.processEnv,
-      allowlist: args.systemEnvAllowlist ?? SYSTEM_ENV_ALLOWLIST,
-      declaredEnv: args.record.env ?? {},
-      resolveRefs: args.resolveRefs,
-    })
-    if (built.status !== 'built') {
-      return { status: 'refused', message: formatVaultFailure('env', built) }
-    }
-    const record = args.record
-    const env = built.env
-    return {
-      status: 'prepared',
-      upstream: {
-        dropClientBlanks: false,
-        guardInitialize: false,
-        open: () => openStdioUpstream(args, record.command, record.args ?? [], env),
-      },
-    }
-  }
-
-  const resolved = await args.resolveRefs({ ...args.record.headers })
-  if (resolved.status !== 'resolved') {
-    return { status: 'refused', message: formatVaultFailure('headers', resolved) }
-  }
+  const tenant = args.tenant ?? TENANT_SETTINGS
   const record = args.record
+  if (record.transport === 'stdio') {
+    // The start-time lock (ADR-0017 T3): the registry gate refuses a NEW stdio
+    // record, but one written before the mode was turned on still exists.
+    // Checked before the vault is read — nothing about it may run.
+    if (tenant.stdioServers === 'refused') {
+      const refusal = new StdioServerRefusedError(record.name)
+      return { status: 'refused', reason: 'tenant', message: `${refusal.message}\n` }
+    }
+    return prepareStdio(args, record)
+  }
+  return prepareHttp(args, record, tenant)
+}
+
+async function prepareStdio(
+  args: PrepareUpstreamArgs,
+  record: Extract<ServerRecord, { transport: 'stdio' }>,
+): Promise<PrepareUpstreamResult> {
+  const built = await buildServerEnv({
+    processEnv: args.processEnv,
+    allowlist: args.systemEnvAllowlist ?? SYSTEM_ENV_ALLOWLIST,
+    declaredEnv: record.env ?? {},
+    resolveRefs: args.resolveRefs,
+  })
+  if (built.status !== 'built') {
+    return { status: 'refused', reason: 'vault', message: formatVaultFailure('env', built) }
+  }
+  const env = built.env
+  return {
+    status: 'prepared',
+    upstream: {
+      dropClientBlanks: false,
+      guardInitialize: false,
+      open: () => openStdioUpstream(args, record.command, record.args ?? [], env),
+    },
+  }
+}
+
+/** The http branch; the client carries the tenant-mode guard when there is one (ADR-0017 T4). */
+async function prepareHttp(
+  args: PrepareUpstreamArgs,
+  record: Extract<ServerRecord, { transport: 'http' }>,
+  tenant: TenantSettings,
+): Promise<PrepareUpstreamResult> {
+  const resolved = await args.resolveRefs({ ...record.headers })
+  if (resolved.status !== 'resolved') {
+    return { status: 'refused', reason: 'vault', message: formatVaultFailure('headers', resolved) }
+  }
   const headers = resolved.values
+  const guard = upstreamGuardFor(tenant)
+  const clientOptions = { ...args.httpClient, ...(guard !== undefined ? { guard } : {}) }
   return {
     status: 'prepared',
     upstream: {
       dropClientBlanks: true,
       guardInitialize: record.protocol === 'stateless',
-      open: () => openHttpUpstream(record.url, headers, record.protocol, args.httpClient),
+      open: () => openHttpUpstream(record.url, headers, record.protocol, clientOptions),
     },
   }
 }
@@ -302,7 +335,7 @@ function openHttpUpstream(
   url: string,
   headers: Record<string, string>,
   protocol: HttpUpstreamProtocol,
-  extra: Pick<HttpUpstreamClientOptions, 'deliverErrorBodies'> = {},
+  extra: Pick<HttpUpstreamClientOptions, 'deliverErrorBodies' | 'guard'> = {},
 ): ConnectUpstream {
   const client: HttpUpstreamClient = createHttpUpstreamClient(
     { url, headers, protocol },

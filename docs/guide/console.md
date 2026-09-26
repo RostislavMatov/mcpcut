@@ -93,6 +93,9 @@ What differs from a local console, because a network is not a shell:
   a streamed `export` and any `policy` form other than a bare `policy show`
   need `operator`. Locally these are host operations open to whoever has the
   shell; over a network that reasoning does not hold (ADR-0014).
+- **A hosted install (tenant mode) refuses more on top of that**: any command
+  naming a path on the server, both here and locally — see
+  [Tenant mode (hosted)](install.md#tenant-mode-hosted) in the install guide.
 - **An `owner` token over the network is close to a shell on the server**:
   it can stop services and write backups to a path. That is
   deliberate, not an accident — protect that token accordingly.

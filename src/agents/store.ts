@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { JOURNAL_DIR } from '../config.js'
 import { compareAsText } from './effective.js'
 import { createJsonStore, type JsonStore } from '../policy/store.js'
+import { TENANT_SETTINGS, type TenantSettings } from '../tenant/settings.js'
 import { AGENTS_FILE_NAME } from './constants.js'
 import {
   assertValidAgentName,
@@ -50,6 +51,20 @@ export class AgentNotFoundError extends Error {
   constructor(name: string) {
     super(`agent "${name}" does not exist`)
     this.name = 'AgentNotFoundError'
+  }
+}
+
+/**
+ * Raised by `createAgent` (tenant mode) once the store already holds
+ * `tenant.limits.agents` records. Enforced on WRITE only, same GOTCHA as
+ * `TooManyServersError` (`src/registry/store.ts`): the read schema's own
+ * ceiling (`MAX_AGENTS`) is untouched, so a tenant mode turned on over an
+ * already-large install keeps reading fine.
+ */
+export class TooManyAgentsError extends Error {
+  constructor(max: number) {
+    super(`too many agents: max ${max} (tenant mode)`)
+    this.name = 'TooManyAgentsError'
   }
 }
 
@@ -114,6 +129,8 @@ export interface AgentsStoreOptions {
   readonly journalDir?: string
   /** Clock override for deterministic timestamps in tests. */
   readonly clock?: () => Date
+  /** Tenant settings this store enforces on write. Defaults to `TENANT_SETTINGS`. */
+  readonly tenant?: TenantSettings
 }
 
 const EMPTY_FILE: AgentsFile = { version: 1, agents: {} }
@@ -138,6 +155,7 @@ function requireAgent(file: AgentsFile, name: string): AgentRecord {
 export function createAgentsStore(opts: AgentsStoreOptions = {}): AgentsStore {
   const journalDir = opts.journalDir ?? JOURNAL_DIR
   const clock = opts.clock ?? (() => new Date())
+  const tenant = opts.tenant ?? TENANT_SETTINGS
   const store: JsonStore<AgentsFile> = createJsonStore(join(journalDir, AGENTS_FILE_NAME), {
     validate: validateAgentsFile,
     defaultValue: EMPTY_FILE,
@@ -155,6 +173,9 @@ export function createAgentsStore(opts: AgentsStoreOptions = {}): AgentsStore {
 
     await store.update((current) => {
       if (Object.hasOwn(current.agents, name)) throw new AgentExistsError(name)
+      if (tenant.isTenant && Object.keys(current.agents).length >= tenant.limits.agents) {
+        throw new TooManyAgentsError(tenant.limits.agents)
+      }
       return withAgent(current, record)
     })
 

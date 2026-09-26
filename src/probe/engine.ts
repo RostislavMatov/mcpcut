@@ -13,6 +13,8 @@ import {
   UpstreamResponseError,
 } from '../transport/http/client.js'
 import { withStatelessMeta } from '../protocol/mcp-stateless.js'
+import { UpstreamAddressRefusedError } from '../net/upstream-guard.js'
+import type { TenantSettings } from '../tenant/settings.js'
 import { prepareUpstream, type ConnectUpstream } from '../upstream/prepare.js'
 import { PROBE_TIMEOUT_MS } from './constants.js'
 
@@ -76,6 +78,8 @@ export interface ProbeDeps {
   readonly killEscalationMs?: number
   /** Upstream-level diagnostic lines (stderr-style). Dropped by default. */
   readonly onDiagnostic?: (line: string) => void
+  /** Tenant mode (ADR-0017), forwarded to `prepareUpstream`. Defaults to `TENANT_SETTINGS` there. */
+  readonly tenant?: TenantSettings
 }
 
 /** JSON-RPC ids of the probe's own requests (string ids — no collision space). */
@@ -98,12 +102,17 @@ export async function probe(record: ServerRecord, deps: ProbeDeps): Promise<Prob
     ...(deps.cwd !== undefined ? { cwd: deps.cwd } : {}),
     ...(deps.childExitGraceMs !== undefined ? { childExitGraceMs: deps.childExitGraceMs } : {}),
     ...(deps.killEscalationMs !== undefined ? { killEscalationMs: deps.killEscalationMs } : {}),
+    ...(deps.tenant !== undefined ? { tenant: deps.tenant } : {}),
     // A 2026-07-28 server refuses the handshake with a 4xx STATUS and a
     // JSON-RPC body; that is an answer to fall back from, not a dead server.
     httpClient: { deliverErrorBodies: true },
   })
   if (prepared.status === 'refused') {
-    return { status: 'vault-refused', message: prepared.message.trim() }
+    // A tenant-mode refusal is not a vault problem: it is reported as `error`
+    // with its reason (ADR-0017 — no new probe status, so the journal's record
+    // schema and `verify --report` stay as they are).
+    const status = prepared.reason === 'tenant' ? 'error' : 'vault-refused'
+    return { status, message: prepared.message.trim() }
   }
 
   const probedVia: ProbedVia = prepared.upstream.guardInitialize
@@ -272,9 +281,13 @@ function failureOf(answer: Exclude<Answer, { kind: 'answered' }>, probedVia: Pro
   // else (refused connection, DNS, broken pipe) is unreachable. Both error
   // families are documented to carry status + host only — never header
   // values or bodies (`transport/http/client-errors.ts`).
+  // A tenant-mode guard refusal (ADR-0017 T4) is the plane's own verdict, not
+  // a server that failed to answer: `error`, with the guard's reason (host as
+  // registered + category of address, never the resolved address).
   if (
     answer.error instanceof UpstreamHttpStatusError ||
-    answer.error instanceof UpstreamResponseError
+    answer.error instanceof UpstreamResponseError ||
+    answer.error instanceof UpstreamAddressRefusedError
   ) {
     return { status: 'error', message: describe(answer.error) }
   }

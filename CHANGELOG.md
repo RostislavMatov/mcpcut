@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Tenant mode.** A `tenant` section in `config.json` — written by
+  `mcpcut setup --yes --tenant`, or by `MCPCUT_TENANT=1` in Docker — turns an
+  install into one meant to be handed to somebody who is not its operator: it
+  refuses `stdio` servers, allows only public `https` upstreams (checked on
+  every connection, not only at registration, so DNS rebinding does not slip
+  through), caps servers/agents/groups at 5/5/2 by default, and has the
+  remote console refuse any command that names a path on the server. An
+  install with no `tenant` section is unaffected, byte for byte. See
+  [Tenant mode (hosted)](docs/guide/install.md#tenant-mode-hosted) and
+  [ADR-0017](docs/adr/0017-hosted-install-per-tenant.md).
+
 ## [0.1.2] — 2026-09-26
 
 ### Changed

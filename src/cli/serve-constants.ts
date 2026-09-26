@@ -58,6 +58,12 @@ export const REFUSAL_UNKNOWN_SERVER = 'unknown-server'
 export const REFUSAL_MISSING_SECRETS = 'missing-secrets'
 export const REFUSAL_INVALID_VAULT_REFS = 'invalid-vault-refs'
 export const REFUSAL_VAULT_ERROR = 'vault-error'
+/**
+ * Tenant mode's start-time lock (ADR-0017 T3): the requested server is a stdio
+ * record and this install runs none. The agent learns only that; the full
+ * reason (`StdioServerRefusedError`) goes to the plane's stderr.
+ */
+export const REFUSAL_STDIO_REFUSED = 'stdio-refused'
 
 /**
  * Refusal used if the session factory is ever invoked without a preceding

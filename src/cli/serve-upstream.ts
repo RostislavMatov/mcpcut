@@ -6,6 +6,8 @@ import { buildServerEnv, type ResolveEnvRefsFn } from '../proxy/server-env.js'
 import { killWithEscalation, spawnServer, type ServerHandle } from '../proxy/spawn.js'
 import { createOrderedWriter } from '../proxy/writer.js'
 import type { ServerRecord } from '../registry/schema.js'
+import { StdioServerRefusedError } from '../tenant/errors.js'
+import { TENANT_SETTINGS, upstreamGuardFor, type TenantSettings } from '../tenant/settings.js'
 import { createHttpUpstreamClient, type HttpUpstreamClientOptions } from '../transport/http/client.js'
 import { frameToMessage, createStdioMessageSink } from '../transport/stdio-adapter.js'
 import type { McpMessage, MessageSink, MessageSource } from '../transport/message.js'
@@ -14,6 +16,7 @@ import {
   protocolMismatchRefusal,
   REFUSAL_INVALID_VAULT_REFS,
   REFUSAL_MISSING_SECRETS,
+  REFUSAL_STDIO_REFUSED,
   REFUSAL_VAULT_ERROR,
   type DownstreamModel,
 } from './serve-constants.js'
@@ -74,6 +77,8 @@ export interface OpenUpstreamDeps {
   readonly killEscalationMs?: number
   /** Extra HTTP client behaviour, e.g. a pool child's `deliverErrorBodies` (RV4). */
   readonly httpClient?: Pick<HttpUpstreamClientOptions, 'deliverErrorBodies'>
+  /** Tenant mode (ADR-0017): stdio lock and upstream guard. Defaults to `TENANT_SETTINGS`. */
+  readonly tenant?: TenantSettings
 }
 
 /**
@@ -148,6 +153,12 @@ async function openStdioUpstream(
   record: Extract<ServerRecord, { transport: 'stdio' }>,
   deps: OpenUpstreamDeps,
 ): Promise<OpenUpstreamResult> {
+  // The start-time lock (ADR-0017 T3), before the vault is read: a stdio
+  // record written before tenant mode was turned on must not run either.
+  if ((deps.tenant ?? TENANT_SETTINGS).stdioServers === 'refused') {
+    const refusal = new StdioServerRefusedError(record.name)
+    return { status: 'refused', error: REFUSAL_STDIO_REFUSED, detail: refusal.message }
+  }
   const built = await buildServerEnv({
     processEnv: deps.processEnv,
     allowlist: deps.envAllowlist,
@@ -313,11 +324,17 @@ async function openHttpUpstream(
     return refuseEnvFailure(resolved)
   }
 
+  const guard = upstreamGuardFor(deps.tenant ?? TENANT_SETTINGS)
   const client = createHttpUpstreamClient(
     { url: record.url, headers: resolved.values, protocol: record.protocol },
     // Shared with connect — session/per-message-headers.ts is the single
-    // owner of the "who gets the SEP-2243 header mirror" decision.
-    { ...perMessageHeadersOptionOf(record.protocol), ...deps.httpClient },
+    // owner of the "who gets the SEP-2243 header mirror" decision; the
+    // tenant-mode guard (ADR-0017 T4) is decided by `upstreamGuardFor`.
+    {
+      ...perMessageHeadersOptionOf(record.protocol),
+      ...deps.httpClient,
+      ...(guard !== undefined ? { guard } : {}),
+    },
   )
   // The source's error/end handlers belong to the session core (one handler
   // per channel — `transport/message.ts`); it ends the session on either.

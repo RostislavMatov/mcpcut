@@ -12,6 +12,7 @@ import {
   GroupNotFoundError,
   GroupsFileInvalidError,
   InvalidGroupNameError,
+  TooManyGroupsError,
   type GroupsStore,
 } from '../groups/store.js'
 import { formatReadableField } from '../journal/format.js'
@@ -96,6 +97,7 @@ const EXPECTED_ERRORS = [
   StoreCorruptError,
   StoreLockError,
   StoreWriteRejectedError,
+  TooManyGroupsError,
 ] as const
 
 function isExpectedError(error: unknown): error is Error {

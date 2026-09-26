@@ -62,7 +62,7 @@ export const SETUP_SYNOPSIS_LINES: readonly string[] = [
   `${ROW_INDENT}${CLI_NAME} setup --yes [--data-dir <dir>] [--ui-host H] [--ui-port N] [--serve-host H] [--serve-port N]`,
   `${FLAG_CONTINUATION_INDENT}[--behind-tls|--no-behind-tls] [--admin <name>|--no-admin] [--supervisor ${SUPERVISORS.join('|')}]`,
   `${FLAG_CONTINUATION_INDENT}[--ui-probe-host H] [--serve-probe-host H] [--start] [--force]`,
-  `${FLAG_CONTINUATION_INDENT}[--ui-public-url <url>] [--serve-public-url <url>]`,
+  `${FLAG_CONTINUATION_INDENT}[--ui-public-url <url>] [--serve-public-url <url>] [--tenant]`,
   `${DESCRIPTION_INDENT}Write the install config, prepare the data directory, run the`,
   `${DESCRIPTION_INDENT}checks and mint the first owner`,
   `${DESCRIPTION_INDENT}--behind-tls is remembered across reruns; --no-behind-tls takes it back`,
@@ -71,6 +71,9 @@ export const SETUP_SYNOPSIS_LINES: readonly string[] = [
   `${DESCRIPTION_INDENT}https://<name>); allows that Host/Origin, records TLS, opens the bind for plain http`,
   `${DESCRIPTION_INDENT}--serve-public-url is remembered as serve.publicUrl — the address agent create`,
   `${DESCRIPTION_INDENT}puts into the client config`,
+  `${DESCRIPTION_INDENT}--tenant writes the strict hosted preset (tenant mode): refuses stdio servers,`,
+  `${DESCRIPTION_INDENT}reaches only public https upstreams, caps servers/agents/groups at 5/5/2; a`,
+  `${DESCRIPTION_INDENT}rerun without it keeps whatever an earlier run wrote`,
   `${DESCRIPTION_INDENT}--force, --no-admin and --start apply to --yes only`,
 ]
 

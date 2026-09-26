@@ -354,6 +354,36 @@ describe('setup --yes: the overlay rule', () => {
     expect(installConfigSchema.parse(await readConfig()).serve.publicUrl).toBe('https://mcp.example.com')
   })
 
+  test('--tenant writes the strict hosted preset, and a rerun without it keeps the section', async () => {
+    // Arrange + Act: first run turns tenant mode on.
+    expect(
+      await runSetupCommand(await fullRunArgs(['--tenant']), fakeIo(), { env, home }),
+    ).toBe(0)
+    expect(installConfigSchema.parse(await readConfig()).tenant).toEqual({
+      stdioServers: 'refused',
+      upstreams: 'public-https',
+      maxServers: 5,
+      maxAgents: 5,
+      maxGroups: 2,
+    })
+
+    // Act: a rerun about something else entirely never types --tenant again.
+    const exitCode = await runSetupCommand(['--yes', '--serve-port', String(await freePort())], fakeIo(), {
+      env,
+      home,
+    })
+
+    // Assert: the section an earlier run wrote survives.
+    expect(exitCode).toBe(0)
+    expect(installConfigSchema.parse(await readConfig()).tenant).toEqual({
+      stdioServers: 'refused',
+      upstreams: 'public-https',
+      maxServers: 5,
+      maxAgents: 5,
+      maxGroups: 2,
+    })
+  })
+
   test('a rerun with --no-behind-tls writes the false that takes the claim back', async () => {
     // Arrange: an install that once claimed TLS in front of it.
     expect(await runSetupCommand(await fullRunArgs(['--behind-tls']), fakeIo(), { env, home })).toBe(0)

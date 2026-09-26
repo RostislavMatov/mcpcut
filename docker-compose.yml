@@ -66,6 +66,8 @@
 # first-run page refuses without the code, and the code is inside the volume.
 #
 # A lost token:              docker compose exec ui mcpcut admin rotate <name> --recover
+#
+# MCPCUT_TENANT=1 (or true) turns on tenant mode (hosted installs, ADR-0017): stdio servers refused, https-only upstreams, 5/5/2 limits — see docs/guide/install.md. Unset/empty = off; any other value (0 included) stops the first start with an error.
 
 name: mcp-control-plane
 

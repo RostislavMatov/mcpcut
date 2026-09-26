@@ -8,6 +8,7 @@ import {
   InvalidResourcePatternError,
   InvalidServerNameError,
   InvalidToolPatternError,
+  TooManyAgentsError,
   type AgentsStore,
   type AgentsStoreOptions,
 } from '../agents/store.js'
@@ -95,6 +96,7 @@ const EXPECTED_ERRORS = [
   StoreCorruptError,
   StoreLockError,
   StoreWriteRejectedError,
+  TooManyAgentsError,
 ] as const
 
 function isExpectedError(error: unknown): error is Error {

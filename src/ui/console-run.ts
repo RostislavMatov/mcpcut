@@ -3,8 +3,10 @@ import { UNKNOWN_TOKEN_NOTICE } from '../admin/constants.js'
 import { roleSatisfies, type Role } from '../admin/authz.js'
 import { consoleRunRequestSchema, CONTENT_TYPE_NDJSON, type ConsoleRunFrame } from '../console-api/contract.js'
 import type { ConsoleRunner, ConsoleRunnerRequest } from '../console-api/runner.js'
+import { TENANT_SETTINGS, type TenantSettings } from '../tenant/settings.js'
 import type { AdminResolver, LoginRateLimiter, PenaltyGate } from './auth.js'
 import { resolveConsoleBearer } from './console-auth.js'
+import { isTenantPathRefused, TENANT_PATH_REFUSED_MESSAGE } from './console-tenant.js'
 import { writeConsoleError } from './console-respond.js'
 import { readRequestBody } from './routes.js'
 import { securityHeaders } from './security-headers.js'
@@ -21,12 +23,16 @@ import { TOO_MANY_ATTEMPTS_NOTICE } from './constants.js'
  *     names the surface as "everything the console can do"; `tui`, `ui`,
  *     `serve`, `wrap`, `connect`, `setup` and an empty argv are daemons and
  *     interactive screens that have no place in a request/response call).
- *  4. The NETWORK ROLE FLOOR for that command (owner decision RC1, follow-on
+ *  4. ADR-0017 T6: on a TENANT install, a further refusal for any argv that
+ *     names a path on the server -- `console-tenant.ts` owns the exact list
+ *     and the reasoning. A hosted owner is owner of their OWN install, not of
+ *     the host it runs on.
+ *  5. The NETWORK ROLE FLOOR for that command (owner decision RC1, follow-on
  *     from ADR-0012 §19: "console ≡ shell under the service's uid" does not
  *     hold over a network, so a coarse floor is enforced here — ON TOP OF,
  *     never instead of, each command's own gate, which still runs once
  *     `runner` dispatches).
- *  5. RC4: a vault WRITE (`vault set|remove|rekey`) is refused unless the
+ *  6. RC4: a vault WRITE (`vault set|remove|rekey`) is refused unless the
  *     connection is `--behind-tls` or the peer is loopback with no trusted
  *     proxy header configured (a header that could rewrite the peer address
  *     makes "the socket says loopback" untrustworthy).
@@ -53,6 +59,13 @@ export interface ConsoleRunDeps {
   readonly maxBodyBytes: number
   readonly runner: ConsoleRunner
   readonly stderr: ConsoleRunWarnSink
+  /**
+   * ADR-0017: which of the three tenant switches this install runs under.
+   * Defaults to `TENANT_SETTINGS` (the real install config, resolved once at
+   * process start) -- production wiring never sets this field; only tests
+   * that need a tenant install different from the process's own do.
+   */
+  readonly tenant?: TenantSettings
 }
 
 // ---------------------------------------------------------------------------
@@ -342,6 +355,10 @@ export async function handleConsoleRun(
   const first = argv[0]
   if (first === undefined || !CONSOLE_ALLOWED_FIRST_WORDS.has(first)) {
     writeConsoleError(res, 403, 'forbidden', CONSOLE_RUN_COMMAND_REFUSED_MESSAGE, deps.behindTls)
+    return
+  }
+  if (isTenantPathRefused(argv, deps.tenant ?? TENANT_SETTINGS)) {
+    writeConsoleError(res, 403, 'forbidden', TENANT_PATH_REFUSED_MESSAGE, deps.behindTls)
     return
   }
   if (!roleSatisfies(auth.admin.role, roleFloorOf(argv))) {

@@ -1,6 +1,16 @@
 import { describe, expect, test } from 'vitest'
 import { z } from 'zod'
-import { INSTALL_CONFIG_VERSION, MAX_CONFIG_STRING_LENGTH, MAX_LIST_ENTRIES } from '../../src/setup/constants.js'
+import { MAX_AGENTS } from '../../src/agents/constants.js'
+import { MAX_GROUPS } from '../../src/groups/constants.js'
+import { MAX_SERVERS_IN_REGISTRY } from '../../src/registry/constants.js'
+import {
+  INSTALL_CONFIG_VERSION,
+  MAX_CONFIG_STRING_LENGTH,
+  MAX_LIST_ENTRIES,
+  MAX_TENANT_AGENTS_BOUND,
+  MAX_TENANT_GROUPS_BOUND,
+  MAX_TENANT_SERVERS_BOUND,
+} from '../../src/setup/constants.js'
 import { defaultInstallConfig } from '../../src/setup/defaults.js'
 import { formatInstallConfigErrors, installConfigSchema } from '../../src/setup/schema.js'
 
@@ -222,6 +232,77 @@ describe('installConfigSchema: serve.publicUrl (phase 4, C1)', () => {
     expect(
       problemsOf({ ...validConfig(), ui: { host: '127.0.0.1', port: 8091, publicUrl: 'https://h' } }),
     ).toContain('ui: unknown key "publicUrl"')
+  })
+})
+
+describe('installConfigSchema: tenant (PRD hosted-accounts, phase 1, task 1, ADR-0017)', () => {
+  test('accepts an absent tenant section: prior behavior, unchanged', () => {
+    expect(installConfigSchema.safeParse(validConfig()).success).toBe(true)
+  })
+
+  test('accepts an empty tenant section', () => {
+    expect(installConfigSchema.safeParse({ ...validConfig(), tenant: {} }).success).toBe(true)
+  })
+
+  test('accepts a fully specified tenant section', () => {
+    const parsed = installConfigSchema.safeParse({
+      ...validConfig(),
+      tenant: { stdioServers: 'refused', upstreams: 'public-https', maxServers: 5, maxAgents: 5, maxGroups: 2 },
+    })
+
+    expect(parsed.success).toBe(true)
+  })
+
+  test('accepts maxGroups: 0 (a hosted install with no groups at all)', () => {
+    expect(installConfigSchema.safeParse({ ...validConfig(), tenant: { maxGroups: 0 } }).success).toBe(true)
+  })
+
+  test('refuses an unknown key inside tenant and names it', () => {
+    expect(problemsOf({ ...validConfig(), tenant: { maxServer: 5 } })).toContain(
+      'tenant: unknown key "maxServer"',
+    )
+  })
+
+  test('refuses a stdioServers value outside the closed set', () => {
+    expect(problemsOf({ ...validConfig(), tenant: { stdioServers: 'sometimes' } }).join('\n')).toContain(
+      'tenant.stdioServers:',
+    )
+  })
+
+  test('refuses an upstreams value outside the closed set', () => {
+    expect(problemsOf({ ...validConfig(), tenant: { upstreams: 'private-ok' } }).join('\n')).toContain(
+      'tenant.upstreams:',
+    )
+  })
+
+  test('refuses maxServers below 1', () => {
+    expect(problemsOf({ ...validConfig(), tenant: { maxServers: 0 } }).join('\n')).toContain(
+      'tenant.maxServers:',
+    )
+  })
+
+  test('refuses maxGroups below 0', () => {
+    expect(problemsOf({ ...validConfig(), tenant: { maxGroups: -1 } }).join('\n')).toContain(
+      'tenant.maxGroups:',
+    )
+  })
+
+  test('refuses a maxServers larger than the schema bound', () => {
+    expect(
+      problemsOf({ ...validConfig(), tenant: { maxServers: MAX_TENANT_SERVERS_BOUND + 1 } }).join('\n'),
+    ).toContain('tenant.maxServers:')
+  })
+
+  test('refuses a non-integer limit', () => {
+    expect(problemsOf({ ...validConfig(), tenant: { maxAgents: 1.5 } }).join('\n')).toContain(
+      'tenant.maxAgents:',
+    )
+  })
+
+  test('the schema bounds mirror the real per-store limits, so a tenant cap can never exceed the plane-wide one', () => {
+    expect(MAX_TENANT_SERVERS_BOUND).toBe(MAX_SERVERS_IN_REGISTRY)
+    expect(MAX_TENANT_AGENTS_BOUND).toBe(MAX_AGENTS)
+    expect(MAX_TENANT_GROUPS_BOUND).toBe(MAX_GROUPS)
   })
 })
 

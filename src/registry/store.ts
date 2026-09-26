@@ -1,4 +1,6 @@
 import { createJsonStore, type JsonStore } from '../policy/store.js'
+import { StdioServerRefusedError } from '../tenant/errors.js'
+import { TENANT_SETTINGS, type TenantSettings } from '../tenant/settings.js'
 import { registryFilePath } from './constants.js'
 import { parseRegistry, parseServerRecord, type RegistryFile, type ServerRecord } from './schema.js'
 
@@ -19,11 +21,34 @@ export class DuplicateServerError extends Error {
   }
 }
 
-/** Raised by `addServer` when the record fails schema validation. */
+/**
+ * Raised by `addServer`/`updateServer` when the record fails schema
+ * validation, or (tenant mode) when it names a non-`https` upstream while
+ * `tenant.upstreams === 'public-https'`. `reason` is either the `z.ZodError`
+ * schema validation produced (message stays the generic `'invalid server
+ * record'`, with the zod error attached as `cause` for callers that want the
+ * detail) or a plain string, used VERBATIM as the message — the tenant-mode
+ * check has one fixed sentence to show the operator, not a zod issue tree.
+ */
 export class InvalidServerRecordError extends Error {
-  constructor(cause: unknown) {
-    super('invalid server record', { cause })
+  constructor(reason: unknown) {
+    const isPlainReason = typeof reason === 'string'
+    super(isPlainReason ? reason : 'invalid server record', isPlainReason ? undefined : { cause: reason })
     this.name = 'InvalidServerRecordError'
+  }
+}
+
+/**
+ * Raised by `addServer` (tenant mode) once the registry already holds
+ * `tenant.limits.servers` records: a hosted install caps its own resource use
+ * per PRD `hosted-accounts` HA7, on WRITE only — see the GOTCHA on
+ * `createRegistryStore` for why reading a larger, pre-existing document must
+ * never fail the same way.
+ */
+export class TooManyServersError extends Error {
+  constructor(max: number) {
+    super(`too many servers: max ${max} (tenant mode)`)
+    this.name = 'TooManyServersError'
   }
 }
 
@@ -75,7 +100,48 @@ function ownRecord(servers: RegistryFile['servers'], name: string): ServerRecord
   return Object.hasOwn(servers, name) ? servers[name] : undefined
 }
 
-export function createRegistryStore(journalDir?: string): RegistryStore {
+/**
+ * `true` when `record` is an http(s) record whose `url` is not `https:`.
+ * `url` is already a validated absolute http(s) URL by the time a caller
+ * holds a `ServerRecord`, so re-parsing it here never throws.
+ */
+function isNonHttpsHttpRecord(record: ServerRecord): boolean {
+  return record.transport === 'http' && new URL(record.url).protocol !== 'https:'
+}
+
+/**
+ * Tenant-mode gate shared by `addServer` and `updateServer`, run BEFORE
+ * `store.update`: both checks are static properties of the record itself
+ * (transport, url scheme), not of the current document, so there is nothing
+ * to gain from running them inside the CAS-retried callback.
+ */
+function assertTenantAllowsServer(record: ServerRecord, tenant: TenantSettings): void {
+  if (record.transport === 'stdio') {
+    if (tenant.stdioServers === 'refused') {
+      throw new StdioServerRefusedError(record.name)
+    }
+    return
+  }
+  if (tenant.upstreams === 'public-https' && isNonHttpsHttpRecord(record)) {
+    throw new InvalidServerRecordError('url: this install reaches only https servers (tenant mode)')
+  }
+}
+
+export interface RegistryStoreOptions {
+  /** Tenant settings this store enforces on write. Defaults to `TENANT_SETTINGS`. */
+  readonly tenant?: TenantSettings
+}
+
+/**
+ * GOTCHA (PRD `hosted-accounts` phase 1, task 7): the `tenant.limits.servers`
+ * ceiling is enforced ONLY here, on write (`addServer`) — never in the read
+ * schema. A tenant mode turned on over an already-large install (more
+ * records than the new limit) must keep reading that document fine;
+ * `registryFileSchema`'s own ceiling (`MAX_SERVERS_IN_REGISTRY` = 200) is
+ * untouched and still the only thing `validateRegistry` enforces.
+ */
+export function createRegistryStore(journalDir?: string, opts?: RegistryStoreOptions): RegistryStore {
+  const tenant = opts?.tenant ?? TENANT_SETTINGS
   const store: JsonStore<RegistryFile> = createJsonStore(registryFilePath(journalDir), {
     validate: validateRegistry,
     defaultValue: EMPTY_REGISTRY,
@@ -87,10 +153,14 @@ export function createRegistryStore(journalDir?: string): RegistryStore {
       throw new InvalidServerRecordError(parsed.error)
     }
     const validated = parsed.record
+    assertTenantAllowsServer(validated, tenant)
 
     await store.update((current) => {
       if (ownRecord(current.servers, validated.name) !== undefined) {
         throw new DuplicateServerError(validated.name)
+      }
+      if (tenant.isTenant && Object.keys(current.servers).length >= tenant.limits.servers) {
+        throw new TooManyServersError(tenant.limits.servers)
       }
       return { ...current, servers: { ...current.servers, [validated.name]: validated } }
     })
@@ -124,6 +194,7 @@ export function createRegistryStore(journalDir?: string): RegistryStore {
       throw new InvalidServerRecordError(parsed.error)
     }
     const validated = parsed.record
+    assertTenantAllowsServer(validated, tenant)
     // Reset per attempt: `update` may re-run the callback on a stolen lock.
     let updated = false
     await store.update((current) => {

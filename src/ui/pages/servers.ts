@@ -1,5 +1,6 @@
 import { MAX_SERVERS_IN_REGISTRY } from '../../registry/constants.js'
 import type { ServerRecord } from '../../registry/schema.js'
+import type { TenantSettings } from '../../tenant/settings.js'
 import type { SecretInfo } from '../../vault/store.js'
 import type { PolicyView } from '../../policy/edit/policy-view.js'
 import { html, join, safeUrl, type Html } from '../html.js'
@@ -111,10 +112,19 @@ export interface ServersView {
    * Absent when the handler has no policy port — no pills, no controls.
    */
   readonly policyView?: PolicyView
+  /**
+   * Tenant mode settings (ADR-0017, task 8), built by the handler from
+   * `TENANT_SETTINGS` (or a test's override) — this module never reads that
+   * singleton itself, so the template stays pure. Absent means "render as an
+   * ordinary install": the `MAX_SERVERS_IN_REGISTRY` counter and the two-way
+   * stdio/http choice, byte for byte as before this task.
+   */
+  readonly tenant?: TenantSettings
 }
 
 function navMetaOf(view: ServersView): string {
-  const servers = `${view.servers.length} / ${MAX_SERVERS_IN_REGISTRY} servers`
+  const limit = view.tenant?.limits.servers ?? MAX_SERVERS_IN_REGISTRY
+  const servers = `${view.servers.length} / ${limit} servers`
   if (view.tools === undefined) return servers
   let quarantined = 0
   for (const record of view.servers) quarantined += view.tools.get(record.name)?.quarantinedCount ?? 0
@@ -187,7 +197,7 @@ function renderManage(view: ServersView): Html {
   }
   const drawer: ServerDrawerState = view.drawer ?? { mode: 'add', open: false, form: EMPTY_SERVER_FORM }
   const { form, ...options } = drawer
-  return renderServerDrawer(view.csrfToken, form, options)
+  return renderServerDrawer(view.csrfToken, form, options, view.tenant?.stdioServers)
 }
 
 /** Renders the `/servers` document: the card grid/list plus, for owners, the modal drawer. */
