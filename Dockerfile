@@ -78,7 +78,8 @@ CMD ["--help"]
 # `HostConfig.Init: true` so Docker's static init binary becomes the real
 # PID 1, ahead of `tenant-run.sh`.
 FROM runtime AS tenant
-COPY docker/tenant-run.sh ./docker/tenant-run.sh
-RUN chmod +x /app/docker/tenant-run.sh
+# `--chmod`, not `RUN chmod`: `runtime` ends on `USER node`, and `node` cannot
+# chmod a root-owned file — the first real build failed exactly there.
+COPY --chmod=755 docker/tenant-run.sh ./docker/tenant-run.sh
 ENTRYPOINT ["/app/docker/tenant-run.sh"]
 CMD []
