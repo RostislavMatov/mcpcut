@@ -87,6 +87,17 @@ export const WILDCARD_PROBE_HOSTS: ReadonlyMap<string, string> = new Map([
 export const UI_PROBE_PATH = '/login'
 
 /**
+ * Where a UI with no admin yet sends `/login` (`SETUP_LOCATION` in
+ * `src/ui/constants.ts`; kept here rather than imported so the operator
+ * surface does not reach into `src/ui/**`). A 303 to exactly this path is the
+ * UI's own first-run state — up, just ownerless — and the only redirect the
+ * readiness probe accepts. Found by the first live tenant install: the
+ * provisioner waits for readiness BEFORE it creates the owner, so a probe that
+ * refused this redirect never saw a fresh install come up.
+ */
+export const UI_FIRST_RUN_LOCATION = '/setup'
+
+/**
  * The supervisor value that hands `ui` and `serve` to something else —
  * compose, systemd, a platform runner (owner decision C7). The manager then
  * only ever reports; it never spawns and never signals.

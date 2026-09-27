@@ -4,6 +4,7 @@ import { MAX_TCP_PORT } from '../cli/serve-constants.js'
 import { hostAuthority, unbracketHost } from './authority.js'
 import {
   PROBE_TIMEOUT_MS,
+  UI_FIRST_RUN_LOCATION,
   UI_PROBE_PATH,
   WILDCARD_PROBE_HOSTS,
   type ServiceName,
@@ -51,10 +52,14 @@ const UI_PROBE_HOST_HEADER_NAME = 'localhost'
 const HTTP_OK_MIN = 200
 const HTTP_OK_END = 300
 
+/** The one redirect status the UI answers `/login` with before its owner exists. */
+const HTTP_SEE_OTHER = 303
+
 /**
  * `ui` is ready when its login screen answers 2xx. Redirects are not followed
  * — `node:http` never follows one — and a 3xx is not ok: a redirect to
- * somewhere else is not the UI answering.
+ * somewhere else is not the UI answering. The one exception is the UI's own
+ * first-run state: a 303 to `UI_FIRST_RUN_LOCATION` (no admin yet).
  *
  * WHY `Host: localhost:<port>` whatever address is dialled (Q32): a UI bound
  * to a wildcard admits only localhost names and its `--allowed-host` list in
@@ -103,7 +108,8 @@ export function probeUi(host: string, port: number, timeoutMs = PROBE_TIMEOUT_MS
       const status = res.statusCode ?? 0
       // Drain rather than leave the body unread: an unread body holds its socket.
       res.resume()
-      settle(status >= HTTP_OK_MIN && status < HTTP_OK_END)
+      const firstRun = status === HTTP_SEE_OTHER && res.headers.location === UI_FIRST_RUN_LOCATION
+      settle((status >= HTTP_OK_MIN && status < HTTP_OK_END) || firstRun)
     })
     req.once('error', () => settle(false))
     req.end()

@@ -215,6 +215,21 @@ describe('probeUi through the UI Host screen (Q32)', () => {
     expect(hits).toEqual(['/login'])
   })
 
+  test('a UI with no owner yet sends /login to /setup — that UI is up (and the redirect is not followed)', async () => {
+    const hits: string[] = []
+    const server = createHttpServer((req, res) => {
+      hits.push(req.url ?? '')
+      res.writeHead(303, { location: '/setup' })
+      res.end()
+    })
+    onDispose(() => closeHttp(server))
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
+    const { port } = server.address() as AddressInfo
+
+    expect(await probeUi('127.0.0.1', port, PROBE_TIMEOUT_MS)).toBe(true)
+    expect(hits).toEqual(['/login'])
+  })
+
   test('leaves no socket or timer behind after a successful probe', async () => {
     const port = await startHttp(200)
     const before = process.getActiveResourcesInfo().length
