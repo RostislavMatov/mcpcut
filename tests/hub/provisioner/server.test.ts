@@ -7,7 +7,7 @@ import {
   type ProvisionerServer,
 } from '../../../hub/src/provisioner/server.js'
 import type { ProvisionerService } from '../../../hub/src/provisioner/service.js'
-import { tenantObjects, useProvisioner } from './provisioner-harness.js'
+import { FAKE_ACTIVITY_S, tenantObjects, useProvisioner } from './provisioner-harness.js'
 
 /**
  * The provisioner's HTTP API (plan `tenant-orchestrator`, Task 4) in front of
@@ -16,6 +16,7 @@ import { tenantObjects, useProvisioner } from './provisioner-harness.js'
  */
 
 const TOKEN = 'p'.repeat(48)
+const FAKE_ACTIVITY_ISO = new Date(FAKE_ACTIVITY_S * 1000).toISOString()
 const ctx = useProvisioner()
 let server: ProvisionerServer
 let port: number
@@ -129,7 +130,7 @@ describe('the tenant lifecycle over HTTP', () => {
     ctx.fake().setVolumeSize('mcpcut-t-alice', 2048)
     const status = await send('GET', '/tenants/alice')
     expect(status.status).toBe(200)
-    expect(status.json()).toEqual({ state: 'running', sizeBytes: 2048 })
+    expect(status.json()).toEqual({ state: 'running', sizeBytes: 2048, running: true, lastActivityAt: FAKE_ACTIVITY_ISO })
 
     const rotated = await send('POST', '/tenants/alice/owner-token')
     expect(rotated.status).toBe(200)
@@ -140,8 +141,41 @@ describe('the tenant lifecycle over HTTP', () => {
     expect(removed.body).toBe('')
     expect(tenantObjects(ctx.fake())).toEqual({ containers: [], networks: [], volumes: [] })
 
-    expect((await send('GET', '/tenants/alice')).json()).toEqual({ state: 'absent', sizeBytes: null })
+    expect((await send('GET', '/tenants/alice')).json()).toEqual({ state: 'absent', sizeBytes: null, running: false, lastActivityAt: null })
     expect((await send('DELETE', '/tenants/alice')).status).toBe(204)
+  })
+
+  test('stop → status → start: 204s, idempotent, and a stopped install reports no activity', async () => {
+    await send('POST', '/tenants', { body: createBody() })
+
+    const stopped = await send('POST', '/tenants/alice/stop')
+    expect(stopped.status).toBe(204)
+    expect(stopped.body).toBe('')
+    expect((await send('POST', '/tenants/alice/stop')).status).toBe(204)
+    expect((await send('GET', '/tenants/alice')).json()).toEqual({ state: 'exited', sizeBytes: null, running: false, lastActivityAt: null })
+
+    expect((await send('POST', '/tenants/alice/start')).status).toBe(204)
+    expect((await send('POST', '/tenants/alice/start')).status).toBe(204)
+    expect((await send('GET', '/tenants/alice')).json()).toMatchObject({ running: true, lastActivityAt: FAKE_ACTIVITY_ISO })
+    expect(serverLogs.join('\n')).toMatch(/stop alice: ok[\s\S]*start alice: ok/)
+  })
+
+  test('stop or start of a tenant that does not exist → 404; of another tenant’s container → 409', async () => {
+    expect((await send('POST', '/tenants/alice/stop')).status).toBe(404)
+    expect((await send('POST', '/tenants/alice/start')).json()).toMatchObject({ error: 'not-found' })
+    await ctx.docker().createContainer('mcpcut-t-alice', { Image: 'x', Labels: { 'mcpcut.tenant': 'eve' } })
+
+    const refused = await send('POST', '/tenants/alice/stop')
+    expect(refused.status).toBe(409)
+    expect(refused.json()).toMatchObject({ error: 'not-ours' })
+  })
+
+  test('stop and start need the Bearer secret like everything else', async () => {
+    await send('POST', '/tenants', { body: createBody() })
+
+    expect((await send('POST', '/tenants/alice/stop', { token: null })).status).toBe(401)
+    expect((await send('POST', '/tenants/alice/start', { token: 'wrong' })).status).toBe(401)
+    expect(ctx.fake().containers().find((c) => c.name === 'mcpcut-t-alice')?.running).toBe(true)
   })
 
   test('no owner token is ever logged', async () => {
@@ -211,6 +245,8 @@ describe('refusals', () => {
     expect((await send('GET', '/tenants')).status).toBe(405)
     expect((await send('PUT', '/tenants/alice')).status).toBe(405)
     expect((await send('GET', '/tenants/alice/owner-token')).status).toBe(405)
+    expect((await send('GET', '/tenants/alice/stop')).status).toBe(405)
+    expect((await send('DELETE', '/tenants/alice/start')).status).toBe(405)
   })
 
   test('a failed create answers the code without a token and leaves nothing behind', async () => {

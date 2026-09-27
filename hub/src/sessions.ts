@@ -50,6 +50,12 @@ export type SessionResolution =
   | { readonly kind: 'none' }
   /** The account behind a live session was blocked; the session is gone now. */
   | { readonly kind: 'blocked' }
+  /**
+   * The account behind a live session is gone or was re-created; the session
+   * is gone now. Names the account it was for, so the caller can say why
+   * (an install that could not be created — `provisioning.ts`, P3).
+   */
+  | { readonly kind: 'ended'; readonly githubId: number; readonly accountCreatedAt: string }
   | { readonly kind: 'live'; readonly session: HubSession; readonly account: AccountRecord }
 
 export interface HubSessions {
@@ -130,10 +136,14 @@ export function createHubSessions(options: HubSessionsOptions): HubSessions {
     const entry = sessions.get(sessionId)
     if (entry === undefined) return { kind: 'none' }
     const now = clock()
-    const account = isDead(entry, now) ? null : options.findAccount(entry.githubId)
-    if (account === null || account.createdAt !== entry.accountCreatedAt) {
+    if (isDead(entry, now)) {
       sessions.delete(sessionId)
       return { kind: 'none' }
+    }
+    const account = options.findAccount(entry.githubId)
+    if (account === null || account.createdAt !== entry.accountCreatedAt) {
+      sessions.delete(sessionId)
+      return { kind: 'ended', githubId: entry.githubId, accountCreatedAt: entry.accountCreatedAt }
     }
     if (account.status === 'blocked') {
       sessions.delete(sessionId)

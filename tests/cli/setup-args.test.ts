@@ -287,6 +287,8 @@ describe('--tenant: writes the strict hosted preset (PRD hosted-accounts, phase 
       maxServers: 5,
       maxAgents: 5,
       maxGroups: 2,
+      maxRequestsPerSecond: 10,
+      maxRequestsPerDay: 10_000,
     })
   })
 

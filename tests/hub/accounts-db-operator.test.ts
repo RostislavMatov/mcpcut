@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import {
+  activatePendingAccount,
+  blockActiveAccount,
   countWaitlist,
   discardPendingAccount,
   findAccountByGithubId,
@@ -92,6 +94,46 @@ describe('discardPendingAccount', () => {
     expect(discardPendingAccount(db, 4)).toBe(false)
 
     expect(findAccountByGithubId(db, 4)?.status).toBe('active')
+  })
+})
+
+describe('activatePendingAccount', () => {
+  test('turns the pending row of exactly this account generation active', () => {
+    seed(5, 'erin')
+
+    expect(activatePendingAccount(db, 5, '2026-01-01T00:00:00.000Z')).toBe(false)
+    expect(activatePendingAccount(db, 5, NOW)).toBe(true)
+
+    expect(findAccountByGithubId(db, 5)?.status).toBe('active')
+  })
+
+  test('never un-blocks a row blocked meanwhile', () => {
+    seed(6, 'fay')
+    setStatus(db, 6, 'blocked')
+
+    expect(activatePendingAccount(db, 6, NOW)).toBe(false)
+
+    expect(findAccountByGithubId(db, 6)?.status).toBe('blocked')
+  })
+})
+
+describe('blockActiveAccount', () => {
+  test('blocks the active row of exactly this account generation', () => {
+    seed(7, 'gus')
+    setStatus(db, 7, 'active')
+
+    expect(blockActiveAccount(db, 7, '2026-01-01T00:00:00.000Z')).toBe(false)
+    expect(blockActiveAccount(db, 7, NOW)).toBe(true)
+
+    expect(findAccountByGithubId(db, 7)?.status).toBe('blocked')
+  })
+
+  test('never blocks a row still being created (pending)', () => {
+    seed(8, 'hal')
+
+    expect(blockActiveAccount(db, 8, NOW)).toBe(false)
+
+    expect(findAccountByGithubId(db, 8)?.status).toBe('pending')
   })
 })
 

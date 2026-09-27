@@ -365,6 +365,8 @@ describe('setup --yes: the overlay rule', () => {
       maxServers: 5,
       maxAgents: 5,
       maxGroups: 2,
+      maxRequestsPerSecond: 10,
+      maxRequestsPerDay: 10_000,
     })
 
     // Act: a rerun about something else entirely never types --tenant again.
@@ -381,6 +383,8 @@ describe('setup --yes: the overlay rule', () => {
       maxServers: 5,
       maxAgents: 5,
       maxGroups: 2,
+      maxRequestsPerSecond: 10,
+      maxRequestsPerDay: 10_000,
     })
   })
 

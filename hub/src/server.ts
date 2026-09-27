@@ -4,6 +4,8 @@ import { securityHeaders } from '../../src/ui/security-headers.js'
 import { findAccountByGithubId, type AccountsDb } from './accounts-db.js'
 import type { HubConfig } from './config.js'
 import type { GithubClient } from './github.js'
+import { createIdleSweeper, type SweepOptions, type SweepSummary } from './idle-sweeper.js'
+import { createInstallWaker } from './install-waker.js'
 import {
   describeError,
   formFields,
@@ -18,8 +20,10 @@ import {
 } from './http.js'
 import { createOauthFlows } from './oauth-flow.js'
 import type { Orchestrator } from './orchestrator.js'
+import { createPendingTokens } from './pending-tokens.js'
+import { createProvisioning, type ReconcileSummary } from './provisioning.js'
 import { clientIpOf, createWindowCounter, rateLimitKeyOf } from './rate-limit.js'
-import { blockedAnswer, matchRoute, notFound, SIGNIN_WINDOW_MS, type HubContext, type HubDeps, type Route } from './routes.js'
+import { blockedAnswer, installFailedAnswer, matchRoute, notFound, SIGNIN_WINDOW_MS, type HubContext, type HubDeps, type Route } from './routes.js'
 import { clearHubSessionCookie, createHubSessions, sessionIdFromCookieHeader, type SessionResolution } from './sessions.js'
 
 /**
@@ -40,7 +44,9 @@ import { clearHubSessionCookie, createHubSessions, sessionIdFromCookieHeader, ty
  *   `session` routes refuse a POST without one (403) and redirect a GET to
  *   `/signin`.
  * - A live session whose account was blocked is signed out on the spot with
- *   the reason (H2: `resolve` re-reads the account).
+ *   the reason (H2: `resolve` re-reads the account); one whose account was
+ *   removed because its install could not be created is signed out with that
+ *   reason, once, on the next page it asks for (plan `hosted-path-and-ops`, P3).
  *
  * Every answer carries the console's security headers with HSTS (the hub is
  * always behind TLS) and `no-store` unless the route set its own cache policy.
@@ -72,6 +78,12 @@ export interface HubServer {
   close(): Promise<void>
   sessionCount(): number
   connectionTimeouts(): HubConnectionTimeouts | null
+  /** Settles `pending` accounts an earlier run left against the provisioner (P4). */
+  reconcilePending(): Promise<ReconcileSummary>
+  /** One idle sweep (plan `hosted-path-and-ops`, P5/P6); `serve` runs it on a schedule. Never rejects. */
+  sweep(options?: SweepOptions): Promise<SweepSummary>
+  /** Resolves once no background install task, reconcile, start or sweep is running. */
+  settled(): Promise<void>
 }
 
 /** Explicit, not Node's defaults (as `src/ui/constants.ts`): a hub form is tiny. */
@@ -106,12 +118,21 @@ export function createHubServer(options: HubServerOptions): HubServer {
     },
     close: () =>
       (closing ??= (async () => {
+        pipeline.deps.provisioning.stop()
+        pipeline.deps.waker.stop()
+        pipeline.deps.idle.stop()
         const instance = server
         server = null
         if (instance !== null) await closeListener(instance)
       })()),
     sessionCount: () => pipeline.deps.sessions.size(),
     connectionTimeouts: () => (server === null ? null : timeoutsOf(server)),
+    reconcilePending: () => pipeline.deps.provisioning.reconcilePending(),
+    sweep: (options?: SweepOptions) => pipeline.deps.idle.sweep(options),
+    settled: async () => {
+      const { provisioning, waker, idle } = pipeline.deps
+      await Promise.all([provisioning.settled(), waker.settled(), idle.settled()])
+    },
   })
 }
 
@@ -196,6 +217,9 @@ async function dispatch(
   const sessionId = sessionIdFromCookieHeader(headerValue(req.headers, 'cookie'))
   const resolution: SessionResolution = deps.sessions.resolve(sessionId)
   if (resolution.kind === 'blocked') return blockedAnswer()
+  if (resolution.kind === 'ended' && route.access === 'session' && req.method === 'GET' && deps.pendingTokens.takeFailed(resolution)) {
+    return installFailedAnswer()
+  }
   const live = resolution.kind === 'live' ? { session: resolution.session, account: resolution.account } : undefined
   const hadDeadCookie = sessionId !== undefined && live === undefined
   if (route.access === 'session' && live === undefined) {
@@ -249,11 +273,27 @@ function timeoutsOf(instance: Server): HubConnectionTimeouts {
 
 function buildDeps(options: HubServerOptions): HubDeps {
   const clock = options.clock ?? Date.now
-  const { config, db } = options
+  const { config, db, orchestrator } = options
+  const log = options.log ?? ((line: string) => process.stderr.write(`${line}\n`))
+  const pendingTokens = createPendingTokens({ clock })
+  const provisioning = createProvisioning({ db, orchestrator, pending: pendingTokens, log })
+  const waker = createInstallWaker({ db, orchestrator, clock, log })
+  const idle = createIdleSweeper({
+    db,
+    orchestrator,
+    clock,
+    log,
+    reconcilePending: () => provisioning.reconcilePending(),
+    isWaking: (githubId) => waker.isWaking(githubId),
+  })
   return {
     db,
     github: options.github,
-    orchestrator: options.orchestrator,
+    orchestrator,
+    pendingTokens,
+    provisioning,
+    waker,
+    idle,
     flows: createOauthFlows({ clock }),
     sessions: createHubSessions({ findAccount: (githubId) => findAccountByGithubId(db, githubId), clock }),
     signups: createWindowCounter({ windowMs: SIGNUP_WINDOW_MS, clock }),
@@ -263,7 +303,7 @@ function buildDeps(options: HubServerOptions): HubDeps {
     minAccountAgeDays: config.minAccountAgeDays,
     signupsPerHourPerIp: config.signupsPerHourPerIp,
     clock,
-    log: options.log ?? ((line) => process.stderr.write(`${line}\n`)),
+    log,
   }
 }
 

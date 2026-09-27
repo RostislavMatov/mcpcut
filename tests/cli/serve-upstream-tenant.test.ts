@@ -16,7 +16,7 @@ import { clientMessage } from '../../src/transport/message.js'
  * the SSRF guard have to hold. Without the mode: exactly as before.
  */
 
-const LIMITS = { servers: 5, agents: 5, groups: 2 } as const
+const LIMITS = { servers: 5, agents: 5, groups: 2, requestsPerSecond: 10, requestsPerDay: 10_000 } as const
 const TENANT: TenantSettings = { isTenant: true, stdioServers: 'refused', upstreams: 'public-https', limits: LIMITS }
 const UNRESTRICTED: TenantSettings = { isTenant: false, stdioServers: 'allowed', upstreams: 'any', limits: LIMITS }
 

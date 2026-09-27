@@ -65,6 +65,8 @@ export interface HubHarness {
   readonly transcript: string[]
   advance(ms: number): void
   nowMs(): number
+  /** Waits until every background install task and reconcile has finished. */
+  settle(): Promise<void>
   request(method: string, path: string, options?: RequestOptions): Promise<HubResponse>
   browser(): Browser
   close(): Promise<void>
@@ -116,6 +118,7 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubHarnes
     transcript,
     advance: (ms) => (now += ms),
     nowMs: () => now,
+    settle: () => server.settled(),
     request,
     browser: () => createBrowser(harness),
     close: async () => {

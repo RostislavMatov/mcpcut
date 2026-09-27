@@ -1,6 +1,8 @@
 import { join } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import { openSqlite, type SqliteHandle } from '../../src/store/sqlite.js'
+import { ensureIdleColumns } from './accounts-idle.js'
+import { ACCOUNT_COLUMNS, accountRecordOf, type AccountRecord, type AccountStatus } from './account-row.js'
 
 /**
  * Storage for the hub's own state (plan `hub-signin-accounts`, Task 2, H3):
@@ -17,23 +19,8 @@ import { openSqlite, type SqliteHandle } from '../../src/store/sqlite.js'
  * concatenation — matching CLAUDE.md's SQL-injection rule.
  */
 
-export type AccountStatus = 'pending' | 'active' | 'blocked'
 export type TombstoneReason = 'deleted' | 'blocked'
-
-/** One row of `accounts`, keyed by the GitHub numeric id (H3: never `login`,
- * which can change hands). */
-export interface AccountRecord {
-  readonly githubId: number
-  readonly login: string
-  readonly subdomain: string
-  readonly status: AccountStatus
-  /** The GitHub account's own `created_at`, used by the age gate (HA12). */
-  readonly githubCreatedAt: string
-  /** When this hub first saw the account. */
-  readonly createdAt: string
-  /** Last successful sign-in; refreshed by `touch`. */
-  readonly lastSeenAt: string
-}
+export type { AccountRecord, AccountStatus } from './account-row.js'
 
 /** One row of `tombstones`: why a GitHub id is refused re-signup, and since when. */
 export interface TombstoneRecord {
@@ -70,10 +57,10 @@ const CREATE_TOMBSTONES_REASON_INDEX =
   'CREATE INDEX IF NOT EXISTS idx_tombstones_reason_at ON tombstones(reason, at)'
 
 const SELECT_ACCOUNT_BY_ID =
-  'SELECT github_id, login, subdomain, status, github_created_at, created_at, last_seen_at ' +
+  `SELECT ${ACCOUNT_COLUMNS} ` +
   'FROM accounts WHERE github_id = ?'
 const SELECT_ACCOUNT_BY_SUBDOMAIN =
-  'SELECT github_id, login, subdomain, status, github_created_at, created_at, last_seen_at ' +
+  `SELECT ${ACCOUNT_COLUMNS} ` +
   'FROM accounts WHERE subdomain = ?'
 const COUNT_ACCOUNTS = 'SELECT COUNT(*) AS n FROM accounts'
 const INSERT_ACCOUNT =
@@ -84,11 +71,15 @@ const TOUCH_ACCOUNT = 'UPDATE accounts SET login = ?, last_seen_at = ? WHERE git
 const DELETE_ACCOUNT = 'DELETE FROM accounts WHERE github_id = ?'
 
 const SELECT_ACCOUNT_BY_LOGIN =
-  'SELECT github_id, login, subdomain, status, github_created_at, created_at, last_seen_at ' +
+  `SELECT ${ACCOUNT_COLUMNS} ` +
   'FROM accounts WHERE lower(login) = lower(?) ORDER BY created_at, github_id LIMIT 1'
 const SELECT_ALL_ACCOUNTS =
-  'SELECT github_id, login, subdomain, status, github_created_at, created_at, last_seen_at ' +
+  `SELECT ${ACCOUNT_COLUMNS} ` +
   'FROM accounts ORDER BY created_at, github_id'
+const ACTIVATE_PENDING_ACCOUNT =
+  "UPDATE accounts SET status = 'active' WHERE github_id = ? AND created_at = ? AND status = 'pending'"
+const BLOCK_ACTIVE_ACCOUNT =
+  "UPDATE accounts SET status = 'blocked' WHERE github_id = ? AND created_at = ? AND status = 'active'"
 const DELETE_PENDING_ACCOUNT = "DELETE FROM accounts WHERE github_id = ? AND status = 'pending'"
 const COUNT_WAITLIST = 'SELECT COUNT(*) AS n FROM waitlist'
 
@@ -125,6 +116,8 @@ export async function openAccountsDb(dataDir: string): Promise<AccountsDb> {
   database.exec(CREATE_TOMBSTONES_TABLE)
   database.exec(CREATE_WAITLIST_ORDER_INDEX)
   database.exec(CREATE_TOMBSTONES_REASON_INDEX)
+  // A fresh database and one from before the column take the same path (P8).
+  ensureIdleColumns(database)
   return { handle, dbPath }
 }
 
@@ -215,6 +208,7 @@ export function insertAccount(
         githubCreatedAt: input.githubCreatedAt,
         createdAt: input.now,
         lastSeenAt: input.now,
+        stoppedAt: null,
       },
     }
   })
@@ -296,6 +290,22 @@ export function discardPendingAccount(db: AccountsDb, githubId: number): boolean
   return Number(db.handle.db.prepare(DELETE_PENDING_ACCOUNT).run(githubId).changes) === 1
 }
 
+/** Completes a signup whose install now exists (plan `hosted-path-and-ops`,
+ * P1/P4): `'pending'` → `'active'` only for the row created at `createdAt` and
+ * only while it is still `'pending'` — an account blocked or deleted while
+ * its install was being made stays as the operator left it. */
+export function activatePendingAccount(db: AccountsDb, githubId: number, createdAt: string): boolean {
+  return Number(db.handle.db.prepare(ACTIVATE_PENDING_ACCOUNT).run(githubId, createdAt).changes) === 1
+}
+
+/** The operator's `block` (stage-4 review): `'active'` → `'blocked'` only for
+ * the row created at `createdAt` and only while it is still `'active'` — a
+ * `'pending'` row is refused, because its install is still being created and
+ * would come up after the block with nobody tracking it. */
+export function blockActiveAccount(db: AccountsDb, githubId: number, createdAt: string): boolean {
+  return Number(db.handle.db.prepare(BLOCK_ACTIVE_ACCOUNT).run(githubId, createdAt).changes) === 1
+}
+
 /** How many people are on the waitlist. */
 export function countWaitlist(db: AccountsDb): number {
   const row = db.handle.db.prepare(COUNT_WAITLIST).get() as { n: number }
@@ -333,33 +343,6 @@ export function joinWaitlist(db: AccountsDb, input: JoinWaitlistInput): number {
  * are never touched — see the module doc on `deleteAccount`. */
 export function purgeTombstones(db: AccountsDb, cutoffIso: string): number {
   return Number(db.handle.db.prepare(PURGE_DELETED_TOMBSTONES).run(cutoffIso).changes)
-}
-
-function accountRecordOf(row: unknown): AccountRecord | null {
-  if (typeof row !== 'object' || row === null) return null
-  const {
-    github_id: githubId,
-    login,
-    subdomain,
-    status,
-    github_created_at: githubCreatedAt,
-    created_at: createdAt,
-    last_seen_at: lastSeenAt,
-  } = row as Record<string, unknown>
-  if (typeof githubId !== 'number' && typeof githubId !== 'bigint') return null
-  if (typeof login !== 'string' || typeof subdomain !== 'string') return null
-  if (status !== 'pending' && status !== 'active' && status !== 'blocked') return null
-  if (typeof githubCreatedAt !== 'string' || typeof createdAt !== 'string') return null
-  if (typeof lastSeenAt !== 'string') return null
-  return {
-    githubId: Number(githubId),
-    login,
-    subdomain,
-    status,
-    githubCreatedAt,
-    createdAt,
-    lastSeenAt,
-  }
 }
 
 function tombstoneRecordOf(row: unknown): TombstoneRecord | null {

@@ -138,7 +138,9 @@ quietly reopen it.
   "upstreams": "public-https",
   "maxServers": 5,
   "maxAgents": 5,
-  "maxGroups": 2
+  "maxGroups": 2,
+  "maxRequestsPerSecond": 10,
+  "maxRequestsPerDay": 10000
 }
 ```
 
@@ -147,6 +149,7 @@ quietly reopen it.
 | `stdioServers` | `allowed` \| `refused` | `refused` | `refused` stops a `stdio` server from ever being registered, edited onto, or started — a `stdio` record is an arbitrary command run on this host on the owner's behalf. |
 | `upstreams` | `any` \| `public-https` | `public-https` | `public-https` allows only `https://` upstream URLs, only on port 443 (no port at all, or an explicit `:443`, both count as port 443 — anything else is refused), and only to a resolved address that is public: loopback, private, link-local (including the `169.254.169.254` metadata address), CGNAT, unspecified, multicast, reserved and documentation ranges are all refused — checked on every connection, not only at registration. |
 | `maxServers` / `maxAgents` / `maxGroups` | integers (up to 200 / 200 / 100) | `5` / `5` / `2` | Ceilings on the three stores, enforced only on write — turning the mode on over an install that already holds more never breaks reading it. |
+| `maxRequestsPerSecond` / `maxRequestsPerDay` | integers (1–1000 / 1–10 000 000) | `10` / `10000` | The request budget of the agent front (`serve`), shared by every agent of the install — see below. |
 
 Write the strict preset without typing every field: `mcpcut setup --yes --tenant`
 (the wizard has no equivalent question — this is a scripted-deploy flag).
@@ -157,6 +160,21 @@ flag. In Docker, `MCPCUT_TENANT=1` (or `true`) has the entrypoint add
 `--tenant` to its own first `setup --yes`; any other non-empty value, `0`
 included, stops the container with an error rather than guessing (see
 `docker-compose.yml`).
+
+**The request budget.** Every HTTP request an agent sends to `serve` — a
+`POST`, the `GET` that opens the server-to-agent stream, a `DELETE` — on the
+pool address (`/mcp`) or a per-server path costs one unit. A quiet install may
+burst to twice `maxRequestsPerSecond` at once, then gets exactly that rate;
+separately, the requests admitted in the current clock hour and the 23 before
+it may not exceed `maxRequestsPerDay` (a sliding day, so a client cannot spend
+two days' worth around midnight). A `GET` stream counts once however long it
+stays open — what flows on it is never counted. Only a request with a valid
+agent token to a real path is charged, so somebody without a token cannot
+spend the owner's allowance, and a refused request costs nothing. Past the
+budget the answer is `429 Too Many Requests` with `Retry-After: <seconds>`
+(when the next request will be admitted — `1` for the per-second limit, up to
+a day for the daily one) and the body `{"error":"rate-limited"}`. The counters
+live in the `serve` process's memory, so a restart starts both afresh.
 
 What each refusal looks like, so a hosted owner's tools show a reason instead
 of an opaque failure:

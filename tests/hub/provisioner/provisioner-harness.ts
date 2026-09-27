@@ -19,7 +19,7 @@ import { startFakeDocker, type ExecScript, type FakeContainer, type FakeDocker }
 export const CADDY = 'caddy'
 export const FAST_READINESS = { timeoutMs: 300, pollMs: 5, execTimeoutMs: 200 } as const
 
-export type ExecKind = 'status' | 'admin-add' | 'admin-rotate' | 'other'
+export type ExecKind = 'status' | 'admin-add' | 'admin-rotate' | 'stat' | 'other'
 
 export type ExecOverride = (argv: readonly string[], container: FakeContainer) => ExecScript | undefined
 
@@ -38,12 +38,16 @@ export interface ProvisionerContext {
 }
 
 export function execKindOf(argv: readonly string[]): ExecKind {
+  if (argv[0] === 'stat') return 'stat'
   const command = argv.slice(2).join(' ')
   if (command === 'status --json') return 'status'
   if (command.startsWith('admin add ')) return 'admin-add'
   if (command.startsWith('admin rotate ')) return 'admin-rotate'
   return 'other'
 }
+
+/** The mtime (epoch seconds) the fake install reports for `journal.db` and `state.db`. */
+export const FAKE_ACTIVITY_S = Date.parse('2026-09-20T08:00:00.000Z') / 1000
 
 export const READY_STATUS = JSON.stringify([
   { host: '0.0.0.0', logPath: '/x/serve.log', port: 8090, service: 'serve', state: 'external' },
@@ -128,7 +132,24 @@ function defaultAnswer(argv: readonly string[], tokens: string[]): ExecScript {
       stderr: 'This token is shown once.\n',
     }
   }
+  if (kind === 'stat') return statAnswer(argv)
   return { exitCode: 127, stderr: 'unknown command\n' }
+}
+
+/**
+ * What GNU `stat -c %Y` does over a fresh install's data directory: a line per
+ * file that exists (`journal.db`, `state.db`), a complaint on stderr for each
+ * `-wal` that does not, and exit code 1 because one was missing.
+ */
+function statAnswer(argv: readonly string[]): ExecScript {
+  const files = argv.slice(3)
+  const present = files.filter((file) => !file.endsWith('-wal'))
+  const missing = files.filter((file) => file.endsWith('-wal'))
+  return {
+    exitCode: missing.length === 0 ? 0 : 1,
+    stdout: present.map(() => `${FAKE_ACTIVITY_S}\n`).join(''),
+    stderr: missing.map((file) => `stat: cannot statx '${file}': No such file or directory\n`).join(''),
+  }
 }
 
 /** The tenant's objects the fake holds, by kind — the caddy container is not a tenant's. */

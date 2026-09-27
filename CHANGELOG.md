@@ -18,6 +18,10 @@ All notable changes to this project are documented here. The format follows
   install with no `tenant` section is unaffected, byte for byte. See
   [Tenant mode (hosted)](docs/guide/install.md#tenant-mode-hosted) and
   [ADR-0017](docs/adr/0017-hosted-install-per-tenant.md).
+- **Request budget in tenant mode.** `serve` admits 10 agent requests a
+  second (bursting to 20) and 10 000 per sliding day per install, then answers
+  `429` with `Retry-After`; tune with `tenant.maxRequestsPerSecond` /
+  `maxRequestsPerDay` ([Tenant mode](docs/guide/install.md#tenant-mode-hosted)).
 - **`admin add`/`admin rotate --json`** prints one line
   `{"admin","role","token"}` on stdout for a script to parse, moving the
   human notices to stderr instead of interleaving them with it.

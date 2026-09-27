@@ -19,6 +19,8 @@ async function signedIn(): Promise<{ h: HubHarness; browser: Browser }> {
   hub = await startHub()
   const browser = hub.browser()
   await browser.signIn(ALICE)
+  // The install is made in the background; the first `/account` after it shows the owner token once.
+  await hub.settle()
   await browser.get('/account')
   return { h: hub, browser }
 }

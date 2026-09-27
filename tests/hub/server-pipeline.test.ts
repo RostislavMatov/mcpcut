@@ -163,6 +163,7 @@ describe('failures', () => {
         create: () => Promise.reject(new Error('unused')),
         rotateOwnerToken: () => Promise.reject(new Error('unused')),
         remove: () => Promise.reject(new Error('unused')),
+        status: () => Promise.reject(new Error('unused')),
       },
     })
     try {

@@ -1411,7 +1411,7 @@ const STDIO_REFUSED_TENANT: TenantSettings = {
   isTenant: true,
   stdioServers: 'refused',
   upstreams: 'public-https',
-  limits: { servers: 5, agents: 5, groups: 2 },
+  limits: { servers: 5, agents: 5, groups: 2, requestsPerSecond: 10, requestsPerDay: 10_000 },
 }
 
 describe('tenant mode (ADR-0017, task 8)', () => {

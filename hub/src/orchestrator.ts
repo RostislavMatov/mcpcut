@@ -8,13 +8,28 @@
  *
  * Until then `serve` runs with `unavailableOrchestrator` (H5): `available` is
  * false, so every new sign-in lands on the waitlist and no install is ever
- * promised, and the three methods reject if anyone calls them regardless.
+ * promised, and every method rejects if anyone calls it regardless.
  */
 
 export interface CreateInstallInput {
   readonly githubId: number
   readonly login: string
   readonly subdomain: string
+}
+
+/** Whether the provisioner holds an install for a subdomain, in any state (plan `hosted-path-and-ops`, P4). */
+export type InstallPresence = 'present' | 'absent'
+
+/** What the provisioner knows of one install (plan `hosted-path-and-ops`, P4–P6). */
+export interface InstallInspection {
+  readonly state: InstallPresence
+  /** Whether its container runs; `false` when stopped or absent. */
+  readonly running: boolean
+  /**
+   * When the install last wrote its journal or state (ISO-8601) — read only
+   * from a running container; `null` when stopped, absent, or none exists.
+   */
+  readonly lastActivityAt: string | null
 }
 
 export interface OwnerTokenGrant {
@@ -38,6 +53,12 @@ export interface Orchestrator {
   rotateOwnerToken(subdomain: string): Promise<OwnerTokenGrant>
   /** Removes the install and everything in it. Resolves only once it is gone. */
   remove(subdomain: string): Promise<void>
+  /** Stops the install's container, keeping its data (P6). Resolves also when it was not running. */
+  stop(subdomain: string): Promise<void>
+  /** Starts a stopped install (P6). Resolves also when it already runs. */
+  start(subdomain: string): Promise<void>
+  /** Whether an install exists for the subdomain — running or stopped is `present` — and how it lives. */
+  inspect(subdomain: string): Promise<InstallInspection>
 }
 
 /** Thrown by `unavailableOrchestrator` — the hub treats it like any other failure. */
@@ -49,12 +70,15 @@ export class OrchestratorUnavailableError extends Error {
   }
 }
 
-/** The phase-2 stand-in: nothing can be created, rotated or removed. */
+/** The phase-2 stand-in: nothing can be created, rotated, removed, stopped, started or read. */
 export const unavailableOrchestrator: Orchestrator = Object.freeze({
   available: false,
   create: () => Promise.reject(new OrchestratorUnavailableError('create an install')),
   rotateOwnerToken: () => Promise.reject(new OrchestratorUnavailableError('rotate an owner token')),
   remove: () => Promise.reject(new OrchestratorUnavailableError('remove an install')),
+  stop: () => Promise.reject(new OrchestratorUnavailableError('stop an install')),
+  start: () => Promise.reject(new OrchestratorUnavailableError('start an install')),
+  inspect: () => Promise.reject(new OrchestratorUnavailableError('read an install status')),
 })
 
 /**

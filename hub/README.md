@@ -93,11 +93,45 @@ environment as `serve`:
 
 | Command | Effect |
 |---|---|
-| `list` | Every account: login, subdomain, status, dates. No tokens. |
-| `block <login>` | Marks the account `blocked` and records a tombstone; an active session for it is ended. Does not yet tear down the account's own install — that is a phase 3 (orchestrator) capability; until then this prints that removal is pending. |
-| `unblock <login>` | Reverses `block`. |
+| `list` | Every account: login, subdomain, status, dates (created, last seen, stopped). No tokens. |
+| `block <login>` | Marks an `active` account `blocked` (its web session ends on its next request) and, with the provisioner link, **stops** its install — data kept. A stop that fails is a warning on stderr (the account is blocked anyway); without the link it says the install still runs. Either way the running hub's next idle sweep stops every blocked install it finds running. An account still being created (`pending`) is refused with exit 1 — try again in a minute. A block writes no tombstone; `delete` of a blocked account writes the permanent one. |
+| `unblock <login>` | Reverses `block`. Starts nothing: a stopped install starts on its person's next sign-in (or by the operator). |
 | `delete <login>` | Removes the account and records a tombstone (a re-signup with the same GitHub account is refused as "recently deleted" for `HUB_MIN_ACCOUNT_AGE_DAYS` — reusing that same window keeps the rule to one number instead of two). |
 | `purge-tombstones` | Drops tombstones older than the retention window, so a very old block/delete stops affecting new signups from an account that has moved on. |
+| `sweep [--dry-run]` | One idle sweep now (see [Idle installs](#idle-installs)), one line per active account and per blocked account whose install is not yet known stopped; `--dry-run` only prints what it would do. Needs the provisioner (`HUB_PROVISIONER_URL`); exits 1 if any account failed. `pending` accounts are left to the running hub — only it knows which of them it is still creating. |
+
+### Idle installs
+
+An install nobody uses is stopped, then removed (ADR-0017 phase 4, HA9). Its
+**activity** is the later of two things: its person's last sign-in to the hub,
+and the last time the install wrote its journal or state
+(`~/.mcpcut/data/{journal,state}.db` and their `-wal` files) — the journal
+takes a record on every agent call and every admin action, so an install used
+only by its agents counts as used. The provisioner reads those mtimes with
+`stat -c %Y` inside the running container; a stopped container is not asked,
+and the date it was stopped stands in (it was stopped only once 60 days had
+passed, so removal never comes early).
+
+| Unused for | What happens |
+|---|---|
+| 60 days | The container is stopped (`docker stop`); its volume, network and Caddy route stay. The hub records `stopped_at`. |
+| 90 days | The install (container, volume, network) is removed, and so is the account — **without** a tombstone: the person may sign up again at once and gets a fresh install. |
+
+`serve` sweeps a minute after it starts and every six hours after that,
+only with a provisioner configured; each sweep also settles `pending`
+accounts again (a provisioner that was down when the hub started). Signing in
+to the hub, or opening `/account`, starts a stopped install in the background
+— the page says "stopped — starting…" and refreshes itself — and counts as a
+sign-in. `/account` shows the dates an unused install stops and is removed on,
+from the last sign-in; agent calls only move them later.
+
+An `active` account whose install the provisioner does not have (for
+example, a hub restarted in the middle of a create that was then rolled back)
+is **never removed quietly**: the sweep logs `install missing, account kept for
+the operator` and `/account` tells its person to contact the operator. The
+operator decides — `delete <login>` (the removal is idempotent), or
+`provision-create` by hand. The flag lives in the hub's memory, so after a
+restart it reappears with the first sweep.
 
 ## Provisioner and tenant installs
 
@@ -196,10 +230,12 @@ an operator runs, is what stands in for one today. A host that needs a hard
 limit is a host that has outgrown sharing one Docker daemon among tenants —
 see ADR-0017's "when we reconsider" for that trigger.
 
-Not built yet, either: stopping an install nobody has used in months (ADR-0017
-phase 4) and a per-tenant rate limit on agent calls (also phase 4) — today a
-tenant that never logs back in keeps its container, and its resource limits,
-running indefinitely.
+An install nobody uses is stopped after 60 days and removed after 90 (see
+[Idle installs](#idle-installs)); the provisioner's side of that is two more
+calls, `POST /tenants/<sub>/stop` and `/start`, and `GET /tenants/<sub>`
+reporting whether the container runs and its last journal/state write. The
+per-tenant limit on agent calls lives in the install itself (the `tenant`
+section of its config — see `docs/guide/install.md`).
 
 ### Cloudflare, for `*.mcpcut.com`
 

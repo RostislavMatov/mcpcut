@@ -77,21 +77,25 @@ describe('GET /signin', () => {
 })
 
 describe('first sign-in', () => {
-  test('creates the account and shows the owner token once, signed in', async () => {
+  test('creates the account in the background and shows the owner token once, signed in', async () => {
     const h = await start()
     const browser = h.browser()
 
     const response = await browser.signIn(profile(501, 'Alice'))
 
     expect(response.status).toBe(200)
-    const [token] = h.orchestrator.tokens()
-    expect(token).toBeDefined()
-    expect(response.body).toContain(token)
-    expect(findAccountByGithubId(h.db, 501)).toMatchObject({ login: 'Alice', subdomain: 'alice', status: 'active' })
-    expect(h.orchestrator.calls()).toEqual([{ method: 'create', subdomain: 'alice' }])
+    expect(response.body).toContain('Preparing your install')
     expect(browser.has('__Host-mcpcut_hub')).toBe(true)
     expect(browser.has('__Host-mcpcut_oauth')).toBe(false)
+    await h.settle()
+    const [token] = h.orchestrator.tokens()
+    expect(token).toBeDefined()
+    expect(response.body).not.toContain(token)
+    expect(findAccountByGithubId(h.db, 501)).toMatchObject({ login: 'Alice', subdomain: 'alice', status: 'active' })
+    expect(h.orchestrator.calls()).toEqual([{ method: 'create', subdomain: 'alice' }])
 
+    const reveal = await browser.get('/account')
+    expect(reveal.body).toContain(token)
     const account = await browser.get('/account')
     expect(account.status).toBe(200)
     expect(account.body).toContain('alice.mcpcut.com')
@@ -117,15 +121,18 @@ describe('first sign-in', () => {
     expect(h.github.revokedTokens()).toHaveLength(1)
   })
 
-  test('an orchestrator failure removes the pending account and says try again', async () => {
+  test('an orchestrator failure removes the pending account and says so on the next page', async () => {
     const h = await start()
     h.orchestrator.fail('create')
     const browser = h.browser()
 
     const response = await browser.signIn(profile(502, 'bob'))
+    await h.settle()
+    const next = await browser.get('/account')
 
-    expect(response.status).toBe(503)
-    expect(response.body).toContain('Nothing was created')
+    expect(response.status).toBe(200)
+    expect(next.status).toBe(503)
+    expect(next.body).toContain('We could not create your install')
     expect(findAccountByGithubId(h.db, 502)).toBeNull()
     expect(findTombstone(h.db, 502)).toBeNull()
     expect(browser.has('__Host-mcpcut_hub')).toBe(false)

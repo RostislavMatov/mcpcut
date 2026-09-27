@@ -5,15 +5,20 @@ import { headerValue, page, seeOther, type HubResult } from './http.js'
 import { clearFlowCookie, flowIdFromCookieHeader, serializeFlowCookie } from './oauth-flow.js'
 import { describeOrchestratorError } from './orchestrator.js'
 import { renderAccountDeleteConfirmPage } from './pages/account-delete-confirm.js'
-import { renderAccountPage } from './pages/account.js'
+import { renderAccountPage, type InstallState } from './pages/account.js'
 import { renderDeletedPage } from './pages/deleted.js'
 import { renderNoticePage } from './pages/notice.js'
+import { renderPreparingPage } from './pages/preparing.js'
 import { renderPrivacyPage } from './pages/privacy.js'
 import { renderSignedInPage } from './pages/signed-in.js'
 import { renderSigninRefusedPage } from './pages/signin-refused.js'
 import { renderTermsPage } from './pages/terms.js'
 import { renderTokenOncePage } from './pages/token-once.js'
 import { renderWaitlistPage } from './pages/waitlist.js'
+import { idleDeadlines, type IdleSweeper } from './idle-sweeper.js'
+import type { InstallWaker } from './install-waker.js'
+import type { PendingTokens } from './pending-tokens.js'
+import type { Provisioning } from './provisioning.js'
 import type { WindowCounter } from './rate-limit.js'
 import { clearHubSessionCookie, serializeHubSessionCookie, type HubSession, type HubSessions } from './sessions.js'
 import { completeCallback, type CallbackOutcome, type SigninDeps } from './signin.js'
@@ -50,6 +55,13 @@ export interface HubDeps extends SigninDeps {
   readonly sessions: HubSessions
   /** Requests to `/signin` and the callback per IP (HA12). */
   readonly signinRequests: WindowCounter
+  /** Owner tokens and failure marks the background install tasks leave (P2/P3). */
+  readonly pendingTokens: PendingTokens
+  readonly provisioning: Provisioning
+  /** Starts a stopped install when its person comes back (P6). */
+  readonly waker: InstallWaker
+  /** The idle sweeper (P5/P6): `/account` asks it whether the install went missing. */
+  readonly idle: IdleSweeper
 }
 
 export interface Route {
@@ -133,13 +145,16 @@ function callbackPage(deps: HubDeps, outcome: CallbackOutcome, clearFlow: string
     case 'waitlist':
       return page(200, renderWaitlistPage({ position: outcome.position }), [clearFlow])
     case 'signed-in': {
+      // A stopped install starts in the background; `/account` says so meanwhile (P6).
+      deps.waker.wake(outcome.account)
       const { sessionId, session } = deps.sessions.create(outcome.account)
       const body = renderSignedInPage({ login: outcome.account.login, csrfToken: session.csrfToken })
       return page(200, body, [clearFlow, serializeHubSessionCookie(sessionId)])
     }
-    case 'created': {
+    case 'preparing': {
+      // The same same-site hand-over as `signed-in`: the refresh carries the Strict cookie.
       const { sessionId, session } = deps.sessions.create(outcome.account)
-      const body = renderTokenOncePage({ login: outcome.account.login, token: outcome.ownerToken, csrfToken: session.csrfToken })
+      const body = renderPreparingPage({ login: outcome.account.login, csrfToken: session.csrfToken })
       return page(200, body, [clearFlow, serializeHubSessionCookie(sessionId)])
     }
   }
@@ -153,8 +168,20 @@ function requireLive(ctx: HubContext): LiveSession {
   return ctx.live
 }
 
+/**
+ * `pending`: the install is still being made — "preparing", refreshing
+ * itself. Ready with an owner token waiting: the token, once (P2). Otherwise
+ * the account page, whose "issue a new owner token" covers a token lost to a
+ * restart or the TTL. A stopped install is started first, in the background (P6).
+ */
 function account(deps: HubDeps, ctx: HubContext): HubResult {
   const { account: record, session } = requireLive(ctx)
+  if (record.status === 'pending') return page(200, renderPreparingPage({ login: record.login, csrfToken: session.csrfToken }))
+  const starting = deps.waker.wake(record)
+  const waiting = deps.pendingTokens.takeToken({ githubId: record.githubId, accountCreatedAt: record.createdAt })
+  if (waiting !== undefined) {
+    return page(200, renderTokenOncePage({ login: record.login, token: waiting, csrfToken: session.csrfToken }))
+  }
   return page(
     200,
     renderAccountPage({
@@ -163,8 +190,16 @@ function account(deps: HubDeps, ctx: HubContext): HubResult {
       status: record.status,
       serveUrl: `https://${record.subdomain}.${deps.tenantDomain}`,
       csrfToken: session.csrfToken,
+      install: installStateOf(deps, record, starting),
+      ...idleDeadlines(record),
     }),
   )
+}
+
+function installStateOf(deps: HubDeps, record: AccountRecord, starting: boolean): InstallState {
+  if (deps.idle.isMissing({ githubId: record.githubId, createdAt: record.createdAt })) return 'missing'
+  if (record.stoppedAt === null) return 'running'
+  return starting ? 'starting' : 'stopped'
 }
 
 const TOKEN_NOT_ISSUED = 'Owner token not issued'
@@ -184,6 +219,8 @@ async function rotateToken(deps: HubDeps, ctx: HubContext): Promise<HubResult> {
     deps.log(`[hub] owner token rotation failed for ${record.subdomain}: ${describeOrchestratorError(error)}`)
     return notice(503, TOKEN_NOT_ISSUED, TOKEN_NOT_ISSUED_MESSAGE, live)
   }
+  // A first token still waiting stopped working the moment this one was minted.
+  deps.pendingTokens.forget(record.githubId)
   return page(200, renderTokenOncePage({ login: record.login, token: ownerToken, csrfToken: session.csrfToken }))
 }
 
@@ -194,6 +231,8 @@ function deleteConfirm(_deps: HubDeps, ctx: HubContext): HubResult {
 
 const DELETE_UNAVAILABLE_MESSAGE =
   'Your install cannot be removed right now, so nothing was deleted. Try again later.'
+const DELETE_WHILE_PREPARING_MESSAGE =
+  'Your install is still being prepared, so nothing was deleted. Try again once it is ready.'
 
 async function deleteAccountRoute(deps: HubDeps, ctx: HubContext): Promise<HubResult> {
   const { account: record, session } = requireLive(ctx)
@@ -203,6 +242,8 @@ async function deleteAccountRoute(deps: HubDeps, ctx: HubContext): Promise<HubRe
   if (typed !== record.login.toLowerCase()) {
     return refuse(400, `The login you typed does not match @${record.login} — nothing was deleted.`)
   }
+  // A remove racing the background create could leave an install behind with no account.
+  if (record.status === 'pending') return refuse(409, DELETE_WHILE_PREPARING_MESSAGE)
   if (!deps.orchestrator.available) return refuse(503, DELETE_UNAVAILABLE_MESSAGE)
   try {
     await deps.orchestrator.remove(record.subdomain)
@@ -212,6 +253,7 @@ async function deleteAccountRoute(deps: HubDeps, ctx: HubContext): Promise<HubRe
   }
   deleteAccount(deps.db, record.githubId, 'deleted', new Date(deps.clock()).toISOString())
   deps.sessions.destroyAccount(record.githubId)
+  deps.pendingTokens.forget(record.githubId)
   deps.log(`[hub] account deleted by its owner: @${record.login} (${record.subdomain})`)
   return page(200, renderDeletedPage({ login: record.login }), [clearHubSessionCookie()])
 }
@@ -235,6 +277,11 @@ function asset(_deps: HubDeps, ctx: HubContext): HubResult {
 /** The hub's 404. */
 export function notFound(): HubResult {
   return page(404, renderNoticePage({ status: 'Not found', message: 'There is nothing at this address.' }))
+}
+
+/** What a session whose install could not be created gets, once: signed out, and told why (P3). */
+export function installFailedAnswer(): HubResult {
+  return refusedPage(503, { kind: 'install-failed' }, [clearHubSessionCookie()])
 }
 
 /** What a live session whose account was just blocked gets: signed out, and told why. */

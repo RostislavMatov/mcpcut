@@ -182,6 +182,17 @@ export const BODY_TOO_MANY_REQUESTS_IN_FLIGHT = Buffer.from(
   'utf8',
 )
 /**
+ * 429 body for a request refused by the install's request budget (tenant
+ * mode, plan `hosted-path-and-ops` P7; `request-budget.ts`). Distinct from
+ * the two 429s above: nothing is wrong with the agent's sessions, the install
+ * has spent its per-second or per-day allowance, and `Retry-After` says when
+ * the next request will be admitted.
+ */
+export const BODY_RATE_LIMITED = Buffer.from('{"error":"rate-limited"}', 'utf8')
+
+/** Response header naming, in whole seconds, when a refused request may be retried (RFC 9110 §10.2.3). */
+export const RETRY_AFTER_HEADER = 'retry-after'
+/**
  * 504 body: the request was abandoned without an answer — the upstream
  * stayed silent past `STATELESS_RESPONSE_TIMEOUT_MS`, or the agent's own
  * socket went away first. Deliberately one code for both: the agent learns

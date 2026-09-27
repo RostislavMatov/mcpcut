@@ -1,12 +1,12 @@
 import { z } from 'zod'
 import type { DockerClient } from './docker.js'
 import { ProvisionerError } from './errors.js'
-import { TENANT_CLI, TENANT_USER } from './templates.js'
+import { TENANT_CLI, TENANT_HOME_MOUNT, TENANT_USER } from './templates.js'
 import { ADMIN_EXEC_TIMEOUT_MS, READY_TIMEOUT_MS } from './timeouts.js'
 
 /**
- * The two things the provisioner asks a running install, by `docker exec`
- * (plan `tenant-orchestrator`, Task 4, O7):
+ * The three things the provisioner asks a running install, by `docker exec`
+ * (plan `tenant-orchestrator`, Task 4, O7; plan `hosted-path-and-ops`, P5):
  *
  *  - "are you up?" — `mcpcut status --json`, until both `ui` and `serve`
  *    answer on their ports. Inside a tenant container the services run under
@@ -17,7 +17,17 @@ import { ADMIN_EXEC_TIMEOUT_MS, READY_TIMEOUT_MS } from './timeouts.js'
  *  - "mint an owner token" — `admin add <name> --role owner --json` on the
  *    first create, `admin rotate <name> --recover --json` after. The one
  *    stdout line is the contract; it is parsed strictly and its token goes
- *    back to the caller only. No error here quotes stdout or stderr.
+ *    back to the caller only.
+ *  - "when were you last used?" — `stat -c %Y` over the SQLite files of the
+ *    data directory: the journal is written on every agent call and every
+ *    admin action, the state on every change. GNU `stat` is in coreutils,
+ *    which Debian marks Essential, so `node:24-bookworm-slim` carries it and
+ *    the check costs no second Node process in a 256 MiB container. A file
+ *    that does not exist (a `-wal` after a checkpoint) prints nothing on
+ *    stdout, a complaint on stderr and makes `stat` exit 1: the lines that
+ *    did come are read and the newest wins.
+ *
+ * No error here quotes stdout or stderr.
  */
 
 export { ADMIN_EXEC_TIMEOUT_MS, READY_TIMEOUT_MS } from './timeouts.js'
@@ -29,6 +39,16 @@ const READY_STATES: ReadonlySet<string> = new Set(['running', 'external'])
 const REQUIRED_SERVICES: readonly string[] = ['ui', 'serve']
 /** `mcpa_` + base64url of the CSPRNG bytes (`src/admin/constants.ts`). */
 const OWNER_TOKEN_PATTERN = /^mcpa_[A-Za-z0-9_-]{16,256}$/
+
+/** The install's SQLite files, main and write-ahead log (`src/journal/db.ts`, `src/policy/store-backend.ts`). */
+export const ACTIVITY_FILES: readonly string[] = Object.freeze(
+  ['journal.db', 'journal.db-wal', 'state.db', 'state.db-wal'].map((file) => `${TENANT_HOME_MOUNT}/data/${file}`),
+)
+/** `stat` exits 0 when every file exists and 1 when some do not; anything else is not an answer. */
+const STAT_EXIT_CODES: ReadonlySet<number> = new Set([0, 1])
+/** Epoch seconds, as `%Y` prints them: digits only, no sign, no exponent (12 digits reach the year 33658). */
+const EPOCH_SECONDS_PATTERN = /^\d{1,12}$/
+const MS_PER_S = 1_000
 
 const StatusAnswer = z.array(z.object({ service: z.string(), state: z.string() }))
 const AdminAnswer = z.strictObject({
@@ -121,6 +141,28 @@ export function ownerTokenFrom(stdout: string, adminName: string, operation: str
   if (!answer.success) throw new ProvisionerError('bad-output', `${operation} printed an unexpected shape`)
   if (answer.data.admin !== adminName) throw new ProvisionerError('bad-output', `${operation} named another admin`)
   return answer.data.token
+}
+
+/** When the install last wrote its journal or state, as ISO-8601; `null` when none of the files exists. */
+export async function readLastActivity(docker: DockerClient, container: string): Promise<string | null> {
+  const result = await docker.exec(container, ['stat', '-c', '%Y', ...ACTIVITY_FILES], execOptions(STATUS_EXEC_TIMEOUT_MS))
+  if (!STAT_EXIT_CODES.has(result.exitCode)) throw new ProvisionerError('bad-output', `stat exited with code ${result.exitCode}`)
+  if (result.truncated.stdout) throw new ProvisionerError('bad-output', 'stat printed more than expected')
+  return lastActivityFrom(result.stdout)
+}
+
+/** The newest of `stat -c %Y`'s lines as ISO-8601, `null` for none; a line that is not epoch seconds is a failure. */
+export function lastActivityFrom(stdout: string): string | null {
+  const lines = stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '')
+  if (lines.some((line) => !EPOCH_SECONDS_PATTERN.test(line))) {
+    throw new ProvisionerError('bad-output', 'stat printed something other than epoch seconds')
+  }
+  if (lines.length === 0) return null
+  const newest = Math.max(...lines.map(Number))
+  return new Date(newest * MS_PER_S).toISOString()
 }
 
 function execOptions(timeoutMs: number): { user: string; env: Record<string, string>; timeoutMs: number } {

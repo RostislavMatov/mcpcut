@@ -11,7 +11,7 @@ import {
 
 /**
  * `service.ts` over the fake Docker Engine (plan `tenant-orchestrator`,
- * Task 4): the full create/rotate/remove/status, a rollback for a failure at
+ * Task 4): the full create/rotate/remove (status, stop and start: `service-power.test.ts`), a rollback for a failure at
  * every step of create, idempotent removal, input refused before Docker,
  * another tenant's objects left alone, one-at-a-time per subdomain, and no
  * owner token in any log line or error.
@@ -360,24 +360,6 @@ describe('remove', () => {
     await removed
 
     expect(tenantObjects(ctx.fake())).toEqual({ containers: [], networks: [], volumes: [] })
-  })
-})
-
-describe('status', () => {
-  test('absent before create; the container state and the volume size after', async () => {
-    expect(await ctx.service().status('alice')).toEqual({ state: 'absent', sizeBytes: null })
-
-    await ctx.service().create(ALICE)
-    expect(await ctx.service().status('alice')).toEqual({ state: 'running', sizeBytes: null })
-
-    ctx.fake().setVolumeSize('mcpcut-t-alice', 4096)
-    expect(await ctx.service().status('alice')).toEqual({ state: 'running', sizeBytes: 4096 })
-  })
-
-  test('another tenant’s container under the name → not-ours', async () => {
-    await ctx.docker().createContainer('mcpcut-t-alice', { Image: 'x', Labels: { 'mcpcut.tenant': 'eve' } })
-
-    expect((await errorOf(ctx.service().status('alice'))).code).toBe('not-ours')
   })
 })
 

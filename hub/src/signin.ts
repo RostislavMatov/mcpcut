@@ -1,20 +1,19 @@
 import {
   countActive,
-  discardPendingAccount,
   findAccountByGithubId,
   findAccountBySubdomain,
   findTombstone,
   insertAccount,
   joinWaitlist,
-  setStatus,
   touch,
   type AccountRecord,
   type AccountsDb,
 } from './accounts-db.js'
 import { GithubError, type GithubClient, type GithubProfile } from './github.js'
 import type { OauthFlows } from './oauth-flow.js'
-import { describeOrchestratorError, type Orchestrator } from './orchestrator.js'
+import type { Orchestrator } from './orchestrator.js'
 import type { SigninRefusalReason } from './pages/signin-refused.js'
+import type { Provisioning } from './provisioning.js'
 import type { WindowCounter } from './rate-limit.js'
 import { decide, type SignupDecision } from './signup-policy.js'
 import { assignSubdomain, SubdomainExhaustedError } from './subdomain.js'
@@ -35,6 +34,8 @@ export interface SigninDeps {
   readonly db: AccountsDb
   readonly github: GithubClient
   readonly orchestrator: Orchestrator
+  /** Makes a new account's install in the background (plan `hosted-path-and-ops`, P1). */
+  readonly provisioning: Pick<Provisioning, 'start'>
   readonly flows: OauthFlows
   /** Accounts created per IP in the trailing hour (HA12). */
   readonly signups: WindowCounter
@@ -55,7 +56,8 @@ export type CallbackOutcome =
   | { readonly kind: 'refused'; readonly reason: SigninRefusalReason; readonly status: number }
   | { readonly kind: 'waitlist'; readonly position: number }
   | { readonly kind: 'signed-in'; readonly account: AccountRecord }
-  | { readonly kind: 'created'; readonly account: AccountRecord; readonly ownerToken: string }
+  /** A new `pending` account whose install is being made in the background. */
+  | { readonly kind: 'preparing'; readonly account: AccountRecord }
 
 /** GitHub authorization codes are short opaque strings; anything else is not one. */
 const CODE_PATTERN = /^[\x21-\x7e]{1,512}$/
@@ -66,7 +68,6 @@ const HTTP_FORBIDDEN = 403
 const HTTP_CONFLICT = 409
 const HTTP_TOO_MANY_REQUESTS = 429
 const HTTP_BAD_GATEWAY = 502
-const HTTP_SERVICE_UNAVAILABLE = 503
 
 function refused(reason: SigninRefusalReason, status: number): CallbackOutcome {
   return { kind: 'refused', reason, status }
@@ -133,8 +134,9 @@ function githubFailure(deps: SigninDeps, error: unknown): Extract<CallbackOutcom
  * Everything from `decide` to the `insertAccount` below runs without an
  * `await`, so two callbacks cannot interleave between the policy read and
  * the seat reservation; `insertAccount`'s own transaction is the backstop.
+ * Nothing here waits for the install itself (P1).
  */
-function admit(deps: SigninDeps, profile: GithubProfile, ip: string): CallbackOutcome | Promise<CallbackOutcome> {
+function admit(deps: SigninDeps, profile: GithubProfile, ip: string): CallbackOutcome {
   const { db } = deps
   const now = new Date(deps.clock()).toISOString()
   const decision = decide({
@@ -185,23 +187,22 @@ function refusalOf(decision: Extract<SignupDecision, { kind: 'refused' }>, minAc
   }
 }
 
-async function createAccount(deps: SigninDeps, profile: GithubProfile, ip: string, now: string): Promise<CallbackOutcome> {
-  const { db } = deps
+/**
+ * Reserves the seat and hands the install to the background (P1): the
+ * callback answers now, whatever the create takes. A second callback for the
+ * same person finds the `pending` row and signs in (`existing`), so it never
+ * starts a second create; `provisioning.start` refuses one anyway.
+ */
+function createAccount(deps: SigninDeps, profile: GithubProfile, ip: string, now: string): CallbackOutcome {
   const reserved = reserveSeat(deps, profile, now)
   if (reserved.kind !== 'reserved') return reserved.outcome
   deps.signups.record(ip)
   const { account } = reserved
-  let ownerToken: string
-  try {
-    ownerToken = (await deps.orchestrator.create({ githubId: account.githubId, login: account.login, subdomain: account.subdomain })).ownerToken
-  } catch (error: unknown) {
-    discardPendingAccount(db, account.githubId)
-    deps.log(`[hub] install creation failed for ${account.subdomain}, signup rolled back: ${describeOrchestratorError(error)}`)
-    return refused({ kind: 'try-again' }, HTTP_SERVICE_UNAVAILABLE)
-  }
-  setStatus(db, account.githubId, 'active')
-  deps.log(`[hub] account created: @${account.login} -> ${account.subdomain}`)
-  return { kind: 'created', account: { ...account, status: 'active' }, ownerToken }
+  // `false` only while the hub shuts down: the row stays `pending` and the next start settles it (P4).
+  const started = deps.provisioning.start(account)
+  const next = started ? 'install being created' : 'install left for the next start'
+  deps.log(`[hub] account reserved: @${account.login} -> ${account.subdomain}, ${next}`)
+  return { kind: 'preparing', account }
 }
 
 type SeatReservation =

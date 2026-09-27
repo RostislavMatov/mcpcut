@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'vitest'
+import { renderHubLayout } from '../../hub/src/pages/layout.js'
 import { renderNoticePage } from '../../hub/src/pages/notice.js'
+import { renderPreparingPage } from '../../hub/src/pages/preparing.js'
 import { renderSignedInPage } from '../../hub/src/pages/signed-in.js'
+import { html } from '../../src/ui/html.js'
 import { expectNoBannedWords } from '../support/banned-words.js'
 
 /**
@@ -42,5 +45,30 @@ describe('renderSignedInPage', () => {
     expect(page).toContain('href="/account"')
     expect(page).toContain('@alice')
     expect(page).not.toMatch(/<script/i)
+  })
+})
+
+describe('renderPreparingPage', () => {
+  test('asks /account again every 3 seconds, signed in, with a link and no script', () => {
+    const page = renderPreparingPage({ login: '<b>alice</b>', csrfToken: 'tok' })
+
+    expect(page).toContain('<meta http-equiv="refresh" content="3; url=/account">')
+    expect(page).toContain('Preparing your install')
+    expect(page).toContain('href="/account"')
+    expect(page).toContain('Sign out')
+    expect(page).toContain('&lt;b&gt;alice&lt;/b&gt;')
+    expect(page).not.toMatch(/<script/i)
+    expectNoBannedWords(page)
+  })
+})
+
+describe('renderHubLayout — refresh delay', () => {
+  test('refuses a delay that is not a whole number of seconds', () => {
+    const render = (seconds: number): string =>
+      renderHubLayout({ title: 't', content: html``, csrfToken: '', refreshTo: '/account', refreshAfterSeconds: seconds })
+
+    expect(render(0)).toContain('content="0; url=/account"')
+    expect(() => render(-1)).toThrow(RangeError)
+    expect(() => render(1.5)).toThrow(RangeError)
   })
 })

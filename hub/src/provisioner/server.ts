@@ -9,13 +9,16 @@ import { PROVISIONER_SOCKET_TIMEOUT_MS } from './timeouts.js'
 
 /**
  * The provisioner's HTTP API for the hub (plan `tenant-orchestrator`,
- * Task 4, O1). Four operations and a health check, nothing else:
+ * Task 4, O1; plan `hosted-path-and-ops`, Task C). Six operations and a
+ * health check, nothing else:
  *
  *   GET    /healthz                    → 200 "ok" (no secret needed)
  *   POST   /tenants                    {subdomain, login, githubId} → 201 {ownerToken}
  *   POST   /tenants/:sub/owner-token   → 200 {ownerToken}
  *   DELETE /tenants/:sub               → 204
- *   GET    /tenants/:sub               → 200 {state, sizeBytes}
+ *   POST   /tenants/:sub/stop          → 204 (idempotent)
+ *   POST   /tenants/:sub/start         → 204 (idempotent)
+ *   GET    /tenants/:sub               → 200 {state, sizeBytes, running, lastActivityAt}
  *
  * The Bearer secret is checked FIRST, before the route or the body is looked
  * at, and in constant time (sha256 digests of equal length). A body is JSON,
@@ -36,6 +39,7 @@ export const PROVISIONER_KEEP_ALIVE_TIMEOUT_MS = 5_000
 const BEARER_PREFIX = 'Bearer '
 const TENANT_PATH = /^\/tenants\/([a-z0-9-]{1,63})$/
 const OWNER_TOKEN_PATH = /^\/tenants\/([a-z0-9-]{1,63})\/owner-token$/
+const POWER_PATH = /^\/tenants\/([a-z0-9-]{1,63})\/(stop|start)$/
 
 const CreateBody = z.strictObject({
   subdomain: z.string().max(63),
@@ -131,8 +135,10 @@ async function route(deps: Deps, req: IncomingMessage, path: string): Promise<An
   const method = req.method ?? ''
   const tenant = TENANT_PATH.exec(path)?.[1]
   const rotating = OWNER_TOKEN_PATH.exec(path)?.[1]
+  const power = POWER_PATH.exec(path)
   if (path === '/tenants') return method === 'POST' ? createTenant(deps, req) : notAllowed()
   if (rotating !== undefined) return method === 'POST' ? run(deps, 'rotate', rotating, () => rotate(deps, rotating)) : notAllowed()
+  if (power !== null) return method === 'POST' ? switchPower(deps, power[1] as string, power[2] === 'stop' ? 'stop' : 'start') : notAllowed()
   if (tenant === undefined) return { status: 404, body: { error: 'not-found', message: 'no such route' } }
   if (method === 'DELETE') return run(deps, 'remove', tenant, () => remove(deps, tenant))
   if (method === 'GET') return run(deps, 'status', tenant, async () => ({ status: 200, body: await deps.service.status(tenant) }))
@@ -173,6 +179,13 @@ async function rotate(deps: Deps, subdomain: string): Promise<Answer> {
 async function remove(deps: Deps, subdomain: string): Promise<Answer> {
   await deps.service.remove(subdomain)
   return { status: 204 }
+}
+
+function switchPower(deps: Deps, subdomain: string, operation: 'stop' | 'start'): Promise<Answer> {
+  return run(deps, operation, subdomain, async () => {
+    await (operation === 'stop' ? deps.service.stop(subdomain) : deps.service.start(subdomain))
+    return { status: 204 }
+  })
 }
 
 /** Runs one operation, logs its outcome (never its body), maps a failure to its status. */

@@ -8,6 +8,8 @@ import {
   MAX_LIST_ENTRIES,
   MAX_TENANT_AGENTS_BOUND,
   MAX_TENANT_GROUPS_BOUND,
+  MAX_TENANT_REQUESTS_PER_DAY_BOUND,
+  MAX_TENANT_REQUESTS_PER_SECOND_BOUND,
   MAX_TENANT_SERVERS_BOUND,
   PUBLIC_ORIGIN_PATTERN,
   REJECTED_ORIGIN_VALUE,
@@ -65,7 +67,9 @@ const publicOriginSchema = boundedString.regex(
 /**
  * `tenant`: the three switches a hosted install turns on (PRD
  * `hosted-accounts`, phase 1, ADR-0017) — refuse stdio servers, reach only
- * public `https` upstreams, and cap servers/agents/groups. Every field is
+ * public `https` upstreams, and cap servers/agents/groups — plus the agent
+ * front's request budget (`maxRequestsPerSecond`/`maxRequestsPerDay`, plan
+ * `hosted-path-and-ops` P7). Every field is
  * `.optional()`: `resolveTenantSettings` (`src/tenant/settings.ts`) fills an
  * omitted one with the STRICT value, not the permissive one, so `tenant: {}`
  * is the fully locked-down preset rather than a no-op. The section itself is
@@ -78,6 +82,8 @@ const tenantSchema = z.strictObject({
   maxServers: z.number().int().min(1).max(MAX_TENANT_SERVERS_BOUND).optional(),
   maxAgents: z.number().int().min(1).max(MAX_TENANT_AGENTS_BOUND).optional(),
   maxGroups: z.number().int().min(0).max(MAX_TENANT_GROUPS_BOUND).optional(),
+  maxRequestsPerSecond: z.number().int().min(1).max(MAX_TENANT_REQUESTS_PER_SECOND_BOUND).optional(),
+  maxRequestsPerDay: z.number().int().min(1).max(MAX_TENANT_REQUESTS_PER_DAY_BOUND).optional(),
 })
 
 export const installConfigSchema = z.strictObject({

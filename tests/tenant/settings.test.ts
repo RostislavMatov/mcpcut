@@ -37,8 +37,18 @@ function okLoad(tenant?: InstallConfig['tenant']): InstallConfigLoad {
 const UNRESTRICTED: Omit<TenantSettings, 'isTenant'> = {
   stdioServers: 'allowed',
   upstreams: 'any',
-  limits: { servers: MAX_SERVERS_IN_REGISTRY, agents: MAX_AGENTS, groups: MAX_GROUPS },
+  limits: {
+    servers: MAX_SERVERS_IN_REGISTRY,
+    agents: MAX_AGENTS,
+    groups: MAX_GROUPS,
+    // No tenant section: no request budget at all — `serve` builds none.
+    requestsPerSecond: Number.POSITIVE_INFINITY,
+    requestsPerDay: Number.POSITIVE_INFINITY,
+  },
 }
+
+/** The strict request limits (plan `hosted-path-and-ops`, P7). */
+const STRICT_REQUESTS = { requestsPerSecond: 10, requestsPerDay: 10_000 } as const
 
 describe('resolveTenantSettings: no tenant section at all means prior behavior, byte for byte', () => {
   test('absent config', () => {
@@ -70,7 +80,7 @@ describe('resolveTenantSettings: an empty tenant section is the fully strict pre
       isTenant: true,
       stdioServers: 'refused',
       upstreams: 'public-https',
-      limits: { servers: 5, agents: 5, groups: 2 },
+      limits: { servers: 5, agents: 5, groups: 2, ...STRICT_REQUESTS },
     })
   })
 })
@@ -83,26 +93,46 @@ describe('resolveTenantSettings: a partial section keeps the strict default for 
       isTenant: true,
       stdioServers: 'allowed',
       upstreams: 'public-https',
-      limits: { servers: 5, agents: 5, groups: 2 },
+      limits: { servers: 5, agents: 5, groups: 2, ...STRICT_REQUESTS },
     })
   })
 
   test('only maxServers given', () => {
     const settings = resolveTenantSettings(okLoad({ maxServers: 40 }))
 
-    expect(settings.limits).toEqual({ servers: 40, agents: 5, groups: 2 })
+    expect(settings.limits).toEqual({ servers: 40, agents: 5, groups: 2, ...STRICT_REQUESTS })
   })
 
   test('every field given explicitly is honored as-is', () => {
     const settings = resolveTenantSettings(
-      okLoad({ stdioServers: 'allowed', upstreams: 'any', maxServers: 100, maxAgents: 50, maxGroups: 10 }),
+      okLoad({
+        stdioServers: 'allowed',
+        upstreams: 'any',
+        maxServers: 100,
+        maxAgents: 50,
+        maxGroups: 10,
+        maxRequestsPerSecond: 50,
+        maxRequestsPerDay: 200_000,
+      }),
     )
 
     expect(settings).toEqual({
       isTenant: true,
       stdioServers: 'allowed',
       upstreams: 'any',
-      limits: { servers: 100, agents: 50, groups: 10 },
+      limits: { servers: 100, agents: 50, groups: 10, requestsPerSecond: 50, requestsPerDay: 200_000 },
+    })
+  })
+
+  test('only the request limits given: the store ceilings stay strict', () => {
+    const settings = resolveTenantSettings(okLoad({ maxRequestsPerSecond: 3, maxRequestsPerDay: 500 }))
+
+    expect(settings.limits).toEqual({
+      servers: 5,
+      agents: 5,
+      groups: 2,
+      requestsPerSecond: 3,
+      requestsPerDay: 500,
     })
   })
 

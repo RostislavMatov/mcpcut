@@ -6,6 +6,7 @@ import {
 import { renderAccountPage, type AccountView } from '../../hub/src/pages/account.js'
 import { renderDeletedPage } from '../../hub/src/pages/deleted.js'
 import { renderHubLayout } from '../../hub/src/pages/layout.js'
+import { renderPreparingPage } from '../../hub/src/pages/preparing.js'
 import { renderPrivacyPage } from '../../hub/src/pages/privacy.js'
 import { renderSigninRefusedPage, type SigninRefusalReason } from '../../hub/src/pages/signin-refused.js'
 import { renderTermsPage } from '../../hub/src/pages/terms.js'
@@ -34,6 +35,7 @@ const ALL_REFUSAL_REASONS: readonly SigninRefusalReason[] = [
   { kind: 'cancelled' },
   { kind: 'github-unavailable' },
   { kind: 'try-again' },
+  { kind: 'install-failed' },
 ]
 
 function accountView(overrides: Partial<AccountView> = {}): AccountView {
@@ -43,6 +45,9 @@ function accountView(overrides: Partial<AccountView> = {}): AccountView {
     status: 'active',
     serveUrl: 'https://alice.mcpcut.com',
     csrfToken: CSRF_TOKEN,
+    install: 'running',
+    stopsOn: '2026-11-26',
+    removedOn: '2026-12-26',
     ...overrides,
   }
 }
@@ -70,6 +75,8 @@ function allPages(): ReadonlyArray<{ readonly name: string; readonly html: strin
       name: 'token-once',
       html: renderTokenOncePage({ login: 'alice', token: 'mcpo_secrettoken', csrfToken: CSRF_TOKEN }),
     },
+    { name: 'preparing', html: renderPreparingPage({ login: 'alice', csrfToken: CSRF_TOKEN }) },
+    { name: 'preparing-xss-login', html: renderPreparingPage({ login: XSS_LOGIN, csrfToken: CSRF_TOKEN }) },
     { name: 'waitlist', html: renderWaitlistPage({ position: 3 }) },
     { name: 'terms', html: renderTermsPage() },
     { name: 'terms-signed-in', html: renderTermsPage({ signedIn: true, csrfToken: CSRF_TOKEN }) },

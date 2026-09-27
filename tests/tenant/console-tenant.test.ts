@@ -30,14 +30,20 @@ const TENANT: TenantSettings = {
   isTenant: true,
   stdioServers: 'refused',
   upstreams: 'public-https',
-  limits: { servers: 5, agents: 5, groups: 2 },
+  limits: { servers: 5, agents: 5, groups: 2, requestsPerSecond: 10, requestsPerDay: 10_000 },
 }
 
 const SELF_HOSTED: TenantSettings = {
   isTenant: false,
   stdioServers: 'allowed',
   upstreams: 'any',
-  limits: { servers: 200, agents: 200, groups: 100 },
+  limits: {
+    servers: 200,
+    agents: 200,
+    groups: 100,
+    requestsPerSecond: Number.POSITIVE_INFINITY,
+    requestsPerDay: Number.POSITIVE_INFINITY,
+  },
 }
 
 function fakeRequest(body: unknown): IncomingMessage {

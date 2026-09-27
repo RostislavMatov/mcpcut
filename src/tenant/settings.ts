@@ -5,7 +5,8 @@ import { loadInstallConfigSync, type InstallConfigLoad } from '../setup/load.js'
  * Tenant mode settings (PRD `hosted-accounts`, phase 1, task 1, ADR-0017): the
  * three switches a `tenant` section of `~/.mcpcut/config.json` turns on for a
  * hosted install — refuse stdio servers, reach only public `https` upstreams,
- * and cap how many servers/agents/groups one install can hold.
+ * and cap how many servers/agents/groups one install can hold — and the
+ * agent front's request budget (plan `hosted-path-and-ops`, P7).
  *
  * Resolved once at import, the RESOLVE-ONCE-AT-IMPORT pattern `src/config.ts`
  * uses for `JOURNAL_DIR`: every module that reads `TENANT_SETTINGS` gets a
@@ -24,11 +25,20 @@ export type StdioServersPolicy = 'allowed' | 'refused'
 /** Whether an http(s) upstream may be any address, or only a public https one. */
 export type UpstreamsPolicy = 'any' | 'public-https'
 
-/** Per-store ceilings a tenant install enforces on write. */
+/** Per-store ceilings a tenant install enforces on write, and its request budget. */
 export interface TenantLimits {
   readonly servers: number
   readonly agents: number
   readonly groups: number
+  /**
+   * Agent-front requests per second (bursting to twice this) and per sliding
+   * 24 hours. `Infinity` off tenant mode: "no limit" stays a number every
+   * comparison already understands, and `serve` builds no budget at all for
+   * a non-tenant install (`src/cli/serve-budget.ts`), so the unlimited value
+   * never reaches the budget's own arithmetic.
+   */
+  readonly requestsPerSecond: number
+  readonly requestsPerDay: number
 }
 
 /** What every gate in the plane reads to decide whether it is running hosted, and how. */
@@ -60,6 +70,8 @@ const UNRESTRICTED_SETTINGS: TenantSettings = Object.freeze({
     servers: UNRESTRICTED_MAX_SERVERS,
     agents: UNRESTRICTED_MAX_AGENTS,
     groups: UNRESTRICTED_MAX_GROUPS,
+    requestsPerSecond: Number.POSITIVE_INFINITY,
+    requestsPerDay: Number.POSITIVE_INFINITY,
   }),
 })
 
@@ -77,6 +89,8 @@ export interface StrictTenantSection {
   readonly maxServers: number
   readonly maxAgents: number
   readonly maxGroups: number
+  readonly maxRequestsPerSecond: number
+  readonly maxRequestsPerDay: number
 }
 
 export const STRICT_TENANT_SECTION: StrictTenantSection = Object.freeze({
@@ -85,6 +99,8 @@ export const STRICT_TENANT_SECTION: StrictTenantSection = Object.freeze({
   maxServers: 5,
   maxAgents: 5,
   maxGroups: 2,
+  maxRequestsPerSecond: 10,
+  maxRequestsPerDay: 10_000,
 })
 
 /**
@@ -110,6 +126,8 @@ export function resolveTenantSettings(load: InstallConfigLoad): TenantSettings {
       servers: tenant.maxServers ?? STRICT_TENANT_SECTION.maxServers,
       agents: tenant.maxAgents ?? STRICT_TENANT_SECTION.maxAgents,
       groups: tenant.maxGroups ?? STRICT_TENANT_SECTION.maxGroups,
+      requestsPerSecond: tenant.maxRequestsPerSecond ?? STRICT_TENANT_SECTION.maxRequestsPerSecond,
+      requestsPerDay: tenant.maxRequestsPerDay ?? STRICT_TENANT_SECTION.maxRequestsPerDay,
     }),
   })
 }

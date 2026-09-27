@@ -1,14 +1,20 @@
 import { Agent as HttpAgent, request as httpRequest, type ClientRequest } from 'node:http'
 import { Agent as HttpsAgent, request as httpsRequest } from 'node:https'
 import { z } from 'zod'
-import { unavailableOrchestrator, type CreateInstallInput, type Orchestrator, type OwnerTokenGrant } from './orchestrator.js'
+import {
+  unavailableOrchestrator,
+  type CreateInstallInput,
+  type InstallInspection,
+  type Orchestrator,
+  type OwnerTokenGrant,
+} from './orchestrator.js'
 import { CREATE_TIMEOUT_MS } from './provisioner/timeouts.js'
 
 /**
  * The hub's orchestrator over the provisioner's HTTP API (plan
  * `tenant-orchestrator`, Task 5, O1). The hub never speaks Docker: it asks
  * the provisioner — the one process with the Docker socket — for exactly the
- * four things the `Orchestrator` interface names.
+ * operations the `Orchestrator` interface names.
  *
  * Secret hygiene is structural, as in `github.ts`: no error built here quotes
  * a response body (a create's body IS an owner token), a header (the Bearer
@@ -19,7 +25,7 @@ import { CREATE_TIMEOUT_MS } from './provisioner/timeouts.js'
 
 /** A create waits for the install to come up; the budget against the provisioner's own waits is in `provisioner/timeouts.ts`. */
 export { CREATE_TIMEOUT_MS } from './provisioner/timeouts.js'
-/** Rotate is one exec; remove is a stop (10 s grace) and a few removals. */
+/** Rotate is one exec; remove and stop are a stop (10 s grace) and a few calls; a status may wait for a rotate under the provisioner's lock. */
 export const DEFAULT_TIMEOUT_MS = 30_000
 export const MAX_RESPONSE_BYTES = 16 * 1024
 
@@ -66,6 +72,13 @@ export interface HttpOrchestrator extends Orchestrator {
 
 const TokenAnswer = z.object({ ownerToken: z.string().regex(OWNER_TOKEN_PATTERN) })
 const ErrorAnswer = z.object({ error: z.string() })
+const InspectAnswer = z.object({
+  state: z.string(),
+  running: z.boolean(),
+  lastActivityAt: z.iso.datetime().nullable(),
+})
+/** The provisioner's `state` for a subdomain it holds nothing for (`provisioner/service.ts`). */
+const ABSENT_STATE = 'absent'
 
 interface Config {
   readonly base: URL
@@ -88,6 +101,9 @@ export function createHttpOrchestrator(options: HttpOrchestratorOptions): HttpOr
     create: (input: CreateInstallInput) => create(config, send, input),
     rotateOwnerToken: (subdomain: string) => rotate(send, subdomain),
     remove: (subdomain: string) => remove(send, subdomain),
+    stop: (subdomain: string) => power(send, subdomain, 'stop'),
+    start: (subdomain: string) => power(send, subdomain, 'start'),
+    inspect: (subdomain: string) => inspect(send, subdomain),
     close: () => {
       agents.http.destroy()
       agents.https.destroy()
@@ -135,6 +151,22 @@ async function remove(send: Send, subdomain: string): Promise<void> {
   const operation = 'provisioner remove'
   const response = await send({ operation, method: 'DELETE', path: tenantPath(subdomain, operation) })
   if (response.status !== HTTP_NO_CONTENT) throw statusError(operation, response)
+}
+
+async function power(send: Send, subdomain: string, action: 'stop' | 'start'): Promise<void> {
+  const operation = `provisioner ${action}`
+  const response = await send({ operation, method: 'POST', path: `${tenantPath(subdomain, operation)}/${action}` })
+  if (response.status !== HTTP_NO_CONTENT) throw statusError(operation, response)
+}
+
+async function inspect(send: Send, subdomain: string): Promise<InstallInspection> {
+  const operation = 'provisioner inspect'
+  const response = await send({ operation, method: 'GET', path: tenantPath(subdomain, operation) })
+  if (response.status !== HTTP_OK) throw statusError(operation, response)
+  const parsed = InspectAnswer.safeParse(jsonOf(response.body))
+  if (!parsed.success) throw new OrchestratorHttpError('bad-response', `${operation}: the answer is not a tenant status`)
+  const { state, running, lastActivityAt } = parsed.data
+  return { state: state === ABSENT_STATE ? 'absent' : 'present', running, lastActivityAt }
 }
 
 function tenantPath(subdomain: string, operation: string): string {

@@ -2,7 +2,13 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
-import { findAccountByGithubId, insertAccount, openAccountsDb, type AccountsDb } from '../../hub/src/accounts-db.js'
+import {
+  findAccountByGithubId,
+  insertAccount,
+  openAccountsDb,
+  type AccountRecord,
+  type AccountsDb,
+} from '../../hub/src/accounts-db.js'
 import type { GithubClient, GithubProfile } from '../../hub/src/github.js'
 import { createOauthFlows, type OauthFlows } from '../../hub/src/oauth-flow.js'
 import { unavailableOrchestrator } from '../../hub/src/orchestrator.js'
@@ -24,12 +30,14 @@ let dir: string
 let db: AccountsDb
 let flows: OauthFlows
 let logs: string[]
+let started: AccountRecord[]
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'mcpcut-hub-signin-test-'))
   db = await openAccountsDb(dir)
   flows = createOauthFlows({ clock: () => NOW })
   logs = []
+  started = []
 })
 
 afterEach(async () => {
@@ -53,6 +61,12 @@ function deps(github: GithubClient, overrides: Partial<SigninDeps> = {}): Signin
     db,
     github,
     orchestrator: createFakeOrchestrator(),
+    provisioning: {
+      start: (account) => {
+        started.push(account)
+        return true
+      },
+    },
     flows,
     signups: createWindowCounter({ windowMs: 3_600_000, clock: () => NOW }),
     maxAccounts: 15,
@@ -86,9 +100,29 @@ describe('completeCallback', () => {
 
     const outcome = await completeCallback(deps(github), callbackQuery())
 
-    expect(outcome.kind).toBe('created')
+    expect(outcome.kind).toBe('preparing')
     expect(logs.join('\n')).toContain('revocation failed')
     expect(logs.join('\n')).not.toContain('gho_leaky')
+  })
+
+  test('a new person gets a pending account and a background install, not a wait', async () => {
+    const orchestrator = createFakeOrchestrator()
+
+    const outcome = await completeCallback(deps(stubGithub(), { orchestrator }), callbackQuery())
+
+    expect(outcome).toMatchObject({ kind: 'preparing', account: { githubId: 1, subdomain: 'alice', status: 'pending' } })
+    expect(findAccountByGithubId(db, 1)?.status).toBe('pending')
+    expect(started.map((account) => account.githubId)).toEqual([1])
+    // The callback itself never calls the orchestrator: the background task does.
+    expect(orchestrator.calls()).toEqual([])
+  })
+
+  test('a hub shutting down still reserves the seat and leaves the install for the next start', async () => {
+    const outcome = await completeCallback(deps(stubGithub(), { provisioning: { start: () => false } }), callbackQuery())
+
+    expect(outcome.kind).toBe('preparing')
+    expect(findAccountByGithubId(db, 1)?.status).toBe('pending')
+    expect(logs.join('\n')).toContain('install left for the next start')
   })
 
   test('a login whose every subdomain is taken is try again, not a crash', async () => {
@@ -113,6 +147,7 @@ describe('completeCallback', () => {
 
     expect(outcome.kind).toBe('signed-in')
     expect(orchestrator.calls()).toEqual([])
+    expect(started).toEqual([])
   })
 
   test('an unparsable GitHub creation date fails closed as try again', async () => {
@@ -136,5 +171,8 @@ describe('unavailableOrchestrator', () => {
     await expect(unavailableOrchestrator.create({ githubId: 1, login: 'a', subdomain: 'a' })).rejects.toThrow(/unavailable/)
     await expect(unavailableOrchestrator.rotateOwnerToken('a')).rejects.toThrow(/unavailable/)
     await expect(unavailableOrchestrator.remove('a')).rejects.toThrow(/unavailable/)
+    await expect(unavailableOrchestrator.inspect('a')).rejects.toThrow(/unavailable/)
+    await expect(unavailableOrchestrator.stop('a')).rejects.toThrow(/unavailable/)
+    await expect(unavailableOrchestrator.start('a')).rejects.toThrow(/unavailable/)
   })
 })

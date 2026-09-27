@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'vitest'
-import { findAccountByGithubId } from '../../hub/src/accounts-db.js'
+import { findAccountByGithubId, insertAccount } from '../../hub/src/accounts-db.js'
 import { createHttpOrchestrator, type HttpOrchestrator } from '../../hub/src/orchestrator-http.js'
 import { createProvisionerServer, type ProvisionerServer } from '../../hub/src/provisioner/server.js'
 import { startHub, type HubHarness } from './harness.js'
@@ -9,8 +9,10 @@ import { CADDY, tenantObjects, useProvisioner } from './provisioner/provisioner-
  * The whole chain with no stand-in in the middle (plan `tenant-orchestrator`,
  * Task 5): the composed hub (`harness.ts`, fake GitHub) → the HTTP
  * orchestrator → the real provisioner server → the real service → the Docker
- * client → the fake Docker Engine. Sign in → `active` → `/account` → a new
- * owner token → delete → the container, the volume and the network are gone.
+ * client → the fake Docker Engine. Sign in → "preparing" → (the background
+ * create) → `active` → `/account` shows the owner token once → a new owner
+ * token → delete → the container, the volume and the network are gone
+ * (plan `hosted-path-and-ops`, Task A: the install is made in the background).
  */
 
 const SECRET = 'e'.repeat(48)
@@ -46,12 +48,16 @@ describe('hub → provisioner → Docker, end to end', () => {
     const h = await startChain()
     const browser = h.browser()
 
-    const created = await browser.signIn(ALICE)
+    const preparing = await browser.signIn(ALICE)
+    expect(preparing.status).toBe(200)
+    expect(preparing.body).toContain('Preparing your install')
+    await h.settle()
+    const reveal = await browser.get('/account')
 
-    expect(created.status).toBe(200)
     const [firstToken] = ctx.tokens()
     expect(firstToken).toMatch(/^mcpa_/)
-    expect(created.body).toContain(String(firstToken))
+    expect(preparing.body).not.toContain(String(firstToken))
+    expect(reveal.body).toContain(String(firstToken))
     expect(findAccountByGithubId(h.db, ALICE.id)).toMatchObject({ subdomain: 'alice', status: 'active' })
     expect(tenantObjects(ctx.fake())).toEqual({
       containers: ['mcpcut-t-alice'],
@@ -64,6 +70,7 @@ describe('hub → provisioner → Docker, end to end', () => {
     const account = await browser.get('/account')
     expect(account.status).toBe(200)
     expect(account.body).toContain('alice.mcpcut.com')
+    expect(account.body).not.toContain(String(firstToken))
 
     const rotated = await browser.post('/account/token')
     expect(rotated.status).toBe(200)
@@ -82,14 +89,17 @@ describe('hub → provisioner → Docker, end to end', () => {
     expect(leaks).not.toContain(SECRET)
   })
 
-  test('a failed create rolls the install back and the sign-in back: try again, no account', async () => {
+  test('a failed create rolls the install back and the sign-in back: the next page says so, no account', async () => {
     const h = await startChain()
     ctx.fake().failNext('POST /containers/{id}/start', 500, 'cannot start')
+    const browser = h.browser()
 
-    const response = await h.browser().signIn(ALICE)
+    await browser.signIn(ALICE)
+    await h.settle()
+    const response = await browser.get('/account')
 
     expect(response.status).toBe(503)
-    expect(response.body).toContain('Nothing was created')
+    expect(response.body).toContain('We could not create your install')
     expect(findAccountByGithubId(h.db, ALICE.id)).toBeNull()
     expect(tenantObjects(ctx.fake())).toEqual({ containers: [], networks: [], volumes: [] })
     expect(h.logs.join('\n')).toContain('provisioner create: the provisioner answered HTTP 502 (docker)')
@@ -99,10 +109,14 @@ describe('hub → provisioner → Docker, end to end', () => {
     const h = await startChain(false)
     const dockerCallsBefore = ctx.fake().calls().length
 
-    const response = await h.browser().signIn(ALICE)
+    const browser = h.browser()
+
+    await browser.signIn(ALICE)
+    await h.settle()
+    const response = await browser.get('/account')
 
     expect(response.status).toBe(503)
-    expect(response.body).toContain('Nothing was created')
+    expect(response.body).toContain('We could not create your install')
     expect(findAccountByGithubId(h.db, ALICE.id)).toBeNull()
     expect(ctx.fake().calls()).toHaveLength(dockerCallsBefore)
     expect(h.logs.join('\n')).toContain('could not be reached (ECONNREFUSED)')
@@ -114,11 +128,27 @@ describe('hub → provisioner → Docker, end to end', () => {
     orchestrator = createHttpOrchestrator({ url, token: SECRET })
     hub = await startHub({ orchestrator })
 
-    const response = await hub.browser().signIn(ALICE)
+    await hub.browser().signIn(ALICE)
+    await hub.settle()
 
-    expect(response.status).toBe(503)
     expect(findAccountByGithubId(hub.db, ALICE.id)).toBeNull()
     expect(hub.logs.join('\n')).toContain('HTTP 401 (unauthorized)')
     expect(tenantObjects(ctx.fake()).containers).toEqual([])
+  })
+
+  test('a restarted hub settles pending rows against the provisioner: installed → active, not → removed', async () => {
+    const h = await startChain()
+    await ctx.service().create({ subdomain: 'kept', login: 'kept', githubId: 8001 })
+    const now = new Date(h.nowMs()).toISOString()
+    for (const [githubId, login] of [[8001, 'kept'], [8002, 'lost']] as const) {
+      insertAccount(h.db, { githubId, login, subdomain: login, githubCreatedAt: '2019-01-01T00:00:00Z', now }, 100)
+    }
+
+    const summary = await h.server.reconcilePending()
+
+    expect(summary).toEqual({ activated: 1, discarded: 1, leftPending: 0 })
+    expect(findAccountByGithubId(h.db, 8001)?.status).toBe('active')
+    expect(findAccountByGithubId(h.db, 8002)).toBeNull()
+    expect(tenantObjects(ctx.fake()).containers).toEqual(['mcpcut-t-kept'])
   })
 })

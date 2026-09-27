@@ -197,3 +197,15 @@ export const MAX_TENANT_AGENTS_BOUND = 200
 
 /** Upper bound of `tenant.maxGroups` — mirrors `MAX_GROUPS`. */
 export const MAX_TENANT_GROUPS_BOUND = 100
+
+// Request limits of a tenant install's agent front (plan `hosted-path-and-ops`,
+// P7): the `tenant.maxRequestsPerSecond`/`maxRequestsPerDay` bounds. Owned
+// here, not mirrored — nothing else in the plane has a request limit to drift
+// from. Generous ceilings: they bound what an operator may write, the strict
+// preset (`STRICT_TENANT_SECTION`) is what a hosted install actually runs.
+
+/** Upper bound of `tenant.maxRequestsPerSecond`. */
+export const MAX_TENANT_REQUESTS_PER_SECOND_BOUND = 1_000
+
+/** Upper bound of `tenant.maxRequestsPerDay`. */
+export const MAX_TENANT_REQUESTS_PER_DAY_BOUND = 10_000_000

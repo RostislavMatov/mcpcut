@@ -30,14 +30,14 @@ const STDIO_REFUSED: TenantSettings = {
   isTenant: true,
   stdioServers: 'refused',
   upstreams: 'any',
-  limits: { servers: 200, agents: 200, groups: 100 },
+  limits: { servers: 200, agents: 200, groups: 100, requestsPerSecond: 10, requestsPerDay: 10_000 },
 }
 
 const PUBLIC_HTTPS_ONLY: TenantSettings = {
   isTenant: true,
   stdioServers: 'allowed',
   upstreams: 'public-https',
-  limits: { servers: 200, agents: 200, groups: 100 },
+  limits: { servers: 200, agents: 200, groups: 100, requestsPerSecond: 10, requestsPerDay: 10_000 },
 }
 
 function withLimits(limits: TenantSettings['limits']): TenantSettings {
@@ -185,7 +185,7 @@ describe('registry: server count limit', () => {
   }
 
   test('the 5th server is OK, the 6th is refused with the fixed message, document stays readable', async () => {
-    const tenant = withLimits({ servers: 5, agents: 5, groups: 2 })
+    const tenant = withLimits({ servers: 5, agents: 5, groups: 2, requestsPerSecond: 10, requestsPerDay: 10_000 })
     const store = createRegistryStore(journalDir, { tenant })
 
     for (let index = 0; index < 5; index += 1) {
@@ -207,7 +207,7 @@ describe('registry: server count limit', () => {
     }
 
     // Act — a fresh store, now with a limit of 5, opens over the same document.
-    const tenant = withLimits({ servers: 5, agents: 5, groups: 2 })
+    const tenant = withLimits({ servers: 5, agents: 5, groups: 2, requestsPerSecond: 10, requestsPerDay: 10_000 })
     const gated = createRegistryStore(journalDir, { tenant })
 
     // Assert — reading never fails; only a NEW write would be refused.
@@ -228,7 +228,7 @@ describe('registry: no tenant section means prior behavior', () => {
 
 describe('agents: count limit', () => {
   test('the 5th agent is OK, the 6th is refused with the fixed message', async () => {
-    const tenant = withLimits({ servers: 5, agents: 5, groups: 2 })
+    const tenant = withLimits({ servers: 5, agents: 5, groups: 2, requestsPerSecond: 10, requestsPerDay: 10_000 })
     const store = createAgentsStore({ journalDir, tenant })
 
     for (let index = 0; index < 5; index += 1) {
@@ -254,7 +254,7 @@ describe('agents: count limit', () => {
 
 describe('groups: count limit', () => {
   test('the 2nd group is OK, the 3rd is refused with the fixed message', async () => {
-    const tenant = withLimits({ servers: 5, agents: 5, groups: 2 })
+    const tenant = withLimits({ servers: 5, agents: 5, groups: 2, requestsPerSecond: 10, requestsPerDay: 10_000 })
     const store = createGroupsStore({ journalDir, tenant })
 
     await store.createGroup('group-0')

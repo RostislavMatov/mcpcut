@@ -17,7 +17,8 @@ import { createFakeOrchestrator } from './fake-orchestrator.js'
 
 /**
  * `hub/src/cli.ts` (plan Task 5, H7): `serve` and the operator commands the
- * host's shell runs — `list`, `block`, `unblock`, `delete`, `purge-tombstones`.
+ * host's shell runs — `list`, `delete`, `purge-tombstones` (`block`/`unblock`:
+ * `cli-block.test.ts`; `sweep`: `cli-sweep.test.ts`).
  * Operator commands need only `HUB_DATA_DIR`; `serve` needs the whole config.
  */
 
@@ -115,42 +116,6 @@ describe('list', () => {
     const result = await run(['list'])
 
     expect(result.out).toContain('no accounts')
-  })
-})
-
-describe('block / unblock', () => {
-  test('block marks the account blocked and says install removal is pending', async () => {
-    await seed(10, 'mallory')
-
-    const result = await run(['block', 'Mallory'])
-
-    expect(result.code).toBe(0)
-    expect(result.out).toContain('install removal pending orchestrator')
-    expect(await withDb((db) => findAccountByGithubId(db, 10)?.status)).toBe('blocked')
-  })
-
-  test('unblock restores it', async () => {
-    await seed(11, 'nick', 'blocked')
-
-    const result = await run(['unblock', 'nick'])
-
-    expect(result.code).toBe(0)
-    expect(await withDb((db) => findAccountByGithubId(db, 11)?.status)).toBe('active')
-  })
-
-  test('both are idempotent and say so', async () => {
-    await seed(12, 'olga', 'blocked')
-
-    expect((await run(['block', 'olga'])).out).toContain('already blocked')
-    await run(['unblock', 'olga'])
-    expect((await run(['unblock', 'olga'])).out).toContain('not blocked')
-  })
-
-  test('an unknown login fails', async () => {
-    const result = await run(['block', 'nobody'])
-
-    expect(result.code).toBe(1)
-    expect(result.err).toContain('no account')
   })
 })
 

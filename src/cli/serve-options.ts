@@ -4,6 +4,7 @@ import type { JournalSinkOptions } from '../journal/sink.js'
 import type { LoadPolicyOptions } from '../policy/load.js'
 import type { RegistryStore } from '../registry/store.js'
 import type { ServeServiceDefaults } from '../setup/bind.js'
+import type { TenantSettings } from '../tenant/settings.js'
 import type { VaultStore } from '../vault/store.js'
 
 /**
@@ -101,6 +102,13 @@ export interface ServeCommandOptions {
    */
   readonly bindDefaults?: ServeServiceDefaults
   readonly killEscalationMs?: number
+  /**
+   * Tenant mode as this run sees it; defaults to `TENANT_SETTINGS`. Today it
+   * decides only the agent front's request budget (`serve-budget.ts`, plan
+   * `hosted-path-and-ops` P7) — the stdio and upstream gates still take
+   * their own `tenant` seams, defaulting to the same value.
+   */
+  readonly tenant?: TenantSettings
   /**
    * @internal test-only seam for injecting a failing journal batch commit
    * (the same seam `RunWrapOptions` exposes), so fail-closed behaviour can be

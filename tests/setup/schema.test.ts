@@ -9,6 +9,8 @@ import {
   MAX_LIST_ENTRIES,
   MAX_TENANT_AGENTS_BOUND,
   MAX_TENANT_GROUPS_BOUND,
+  MAX_TENANT_REQUESTS_PER_DAY_BOUND,
+  MAX_TENANT_REQUESTS_PER_SECOND_BOUND,
   MAX_TENANT_SERVERS_BOUND,
 } from '../../src/setup/constants.js'
 import { defaultInstallConfig } from '../../src/setup/defaults.js'
@@ -247,10 +249,41 @@ describe('installConfigSchema: tenant (PRD hosted-accounts, phase 1, task 1, ADR
   test('accepts a fully specified tenant section', () => {
     const parsed = installConfigSchema.safeParse({
       ...validConfig(),
-      tenant: { stdioServers: 'refused', upstreams: 'public-https', maxServers: 5, maxAgents: 5, maxGroups: 2 },
+      tenant: {
+        stdioServers: 'refused',
+        upstreams: 'public-https',
+        maxServers: 5,
+        maxAgents: 5,
+        maxGroups: 2,
+        maxRequestsPerSecond: 10,
+        maxRequestsPerDay: 10_000,
+      },
     })
 
     expect(parsed.success).toBe(true)
+  })
+
+  test('request limits: the documented bounds are 1..1000 per second and 1..10 000 000 per day', () => {
+    expect(MAX_TENANT_REQUESTS_PER_SECOND_BOUND).toBe(1_000)
+    expect(MAX_TENANT_REQUESTS_PER_DAY_BOUND).toBe(10_000_000)
+    const at = (tenant: Record<string, unknown>): boolean =>
+      installConfigSchema.safeParse({ ...validConfig(), tenant }).success
+
+    expect(at({ maxRequestsPerSecond: 1, maxRequestsPerDay: 1 })).toBe(true)
+    expect(at({ maxRequestsPerSecond: 1_000, maxRequestsPerDay: 10_000_000 })).toBe(true)
+  })
+
+  test.each([
+    ['maxRequestsPerSecond', 0],
+    ['maxRequestsPerSecond', 1_001],
+    ['maxRequestsPerSecond', 2.5],
+    ['maxRequestsPerDay', 0],
+    ['maxRequestsPerDay', 10_000_001],
+    ['maxRequestsPerDay', 99.9],
+  ])('refuses %s: %d and names the field', (field, value) => {
+    expect(problemsOf({ ...validConfig(), tenant: { [field]: value } }).join('\n')).toContain(
+      `tenant.${field}:`,
+    )
   })
 
   test('accepts maxGroups: 0 (a hosted install with no groups at all)', () => {

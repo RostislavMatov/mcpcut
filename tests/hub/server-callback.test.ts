@@ -158,6 +158,7 @@ describe('GitHub answers', () => {
     h.github.setBehaviour('revoke', 'error-500')
 
     const response = await h.browser().signIn()
+    await h.settle()
 
     expect(response.status).toBe(200)
     expect(findAccountByGithubId(h.db, 1_000_001)?.status).toBe('active')
@@ -178,6 +179,8 @@ describe('secrets never leave the process', () => {
     h.github.setBehaviour('revoke', 'error-500')
     const browser = h.browser()
     await browser.signIn()
+    await h.settle()
+    await browser.get('/account')
     await browser.get('/account')
     await browser.post('/account/token')
     h.github.setBehaviour('user', 'not-json')
@@ -211,6 +214,9 @@ describe('secrets never leave the process', () => {
     const h = await start()
     const browser = h.browser()
     await browser.signIn()
+    await h.settle()
+    await browser.get('/account')
+    await browser.get('/account')
     for (const [method, token] of Object.entries(leaked)) {
       h.orchestrator.fail(method as keyof typeof leaked, `upstream said: bearer ${token} rejected`)
     }
@@ -218,6 +224,7 @@ describe('secrets never leave the process', () => {
     await browser.post('/account/token')
     await browser.post('/account/delete', { login: 'alice' })
     await h.browser().signIn({ id: 6, login: 'another', created_at: '2019-01-01T00:00:00Z' })
+    await h.settle()
 
     const failures = h.logs.filter((line) => line.includes('failed'))
     expect(failures).toHaveLength(3)

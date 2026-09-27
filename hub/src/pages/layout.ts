@@ -40,6 +40,8 @@ export interface HubLayoutOptions {
    * it, the callback being the tail of a navigation that began on github.com.
    */
   readonly refreshTo?: string
+  /** Seconds before `refreshTo` is followed; 0 (at once) when unset. The "preparing" page polls with it. */
+  readonly refreshAfterSeconds?: number
 }
 
 interface NavItem {
@@ -98,6 +100,11 @@ function renderPublicFoot(activeNav: string | undefined): Html {
   return html`<footer class="hub-foot"><nav aria-label="Policies">${join(links, html` · `)}</nav></footer>`
 }
 
+function renderRefresh(path: string, afterSeconds: number): Html {
+  if (!Number.isInteger(afterSeconds) || afterSeconds < 0) throw new RangeError('renderHubLayout: refreshAfterSeconds must be a whole number of seconds')
+  return html`<meta http-equiv="refresh" content="${String(afterSeconds)}; url=${safeUrl(path)}">`
+}
+
 /** Renders a complete HTML document string ready for the HTTP body. */
 export function renderHubLayout(options: HubLayoutOptions): string {
   const doc = html`<!DOCTYPE html>
@@ -106,7 +113,7 @@ export function renderHubLayout(options: HubLayoutOptions): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="csrf-token" content="${options.csrfToken}">
-${options.refreshTo !== undefined ? html`<meta http-equiv="refresh" content="0; url=${safeUrl(options.refreshTo)}">` : html``}
+${options.refreshTo !== undefined ? renderRefresh(options.refreshTo, options.refreshAfterSeconds ?? 0) : html``}
 <title>${options.title} · ${BRAND_NAME}</title>
 <link rel="stylesheet" href="/hub-assets/hub.css">
 <link rel="icon" href="/hub-assets/favicon.svg" type="image/svg+xml">

@@ -1,14 +1,22 @@
 import { openAccountsDb } from './accounts-db.js'
 import { loadHubConfig, type HubConfig } from './config.js'
 import { createGithubClient } from './github.js'
+import { DEFAULT_SWEEP_SCHEDULE, scheduleSweeps, type SweepSchedule, type SweepScheduler } from './idle-sweeper.js'
 import type { Orchestrator } from './orchestrator.js'
 import { openOrchestrator } from './orchestrator-http.js'
-import { createHubServer } from './server.js'
+import { createHubServer, type HubServer } from './server.js'
 
 /**
  * `hub serve` (plan Task 5): load and validate the config (fail fast, every
  * problem on its own line), open `hub.db`, build the GitHub client, listen,
  * and hold until `shutdown` resolves.
+ *
+ * Once listening, and only with an available orchestrator, the `pending`
+ * accounts an earlier run left are settled against the provisioner in the
+ * background (plan `hosted-path-and-ops`, P4 — `provisioning.ts`), and the
+ * idle sweeper runs a minute later and every six hours after (P5/P6 —
+ * `idle-sweeper.ts`; each sweep settles `pending` rows again too). Its timer
+ * never keeps the process alive and stops before the server closes.
  *
  * The orchestrator (plan `tenant-orchestrator`, Task 5): the provisioner's
  * HTTP API when `HUB_PROVISIONER_URL` and `HUB_PROVISIONER_TOKEN_FILE` are
@@ -26,6 +34,10 @@ export interface ServeIo {
   /** Resolves when the process should stop (SIGINT/SIGTERM in production). */
   readonly shutdown: Promise<void>
   readonly clock?: () => number
+  /** Overrides when the idle sweeper runs (tests); omitted, `DEFAULT_SWEEP_SCHEDULE`. */
+  readonly sweepSchedule?: SweepSchedule
+  /** Overrides what runs the idle sweeper on that schedule (tests drive sweeps by hand); omitted, `scheduleSweeps`. */
+  readonly sweepScheduler?: SweepScheduler
 }
 
 const CALLBACK_PATH = '/auth/github/callback'
@@ -56,17 +68,55 @@ export async function runServe(io: ServeIo): Promise<number> {
     log,
     ...(io.clock === undefined ? {} : { clock: io.clock }),
   })
+  let sweeps: { stop(): void } | undefined
   try {
     const { port } = await server.listen(config.port, config.host)
     announce(io, config, port, opened.orchestrator, io.orchestrator === undefined)
+    if (opened.orchestrator.available) sweeps = startBackgroundWork(io, server)
     await io.shutdown
     return EXIT_OK
   } finally {
+    sweeps?.stop()
     await server.close()
+    // Closing the orchestrator cuts its sockets, so background tasks settle
+    // at once; the bound only guards a caller-supplied one that never does.
     opened.close()
+    await settledWithin(server.settled(), SHUTDOWN_SETTLE_MS)
     github.close()
     db.handle.close()
   }
+}
+
+/** P4 at once and the idle sweeper on its schedule (P5/P6), both in the background: the hub answers meanwhile. */
+function startBackgroundWork(io: ServeIo, server: HubServer): { stop(): void } {
+  void server.reconcilePending()
+  const schedule = io.sweepSchedule ?? DEFAULT_SWEEP_SCHEDULE
+  const sweeps = (io.sweepScheduler ?? scheduleSweeps)(() => server.sweep(), schedule)
+  io.stdout(`[hub] idle sweep: first in ${durationOf(schedule.firstDelayMs)}, then every ${durationOf(schedule.intervalMs)}\n`)
+  return sweeps
+}
+
+const MS_PER_MINUTE = 60 * 1000
+const MS_PER_HOUR = 60 * MS_PER_MINUTE
+
+/** `6 h`, `1 min`, `20 ms` — whichever unit divides the duration. */
+function durationOf(ms: number): string {
+  if (ms % MS_PER_HOUR === 0) return `${ms / MS_PER_HOUR} h`
+  if (ms % MS_PER_MINUTE === 0) return `${ms / MS_PER_MINUTE} min`
+  return `${ms} ms`
+}
+
+/** How long shutdown waits for background install tasks before closing `hub.db` under them. */
+const SHUTDOWN_SETTLE_MS = 5_000
+
+async function settledWithin(settled: Promise<void>, ms: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined
+  const bound = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, ms)
+    timer.unref()
+  })
+  await Promise.race([settled, bound])
+  clearTimeout(timer)
 }
 
 /**

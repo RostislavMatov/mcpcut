@@ -14,7 +14,7 @@ import {
   TENANT_LABEL,
   type TenantNames,
 } from './templates.js'
-import { mintOwnerToken, waitUntilReady, type ReadinessOptions } from './tenant-exec.js'
+import { mintOwnerToken, readLastActivity, waitUntilReady, type ReadinessOptions } from './tenant-exec.js'
 
 /**
  * What the provisioner does (plan `tenant-orchestrator`, Task 4): create,
@@ -33,11 +33,17 @@ import { mintOwnerToken, waitUntilReady, type ReadinessOptions } from './tenant-
  *   network. Idempotent: whatever is already gone counts as removed. The
  *   container, the volume and the network are each removed only when they
  *   carry this tenant's label; otherwise the call fails `not-ours`.
- * - `status`: the container's state and the volume's size (O9).
+ * - `stop` / `start`: the container only — the volume, the network and
+ *   Caddy's attachment stay (plan `hosted-path-and-ops`, P6). Both are
+ *   idempotent; a tenant with no container is `not-found`.
+ * - `status`: the container's state, the volume's size (O9), whether it runs
+ *   and — only while it runs — when its journal or state was last written
+ *   (`stat` in the container, P5).
  *
  * Every input is validated before the first Docker call, and an object that
  * carries another tenant's label is never touched. Mutations of one
- * subdomain run one at a time; the tenant ceiling is checked and a slot
+ * subdomain — and reads of it, so a status never sees a create half built —
+ * run one at a time; the tenant ceiling is checked and a slot
  * reserved in one step for the whole host (`capacity.ts`). Tokens are
  * returned, never logged.
  */
@@ -58,6 +64,9 @@ export interface TenantStatus {
   readonly state: string
   /** The volume's size when Docker knows it (O9); `null` otherwise. */
   readonly sizeBytes: number | null
+  readonly running: boolean
+  /** The newest mtime of the install's SQLite files, ISO-8601; `null` when stopped, absent or none exists. */
+  readonly lastActivityAt: string | null
 }
 
 export interface ProvisionerServiceOptions {
@@ -76,6 +85,8 @@ export interface ProvisionerService {
   create(input: CreateTenantInput): Promise<{ readonly ownerToken: string }>
   rotateOwnerToken(subdomain: string): Promise<{ readonly ownerToken: string }>
   remove(subdomain: string): Promise<void>
+  stop(subdomain: string): Promise<void>
+  start(subdomain: string): Promise<void>
   status(subdomain: string): Promise<TenantStatus>
 }
 
@@ -104,7 +115,18 @@ export function createProvisionerService(options: ProvisionerServiceOptions): Pr
       const names = namesOf(subdomain)
       return lock.run(subdomain, () => removeTenant(ctx, subdomain, names))
     },
-    status: async (subdomain: string) => statusOf(ctx, subdomain, namesOf(subdomain)),
+    stop: async (subdomain: string) => {
+      const names = namesOf(subdomain)
+      return lock.run(subdomain, () => stopTenant(ctx, subdomain, names))
+    },
+    start: async (subdomain: string) => {
+      const names = namesOf(subdomain)
+      return lock.run(subdomain, () => startTenant(ctx, subdomain, names))
+    },
+    status: async (subdomain: string) => {
+      const names = namesOf(subdomain)
+      return lock.run(subdomain, () => statusOf(ctx, subdomain, names))
+    },
   })
 }
 
@@ -207,7 +229,7 @@ async function rollback(ctx: Context, subdomain: string, steps: readonly UndoSte
 }
 
 // ---------------------------------------------------------------------------
-// rotate, remove, status
+// rotate, remove, stop, start, status
 
 async function rotateTenant(ctx: Context, subdomain: string, names: TenantNames): Promise<{ readonly ownerToken: string }> {
   try {
@@ -266,12 +288,40 @@ async function removeVolumeIfOurs(docker: DockerClient, names: TenantNames, subd
   await ignoreNotFound(() => docker.removeVolume(names.volume))
 }
 
+async function stopTenant(ctx: Context, subdomain: string, names: TenantNames): Promise<void> {
+  try {
+    const info = await inspectOurs(ctx.docker, names, subdomain)
+    if (info === undefined) throw new ProvisionerError('not-found', `stop: no install for ${subdomain}`)
+    // Docker answers 304 for a container that is not running: stopping twice is success.
+    await ctx.docker.stopContainer(names.container, STOP_TIMEOUT_S)
+    ctx.log(`[provisioner] stopped ${subdomain}`)
+  } catch (error: unknown) {
+    throw asProvisionerError(error, `stop ${subdomain}`)
+  }
+}
+
+async function startTenant(ctx: Context, subdomain: string, names: TenantNames): Promise<void> {
+  try {
+    const info = await inspectOurs(ctx.docker, names, subdomain)
+    if (info === undefined) throw new ProvisionerError('not-found', `start: no install for ${subdomain}`)
+    // 304 for one already running: starting twice is success.
+    await ctx.docker.startContainer(names.container)
+    ctx.log(`[provisioner] started ${subdomain}`)
+  } catch (error: unknown) {
+    throw asProvisionerError(error, `start ${subdomain}`)
+  }
+}
+
+const ABSENT: TenantStatus = Object.freeze({ state: 'absent', sizeBytes: null, running: false, lastActivityAt: null })
+
 async function statusOf(ctx: Context, subdomain: string, names: TenantNames): Promise<TenantStatus> {
   try {
     const info = await inspectOurs(ctx.docker, names, subdomain)
-    if (info === undefined) return { state: 'absent', sizeBytes: null }
+    if (info === undefined) return ABSENT
     const size = await ctx.docker.volumeSize(names.volume)
-    return { state: info.status, sizeBytes: size ?? null }
+    // A stopped container cannot be asked; the hub remembers when it stopped it.
+    const lastActivityAt = info.running ? await readLastActivity(ctx.docker, names.container) : null
+    return { state: info.status, sizeBytes: size ?? null, running: info.running, lastActivityAt }
   } catch (error: unknown) {
     throw asProvisionerError(error, `status ${subdomain}`)
   }

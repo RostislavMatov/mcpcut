@@ -1,5 +1,6 @@
 import { pathToFileURL } from 'node:url'
 import { loadProvisionerLink } from './config.js'
+import type { SweepSchedule, SweepScheduler } from './idle-sweeper.js'
 import type { Orchestrator } from './orchestrator.js'
 import { openOrchestrator, type OpenedOrchestrator } from './orchestrator-http.js'
 import { OPERATOR_COMMANDS, runOperatorCommand } from './operator.js'
@@ -9,7 +10,8 @@ import { runServe } from './serve.js'
 /**
  * The hub's entry point (plan Task 5, H7): `node hub/dist/hub/src/cli.js
  * <command>`. `serve` runs the web process; the operator commands (`list`,
- * `block <login>`, `unblock <login>`, `delete <login>`, `purge-tombstones`)
+ * `block <login>`, `unblock <login>`, `delete <login>`, `purge-tombstones`,
+ * `sweep [--dry-run]`)
  * run beside it in the host's shell against the same `HUB_DATA_DIR`.
  * `provision` runs the provisioner (plan `tenant-orchestrator`, Task 4) — a
  * separate process from the same image, the only one given the Docker
@@ -29,16 +31,21 @@ export interface HubCliIo {
   readonly orchestrator?: Orchestrator
   /** `serve` and `provision` stop when this resolves; defaults to the first SIGINT/SIGTERM. */
   readonly shutdown?: Promise<void>
+  /** Overrides when `serve` runs the idle sweeper (tests). */
+  readonly sweepSchedule?: SweepSchedule
+  /** Overrides what runs the idle sweeper on that schedule (tests drive sweeps by hand). */
+  readonly sweepScheduler?: SweepScheduler
 }
 
 const USAGE =
   'usage: cli.js <command>\n' +
   '  serve                      run the hub (HUB_* environment)\n' +
   '  list                       accounts and the waitlist size\n' +
-  '  block <github-login>       block an account; its sessions end\n' +
+  '  block <github-login>       block an account; its sessions end, its install stops\n' +
   '  unblock <github-login>     lift a block\n' +
   '  delete <github-login>      delete an account (tombstone kept)\n' +
   '  purge-tombstones           drop delete tombstones past the cooldown\n' +
+  '  sweep [--dry-run]          one idle sweep: stop at 60 unused days, remove at 90\n' +
   PROVISIONER_USAGE
 const EXIT_FAILED = 1
 const EXIT_USAGE = 2
@@ -57,6 +64,8 @@ export async function runHubCli(argv: readonly string[], io: HubCliIo = {}): Pro
       shutdown,
       ...(io.orchestrator === undefined ? {} : { orchestrator: io.orchestrator }),
       ...(io.clock === undefined ? {} : { clock: io.clock }),
+      ...(io.sweepSchedule === undefined ? {} : { sweepSchedule: io.sweepSchedule }),
+      ...(io.sweepScheduler === undefined ? {} : { sweepScheduler: io.sweepScheduler }),
     })
   }
   if (PROVISIONER_COMMANDS.has(command)) {

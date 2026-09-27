@@ -107,6 +107,58 @@ describe('the requests it sends', () => {
     expect(seen[0]).toMatchObject({ method: 'DELETE', url: '/tenants/alice' })
   })
 
+  test('inspect: GET /tenants/:sub; any state but absent is present, with running and the last activity', async () => {
+    handler = json(200, { state: 'running', sizeBytes: 1024, running: true, lastActivityAt: '2026-09-20T08:00:00.000Z' })
+    expect(await client().inspect('alice')).toEqual({ state: 'present', running: true, lastActivityAt: '2026-09-20T08:00:00.000Z' })
+    expect(seen[0]).toMatchObject({ method: 'GET', url: '/tenants/alice', body: '' })
+    expect(seen[0]?.headers.authorization).toBe(`Bearer ${SECRET}`)
+
+    handler = json(200, { state: 'exited', sizeBytes: null, running: false, lastActivityAt: null })
+    expect(await client().inspect('alice')).toEqual({ state: 'present', running: false, lastActivityAt: null })
+
+    handler = json(200, { state: 'absent', sizeBytes: null, running: false, lastActivityAt: null })
+    expect(await client().inspect('alice')).toEqual({ state: 'absent', running: false, lastActivityAt: null })
+  })
+
+  test('inspect: an error status or an answer missing a field is a failure, never a guess', async () => {
+    handler = json(502, { error: 'docker', message: 'engine down' })
+    const failed = await failureOf(client().inspect('alice'))
+    expect(failed.failure).toBe('http-status')
+    expect(failed.message).toBe('provisioner inspect: the provisioner answered HTTP 502 (docker)')
+
+    for (const body of [
+      { sizeBytes: 1 },
+      { state: 'running', running: true },
+      { state: 'running', running: 'yes', lastActivityAt: null },
+      { state: 'running', running: true, lastActivityAt: 'yesterday' },
+    ]) {
+      handler = json(200, body)
+      expect((await failureOf(client().inspect('alice'))).failure).toBe('bad-response')
+    }
+  })
+
+  test('inspect: a subdomain that is not one never becomes a path', async () => {
+    expect((await failureOf(client().inspect('a/b'))).failure).toBe('invalid-input')
+    expect(seen).toEqual([])
+  })
+
+  test.each(['stop', 'start'] as const)('%s: POST /tenants/:sub/%s, 204 is success', async (operation) => {
+    handler = (_req, res) => res.writeHead(204).end()
+
+    await expect(client()[operation]('alice')).resolves.toBeUndefined()
+    expect(seen[0]).toMatchObject({ method: 'POST', url: `/tenants/alice/${operation}`, body: '' })
+    expect(seen[0]?.headers.authorization).toBe(`Bearer ${SECRET}`)
+  })
+
+  test.each(['stop', 'start'] as const)('%s: any other status is a failure naming the code only', async (operation) => {
+    handler = json(404, { error: 'not-found', message: 'no install for alice' })
+
+    const failed = await failureOf(client()[operation]('alice'))
+    expect(failed.message).toBe(`provisioner ${operation}: the provisioner answered HTTP 404 (not-found)`)
+    expect(failed.code).toBe('not-found')
+    expect((await failureOf(client()[operation]('../x'))).failure).toBe('invalid-input')
+  })
+
   test('is available, and waits 120 s for a create by default', () => {
     expect(client().available).toBe(true)
     expect(CREATE_TIMEOUT_MS).toBe(120_000)

@@ -24,6 +24,8 @@ export type SigninRefusalReason =
   | { readonly kind: 'cancelled' }
   | { readonly kind: 'github-unavailable' }
   | { readonly kind: 'try-again' }
+  /** The install was being made in the background and that failed (plan `hosted-path-and-ops`, P3). */
+  | { readonly kind: 'install-failed' }
 
 export interface SigninRefusedView {
   readonly reason: SigninRefusalReason
@@ -45,6 +47,8 @@ function messageOf(reason: SigninRefusalReason): Html {
       return html`GitHub did not answer in time. Try again in a moment.`
     case 'try-again':
       return html`Something went wrong completing sign-in. Nothing was created — try again.`
+    case 'install-failed':
+      return html`We could not create your install — sign in again. Nothing was kept.`
   }
 }
 

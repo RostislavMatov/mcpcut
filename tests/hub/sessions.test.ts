@@ -27,6 +27,7 @@ function account(overrides: Partial<AccountRecord> = {}): AccountRecord {
     githubCreatedAt: '2019-01-01T00:00:00Z',
     createdAt: '2026-09-01T00:00:00.000Z',
     lastSeenAt: '2026-09-01T00:00:00.000Z',
+    stoppedAt: null,
     ...overrides,
   }
 }
@@ -103,6 +104,7 @@ describe('create / resolve', () => {
 
     setAccount(null)
 
+    expect(sessions.resolve(sessionId)).toEqual({ kind: 'ended', githubId: 42, accountCreatedAt: '2026-09-01T00:00:00.000Z' })
     expect(sessions.resolve(sessionId)).toEqual({ kind: 'none' })
   })
 
@@ -112,6 +114,7 @@ describe('create / resolve', () => {
 
     setAccount(account({ createdAt: '2026-11-01T00:00:00.000Z' }))
 
+    expect(sessions.resolve(sessionId)).toEqual({ kind: 'ended', githubId: 42, accountCreatedAt: '2026-09-01T00:00:00.000Z' })
     expect(sessions.resolve(sessionId)).toEqual({ kind: 'none' })
   })
 })

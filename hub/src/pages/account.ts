@@ -1,10 +1,12 @@
 import { html, safeUrl, type Html } from '../../../src/ui/html.js'
+import type { AccountStatus } from '../account-row.js'
 import { csrfField } from './csrf-field.js'
 import { renderHubLayout } from './layout.js'
 
 /**
  * The `/account` page (UX Design, Task 4). It shows the tenant's identity and
- * status, a button to mint a fresh OWNER token (the install's admin
+ * status, how the install lives and when an unused one stops and is removed
+ * (plan `hosted-path-and-ops`, P6), a button to mint a fresh OWNER token (the install's admin
  * credential — shown once by `token-once.ts`), and the block a visitor pastes
  * into an agent's MCP client to reach their install through the bridge
  * (ADR-0015 §4, `connect --url`).
@@ -23,7 +25,13 @@ import { renderHubLayout } from './layout.js'
  * words (plan Task 4).
  */
 
-export type AccountStatus = 'pending' | 'active' | 'blocked'
+/**
+ * How the install lives (plan `hosted-path-and-ops`, Task C, P6): `running`;
+ * `starting` — stopped after 60 idle days and being started again now;
+ * `stopped` — stopped, and cannot be started right now (no orchestrator);
+ * `missing` — the provisioner holds nothing for an active account.
+ */
+export type InstallState = 'running' | 'starting' | 'stopped' | 'missing'
 
 export interface AccountView {
   /** The GitHub login, shown for identity only (never the key — that's the numeric id). */
@@ -33,7 +41,16 @@ export interface AccountView {
   /** The tenant's origin, e.g. `https://alice.mcpcut.com` (no trailing slash). */
   readonly serveUrl: string
   readonly csrfToken: string
+  readonly install: InstallState
+  /** `YYYY-MM-DD`: when an unused install stops (P6). */
+  readonly stopsOn: string
+  /** `YYYY-MM-DD`: when an unused install and this account are removed (P6). */
+  readonly removedOn: string
 }
+
+/** How often the page asks again while a stopped install starts. */
+export const STARTING_REFRESH_SECONDS = 5
+const ACCOUNT_PATH = '/account'
 
 /** The one entry name the client config carries — mirrors `CLIENT_CONFIG_ENTRY_NAME`. */
 const CLIENT_CONFIG_ENTRY_NAME = 'mcpcut'
@@ -73,6 +90,34 @@ function clientConfigJsonOf(view: AccountView): string {
 function statusPillOf(status: AccountStatus): Html {
   const cls = status === 'active' ? 'pill pill-on' : 'pill'
   return html`<span class="${cls}">${status}</span>`
+}
+
+function renderInstallBody(view: AccountView): Html {
+  switch (view.install) {
+    case 'missing':
+      return html`<p><strong>Your install is missing.</strong> Nothing was removed on purpose — please contact the operator.</p>`
+    case 'starting':
+      return html`
+        <p><strong>stopped — starting…</strong></p>
+        <p class="hint">Your install was stopped after 60 days without use and is starting again. This page checks again in a few seconds.</p>
+      `
+    case 'stopped':
+      return html`<p class="hint">Your install was stopped after 60 days without use and cannot be started right now. Try again later; it is removed on ${view.removedOn} if unused.</p>`
+    case 'running':
+      return html`
+        <p>Your install stops on ${view.stopsOn} if unused, and is removed on ${view.removedOn} if unused.</p>
+        <p class="hint">Signing in here or any call from your agents moves both dates. A stopped install starts again when you sign in.</p>
+      `
+  }
+}
+
+function renderInstallPanel(view: AccountView): Html {
+  return html`
+    <section class="panel">
+      <div class="panel-hd"><h2>Install</h2></div>
+      <div class="panel-bd">${renderInstallBody(view)}</div>
+    </section>
+  `
 }
 
 function renderTokenPanel(view: AccountView): Html {
@@ -119,6 +164,7 @@ export function renderAccountPage(view: AccountView): string {
         <p class="hint">${view.subdomain}.mcpcut.com</p>
       </div>
     </section>
+    ${renderInstallPanel(view)}
     ${renderTokenPanel(view)}
     ${renderClientConfigPanel(view)}
     <section class="panel hub-danger">
@@ -135,5 +181,6 @@ export function renderAccountPage(view: AccountView): string {
     csrfToken: view.csrfToken,
     signedIn: true,
     activeNav: 'account',
+    ...(view.install === 'starting' ? { refreshTo: ACCOUNT_PATH, refreshAfterSeconds: STARTING_REFRESH_SECONDS } : {}),
   })
 }

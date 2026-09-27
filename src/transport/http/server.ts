@@ -11,24 +11,28 @@ import {
 } from '../../net/connection-timeouts.js'
 import { isHostAllowed, isWildcardBindHost, LOCALHOST_HOSTNAMES } from '../../net/origin-host.js'
 import { authenticate, type TokenResolver } from './auth.js'
+import type { RequestBudget } from './request-budget.js'
 import { isOriginAllowed, parseRoute, type RouteMethod } from './routes.js'
 import {
   BODY_FORBIDDEN,
   BODY_INTERNAL,
   BODY_NOT_FOUND,
   BODY_PAYLOAD_TOO_LARGE,
+  BODY_RATE_LIMITED,
   BODY_UNAUTHORIZED,
   DEFAULT_HTTP_HOST,
   HEADERS_TIMEOUT_MS,
   HTTP_STATUS_FORBIDDEN,
   HTTP_STATUS_INTERNAL_ERROR,
   HTTP_STATUS_PAYLOAD_TOO_LARGE,
+  HTTP_STATUS_TOO_MANY_REQUESTS,
   HTTP_STATUS_UNAUTHORIZED,
   KEEP_ALIVE_TIMEOUT_MS,
   MAX_REQUEST_BODY_BYTES,
   NON_LOCALHOST_BIND_WARNING,
   POOL_ROUTE_TARGET,
   REQUEST_TIMEOUT_MS,
+  RETRY_AFTER_HEADER,
   WILDCARD_BIND_WARNING,
 } from './server-constants.js'
 import { CONTENT_TYPE_JSON, HTTP_STATUS_NOT_FOUND } from './constants.js'
@@ -56,7 +60,15 @@ import {
  *    agent segment — the token alone names the agent (PE5) — so there is
  *    nothing to compare, and the union makes that a type-level fact rather
  *    than a rule to remember.
- * 5. Dispatch to the session manager.
+ * 5. Request budget, when the front was handed one (tenant mode, plan
+ *    `hosted-path-and-ops` P7) → 429 + `Retry-After` once it is spent.
+ *    AFTER authentication and route parsing on purpose: a budget spent before
+ *    them would let anyone who can reach the port — no token needed — burn
+ *    the install's allowance for the day and lock its own agents out. So only
+ *    an authenticated request to a real route costs one unit. BEFORE the body
+ *    is read, so a refusal costs the front no buffering. A GET stream is one
+ *    request however long it stays open; what flows on it is not counted.
+ * 6. Dispatch to the session manager.
  *
  * The pool route sits AFTER authentication like every other: an
  * unauthenticated `GET /mcp` gets the same 401 as any path, so the endpoint's
@@ -81,6 +93,12 @@ export interface HttpFrontOptions extends Omit<SessionManagerOptions, 'onSession
   readonly maxBodyBytes?: number
   /** Diagnostics sink; defaults to `process.stderr`. */
   readonly stderr?: WarnSink
+  /**
+   * Requests this front admits (step 5 above); absent — no limit. The caller
+   * decides whether there is one (`serve` does, from tenant mode); the front
+   * only spends it, reading the time from `now`.
+   */
+  readonly requestBudget?: RequestBudget
 }
 
 /** The per-connection timeouts a live listener enforces, read back from it (tests). */
@@ -137,6 +155,22 @@ function headerValue(req: IncomingMessage, name: string): string | undefined {
   return Array.isArray(raw) ? raw[0] : raw
 }
 
+/** The 429 a spent budget answers, or `null` when this request may proceed. */
+function budgetRefusal(budget: RequestBudget | undefined, nowMs: number): ResponsePlan | null {
+  if (budget === undefined) {
+    return null
+  }
+  const decision = budget.take(nowMs)
+  if (decision.ok) {
+    return null
+  }
+  return {
+    status: HTTP_STATUS_TOO_MANY_REQUESTS,
+    headers: { [RETRY_AFTER_HEADER]: String(decision.retryAfterSeconds) },
+    body: BODY_RATE_LIMITED,
+  }
+}
+
 /** Class and message only — never a body, a header or a token. */
 function describeError(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}` : String(error)
@@ -162,6 +196,7 @@ export function createHttpFront(opts: HttpFrontOptions): HttpFront {
   const allowedOrigins = opts.allowedOrigins ?? []
   const allowedHosts = opts.allowedHosts ?? []
   const maxBodyBytes = opts.maxBodyBytes ?? MAX_REQUEST_BODY_BYTES
+  const now = opts.now ?? Date.now
   const manager = createSessionManager({
     ...opts,
     onSessionError: (sessionId, error) => {
@@ -239,6 +274,11 @@ export function createHttpFront(opts: HttpFrontOptions): HttpFront {
     const route = parseRoute(req.method, req.url)
     if (route === null || (route.kind === 'server' && route.agentName !== auth.agent.name)) {
       writePlan(res, { status: HTTP_STATUS_NOT_FOUND, body: BODY_NOT_FOUND })
+      return
+    }
+    const refusal = budgetRefusal(opts.requestBudget, now())
+    if (refusal !== null) {
+      writePlan(res, refusal)
       return
     }
     const ctx: SessionContext =

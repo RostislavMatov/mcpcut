@@ -65,6 +65,11 @@ afterEach(async () => {
  *   - `term-exit:<code>` blocks (so the wrapper's `wait` blocks too) until it
  *                        receives TERM, then exits with that code — a
  *                        graceful shutdown.
+ *   - `exit-when-both:<code>` waits until both `ui` and `serve` are in the
+ *                        log, then exits with that code. A bare `exit:` for
+ *                        the first process races the second one's start
+ *                        under load: the script (rightly) stops `serve`
+ *                        before it has logged anything.
  *   - unset (default)    blocks and exits 0 on TERM, same as `term-exit:0`.
  */
 async function writeFakeNode(): Promise<void> {
@@ -84,6 +89,13 @@ async function writeFakeNode(): Promise<void> {
     '  *) exit 0 ;;',
     'esac',
     'case "$BEHAVIOR" in',
+    '  exit-when-both:*)',
+    '    i=0',
+    '    while [ "$i" -lt 200 ]; do',
+    '      if grep -q "cli.js ui" "$FAKE_LOG" && grep -q "cli.js serve" "$FAKE_LOG"; then break; fi',
+    '      i=$((i + 1)); sleep 0.05',
+    '    done',
+    '    exit "${BEHAVIOR#exit-when-both:}" ;;',
     '  exit:*)',
     '    exit "${BEHAVIOR#exit:}" ;;',
     '  term-exit:*)',
@@ -215,7 +227,7 @@ describe.skipIf(process.platform === 'win32')('docker/tenant-run.sh', () => {
       // `ui` exits right away; the script's own logic (not a test-injected
       // signal) is what stops `serve` — see the timing note on `RunOptions`
       // for why this test avoids racing a fixed delay against a trap install.
-      const result = await runTenant({ FAKE_UI_BEHAVIOR: 'exit:0', FAKE_SERVE_BEHAVIOR: 'term-exit:0' })
+      const result = await runTenant({ FAKE_UI_BEHAVIOR: 'exit-when-both:0', FAKE_SERVE_BEHAVIOR: 'term-exit:0' })
 
       expect(result.log[0]).toBe(SETUP_ARGV)
       expect(result.log).toContain('/app/dist/cli.js ui')
@@ -228,7 +240,7 @@ describe.skipIf(process.platform === 'win32')('docker/tenant-run.sh', () => {
   test(
     '`ui` exiting first sends TERM to `serve` and the script exits with `ui`\'s code',
     async () => {
-      const result = await runTenant({ FAKE_UI_BEHAVIOR: 'exit:5', FAKE_SERVE_BEHAVIOR: 'term-exit:0' })
+      const result = await runTenant({ FAKE_UI_BEHAVIOR: 'exit-when-both:5', FAKE_SERVE_BEHAVIOR: 'term-exit:0' })
 
       expect(result.code).toBe(5)
       expect(result.signal).toBeNull()
@@ -254,7 +266,7 @@ describe.skipIf(process.platform === 'win32')('docker/tenant-run.sh', () => {
       // exits 1 instead of 0 (as if shutdown itself failed). The contract is
       // "the FIRST process to exit decides the code" — `serve`'s code here
       // must not leak into the result.
-      const result = await runTenant({ FAKE_UI_BEHAVIOR: 'exit:0', FAKE_SERVE_BEHAVIOR: 'term-exit:1' })
+      const result = await runTenant({ FAKE_UI_BEHAVIOR: 'exit-when-both:0', FAKE_SERVE_BEHAVIOR: 'term-exit:1' })
 
       expect(result.code).toBe(0)
     },
@@ -337,7 +349,7 @@ describe.skipIf(process.platform === 'win32')('docker/tenant-run.sh', () => {
     'dash: `ui` exiting first sends TERM to `serve` and the script exits with `ui`\'s code',
     async () => {
       const result = await runTenant(
-        { FAKE_UI_BEHAVIOR: 'exit:5', FAKE_SERVE_BEHAVIOR: 'term-exit:0' },
+        { FAKE_UI_BEHAVIOR: 'exit-when-both:5', FAKE_SERVE_BEHAVIOR: 'term-exit:0' },
         { shell: DASH },
       )
 
