@@ -120,7 +120,11 @@ publisher настроен (G5: `release.yml`, только stage, «2FA + disal
 - **Фаза 1 «режим арендатора» — закрыта 2026-09-27** (ветка `feat/tenant-mode`, не закоммичено; отчёт
   `.claude/PRPs/reports/tenant-mode-report.md`). Хвосты: браузерный смок формы `/servers` в режиме арендатора;
   выпуск 0.2.0 — с «да» владельца.
-- Фазы 2 (hub: GitHub OAuth, учётки, Terms/Privacy), 3 (контейнер на пользователя, маршрутизация `*.mcpcut.com`),
+- **Фаза 2 «hub» — закрыта 2026-09-27** (отчёт `.claude/PRPs/reports/hub-signin-accounts-report.md`): вход через
+  GitHub, учётки, лист ожидания, Terms/Privacy, операторский CLI; до фазы 3 все входы — в лист ожидания. Хвосты:
+  деплой (OAuth App владельца, Cloudflare Authenticated Origin Pulls, `caddy validate`, браузерный смок входа);
+  `tests/**` не типизируются tsc.
+- Фазы 3 (контейнер на пользователя, маршрутизация `*.mcpcut.com`, `--json` у `setup`/`admin rotate`),
   4 (путь «вход → первый вызов»), 5 (ревью, смок, открытие) — впереди.
 
 ### Контрольная точка через 30 дней (D4) — 2026-10-25

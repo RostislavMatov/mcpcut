@@ -38,11 +38,37 @@
 
 mcpcut.com:8443, www.mcpcut.com:8443 {
 	tls /etc/caddy/origin/cert.pem /etc/caddy/origin/key.pem
+	# Cloudflare Authenticated Origin Pulls (H6, ADR-0017 phase 2): proves a
+	# request at this vhost actually transited Cloudflare, so `CF-Connecting-
+	# IP` below cannot be forged by hitting the origin IP directly and walking
+	# straight through the hub's per-IP signup rate limit (HA12). Turn on
+	# together with the matching zone setting (SSL/TLS → Origin Server →
+	# Authenticated Origin Pulls): fetch Cloudflare's origin-pull CA to the
+	# path below, then move this block inside the `tls` directive above
+	# (`tls cert.pem key.pem { client_auth { ... } }`). Left commented so a
+	# deploy that has not done the zone side yet does not go dark:
+	# client_auth {
+	# 	mode require_and_verify
+	# 	trust_pool file /etc/caddy/origin/cf-origin-pull-ca.pem
+	# }
 	@www host www.mcpcut.com
 	redir @www https://mcpcut.com{uri} 301
-	import page_headers
-	root * /srv/site
-	file_server
+	# hub (ADR-0017 phase 2, `mcpcut-hub`): sign-in and accounts. It sets its
+	# own security headers (its CSP allows its own forms); the static page's
+	# `page_headers` (form-action 'none') must NOT be applied to it, hence two
+	# `handle` blocks rather than one site-wide `import`. `CF-Connecting-IP` is
+	# an ordinary request header here — Caddy forwards it to the upstream as
+	# received — which is exactly why the Authenticated Origin Pulls block above
+	# matters: without it, that header is whatever a direct caller sends.
+	@hub path /signin /auth/* /account /account/* /signout /terms /privacy /hub-assets/*
+	handle @hub {
+		reverse_proxy hub:8092
+	}
+	handle {
+		import page_headers
+		root * /srv/site
+		file_server
+	}
 }
 
 mcp.mcpcut.com:8443 {

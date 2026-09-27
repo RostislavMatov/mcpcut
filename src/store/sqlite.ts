@@ -2,7 +2,7 @@ import { chmod, mkdir, open } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
-import { JOURNAL_DIR_MODE, JOURNAL_FILE_MODE } from '../config.js'
+import { JOURNAL_DIR_MODE, JOURNAL_FILE_MODE } from './file-modes.js'
 
 /**
  * The single point of contact with `node:sqlite` (ADR-0006): opening, the
@@ -116,7 +116,7 @@ function describeCause(cause: unknown): string {
  * Primary result code SQLITE_BUSY. `node:sqlite` currently reports primary
  * codes on `errcode`; if a future runtime switches to extended codes
  * (e.g. SQLITE_BUSY_TIMEOUT = 773), this stops matching — that lands under
- * the ADR-0006 revisit trigger "`node:sqlite` меняет API".
+ * the ADR-0006 revisit trigger "`node:sqlite` changes its API".
  */
 const SQLITE_BUSY_ERRCODE = 5
 

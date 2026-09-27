@@ -33,8 +33,8 @@ export default defineConfig({
     },
     coverage: {
       provider: 'v8',
-      include: ['src/**/*.ts'],
-      exclude: ['src/cli.ts'],
+      include: ['src/**/*.ts', 'hub/src/**/*.ts'],
+      exclude: ['src/cli.ts', 'hub/src/cli.ts'],
       thresholds: {
         lines: COVERAGE_THRESHOLD_PERCENT,
         functions: COVERAGE_THRESHOLD_PERCENT,

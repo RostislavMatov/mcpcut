@@ -17,11 +17,7 @@ export const JOURNAL_DIR_RESOLUTION: DataDirResolution = resolveDataDir({
 /** Directory where per-session JSONL journal files are stored. */
 export const JOURNAL_DIR = JOURNAL_DIR_RESOLUTION.dataDir
 
-/** Journal directory permissions: owner-only (journals hold sensitive traffic). */
-export const JOURNAL_DIR_MODE = 0o700
-
-/** Journal file permissions: owner read/write only. */
-export const JOURNAL_FILE_MODE = 0o600
+export { JOURNAL_DIR_MODE, JOURNAL_FILE_MODE } from './store/file-modes.js'
 
 /**
  * Batch bounds for the journal's write path (ADR-0006): thousands of records

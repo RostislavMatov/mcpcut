@@ -46,7 +46,8 @@
     "prepublishOnly": "node tools/release/check-release.mjs",
     "test": "vitest run --coverage",
     "test:watch": "vitest",
-    "lint": "tsc -p tsconfig.json --noEmit"
+    "lint": "tsc -p tsconfig.json --noEmit && tsc -p hub/tsconfig.json --noEmit",
+    "build:hub": "tsc -p hub/tsconfig.json"
   },
   "dependencies": {
     "ulid": "^2.3.0",

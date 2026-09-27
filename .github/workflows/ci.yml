@@ -41,6 +41,9 @@ jobs:
       - name: Lint (typecheck)
         run: npm run lint
 
+      - name: Build hub
+        run: npm run build:hub
+
       - name: Build
         run: npm run build
 

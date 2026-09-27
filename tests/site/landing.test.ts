@@ -3,6 +3,7 @@ import { join, normalize, relative, resolve } from 'node:path'
 import { describe, expect, test } from 'vitest'
 import { FAVICON } from '../../src/ui/assets/favicon.js'
 import { SILKSCREEN_400, SILKSCREEN_700 } from '../../src/ui/assets/fonts.js'
+import { expectNoBannedWords } from '../support/banned-words.js'
 
 /**
  * `site/` is the preview page served at https://mcpcut.com (plan
@@ -30,10 +31,20 @@ const NPM_URL = 'https://www.npmjs.com/package/mcpcut'
 /** A GitHub link into the repository's tree; the path after `main/` must exist here. */
 const REPOSITORY_FILE_LINK = new RegExp(`^${REPOSITORY_URL.replace(/[.]/g, '\\.')}/(?:blob|tree)/main/([^#?]+)`)
 
+/**
+ * Site-relative paths that lead off this directory on purpose: Caddy proxies
+ * them to the hub, a separate process on the same origin (ADR-0017 phase 2,
+ * plan `hub-signin-accounts` Task 6). No file under `site/` answers them, so
+ * they are exempt from the "every link resolves to a file here" check below,
+ * but they must still be relative (never a scheme, never another host) — the
+ * hub is reached on this same origin, through Caddy, not as a link out.
+ */
+const HUB_ROUTES: ReadonlySet<string> = new Set(['/signin', '/terms', '/privacy'])
+
 const OG_IMAGE_WIDTH = 1200
 const OG_IMAGE_HEIGHT = 630
 
-/** How far after "tamper-evident" the qualifier may stand (characters of text). */
+/** How far a "preview" label may stand from the network feature it qualifies (characters of text). */
 const QUALIFIER_WINDOW = 80
 
 const FONT_FILES: ReadonlyArray<readonly [string, Buffer | string]> = [
@@ -127,19 +138,12 @@ describe('site/ — the preview page at mcpcut.com', () => {
 describe('site/ — the words the project refuses', () => {
   test('never says tamper-proof or audit-ready', () => {
     for (const source of [text, css]) {
-      expect(source).not.toMatch(/tamper[- ]?proof/i)
-      expect(source).not.toMatch(/audit[- ]?ready/i)
+      expectNoBannedWords(source)
     }
   })
 
   test('says tamper-evident only with "external anchor" right after it', () => {
-    const lower = text.toLowerCase()
-    let at = lower.indexOf('tamper-evident')
-    while (at !== -1) {
-      const window = lower.slice(at, at + QUALIFIER_WINDOW)
-      expect(window, `"${text.slice(at, at + QUALIFIER_WINDOW)}"`).toContain('external anchor')
-      at = lower.indexOf('tamper-evident', at + 1)
-    }
+    expectNoBannedWords(text)
   })
 
   test('the network features are labelled preview', () => {
@@ -150,7 +154,16 @@ describe('site/ — the words the project refuses', () => {
     }
   })
 
-  test('promises no sign-up and no hosted service', () => {
+  test('is honest about the hosted preview, not a self-serve sign-up', () => {
+    // The page now has a real path in — "Sign in with GitHub" (/signin) into
+    // a waitlist, both plainly labelled preview (H5, ADR-0017 phase 2:
+    // installs are still handed out by hand while the piece that creates
+    // them is built). "Sign in" and "hosted in preview" are deliberately not
+    // in the pattern below; what it still refuses is a promise that anyone
+    // can register themselves right now ("sign up"/"register now"/"create an
+    // account" — arrivals land on a waitlist, not straight into an account)
+    // or that the service is generally available ("hosted service/version/
+    // plan", "free trial" — it is a preview, not a product tier).
     expect(text).not.toMatch(/sign[- ]?up|register now|create an account|hosted (?:service|version|plan)|free trial/i)
   })
 })
@@ -197,6 +210,7 @@ describe('site/ — self-contained under a strict CSP', () => {
         continue
       }
       if (!isExternal(url)) {
+        if (HUB_ROUTES.has(url)) continue
         expect(existsSync(siteFileOf(url)), url).toBe(true)
         continue
       }
