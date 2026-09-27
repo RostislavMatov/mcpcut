@@ -10,16 +10,16 @@ import { startFakeDocker, type ExecScript, type FakeContainer, type FakeDocker }
 
 /**
  * A provisioner over the fake Docker Engine (plan `tenant-orchestrator`,
- * Task 4). The fake answers `docker exec` the way a tenant install would:
- * `status --json` names both services `external` (tenant containers have no
- * pid files), `admin add|rotate … --json` prints the one-line contract with a
- * fresh `mcpa_` token. A test can replace any answer with `answer(...)`.
+ * Task 4). The fake answers `docker exec` the way a tenant install would: the
+ * readiness probe (`node -e`, `READY_PROBE_SCRIPT`) prints both services up,
+ * `admin add|rotate … --json` prints the one-line contract with a fresh
+ * `mcpa_` token. A test can replace any answer with `answer(...)`.
  */
 
 export const CADDY = 'caddy'
 export const FAST_READINESS = { timeoutMs: 300, pollMs: 5, execTimeoutMs: 200 } as const
 
-export type ExecKind = 'status' | 'admin-add' | 'admin-rotate' | 'stat' | 'other'
+export type ExecKind = 'ready' | 'admin-add' | 'admin-rotate' | 'stat' | 'other'
 
 export type ExecOverride = (argv: readonly string[], container: FakeContainer) => ExecScript | undefined
 
@@ -39,8 +39,8 @@ export interface ProvisionerContext {
 
 export function execKindOf(argv: readonly string[]): ExecKind {
   if (argv[0] === 'stat') return 'stat'
+  if (argv[0] === 'node' && argv[1] === '-e') return 'ready'
   const command = argv.slice(2).join(' ')
-  if (command === 'status --json') return 'status'
   if (command.startsWith('admin add ')) return 'admin-add'
   if (command.startsWith('admin rotate ')) return 'admin-rotate'
   return 'other'
@@ -49,10 +49,8 @@ export function execKindOf(argv: readonly string[]): ExecKind {
 /** The mtime (epoch seconds) the fake install reports for `journal.db` and `state.db`. */
 export const FAKE_ACTIVITY_S = Date.parse('2026-09-20T08:00:00.000Z') / 1000
 
-export const READY_STATUS = JSON.stringify([
-  { host: '0.0.0.0', logPath: '/x/serve.log', port: 8090, service: 'serve', state: 'external' },
-  { host: '0.0.0.0', logPath: '/x/ui.log', port: 8091, service: 'ui', state: 'external' },
-])
+/** What the readiness probe script prints once both services answer. */
+export const READY_STATUS = JSON.stringify({ ui: true, serve: true })
 
 export function useProvisioner(): ProvisionerContext {
   let fake: FakeDocker | undefined
@@ -121,8 +119,8 @@ export function useProvisioner(): ProvisionerContext {
 
 function defaultAnswer(argv: readonly string[], tokens: string[]): ExecScript {
   const kind = execKindOf(argv)
-  // What the real `status --json` does in a tenant container: both `external`, exit 1.
-  if (kind === 'status') return { exitCode: 1, stdout: `${READY_STATUS}\n` }
+  // What the real readiness probe prints once both services answer; it always exits 0.
+  if (kind === 'ready') return { exitCode: 0, stdout: `${READY_STATUS}\n` }
   if (kind === 'admin-add' || kind === 'admin-rotate') {
     const token = `mcpa_${randomBytes(24).toString('base64url')}`
     tokens.push(token)

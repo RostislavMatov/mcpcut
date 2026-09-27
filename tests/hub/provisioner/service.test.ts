@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import { ProvisionerError } from '../../../hub/src/provisioner/errors.js'
+import { READY_PROBE_SCRIPT } from '../../../hub/src/provisioner/tenant-exec.js'
 import { containerSpec } from '../../../hub/src/provisioner/templates.js'
 import {
   CADDY,
@@ -51,31 +52,25 @@ describe('create', () => {
     expect(caddyNetworks()).toEqual(['mcpcut-t-alice'])
   })
 
-  test('waits for status, then mints the owner as the lowercased login, as user node', async () => {
+  test('waits for readiness, then mints the owner as the lowercased login, as user node', async () => {
     await ctx.service().create(ALICE)
 
     const argvs = ctx.execs()
-    expect(argvs[0]).toEqual(['node', '/app/dist/cli.js', 'status', '--json'])
+    expect(argvs[0]).toEqual(['node', '-e', READY_PROBE_SCRIPT])
     expect(argvs.at(-1)).toEqual(['node', '/app/dist/cli.js', 'admin', 'add', 'alice', '--role', 'owner', '--json'])
     const execCreates = ctx.fake().calls().filter((call) => call.route === 'POST /containers/{id}/exec')
     expect(execCreates.every((call) => (call.body as { User?: string }).User === 'node')).toBe(true)
   })
 
-  test('keeps polling until both services answer, accepting running as well as external, whatever the exit code', async () => {
+  test('keeps polling until both services answer, whatever the exit code', async () => {
     let polls = 0
     ctx.answer((argv) => {
-      if (execKindOf(argv) !== 'status') return undefined
+      if (execKindOf(argv) !== 'ready') return undefined
       polls += 1
       if (polls === 1) return { exitCode: 1, stderr: 'no config yet\n' }
-      if (polls === 2) return { exitCode: 1, stdout: '[{"service":"ui","state":"external"},{"service":"serve","state":"stopped"}]' }
-      if (polls === 3) return { exitCode: 0, stdout: JSON.stringify([{ service: 'ui', state: 'running' }]) }
-      return {
-        exitCode: 0,
-        stdout: JSON.stringify([
-          { service: 'ui', state: 'running' },
-          { service: 'serve', state: 'external' },
-        ]),
-      }
+      if (polls === 2) return { exitCode: 0, stdout: JSON.stringify({ ui: true, serve: false }) }
+      if (polls === 3) return { exitCode: 1, stdout: JSON.stringify({ ui: false, serve: true }) }
+      return { exitCode: 0, stdout: JSON.stringify({ ui: true, serve: true }) }
     })
 
     await ctx.service().create(ALICE)
@@ -201,7 +196,7 @@ describe('create rolls back whatever it built when a step fails', () => {
   })
 
   test('the install never comes up → not-ready, rolled back', async () => {
-    ctx.answer((argv) => (execKindOf(argv) === 'status' ? { exitCode: 0, stdout: '[]' } : undefined))
+    ctx.answer((argv) => (execKindOf(argv) === 'ready' ? { exitCode: 0, stdout: '[]' } : undefined))
 
     const error = await errorOf(ctx.service().create(ALICE))
 

@@ -50,7 +50,7 @@ describe('the tenant ceiling holds for creates of different subdomains at once',
   test('a create that fails while others wait lets exactly one of them through', async () => {
     const service = ctx.serviceWith({ maxTenants: 1 })
     ctx.answer((argv, container) =>
-      execKindOf(argv) === 'status' && container.name === 'mcpcut-t-alice' ? { exitCode: 0, stdout: '[]' } : undefined,
+      execKindOf(argv) === 'ready' && container.name === 'mcpcut-t-alice' ? { exitCode: 0, stdout: '[]' } : undefined,
     )
 
     const first = await errorOf(service.create({ subdomain: 'alice', login: 'alice' }))
@@ -69,7 +69,7 @@ describe('the tenant ceiling holds for creates of different subdomains at once',
     let second: Promise<unknown> | undefined
     ctx.answer((argv, container) => {
       // Alice's container exists and her create is still in flight: bob must still fit.
-      if (execKindOf(argv) === 'status' && container.name === 'mcpcut-t-alice' && second === undefined) {
+      if (execKindOf(argv) === 'ready' && container.name === 'mcpcut-t-alice' && second === undefined) {
         second = service.create({ subdomain: 'bob', login: 'bob' })
       }
       return undefined

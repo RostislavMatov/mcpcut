@@ -159,9 +159,9 @@ describe('the requests it sends', () => {
     expect((await failureOf(client()[operation]('../x'))).failure).toBe('invalid-input')
   })
 
-  test('is available, and waits 120 s for a create by default', () => {
+  test('is available, and waits 150 s for a create by default', () => {
     expect(client().available).toBe(true)
-    expect(CREATE_TIMEOUT_MS).toBe(120_000)
+    expect(CREATE_TIMEOUT_MS).toBe(150_000)
   })
 
   test('a subdomain that is not one never becomes a path', async () => {

@@ -22,8 +22,8 @@ import { mintOwnerToken, readLastActivity, waitUntilReady, type ReadinessOptions
  * fixed templates in `templates.ts`.
  *
  * - `create`: network → volume → container → start → attach Caddy → wait
- *   until `status --json` says both services answer (≤ 45 s) → `admin add
- *   --json`. A failure at ANY step removes what this call created, in
+ *   until the readiness probe says both services answer (≤ 60 s,
+ *   `tenant-exec.ts`) → `admin add --json`. A failure at ANY step removes what this call created, in
  *   reverse, and rethrows the first failure; nothing that existed before the
  *   call is touched (a tenant whose container or volume already exists is
  *   refused as `exists` before anything is created).

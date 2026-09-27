@@ -16,10 +16,10 @@ import { CREATE_DOCKER_MARGIN_MS } from '../../../hub/src/provisioner/timeouts.j
 const DOCKER_STEPS_MARGIN_MS = 30_000
 
 describe('create timeouts', () => {
-  test('readiness 45 s, admin add 20 s, the hub waits 120 s', () => {
-    expect(READY_TIMEOUT_MS).toBe(45_000)
-    expect(ADMIN_EXEC_TIMEOUT_MS).toBe(20_000)
-    expect(CREATE_TIMEOUT_MS).toBe(120_000)
+  test('readiness 60 s, admin add 30 s, the hub waits 150 s', () => {
+    expect(READY_TIMEOUT_MS).toBe(60_000)
+    expect(ADMIN_EXEC_TIMEOUT_MS).toBe(30_000)
+    expect(CREATE_TIMEOUT_MS).toBe(150_000)
   })
 
   test('the hub waits longer than the provisioner’s waits plus at least 30 s for the Docker steps', () => {
