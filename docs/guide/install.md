@@ -145,7 +145,7 @@ quietly reopen it.
 | Key | Values | Strict default | What it does |
 |---|---|---|---|
 | `stdioServers` | `allowed` \| `refused` | `refused` | `refused` stops a `stdio` server from ever being registered, edited onto, or started — a `stdio` record is an arbitrary command run on this host on the owner's behalf. |
-| `upstreams` | `any` \| `public-https` | `public-https` | `public-https` allows only `https://` upstream URLs, and only to a resolved address that is public: loopback, private, link-local (including the `169.254.169.254` metadata address), CGNAT, unspecified, multicast, reserved and documentation ranges are all refused — checked on every connection, not only at registration. |
+| `upstreams` | `any` \| `public-https` | `public-https` | `public-https` allows only `https://` upstream URLs, only on port 443 (no port at all, or an explicit `:443`, both count as port 443 — anything else is refused), and only to a resolved address that is public: loopback, private, link-local (including the `169.254.169.254` metadata address), CGNAT, unspecified, multicast, reserved and documentation ranges are all refused — checked on every connection, not only at registration. |
 | `maxServers` / `maxAgents` / `maxGroups` | integers (up to 200 / 200 / 100) | `5` / `5` / `2` | Ceilings on the three stores, enforced only on write — turning the mode on over an install that already holds more never breaks reading it. |
 
 Write the strict preset without typing every field: `mcpcut setup --yes --tenant`
@@ -169,6 +169,12 @@ of an opaque failure:
   it.
 - Registering a non-`https` URL refuses with `url: this install reaches only
   https servers (tenant mode)`.
+- Registering (or, at connect time, dialing) an `https` URL that names an
+  explicit port other than 443 refuses with `url: this install reaches only
+  port 443 (tenant mode)` (registration) or `refused to connect to <host>:
+  this install reaches only port 443 (tenant mode)` (the guard). No port at
+  all, or an explicit `:443`, both pass — the URL parser treats them as the
+  same thing.
 - An `https` upstream that resolves to (or is literally) a non-public address
   is refused with `refused to connect to <host>: it resolves to a <kind>
   address; this install reaches only public https servers (tenant mode)` —

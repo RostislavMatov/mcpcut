@@ -131,6 +131,54 @@ describe('registry: upstreams public-https only', () => {
   })
 })
 
+describe('registry: upstreams public-https reaches only port 443 (O8)', () => {
+  const NON_DEFAULT_PORT: ServerRecord = {
+    name: 'remote-api',
+    transport: 'http',
+    url: 'https://example.com:8443/mcp',
+    protocol: 'auto',
+  }
+
+  test('addServer of a url naming an explicit non-443 port is refused with the fixed message', async () => {
+    const store = createRegistryStore(journalDir, { tenant: PUBLIC_HTTPS_ONLY })
+
+    await expect(store.addServer(NON_DEFAULT_PORT)).rejects.toBeInstanceOf(InvalidServerRecordError)
+    await expect(store.addServer(NON_DEFAULT_PORT)).rejects.toThrow(
+      'url: this install reaches only port 443 (tenant mode)',
+    )
+    expect(await store.listServers()).toEqual([])
+  })
+
+  test('a url with no port at all succeeds', async () => {
+    const store = createRegistryStore(journalDir, { tenant: PUBLIC_HTTPS_ONLY })
+
+    await expect(store.addServer(HTTPS)).resolves.toEqual(HTTPS)
+  })
+
+  test('a url with an explicit :443 succeeds (the URL parser normalizes it to the default)', async () => {
+    const store = createRegistryStore(journalDir, { tenant: PUBLIC_HTTPS_ONLY })
+    const explicit443: ServerRecord = { ...HTTPS, url: 'https://example.com:443/mcp' }
+
+    await expect(store.addServer(explicit443)).resolves.toEqual(explicit443)
+  })
+
+  test('updateServer moving an existing record to a non-443 port is refused, original untouched', async () => {
+    const store = createRegistryStore(journalDir, { tenant: PUBLIC_HTTPS_ONLY })
+    await store.addServer(HTTPS)
+
+    await expect(
+      store.updateServer({ ...NON_DEFAULT_PORT, name: HTTPS.name }),
+    ).rejects.toBeInstanceOf(InvalidServerRecordError)
+    expect(await store.getServer(HTTPS.name)).toEqual(HTTPS)
+  })
+
+  test('without tenant mode, a non-443 port is unaffected', async () => {
+    const store = createRegistryStore(journalDir)
+
+    await expect(store.addServer(NON_DEFAULT_PORT)).resolves.toEqual(NON_DEFAULT_PORT)
+  })
+})
+
 describe('registry: server count limit', () => {
   function httpsServer(index: number): ServerRecord {
     return { name: `server-${index}`, transport: 'http', url: `https://example.com/${index}`, protocol: 'auto' }

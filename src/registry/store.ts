@@ -110,10 +110,21 @@ function isNonHttpsHttpRecord(record: ServerRecord): boolean {
 }
 
 /**
+ * `true` when an http(s) record's URL names a port other than the scheme's
+ * default (O8, tenant-orchestrator plan: "reaches only port 443"). The
+ * WHATWG URL parser already normalizes an explicit default port away
+ * (`new URL('https://x:443').port === ''`), so an https record with a
+ * non-empty `.port` names an EXPLICIT, non-default one.
+ */
+function hasNonDefaultPort(record: ServerRecord): boolean {
+  return record.transport === 'http' && new URL(record.url).port !== ''
+}
+
+/**
  * Tenant-mode gate shared by `addServer` and `updateServer`, run BEFORE
  * `store.update`: both checks are static properties of the record itself
- * (transport, url scheme), not of the current document, so there is nothing
- * to gain from running them inside the CAS-retried callback.
+ * (transport, url scheme/port), not of the current document, so there is
+ * nothing to gain from running them inside the CAS-retried callback.
  */
 function assertTenantAllowsServer(record: ServerRecord, tenant: TenantSettings): void {
   if (record.transport === 'stdio') {
@@ -122,8 +133,12 @@ function assertTenantAllowsServer(record: ServerRecord, tenant: TenantSettings):
     }
     return
   }
-  if (tenant.upstreams === 'public-https' && isNonHttpsHttpRecord(record)) {
+  if (tenant.upstreams !== 'public-https') return
+  if (isNonHttpsHttpRecord(record)) {
     throw new InvalidServerRecordError('url: this install reaches only https servers (tenant mode)')
+  }
+  if (hasNonDefaultPort(record)) {
+    throw new InvalidServerRecordError('url: this install reaches only port 443 (tenant mode)')
   }
 }
 

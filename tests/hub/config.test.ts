@@ -257,3 +257,83 @@ describe('loadHubConfig: the GitHub client secret file (H4)', () => {
     expect(problems).toEqual([`HUB_GITHUB_CLIENT_SECRET_FILE: could not read "${secretPath}": boom`])
   })
 })
+
+describe('loadHubConfig: the provisioner link (tenant-orchestrator Task 5)', () => {
+  const TOKEN = 'a'.repeat(64)
+
+  async function tokenFile(content = `${TOKEN}\n`, mode = 0o600): Promise<string> {
+    const path = join(dir, 'provisioner-token')
+    await writeFile(path, content)
+    await chmod(path, mode)
+    return path
+  }
+
+  test('neither var set: no provisioner, waitlist mode', () => {
+    const load = loadHubConfig({ env: validEnv() })
+    if (load.kind !== 'ok') throw new Error('expected ok')
+    expect(load.config.provisioner).toBeUndefined()
+  })
+
+  test('both set: the origin and the token from the file', async () => {
+    const load = loadHubConfig({
+      env: validEnv({ HUB_PROVISIONER_URL: 'http://provisioner:8093', HUB_PROVISIONER_TOKEN_FILE: await tokenFile() }),
+    })
+    if (load.kind !== 'ok') throw new Error(`expected ok: ${JSON.stringify(load)}`)
+    expect(load.config.provisioner).toEqual({ url: 'http://provisioner:8093', token: TOKEN })
+  })
+
+  test('a 0400 token file is accepted', async () => {
+    const load = loadHubConfig({
+      env: validEnv({ HUB_PROVISIONER_URL: 'https://p.internal', HUB_PROVISIONER_TOKEN_FILE: await tokenFile(TOKEN, 0o400) }),
+    })
+    expect(load.kind).toBe('ok')
+  })
+
+  test.each([
+    [{ HUB_PROVISIONER_URL: 'http://provisioner:8093' }],
+    [{ HUB_PROVISIONER_TOKEN_FILE: '/run/secrets/x' }],
+  ])('only one of the two is a problem: %j', (vars) => {
+    expect(expectInvalid(loadHubConfig({ env: validEnv(vars) }))).toEqual([
+      'HUB_PROVISIONER_URL and HUB_PROVISIONER_TOKEN_FILE must be set together, or neither',
+    ])
+  })
+
+  test.each(['ftp://provisioner', 'http://provisioner:8093/tenants', 'http://user@provisioner', 'provisioner:8093'])(
+    'a URL that is not an http(s) origin is refused: %s',
+    async (url) => {
+      const problems = expectInvalid(loadHubConfig({ env: validEnv({ HUB_PROVISIONER_URL: url, HUB_PROVISIONER_TOKEN_FILE: await tokenFile() }) }))
+      expect(problems).toEqual(['HUB_PROVISIONER_URL: must be an http(s) origin: http://host[:port], no path'])
+    },
+  )
+
+  test('a group-readable token file is refused', async () => {
+    const path = await tokenFile(TOKEN, 0o640)
+    const problems = expectInvalid(loadHubConfig({ env: validEnv({ HUB_PROVISIONER_URL: 'http://p:1', HUB_PROVISIONER_TOKEN_FILE: path }) }))
+    expect(problems[0]).toMatch(/^HUB_PROVISIONER_TOKEN_FILE: .*wider than the required 0600/)
+  })
+
+  test('a short token is refused without being quoted', async () => {
+    const path = await tokenFile('short-secret')
+    const problems = expectInvalid(loadHubConfig({ env: validEnv({ HUB_PROVISIONER_URL: 'http://p:1', HUB_PROVISIONER_TOKEN_FILE: path }) }))
+    expect(problems).toHaveLength(1)
+    expect(problems[0]).toMatch(/^HUB_PROVISIONER_TOKEN_FILE: .* must hold 32–1024 visible ASCII characters/)
+    expect(problems[0]).not.toContain('short-secret')
+  })
+
+  test('a token file path over the length bound is refused', () => {
+    const problems = expectInvalid(
+      loadHubConfig({ env: validEnv({ HUB_PROVISIONER_URL: 'http://p:1', HUB_PROVISIONER_TOKEN_FILE: `/${'x'.repeat(5000)}` }) }),
+    )
+    expect(problems).toEqual(['HUB_PROVISIONER_TOKEN_FILE: is too long'])
+  })
+
+  test('its problems are listed beside every other one', async () => {
+    const problems = expectInvalid(
+      loadHubConfig({ env: validEnv({ HUB_PUBLIC_URL: undefined, HUB_PROVISIONER_URL: 'http://p:1' }) }),
+    )
+    expect(problems).toEqual([
+      'HUB_PUBLIC_URL: is required',
+      'HUB_PROVISIONER_URL and HUB_PROVISIONER_TOKEN_FILE must be set together, or neither',
+    ])
+  })
+})

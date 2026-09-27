@@ -18,6 +18,9 @@ All notable changes to this project are documented here. The format follows
   install with no `tenant` section is unaffected, byte for byte. See
   [Tenant mode (hosted)](docs/guide/install.md#tenant-mode-hosted) and
   [ADR-0017](docs/adr/0017-hosted-install-per-tenant.md).
+- **`admin add`/`admin rotate --json`** prints one line
+  `{"admin","role","token"}` on stdout for a script to parse, moving the
+  human notices to stderr instead of interleaving them with it.
 
 ## [0.1.2] — 2026-09-26
 

@@ -117,10 +117,15 @@ export function assignSubdomain(login: string, options: AssignSubdomainOptions):
   throw new SubdomainExhaustedError(base)
 }
 
+/**
+ * True when `candidate` is a subdomain this hub could ever hand out: a valid
+ * DNS label that is not reserved. The provisioner (plan `tenant-orchestrator`,
+ * Task 4) applies the same rule before it names any Docker object after it.
+ */
+export function isAssignableSubdomain(candidate: string): boolean {
+  return LABEL_PATTERN.test(candidate) && !RESERVED_SUBDOMAINS.has(candidate)
+}
+
 function isFree(candidate: string, options: AssignSubdomainOptions): boolean {
-  return (
-    LABEL_PATTERN.test(candidate) &&
-    !RESERVED_SUBDOMAINS.has(candidate) &&
-    !options.isOccupied(candidate)
-  )
+  return isAssignableSubdomain(candidate) && !options.isOccupied(candidate)
 }

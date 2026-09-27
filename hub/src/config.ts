@@ -1,5 +1,7 @@
-import { readFileSync as fsReadFileSync, statSync as fsStatSync } from 'node:fs'
 import { z } from 'zod'
+import { readBearerTokenFile, readSecretFile, type SecretFileSeams } from './secret-file.js'
+
+export type { SecretFileStat } from './secret-file.js'
 
 /**
  * The hub's own configuration (plan `hub-signin-accounts`, Task 2): env vars
@@ -90,6 +92,8 @@ const rawHubConfigSchema = z.object({
   HUB_TRUST_CF_CONNECTING_IP: booleanFlagField('0'),
 })
 
+const HUB_VAR_NAMES = Object.keys(rawHubConfigSchema.shape) as readonly (keyof z.input<typeof rawHubConfigSchema>)[]
+
 /** The hub's fully validated configuration. */
 export interface HubConfig {
   /** The `https://…` origin the hub itself is reached at (behind Caddy). */
@@ -121,29 +125,34 @@ export interface HubConfig {
    * anything and walk straight through the per-IP rate limit otherwise.
    */
   readonly trustCfConnectingIp: boolean
+  /**
+   * The provisioner that creates installs (plan `tenant-orchestrator`,
+   * Task 5), when `HUB_PROVISIONER_URL` and `HUB_PROVISIONER_TOKEN_FILE` are
+   * both set; `undefined` runs the hub in waitlist mode.
+   */
+  readonly provisioner: ProvisionerLink | undefined
 }
+
+/** Where the provisioner answers and the Bearer secret it expects. */
+export interface ProvisionerLink {
+  readonly url: string
+  /** Read from `HUB_PROVISIONER_TOKEN_FILE`; never logged. */
+  readonly token: string
+}
+
+export type ProvisionerLinkLoad =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'ok'; readonly link: ProvisionerLink }
+  | { readonly kind: 'invalid'; readonly problems: readonly string[] }
 
 export type HubConfigLoad =
   | { readonly kind: 'ok'; readonly config: HubConfig }
   | { readonly kind: 'invalid'; readonly problems: readonly string[] }
 
-/** Minimal `fs.Stats` surface the permission check needs; real `statSync` satisfies it. */
-export interface SecretFileStat {
-  isFile(): boolean
-  readonly mode: number
-}
-
-export interface LoadHubConfigOptions {
+export interface LoadHubConfigOptions extends SecretFileSeams {
   /** Environment to read the `HUB_*` vars from. Defaults to `process.env`. */
   readonly env?: NodeJS.ProcessEnv
-  /** Stat seam for the client-secret file. Defaults to `node:fs`'s `statSync`. */
-  readonly statSecretFile?: (path: string) => SecretFileStat
-  /** Read seam for the client-secret file. Defaults to `node:fs`'s `readFileSync`. */
-  readonly readSecretFile?: (path: string) => string
 }
-
-/** Bits allowed on the client-secret file: owner read/write, nothing else. */
-const SECRET_FILE_ALLOWED_MODE_BITS = 0o600
 
 /**
  * Resolves and validates every `HUB_*` env var, including reading and
@@ -154,19 +163,7 @@ const SECRET_FILE_ALLOWED_MODE_BITS = 0o600
  */
 export function loadHubConfig(options: LoadHubConfigOptions = {}): HubConfigLoad {
   const env = options.env ?? process.env
-  const raw = {
-    HUB_PUBLIC_URL: env.HUB_PUBLIC_URL,
-    HUB_TENANT_DOMAIN: env.HUB_TENANT_DOMAIN,
-    HUB_GITHUB_CLIENT_ID: env.HUB_GITHUB_CLIENT_ID,
-    HUB_GITHUB_CLIENT_SECRET_FILE: env.HUB_GITHUB_CLIENT_SECRET_FILE,
-    HUB_DATA_DIR: env.HUB_DATA_DIR,
-    HUB_HOST: env.HUB_HOST,
-    HUB_PORT: env.HUB_PORT,
-    HUB_MAX_ACCOUNTS: env.HUB_MAX_ACCOUNTS,
-    HUB_MIN_ACCOUNT_AGE_DAYS: env.HUB_MIN_ACCOUNT_AGE_DAYS,
-    HUB_SIGNUPS_PER_HOUR_PER_IP: env.HUB_SIGNUPS_PER_HOUR_PER_IP,
-    HUB_TRUST_CF_CONNECTING_IP: env.HUB_TRUST_CF_CONNECTING_IP,
-  }
+  const raw = Object.fromEntries(HUB_VAR_NAMES.map((name) => [name, env[name]]))
 
   const parsed = rawHubConfigSchema.safeParse(raw)
   const problems = parsed.success ? [] : formatIssues(parsed.error)
@@ -175,10 +172,12 @@ export function loadHubConfig(options: LoadHubConfigOptions = {}): HubConfigLoad
   // a valid, non-empty string; otherwise its problem is already listed above.
   const secretFilePath = parsed.success ? parsed.data.HUB_GITHUB_CLIENT_SECRET_FILE : undefined
   const secret =
-    secretFilePath === undefined ? undefined : readClientSecretFile(secretFilePath, options)
+    secretFilePath === undefined ? undefined : readSecretFile('HUB_GITHUB_CLIENT_SECRET_FILE', secretFilePath, options)
   if (secret !== undefined && !secret.ok) problems.push(secret.problem)
+  const provisioner = loadProvisionerLink({ ...options, env })
+  if (provisioner.kind === 'invalid') problems.push(...provisioner.problems)
 
-  if (!parsed.success || secret === undefined || !secret.ok) {
+  if (!parsed.success || secret === undefined || !secret.ok || provisioner.kind === 'invalid') {
     return { kind: 'invalid', problems }
   }
 
@@ -197,63 +196,45 @@ export function loadHubConfig(options: LoadHubConfigOptions = {}): HubConfigLoad
       minAccountAgeDays: data.HUB_MIN_ACCOUNT_AGE_DAYS,
       signupsPerHourPerIp: data.HUB_SIGNUPS_PER_HOUR_PER_IP,
       trustCfConnectingIp: data.HUB_TRUST_CF_CONNECTING_IP,
+      provisioner: provisioner.kind === 'ok' ? provisioner.link : undefined,
     },
   }
 }
 
-type SecretFileRead = { readonly ok: true; readonly value: string } | { readonly ok: false; readonly problem: string }
+/**
+ * `http(s)://host[:port]`, no path: the provisioner sits on the hub's private
+ * compose network (`http://provisioner:8093`), so plain http is allowed here —
+ * unlike `HUB_PUBLIC_URL`, this address never leaves the host.
+ */
+const PROVISIONER_URL_PATTERN = /^https?:\/\/[^\s/\\?#@]+$/i
 
 /**
- * Reads the GitHub client secret from `path`, refusing a file that does not
- * exist, is not a regular file, or grants any permission bit beyond owner
- * read/write (H4: the secret is never accepted in the environment, so the
- * file is its only copy at rest and must not be group- or world-readable).
+ * The provisioner half of the config on its own, so the operator commands
+ * (which need only `HUB_DATA_DIR`) can reach the same provisioner as `serve`.
+ * Both vars or neither: one without the other is a half-configured link, and
+ * silently falling back to waitlist mode would hide it.
  */
-function readClientSecretFile(path: string, options: LoadHubConfigOptions): SecretFileRead {
-  const statSync = options.statSecretFile ?? fsStatSync
-  const readFileSync = options.readSecretFile ?? ((p: string) => fsReadFileSync(p, 'utf8'))
-
-  let stats: SecretFileStat
-  try {
-    stats = statSync(path)
-  } catch (error: unknown) {
-    return {
-      ok: false,
-      problem: `HUB_GITHUB_CLIENT_SECRET_FILE: could not stat "${path}": ${describeError(error)}`,
-    }
+export function loadProvisionerLink(options: LoadHubConfigOptions = {}): ProvisionerLinkLoad {
+  const env = options.env ?? process.env
+  const url = nonEmpty(env.HUB_PROVISIONER_URL)
+  const tokenFile = nonEmpty(env.HUB_PROVISIONER_TOKEN_FILE)
+  if (url === undefined && tokenFile === undefined) return { kind: 'none' }
+  if (url === undefined || tokenFile === undefined) {
+    return { kind: 'invalid', problems: ['HUB_PROVISIONER_URL and HUB_PROVISIONER_TOKEN_FILE must be set together, or neither'] }
   }
-  if (!stats.isFile()) {
-    return { ok: false, problem: `HUB_GITHUB_CLIENT_SECRET_FILE: "${path}" is not a regular file` }
+  const problems: string[] = []
+  if (url.length > MAX_ENV_STRING_LENGTH || !PROVISIONER_URL_PATTERN.test(url)) {
+    problems.push('HUB_PROVISIONER_URL: must be an http(s) origin: http://host[:port], no path')
   }
-  const excessBits = (stats.mode & 0o777) & ~SECRET_FILE_ALLOWED_MODE_BITS
-  if (excessBits !== 0) {
-    const mode = (stats.mode & 0o777).toString(8).padStart(3, '0')
-    return {
-      ok: false,
-      problem:
-        `HUB_GITHUB_CLIENT_SECRET_FILE: "${path}" has mode 0${mode}, wider than the required 0600 ` +
-        '(owner read/write only)',
-    }
-  }
-
-  let text: string
-  try {
-    text = readFileSync(path)
-  } catch (error: unknown) {
-    return {
-      ok: false,
-      problem: `HUB_GITHUB_CLIENT_SECRET_FILE: could not read "${path}": ${describeError(error)}`,
-    }
-  }
-  const value = text.trim()
-  if (value.length === 0) {
-    return { ok: false, problem: `HUB_GITHUB_CLIENT_SECRET_FILE: "${path}" is empty` }
-  }
-  return { ok: true, value }
+  const token = tokenFile.length > MAX_ENV_STRING_LENGTH ? undefined : readBearerTokenFile('HUB_PROVISIONER_TOKEN_FILE', tokenFile, options)
+  if (token === undefined) problems.push('HUB_PROVISIONER_TOKEN_FILE: is too long')
+  else if (!token.ok) problems.push(token.problem)
+  if (problems.length > 0 || token === undefined || !token.ok) return { kind: 'invalid', problems }
+  return { kind: 'ok', link: { url: new URL(url).origin, token: token.value } }
 }
 
-function describeError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+function nonEmpty(value: string | undefined): string | undefined {
+  return value === undefined || value === '' ? undefined : value
 }
 
 /**

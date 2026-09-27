@@ -1,27 +1,57 @@
-# mcpcut.com — the preview page and the agent front of one install, on a host
-# whose 443 belongs to another service. Exactly what runs on the project's own
-# host; put your names where mcpcut.com stands.
+# mcpcut.com — the preview page, the hub (accounts, ADR-0017 phase 2) and
+# every tenant install (ADR-0017 phase 3), on a host whose 443 belongs to
+# another service. Exactly what runs on the project's own host; put your
+# names where mcpcut.com stands.
 #
-#   https://mcpcut.com        visitors hit Cloudflare's 443 (proxied record);
-#                             an Origin Rule sends HTTPS requests to :8443 here.
-#                             Certificate: Cloudflare Origin CA (trusted by
-#                             Cloudflare only), SSL mode Full (strict).
-#   https://mcp.mcpcut.com:8443
-#                             agents, DNS only (not proxied): Cloudflare cuts a
-#                             response idle for 100 s, an agent waiting on an
-#                             approval must not be cut. Let's Encrypt over
-#                             HTTP-01 on :80 (TLS-ALPN needs 443, which is not ours).
+# Everything here sits behind Cloudflare: proxied DNS records for
+# `mcpcut.com`, `www`, `mcp`, and the wildcard `*`, plus one Origin Rule that
+# sends HTTPS traffic for `mcpcut.com` and for every name under
+# `*.mcpcut.com` (an expression such as `(http.host eq "mcpcut.com") or
+# (http.host.wildcard("*.mcpcut.com"))`) to this host's :8443. One Cloudflare
+# Origin CA certificate, issued for `mcpcut.com, *.mcpcut.com`, covers all of
+# it. (The earlier caution here — issue the Origin CA for `mcpcut.com` and
+# `www` only, never the wildcard, so Caddy would not skip Let's Encrypt for
+# `mcp.mcpcut.com` — no longer applies: `mcp.mcpcut.com` moved behind the
+# proxy too, below, so there is no Let's Encrypt certificate left to skip.)
+# Certificate mode: Cloudflare SSL/TLS → Full (strict).
 #
-# The admin UI is NOT published: it stays on host loopback (127.0.0.1:8091).
-# Reach it through a tunnel:  ssh -N -L 8091:127.0.0.1:8091 <user>@<host>
+# Caddy itself decides which block below answers a given Host — a Caddyfile's
+# site blocks are matched by specificity, not by file order — so the three
+# explicit blocks (`mcpcut.com`/`www.mcpcut.com`, `mcp.mcpcut.com`) always win
+# over the `*.mcpcut.com` wildcard block for their own name; nothing here
+# needs a reload when a tenant is created or removed (O5):
 #
-# Issue the Origin CA certificate for mcpcut.com and www.mcpcut.com ONLY, not
-# *.mcpcut.com: Caddy takes a loaded certificate that matches a name as that
-# name's certificate and skips Let's Encrypt, so a wildcard would hand agents
-# on mcp.mcpcut.com a certificate only Cloudflare trusts. (`auto_https
-# ignore_loaded_certs` is not the fix: it sends the proxied names to Let's
-# Encrypt too, and HTTP-01 cannot pass through Cloudflare here.)
+#   https://mcpcut.com          the preview page, and the hub's routes
+#                                (/signin, /auth/*, /account, /account/*,
+#                                /signout, /terms, /privacy, /hub-assets/*).
+#   https://mcp.mcpcut.com/mcp  the agent front of the OWNER'S OWN install —
+#                                the one docker-compose.yml runs directly, not
+#                                a tenant's. Proxied through Cloudflare like
+#                                everything else now; the address handed to
+#                                agents changed from
+#                                `https://mcp.mcpcut.com:8443` to
+#                                `https://mcp.mcpcut.com/mcp` when it moved.
+#   https://<sub>.mcpcut.com    a tenant's own console;
+#   https://<sub>.mcpcut.com/mcp  that tenant's agent front. `<sub>` selects
+#                                the upstream container `mcpcut-t-<sub>` by
+#                                name, on the tenant's own Docker network
+#                                (which `provisioner` attaches this `caddy`
+#                                container to when the tenant is created —
+#                                O4). A subdomain nobody has provisioned
+#                                resolves to no such container name: Caddy
+#                                answers 502, never another tenant's.
+#
+# The admin UI of the OWNER'S OWN install is NOT published here: it stays on
+# host loopback (127.0.0.1:8091). Reach it through a tunnel:
+#   ssh -N -L 8091:127.0.0.1:8091 <user>@<host>
+#
+# admin off: Caddy joins every tenant's network (the provisioner connects it),
+# so a tenant container is a network neighbour of this process. Nothing here
+# reloads Caddy through its admin API — routes to tenants are resolved per
+# request from the Host label — so the API is switched off rather than left on
+# a loopback bind a future edit could widen. Config changes: restart Caddy.
 {
+	admin off
 	http_port 80
 	https_port 8443
 }
@@ -46,7 +76,9 @@ mcpcut.com:8443, www.mcpcut.com:8443 {
 	# Authenticated Origin Pulls): fetch Cloudflare's origin-pull CA to the
 	# path below, then move this block inside the `tls` directive above
 	# (`tls cert.pem key.pem { client_auth { ... } }`). Left commented so a
-	# deploy that has not done the zone side yet does not go dark:
+	# deploy that has not done the zone side yet does not go dark; the same
+	# setting, once on, applies to the `mcp.mcpcut.com` and `*.mcpcut.com`
+	# blocks below too — it is a zone-wide Cloudflare setting, not per-block.
 	# client_auth {
 	# 	mode require_and_verify
 	# 	trust_pool file /etc/caddy/origin/cf-origin-pull-ca.pem
@@ -72,10 +104,44 @@ mcpcut.com:8443, www.mcpcut.com:8443 {
 }
 
 mcp.mcpcut.com:8443 {
-	tls {
-		issuer acme {
-			disable_tlsalpn_challenge
-		}
-	}
+	# The owner's own install (docker-compose.yml, not a tenant): reached
+	# through Cloudflare's proxy like every other name here (ADR-0017 O6),
+	# with the same Origin CA pair as the block above — no ACME/HTTP-01 step,
+	# and so nothing here to keep off :443 (TLS-ALPN needs 443, which was the
+	# reason this used to run its own Let's Encrypt certificate on :8443
+	# directly). Cloudflare still cuts a response idle for 100 s; an agent
+	# waiting on a human approval must not be cut — a live smoke watches this
+	# (see the wildcard block below, which carries the same risk for tenants).
+	tls /etc/caddy/origin/cert.pem /etc/caddy/origin/key.pem
 	reverse_proxy serve:8090
+}
+
+# ADR-0017 phase 3: one block for every tenant, present before the first one
+# is ever created and unchanged after the last one is removed — no Caddy
+# reload on `provision-create`/`provision-remove` (O5).
+# `{http.request.host.labels.2}` is the Host header's label, counting from
+# the right and starting at 0 (Caddy's own indexing): for `smoke1.mcpcut.com`,
+# label 0 is `com`, label 1 is `mcpcut`, label 2 is `smoke1` — the subdomain
+# the provisioner named the tenant's container, network and volume after
+# (`mcpcut-t-<sub>`, `hub/src/provisioner/templates.ts`). Caddy resolves that
+# name on the tenant's own Docker network, which `provisioner` connects this
+# `caddy` container to when the tenant is created; nothing here lists
+# tenants, and this block never talks to Docker itself.
+#
+# `import page_headers` is deliberately absent: the console sets its own
+# security headers (`src/ui/security-headers.ts`), tuned to its own forms,
+# and this block fronts a different tenant's install on every request, not
+# one static page.
+*.mcpcut.com:8443 {
+	tls /etc/caddy/origin/cert.pem /etc/caddy/origin/key.pem
+	# Cloudflare cuts a response idle for 100 s (see the header comment); an
+	# agent of this tenant waiting on a human approval must not be cut. A live
+	# smoke exercises an approval close to that limit.
+	@agent path /mcp /mcp/*
+	handle @agent {
+		reverse_proxy mcpcut-t-{http.request.host.labels.2}:8090
+	}
+	handle {
+		reverse_proxy mcpcut-t-{http.request.host.labels.2}:8091
+	}
 }

@@ -30,8 +30,9 @@ mcpcut quarantine reject <server> <tool>                                 # needs
 mcpcut approvals list [--json]
 mcpcut approvals approve <id> [--reason TEXT]        # needs MCP_ADMIN_TOKEN once an admin exists
 mcpcut approvals deny <id> [--reason TEXT]           # needs MCP_ADMIN_TOKEN once an admin exists
-mcpcut admin add <name> --role owner|operator|viewer                 # needs MCP_ADMIN_TOKEN (owner) once an admin exists
-mcpcut admin list | remove <name> | rotate <name> [--recover] | role <name> owner|operator|viewer
+mcpcut admin add <name> --role owner|operator|viewer [--json]        # needs MCP_ADMIN_TOKEN (owner) once an admin exists
+mcpcut admin list | remove <name> | rotate <name> [--recover] [--json] | role <name> owner|operator|viewer
+                                                  # --json on add/rotate: one line {"admin","role","token"} on stdout, notices on stderr
 mcpcut ui [--port 8091] [--host 127.0.0.1] [--behind-tls]
           [--allowed-host <host[:port]>]... [--allowed-origin <origin>]... [--trusted-proxy-header <name>]
 mcpcut migrate

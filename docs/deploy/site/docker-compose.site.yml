@@ -1,20 +1,35 @@
 # Override for the repository's docker-compose.yml: the preview page, the
-# agent front of one install, and the hub (ADR-0017 phase 2, GitHub sign-in
-# and accounts) behind Caddy — see the Caddyfile beside this file for the
-# routing and the certificates. Run from the repository root, with this file,
-# the Caddyfile, the page (`site/`), the Origin CA pair (`origin/cert.pem`,
-# `origin/key.pem`, mode 0600) and the GitHub OAuth App's client secret
+# agent front of one install, the hub (ADR-0017 phase 2, GitHub sign-in and
+# accounts) and the provisioner (ADR-0017 phase 3, tenant installs) behind
+# Caddy — see the Caddyfile beside this file for the routing and the
+# certificates. Run from the repository root, with this file, the Caddyfile,
+# the page (`site/`), the Origin CA pair (`origin/cert.pem`, `origin/key.pem`,
+# mode 0600), the GitHub OAuth App's client secret
 # (`secrets/github-client-secret`, mode 0600 — see `hub/README.md` for how to
-# create the app) beside docker-compose.yml. `HUB_GITHUB_CLIENT_ID` is not a
-# secret (GitHub shows it in the app's settings page) but is still supplied
-# from outside this file, in a `.env` file beside it:
+# create the app) and the provisioner's Bearer secret
+# (`secrets/provisioner-token`, mode 0600, made with `openssl rand -hex 32` —
+# see `hub/README.md`, "Provisioner and tenant installs") beside
+# docker-compose.yml. `HUB_GITHUB_CLIENT_ID` is not a secret (GitHub shows it
+# in the app's settings page) but is still supplied from outside this file,
+# together with `DOCKER_GID` (the host's `docker` group id — `stat -c %g
+# /var/run/docker.sock`, see `hub/README.md`), in a `.env` file beside it:
 #
 #   echo 'HUB_GITHUB_CLIENT_ID=…' > .env
+#   echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)" >> .env
+#   docker build --target tenant -t mcpcut-tenant:local .
 #   docker compose -p mcpcut-site -f docker-compose.yml -f docker-compose.site.yml up -d --build
+#
+# The tenant image built above is not a compose service on purpose: it
+# changes only when the root Dockerfile's `tenant` stage does, far less often
+# than this stack restarts, and a service would rebuild it on every `up
+# --build` for no reason. Rebuild it by hand after a change to that stage.
 #
 # MCPCUT_SERVE_PUBLIC_URL is set on BOTH plane services before the first
 # start: the container that runs `setup` first writes it into the install
-# config, and `agent create` prints this address to agents.
+# config, and `agent create` prints this address to agents. It is
+# `https://mcp.mcpcut.com` with no port (ADR-0017 O6): that name is now
+# proxied through Cloudflare like every other one here, so agents reach it on
+# 443 the way a browser reaches `mcpcut.com` — see the Caddyfile.
 #
 # Limits: the host is shared and has two CPUs.
 x-limits: &limits
@@ -25,11 +40,11 @@ services:
   ui:
     <<: *limits
     environment:
-      MCPCUT_SERVE_PUBLIC_URL: https://mcp.mcpcut.com:8443
+      MCPCUT_SERVE_PUBLIC_URL: https://mcp.mcpcut.com
   serve:
     <<: *limits
     environment:
-      MCPCUT_SERVE_PUBLIC_URL: https://mcp.mcpcut.com:8443
+      MCPCUT_SERVE_PUBLIC_URL: https://mcp.mcpcut.com
   hub:
     build:
       context: .
@@ -37,6 +52,14 @@ services:
     restart: unless-stopped
     cpus: 0.25
     mem_limit: 128m
+    # `default` (Compose's implicit network — every service below that does
+    # not name its own `networks:` joins it) reaches `caddy`; `hub-internal`
+    # reaches `provisioner` (ADR-0017 phase 3) and nothing else. Naming
+    # `networks:` at all replaces the implicit "every network" a service
+    # otherwise gets, so `hub`, which needs both, must list both.
+    networks:
+      - default
+      - hub-internal
     environment:
       HUB_PUBLIC_URL: https://mcpcut.com
       HUB_TENANT_DOMAIN: mcpcut.com
@@ -53,9 +76,16 @@ services:
       # header any direct caller can forge to walk through the signup rate
       # limit (HA12).
       HUB_TRUST_CF_CONNECTING_IP: "1"
+      # ADR-0017 phase 3: the provisioner's HTTP API and the same Bearer
+      # secret both ends present, reachable only on `hub-internal`, whose
+      # only other member is `provisioner`. Left unset, the hub still runs —
+      # every sign-in just joins the waitlist instead of getting an install.
+      HUB_PROVISIONER_URL: http://provisioner:8093
+      HUB_PROVISIONER_TOKEN_FILE: /run/secrets/provisioner-token
     volumes:
       - hub-data:/data
       - ./secrets/github-client-secret:/run/secrets/github-client-secret:ro
+      - ./secrets/provisioner-token:/run/secrets/provisioner-token:ro
     # No `ports:`: unlike `ui`/`serve`, the hub is never meant to be reached
     # directly, not even on host loopback — only `caddy` talks to it, by
     # service name on the compose network.
@@ -65,8 +95,58 @@ services:
       timeout: 5s
       start_period: 10s
       retries: 3
+  # ADR-0017 phase 3: the only container holding the Docker socket
+  # (`hub/src/provisioner/*`). It is reachable only from `hub`, over
+  # `hub-internal` — it has no route to `caddy`, to the tenants it creates,
+  # or to the internet; the socket is a local bind mount, not a network peer.
+  # What it may do with that socket is fixed by `hub/src/provisioner/
+  # templates.ts`, not by anything a caller sends: one container shape per
+  # tenant, capped, capability-less, read-only, on its own network,
+  # publishing no port. `PROVISIONER_CADDY_CONTAINER` names `caddy` by the
+  # `container_name` set below, so the provisioner can attach a new tenant's
+  # network to it without ever joining that network itself.
+  provisioner:
+    build:
+      context: .
+      dockerfile: hub/Dockerfile
+    command: ["node", "--disable-warning=ExperimentalWarning", "hub/dist/hub/src/cli.js", "provision"]
+    restart: unless-stopped
+    cpus: 0.25
+    mem_limit: 128m
+    networks:
+      - hub-internal
+    environment:
+      PROVISIONER_TOKEN_FILE: /run/secrets/provisioner-token
+      PROVISIONER_CADDY_CONTAINER: mcpcut-caddy
+      PROVISIONER_PUBLIC_DOMAIN: mcpcut.com
+      PROVISIONER_IMAGE: mcpcut-tenant:local
+      PROVISIONER_MAX_TENANTS: "20"
+      PROVISIONER_HOST: "0.0.0.0"
+    volumes:
+      - ./secrets/provisioner-token:/run/secrets/provisioner-token:ro
+      # The one thing this container exists for; nothing else here needs it.
+      # The filter is `templates.ts` (fixed shapes), not this mount, which is
+      # the ordinary rw the Docker Engine API requires.
+      - /var/run/docker.sock:/var/run/docker.sock
+    # The socket is owned root:docker on the host; this container runs as
+    # `node` (uid 1000, the hub image's user) and needs the host's `docker`
+    # group id added to reach it. `DOCKER_GID` — see the top of this file and
+    # `hub/README.md`.
+    group_add:
+      - "${DOCKER_GID:?set DOCKER_GID in a .env file beside this compose file to the docker.sock group id — see hub/README.md}"
+    # No `ports:`: reached only by `hub`, by service name on `hub-internal`.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8093/healthz').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
   caddy:
     image: caddy:2
+    # Named so `provisioner` can attach a tenant's network to this container
+    # without a lookup (`PROVISIONER_CADDY_CONTAINER` above) and without ever
+    # joining that network's neighbours (ADR-0017 O4/O5).
+    container_name: mcpcut-caddy
     restart: unless-stopped
     cpus: 0.5
     mem_limit: 256m
@@ -83,6 +163,14 @@ services:
       - ./site:/srv/site:ro
       - ./origin:/etc/caddy/origin:ro
       - caddy-data:/data
+networks:
+  # `hub` and `provisioner` only; not the network `caddy`/`ui`/`serve` share
+  # (Compose's implicit `default`, unnamed here on purpose — see `hub`'s
+  # comment above). `internal: true`: this pair never needs the internet, and
+  # keeping it off any external route means a bug in either process cannot
+  # turn into an open relay out.
+  hub-internal:
+    internal: true
 volumes:
   caddy-data:
   hub-data:

@@ -1,5 +1,5 @@
 import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { request as httpRequest } from 'node:http'
+import { createServer, request as httpRequest } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
@@ -295,6 +295,74 @@ describe('serve', () => {
       'warning: HUB_TRUST_CF_CONNECTING_IP=1 trusts the CF-Connecting-IP header — turn on Cloudflare Authenticated Origin Pulls (docs/deploy/site/Caddyfile), or anyone reaching the origin directly can forge it and bypass the per-IP sign-up limit\n',
     )
     expect(out).not.toContain('CF-Connecting-IP')
+  })
+})
+
+describe('the provisioner link (tenant-orchestrator Task 5)', () => {
+  const PROVISIONER_SECRET = 'k'.repeat(40)
+
+  async function linkEnv(url: string): Promise<NodeJS.ProcessEnv> {
+    const tokenFile = join(dir, 'provisioner-token')
+    await writeFile(tokenFile, PROVISIONER_SECRET)
+    await chmod(tokenFile, 0o600)
+    return { HUB_PROVISIONER_URL: url, HUB_PROVISIONER_TOKEN_FILE: tokenFile }
+  }
+
+  test('serve with a provisioner configured announces it instead of the waitlist', async () => {
+    let stop: () => void = () => undefined
+    const shutdown = new Promise<void>((resolve) => (stop = resolve))
+    let out = ''
+    const secretFile = join(dir, 'github-client-secret')
+    await writeFile(secretFile, 'the-client-secret-value\n')
+    await chmod(secretFile, 0o600)
+    const running = runHubCli(['serve'], {
+      env: {
+        HUB_PUBLIC_URL: 'https://mcpcut.test',
+        HUB_GITHUB_CLIENT_ID: 'Ov23liTestClientId',
+        HUB_GITHUB_CLIENT_SECRET_FILE: secretFile,
+        HUB_DATA_DIR: join(dir, 'data'),
+        HUB_PORT: '0',
+        ...(await linkEnv('http://provisioner.internal:8093')),
+      },
+      stdout: (text) => (out += text),
+      stderr: (text) => (out += text),
+      shutdown,
+    })
+    await waitForPort(() => out)
+    stop()
+
+    expect(await running).toBe(0)
+    expect(out).toContain('[hub] orchestrator: the provisioner at http://provisioner.internal:8093')
+    expect(out).not.toContain('waitlist')
+    expect(out).not.toContain(PROVISIONER_SECRET)
+  })
+
+  test('an operator delete removes the install through the provisioner', async () => {
+    await seed(40, 'vera')
+    const seen: string[] = []
+    const stub = createServer((req, res) => {
+      seen.push(`${req.method} ${req.url} ${req.headers.authorization}`)
+      res.writeHead(204).end()
+    })
+    await new Promise<void>((resolve) => stub.listen(0, '127.0.0.1', resolve))
+    const address = stub.address()
+    const port = typeof address === 'object' && address !== null ? address.port : 0
+    try {
+      const result = await run(['delete', 'vera'], { env: { HUB_DATA_DIR: dir, ...(await linkEnv(`http://127.0.0.1:${port}`)) } })
+
+      expect(result.code).toBe(0)
+      expect(seen).toEqual([`DELETE /tenants/vera Bearer ${PROVISIONER_SECRET}`])
+      expect(await withDb((db) => findAccountByGithubId(db, 40))).toBeNull()
+    } finally {
+      await new Promise<void>((resolve) => stub.close(() => resolve()))
+    }
+  })
+
+  test('a half-configured link stops an operator command with one line', async () => {
+    const result = await run(['list'], { env: { HUB_DATA_DIR: dir, HUB_PROVISIONER_URL: 'http://p:1' } })
+
+    expect(result.code).toBe(1)
+    expect(result.err).toBe('hub: HUB_PROVISIONER_URL and HUB_PROVISIONER_TOKEN_FILE must be set together, or neither\n')
   })
 })
 

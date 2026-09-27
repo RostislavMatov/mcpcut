@@ -17,8 +17,11 @@ import type { AddressRefusal } from './address-class.js'
  * tenant), and never a path or query (they may carry tokens).
  */
 
-/** Why the guard refused: the URL scheme, or the kind of address. */
-export type UpstreamRefusal = AddressRefusal | 'scheme'
+/**
+ * Why the guard refused: the URL scheme, an explicit non-443 port (O8,
+ * tenant-orchestrator plan), or the kind of address.
+ */
+export type UpstreamRefusal = AddressRefusal | 'scheme' | 'port'
 
 /** Where the refused address came from: the URL itself, or a DNS answer. */
 export type AddressSource = 'literal' | 'resolved'
@@ -27,6 +30,7 @@ export const UPSTREAM_ADDRESS_REFUSED_CODE = 'ERR_UPSTREAM_ADDRESS_REFUSED'
 
 const TENANT_SCOPE = 'this install reaches only public https servers (tenant mode)'
 const SCHEME_SCOPE = 'this install reaches only https servers (tenant mode)'
+const PORT_SCOPE = 'this install reaches only port 443 (tenant mode)'
 
 export class UpstreamAddressRefusedError extends Error {
   readonly code = UPSTREAM_ADDRESS_REFUSED_CODE
@@ -43,6 +47,7 @@ export class UpstreamAddressRefusedError extends Error {
 
 function explain(reason: UpstreamRefusal, source: AddressSource): string {
   if (reason === 'scheme') return SCHEME_SCOPE
+  if (reason === 'port') return PORT_SCOPE
   const verb = source === 'literal' ? 'it is' : 'it resolves to'
   return `${verb} ${articleFor(reason)} ${reason} address; ${TENANT_SCOPE}`
 }

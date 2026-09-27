@@ -175,8 +175,12 @@ describe('HTTP upstream client with a guard', () => {
   test('a name that resolves to loopback is refused inside the socket lookup — no connection, no address shown', async () => {
     const listener = await countingListener()
     const guard = createUpstreamGuard({ lookup: resolvingTo('127.0.0.1') })
+    // No explicit port: since ADR-0017 O8 the guard's own `checkUrl` refuses
+    // any non-443 port before a request is even built, and this test is about
+    // the LATER refusal inside DNS resolution — `listener` exists only to
+    // prove no TCP connection ever happens, whatever port the URL names.
     const client = openClient(
-      { url: `https://upstream.test:${listener.port}/mcp?${SECRET_QUERY}`, protocol: 'stateless' },
+      { url: `https://upstream.test/mcp?${SECRET_QUERY}`, protocol: 'stateless' },
       { guard },
     )
     const errors = collectErrors(client.source)
@@ -201,6 +205,20 @@ describe('HTTP upstream client with a guard', () => {
 
     await expect(client.sink.write(requestMessage(1, 'tools/list'))).rejects.toThrow(
       'this install reaches only https servers (tenant mode)',
+    )
+    expect(listener.connections()).toBe(0)
+  })
+
+  test('an https url naming a non-443 port is refused by the guard before any connection (O8)', async () => {
+    const listener = await countingListener()
+    const client = openClient(
+      { url: `https://upstream.test:${listener.port}/mcp`, protocol: 'stateless' },
+      { guard: createUpstreamGuard() },
+    )
+    collectErrors(client.source)
+
+    await expect(client.sink.write(requestMessage(1, 'tools/list'))).rejects.toThrow(
+      'this install reaches only port 443 (tenant mode)',
     )
     expect(listener.connections()).toBe(0)
   })
@@ -284,11 +302,15 @@ describe('HTTP upstream client with a guard — its own socket pool', () => {
     const planted: Socket = netConnect(listener.port, '127.0.0.1')
     await new Promise<void>((resolve) => planted.once('connect', () => resolve()))
     const freeSockets = httpsGlobalAgent.freeSockets as Record<string, Socket[] | undefined>
-    const name = httpsGlobalAgent.getName({ host: 'upstream.test', port: listener.port })
+    // No explicit port on the client's own URL below (ADR-0017 O8: the guard
+    // refuses any non-443 port before dialing), so the pool key it would
+    // collide on is the default https port — `listener`'s real port is only
+    // where `planted` physically connects, to prove NOTHING flows to it.
+    const name = httpsGlobalAgent.getName({ host: 'upstream.test', port: 443 })
     freeSockets[name] = [planted]
     try {
       const client = openClient(
-        { url: `https://upstream.test:${listener.port}/mcp`, protocol: 'stateless' },
+        { url: 'https://upstream.test/mcp', protocol: 'stateless' },
         { guard: createUpstreamGuard({ lookup: resolvingTo('127.0.0.1') }) },
       )
       collectErrors(client.source)
@@ -309,8 +331,10 @@ describe('HTTP upstream client with a guard — its own socket pool', () => {
     const viaGlobal = vi.spyOn(httpsGlobalAgent, 'createConnection')
     const viaGuard = vi.spyOn(guard.agent, 'createConnection')
     try {
+      // No explicit port (ADR-0017 O8) — `listener` only proves no TCP
+      // connection is ever made, whatever port a real one would have used.
       const client = openClient(
-        { url: `https://upstream.test:${listener.port}/mcp`, protocol: 'stateless' },
+        { url: 'https://upstream.test/mcp', protocol: 'stateless' },
         { guard },
       )
       collectErrors(client.source)

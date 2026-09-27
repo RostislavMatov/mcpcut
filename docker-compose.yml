@@ -74,6 +74,14 @@ name: mcp-control-plane
 x-plane: &plane
   build:
     context: .
+    # Explicit: the Dockerfile also defines a `tenant` stage (hosted installs,
+    # ADR-0017) AFTER `runtime` — it must be `FROM runtime`, so it is now the
+    # last stage in the file, and Docker builds the last stage by default when
+    # no target is given. Pinning `runtime` here keeps `docker compose build`
+    # / `up --build` producing the same two-container image they always did;
+    # a bare `docker build .` outside compose now defaults to `tenant`
+    # instead (see the Dockerfile's `tenant` stage comment).
+    target: runtime
   image: mcp-control-plane:local
   volumes:
     # One volume for the whole install directory, $HOME/.mcpcut: `data/` is

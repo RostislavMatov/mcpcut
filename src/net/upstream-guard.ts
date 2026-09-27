@@ -88,11 +88,20 @@ export function createUpstreamGuard(deps: UpstreamGuardDeps = {}): UpstreamGuard
 function checkUrl(url: URL): void {
   const host = withoutBrackets(url.hostname)
   if (url.protocol !== 'https:') throw new UpstreamAddressRefusedError(host, 'scheme')
-  if (isIP(host) === 0) return
-  const verdict = classifyAddress(host)
-  if (verdict.kind === 'refused') {
-    throw new UpstreamAddressRefusedError(host, verdict.reason, 'literal')
+  // An IP literal that IS a refused address reports THAT reason, port
+  // notwithstanding — a loopback/private/etc. literal is refused for what it
+  // is, whatever port it names. A DNS name (or a literal that passes the
+  // address check) falls through to the port rule below.
+  if (isIP(host) !== 0) {
+    const verdict = classifyAddress(host)
+    if (verdict.kind === 'refused') {
+      throw new UpstreamAddressRefusedError(host, verdict.reason, 'literal')
+    }
   }
+  // O8 (tenant-orchestrator plan): reaches only port 443. The URL parser
+  // normalizes an explicit `:443` on `https:` away, so a non-empty `.port`
+  // here always names an explicit, non-default port.
+  if (url.port !== '') throw new UpstreamAddressRefusedError(host, 'port')
 }
 
 function guardedLookup(resolveAll: ResolveAllFunction): LookupFunction {

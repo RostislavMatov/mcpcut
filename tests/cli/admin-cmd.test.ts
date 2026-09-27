@@ -239,6 +239,64 @@ describe('admin add', () => {
 })
 
 // ---------------------------------------------------------------------------
+// admin add --json (tenant-orchestrator plan Task 1, O7): a hosted install's
+// provisioner reads this line via `docker exec` instead of scraping the
+// readable text, so shape and stream discipline are the load-bearing facts.
+// ---------------------------------------------------------------------------
+
+describe('admin add --json', () => {
+  test('stdout is exactly one JSON line {admin,role,token}, nothing else', async () => {
+    const { code, io } = await runAdmin(['add', 'alice', '--role', 'owner', '--json'])
+
+    expect(code).toBe(0)
+    const lines = io.outText().split('\n').filter((line) => line.length > 0)
+    expect(lines).toHaveLength(1)
+    const parsed = JSON.parse(lines[0] as string) as Record<string, unknown>
+    expect(parsed).toEqual({ admin: 'alice', role: 'owner', token: expect.stringMatching(/^mcpa_/) })
+  })
+
+  test('the token in the JSON line is the one hashed into the store', async () => {
+    const { io } = await runAdmin(['add', 'alice', '--role', 'owner', '--json'])
+
+    const { token } = JSON.parse(io.outText().trim()) as { token: string }
+    const store = createAdminStore({ journalDir })
+    const admin = await store.getActiveAdmin('alice')
+    expect(admin?.tokenHash).toMatch(/^[0-9a-f]{64}$/)
+    expect(admin?.tokenHash).not.toContain(token)
+  })
+
+  test('none of the human notices land on stdout; the one-time notice moves to stderr', async () => {
+    const { io } = await runAdmin(['add', 'alice', '--role', 'owner', '--json'])
+
+    expect(io.outText()).not.toContain('Save this token now')
+    expect(io.outText()).not.toContain("Do not redirect this command's stdout")
+    expect(io.errText()).toContain('Save this token now')
+    // Dropped, not moved: under --json, capturing stdout is the point of the
+    // flag, so warning against it would contradict the flag's own purpose.
+    expect(io.errText()).not.toContain("Do not redirect this command's stdout")
+  })
+
+  test('an error still goes to stderr as readable text, not JSON, and exits 1', async () => {
+    await seedOwner('alice')
+
+    const { code, io } = await runAdmin(['add', 'alice', '--role', 'viewer', '--json'])
+
+    expect(code).toBe(1)
+    expect(io.outText()).toBe('')
+    expect(io.errText()).toContain('alice')
+  })
+
+  test('the journal record is unaffected by --json', async () => {
+    await runAdmin(['add', 'alice', '--role', 'owner', '--json'])
+
+    const records = await accessRecords()
+    expect(records).toContainEqual(
+      expect.objectContaining({ action: 'admin.add', admin: 'alice', targetRole: 'owner' }),
+    )
+  })
+})
+
+// ---------------------------------------------------------------------------
 // admin list
 // ---------------------------------------------------------------------------
 
@@ -394,6 +452,45 @@ describe('admin rotate', () => {
     const { io } = await runAdmin(['rotate', 'alice'])
 
     expect(holdsOneTimeToken('rotate', { name: 'alice' }, io)).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// admin rotate --json — same machine shape as `add --json`.
+// ---------------------------------------------------------------------------
+
+describe('admin rotate --json', () => {
+  test('stdout is exactly one JSON line {admin,role,token}', async () => {
+    await seedOwner('alice')
+
+    const { code, io } = await runAdmin(['rotate', 'alice', '--json'])
+
+    expect(code).toBe(0)
+    const lines = io.outText().split('\n').filter((line) => line.length > 0)
+    expect(lines).toHaveLength(1)
+    const parsed = JSON.parse(lines[0] as string) as Record<string, unknown>
+    expect(parsed).toEqual({ admin: 'alice', role: 'owner', token: expect.stringMatching(/^mcpa_/) })
+  })
+
+  test('the notices move to stderr: one-time token and the invalidated-sessions line', async () => {
+    await seedOwner('alice')
+
+    const { io } = await runAdmin(['rotate', 'alice', '--json'])
+
+    expect(io.outText()).not.toContain('Save this token now')
+    expect(io.errText()).toContain('Save this token now')
+    expect(io.errText()).toContain('is now invalid')
+    expect(io.outText()).not.toContain('is now invalid')
+  })
+
+  test('--recover --json needs no admin token and still prints the one-line shape', async () => {
+    await seedOwner('alice')
+
+    const { code, io } = await runAdmin(['rotate', 'alice', '--recover', '--json'], captureIo(), {})
+
+    expect(code).toBe(0)
+    const parsed = JSON.parse(io.outText().trim()) as Record<string, unknown>
+    expect(parsed).toEqual({ admin: 'alice', role: 'owner', token: expect.stringMatching(/^mcpa_/) })
   })
 })
 

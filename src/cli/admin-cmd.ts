@@ -124,14 +124,17 @@ export async function runAdminCommand(
 type AdminFlags = NonNullable<ParseArgsConfig['options']>
 
 const NO_FLAGS: AdminFlags = {}
-const ROLE_FLAG: AdminFlags = { role: { type: 'string' } }
-const RECOVER_FLAG: AdminFlags = { recover: { type: 'boolean' } }
+/** `add` and `rotate` both take it (Task 1, tenant-orchestrator plan, O7). */
+const JSON_FLAG: AdminFlags = { json: { type: 'boolean' } }
+const ADD_FLAGS: AdminFlags = { role: { type: 'string' }, ...JSON_FLAG }
+const ROTATE_FLAGS: AdminFlags = { recover: { type: 'boolean' }, ...JSON_FLAG }
 
-/** What one parsed invocation carries; `recover` is false unless `rotate` saw the flag. */
+/** What one parsed invocation carries; `recover`/`json` are false unless the flag was given. */
 interface ParsedAdminArgs {
   readonly positionals: string[]
   readonly role: string | undefined
   readonly recover: boolean
+  readonly json: boolean
 }
 
 /** Strict positional+flag parse; a malformed invocation yields `null`. */
@@ -143,10 +146,21 @@ function parseAdminArgs(args: readonly string[], flags: AdminFlags): ParsedAdmin
       positionals: parsed.positionals,
       role: typeof role === 'string' ? role : undefined,
       recover: parsed.values['recover'] === true,
+      json: parsed.values['json'] === true,
     }
   } catch {
     return null
   }
+}
+
+/**
+ * The one-line machine shape `add`/`rotate` print on stdout under `--json`
+ * (tenant-orchestrator plan Task 1, O7): a hosted install's provisioner reads
+ * this instead of scraping the readable text, so key order and shape are
+ * fixed on purpose.
+ */
+function jsonAdminLine(admin: Pick<AdminRecord, 'name' | 'role'>, token: string): string {
+  return `${JSON.stringify({ admin: admin.name, role: admin.role, token })}\n`
 }
 
 async function runAdd(
@@ -155,7 +169,7 @@ async function runAdd(
   opts: AdminCliOptions,
   store: AdminStore,
 ): Promise<number> {
-  const parsed = parseAdminArgs(args, ROLE_FLAG)
+  const parsed = parseAdminArgs(args, ADD_FLAGS)
   if (parsed === null || parsed.positionals.length !== 1) return usage(io)
 
   const name = parsed.positionals.length === 1 ? parsed.positionals[0] : undefined
@@ -177,11 +191,22 @@ async function runAdd(
   if (actor === undefined) return 1
 
   const { admin, token } = await store.createAdmin(name, role)
-  io.stdout.write(`admin: ${formatReadableField(admin.name)}\n`)
-  io.stdout.write(`role: ${admin.role}\n`)
-  io.stdout.write(`token: ${token}\n`)
-  io.stdout.write(TOKEN_ONCE_NOTICE)
-  io.stdout.write(TOKEN_STDOUT_REDIRECT_WARNING)
+  if (parsed.json) {
+    // Machine mode: the ONE line on stdout is the contract (a hosted install's
+    // provisioner parses it via `docker exec`), so nothing else may share that
+    // stream. The one-time-token fact is still true and goes to stderr; the
+    // "do not redirect stdout" warning is dropped rather than moved there —
+    // under --json, capturing stdout IS the intended use, so warning against
+    // it would contradict the flag's own purpose.
+    io.stdout.write(jsonAdminLine(admin, token))
+    io.stderr.write(TOKEN_ONCE_NOTICE)
+  } else {
+    io.stdout.write(`admin: ${formatReadableField(admin.name)}\n`)
+    io.stdout.write(`role: ${admin.role}\n`)
+    io.stdout.write(`token: ${token}\n`)
+    io.stdout.write(TOKEN_ONCE_NOTICE)
+    io.stdout.write(TOKEN_STDOUT_REDIRECT_WARNING)
+  }
   // The record names the admin and the role given — never the token above.
   return recordChange(io, opts, actor, 'add', roleTarget(name, role), {
     action: 'admin.add',
@@ -279,7 +304,7 @@ async function runRotate(
   opts: AdminCliOptions,
   store: AdminStore,
 ): Promise<number> {
-  const parsed = parseAdminArgs(args, RECOVER_FLAG)
+  const parsed = parseAdminArgs(args, ROTATE_FLAGS)
   if (parsed === null || parsed.positionals.length !== 1) return usage(io)
 
   const name = parsed.positionals.length === 1 ? parsed.positionals[0] : undefined
@@ -293,11 +318,19 @@ async function runRotate(
   if (actor === undefined) return 1
 
   const { admin, token } = await store.rotateAdmin(name)
-  io.stdout.write(`admin: ${formatReadableField(admin.name)}\n`)
-  io.stdout.write(`token: ${token}\n`)
-  io.stdout.write(TOKEN_ONCE_NOTICE)
-  io.stdout.write(TOKEN_STDOUT_REDIRECT_WARNING)
-  io.stdout.write(`Any browser session held by ${formatReadableField(admin.name)} is now invalid.\n`)
+  if (parsed.json) {
+    // Same tradeoff as `add --json`: one machine line on stdout, the human
+    // notices (still true) on stderr, the redirect warning dropped.
+    io.stdout.write(jsonAdminLine(admin, token))
+    io.stderr.write(TOKEN_ONCE_NOTICE)
+    io.stderr.write(`Any browser session held by ${formatReadableField(admin.name)} is now invalid.\n`)
+  } else {
+    io.stdout.write(`admin: ${formatReadableField(admin.name)}\n`)
+    io.stdout.write(`token: ${token}\n`)
+    io.stdout.write(TOKEN_ONCE_NOTICE)
+    io.stdout.write(TOKEN_STDOUT_REDIRECT_WARNING)
+    io.stdout.write(`Any browser session held by ${formatReadableField(admin.name)} is now invalid.\n`)
+  }
   return recordChange(io, opts, actor, 'rotate', formatReadableField(name), {
     action: 'admin.rotate',
     admin: name,

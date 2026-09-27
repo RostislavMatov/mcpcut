@@ -99,6 +99,127 @@ environment as `serve`:
 | `delete <login>` | Removes the account and records a tombstone (a re-signup with the same GitHub account is refused as "recently deleted" for `HUB_MIN_ACCOUNT_AGE_DAYS` — reusing that same window keeps the rule to one number instead of two). |
 | `purge-tombstones` | Drops tombstones older than the retention window, so a very old block/delete stops affecting new signups from an account that has moved on. |
 
+## Provisioner and tenant installs
+
+ADR-0017 phase 3: when the hub creates an account, it does not touch Docker
+itself — it calls a second, small process, the **provisioner**
+(`hub/src/provisioner/*`, entry point `node hub/dist/hub/src/cli.js
+provision`), which is the only thing anywhere in this deployment holding the
+Docker socket. The hub only ever speaks a narrow Bearer-authenticated HTTP API
+to it (`hub/src/orchestrator-http.ts`): create an install, mint or rotate its
+owner token, remove it, read its state. What the provisioner may create with
+the socket is fixed in code (`hub/src/provisioner/templates.ts`), not by
+anything a caller — even a compromised hub — can send: one container per
+tenant, capped on CPU/memory/processes, capability-less, read-only root
+filesystem, on its own Docker network with no route to any other tenant or to
+the host, publishing no port of its own. This is the same reasoning as
+`HUB_TRUST_CF_CONNECTING_IP` above, one level down: a narrow, fixed-shape API
+in front of a dangerous primitive, instead of trusting whoever holds the
+primitive to always call it safely.
+
+A tenant's install is the same `mcpcut` image as everywhere else in this
+repository, built from a later stage of the root `Dockerfile`:
+
+```bash
+docker build --target tenant -t mcpcut-tenant:local .
+```
+
+(`docker-compose.site.yml` does not build this image as a compose service —
+see the comment at its top — build it by hand once, and again after a change
+to the `tenant` stage.) The container runs `docker/tenant-run.sh`, which
+starts both `ui` and `serve` under one PID 1 and exits with whichever of them
+exits first — `restart: unless-stopped` (set in the fixed container template,
+not in compose) brings it back.
+
+### Configuration
+
+Both the provisioner and the hub read the environment below; none of it is
+optional except `PROVISIONER_TOKEN_FILE`, which has no default because it is
+a secret.
+
+| Variable | Where | Default | Meaning |
+|---|---|---|---|
+| `PROVISIONER_TOKEN_FILE` | provisioner | — | Path to a file holding the Bearer secret the hub must present, mode `0600`/`0400`, at least 32 visible ASCII characters (`openssl rand -hex 32` makes one). |
+| `PROVISIONER_DOCKER_SOCKET` | provisioner | `/var/run/docker.sock` | Where the Docker Engine API socket is mounted. |
+| `PROVISIONER_IMAGE` | provisioner | `mcpcut-tenant:local` | The image a new tenant's container is created from — the one built above. |
+| `PROVISIONER_CADDY_CONTAINER` | provisioner | — (unset = a tenant is created with no route to it, useful only for a Docker-only smoke) | The name of the Caddy container the provisioner attaches every tenant's network to (`container_name: mcpcut-caddy` in `docker-compose.site.yml`), so Caddy can reach `mcpcut-t-<sub>` by name without joining that network's other members. |
+| `PROVISIONER_PUBLIC_DOMAIN` | provisioner | `mcpcut.com` | The domain a tenant's install is told its own console and agent front live on (`https://<sub>.<domain>`). |
+| `PROVISIONER_HOST` / `PROVISIONER_PORT` | provisioner | `0.0.0.0` / `8093` | Where the provisioner's HTTP API listens — `0.0.0.0` is safe only because, in `docker-compose.site.yml`, the only other member of its network (`hub-internal`) is `hub`. |
+| `PROVISIONER_MAX_TENANTS` | provisioner | `20` | Refuses a new tenant once this many already exist on the host (a ceiling on a shared box, not a promise to any one tenant). |
+| `HUB_PROVISIONER_URL` | hub | — (unset = no orchestrator; every sign-in joins the waitlist) | `http://provisioner:8093` in `docker-compose.site.yml` — the provisioner's address on `hub-internal`. Must be set together with the next variable, or neither. |
+| `HUB_PROVISIONER_TOKEN_FILE` | hub | — | A file holding **the same secret** as `PROVISIONER_TOKEN_FILE` — the two processes are the two ends of one Bearer credential, each reading it from its own mounted copy of the same file (`docker-compose.site.yml` bind-mounts one host file, `secrets/provisioner-token`, read-only into both containers). |
+
+Make the shared secret once, the same way as the GitHub client secret above:
+
+```bash
+umask 077
+openssl rand -hex 32 > secrets/provisioner-token
+sudo chown 1000:1000 secrets/provisioner-token   # the image's `node` user, uid 1000
+```
+
+### Giving the provisioner access to Docker
+
+The Docker socket on the host is owned `root:docker`; the provisioner's
+container runs as `node` (uid 1000, same as the hub image), so it needs the
+host's `docker` group id added to its supplementary groups:
+
+```bash
+echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)" >> .env
+```
+
+`docker-compose.site.yml` passes this through `group_add:`. Widening the
+socket's own permissions instead (`chmod 666`) would let anything reachable
+by any process on the host talk to Docker directly — `DOCKER_GID` grants that
+capability to this one container only.
+
+### Operator commands
+
+Like the hub's own operator CLI above, there is no panel for this — an
+operator with Docker socket access already has more power than any panel
+would add. Run these inside the provisioner's own container, where the
+socket is:
+
+```bash
+docker compose exec provisioner node hub/dist/hub/src/cli.js provision-create <sub> <login>
+docker compose exec provisioner node hub/dist/hub/src/cli.js provision-status <sub>
+docker compose exec provisioner node hub/dist/hub/src/cli.js provision-remove <sub>
+```
+
+`provision-create` prints the new owner's token once, on stdout, with a
+warning on stderr — nothing keeps a second copy, the same rule as the root
+install's own first-owner token. `provision-status` is also the answer to
+"how much disk is this tenant using": there is **no hard quota** on a
+tenant's volume (O9 — Docker's own volumes are not quota-limited without a
+filesystem like `xfs` with project quotas, which this deployment does not
+assume); watching `provision-status` across tenants, by hand or by a script
+an operator runs, is what stands in for one today. A host that needs a hard
+limit is a host that has outgrown sharing one Docker daemon among tenants —
+see ADR-0017's "when we reconsider" for that trigger.
+
+Not built yet, either: stopping an install nobody has used in months (ADR-0017
+phase 4) and a per-tenant rate limit on agent calls (also phase 4) — today a
+tenant that never logs back in keeps its container, and its resource limits,
+running indefinitely.
+
+### Cloudflare, for `*.mcpcut.com`
+
+Beyond what phase 2 already needed (a proxied `mcpcut.com` and Origin Rule),
+tenant routing needs:
+
+- A proxied wildcard DNS record, `*` → this host, so every `<sub>.mcpcut.com`
+  resolves through Cloudflare.
+- A proxied `mcp` record (`mcp.mcpcut.com` moved behind the proxy too in this
+  phase — see the Caddyfile).
+- The Origin Rule (SSL/TLS → Origin Rules) covering `*.mcpcut.com` as well as
+  `mcpcut.com`, sending both to this host's `:8443`.
+- One Cloudflare Origin CA certificate issued for `mcpcut.com, *.mcpcut.com`
+  (a single certificate covering both, not two separate ones) — see the
+  Caddyfile's header comment for why the wildcard could not be added later
+  without touching `mcp.mcpcut.com`'s old certificate.
+- Authenticated Origin Pulls (SSL/TLS → Origin Server), the same zone-wide
+  setting the Caddyfile already documents for `mcpcut.com`; it applies to
+  every proxied name at once, tenants included.
+
 ## Creating the GitHub OAuth App
 
 The hub authenticates visitors as a GitHub OAuth App, not a GitHub App — it
@@ -144,8 +265,11 @@ create or find an account.
 
 `docs/deploy/site/` has the full picture: the Caddyfile that proxies
 `/signin`, `/auth/*`, `/account`, `/account/*`, `/signout`, `/terms`,
-`/privacy` and `/hub-assets/*` on `mcpcut.com` to the hub and serves
-everything else as the static preview page, and
-`docker-compose.site.yml`, which builds this directory's `Dockerfile`, gives
-the hub its own data volume and secret mount, and starts it with no port of
-its own published — only Caddy, on the compose network, ever reaches it.
+`/privacy` and `/hub-assets/*` on `mcpcut.com` to the hub, routes
+`*.mcpcut.com` to whichever tenant's own container the subdomain names
+(ADR-0017 phase 3, see "Provisioner and tenant installs" above), and serves
+everything else as the static preview page; and `docker-compose.site.yml`,
+which builds this directory's `Dockerfile` for both `hub` and `provisioner`,
+gives each its own data volume and secret mount, and starts `hub` with no
+port of its own published and `provisioner` with none at all — only Caddy,
+and only `hub` on its own separate network, ever reach them.

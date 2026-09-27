@@ -82,17 +82,20 @@ export function trustedProxyHeaderNotice(header: string): string {
 }
 
 export const ADMIN_USAGE = `Usage:
-  admin add <name> --role ${ADMIN_ROLES.join('|')}
+  admin add <name> --role ${ADMIN_ROLES.join('|')} [--json]
                                          Create a named admin; prints its token ONCE
   admin list                             List admins with roles and dates (never hashes)
   admin remove <name>                    Revoke an admin (the last owner cannot be removed)
-  admin rotate <name>                    Mint a fresh token; kills that admin's live sessions
-  admin rotate <name> --recover          Same, with NO admin token: the way back in when the last
+  admin rotate <name> [--json]           Mint a fresh token; kills that admin's live sessions
+  admin rotate <name> --recover [--json] Same, with NO admin token: the way back in when the last
                                          owner lost theirs (recorded as an unattributed recovery)
   admin role <name> <${ADMIN_ROLES.join('|')}>
                                          Change an admin's role (the last owner cannot be demoted)
 Every command needs a personal admin token in ${ADMIN_TOKEN_ENV_VAR} (role owner); the FIRST admin
 of an empty store needs none, and every change is recorded in the journal under the admin who made it.
+--json on add/rotate prints ONE line {"admin","role","token"} on stdout and nothing else; the
+one-time-token and session-invalidation notices move to stderr, and the "do not redirect stdout"
+warning is dropped (a script capturing that line is the point of the flag).
 `
 
 /**

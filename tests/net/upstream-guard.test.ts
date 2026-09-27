@@ -193,7 +193,7 @@ describe('createUpstreamGuard — checkUrl', () => {
 
   test('a public https literal passes', () => {
     expect(() => guard.checkUrl(new URL('https://1.1.1.1/mcp'))).not.toThrow()
-    expect(() => guard.checkUrl(new URL('https://[2606:4700::1111]:8443/mcp'))).not.toThrow()
+    expect(() => guard.checkUrl(new URL('https://[2606:4700::1111]/mcp'))).not.toThrow()
   })
 
   test.each(['http://public.example/mcp', 'http://1.1.1.1/', 'ws://public.example/', 'ftp://x/'])(
@@ -260,6 +260,44 @@ describe('createUpstreamGuard — checkUrl', () => {
     }
     expect((caught as Error).message).not.toContain('s3cret')
     expect((caught as Error).message).not.toContain('/mcp')
+  })
+})
+
+describe('createUpstreamGuard — checkUrl port (O8, tenant-orchestrator plan)', () => {
+  const guard = createUpstreamGuard({ lookup: fakeResolver(ANSWERS).resolve })
+
+  test('an explicit non-443 port on a DNS name is refused', () => {
+    let caught: unknown
+    try {
+      guard.checkUrl(new URL('https://internal.example:8443/mcp'))
+    } catch (error: unknown) {
+      caught = error
+    }
+    expect(caught).toBeInstanceOf(UpstreamAddressRefusedError)
+    expect(caught).toMatchObject({ reason: 'port', host: 'internal.example' })
+    expect((caught as Error).message).toBe(
+      'refused to connect to internal.example: this install reaches only port 443 (tenant mode)',
+    )
+  })
+
+  test('no port at all, and an explicit :443 (normalized away by the URL parser), both pass', () => {
+    expect(new URL('https://internal.example:443/mcp').port).toBe('')
+    expect(() => guard.checkUrl(new URL('https://internal.example/mcp'))).not.toThrow()
+    expect(() => guard.checkUrl(new URL('https://internal.example:443/mcp'))).not.toThrow()
+  })
+
+  test('an explicit non-443 port on a public IP literal is refused', () => {
+    expect(() => guard.checkUrl(new URL('https://1.1.1.1:8443/mcp'))).toThrow(
+      'refused to connect to 1.1.1.1: this install reaches only port 443 (tenant mode)',
+    )
+  })
+
+  test('an already-refused literal reports its address reason, not the port', () => {
+    // 10.0.0.5 is private regardless of the port it names — the address
+    // check runs first for a literal, so the port is never the reported cause.
+    expect(() => guard.checkUrl(new URL('https://10.0.0.5:8443/'))).toThrow(
+      'refused to connect to 10.0.0.5: it is a private address;',
+    )
   })
 })
 
