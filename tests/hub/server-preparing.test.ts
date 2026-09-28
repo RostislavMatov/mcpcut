@@ -115,6 +115,35 @@ describe('once the install is ready', () => {
     expect(second.body).toContain('https://alice.mcpcut.com/mcp')
   })
 
+  // A sibling tenant's page on `*.mcpcut.com` is same-site with the hub, so a
+  // background fetch or a hidden frame from it carries the SameSite=Strict
+  // session cookie; neither may burn the token the person has not seen yet.
+  test.each([
+    ['a background fetch', { 'sec-fetch-site': 'same-site', 'sec-fetch-mode': 'no-cors', 'sec-fetch-dest': 'empty' }],
+    ['a frame', { 'sec-fetch-site': 'same-site', 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'iframe' }],
+    ['a prefetch', { 'sec-fetch-site': 'same-site', 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document', 'sec-purpose': 'prefetch' }],
+    ['a prerender', { 'sec-fetch-site': 'same-site', 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document', 'sec-purpose': 'prefetch;prerender' }],
+    ['a legacy prefetch', { 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document', purpose: 'prefetch' }],
+    ['a fetch that only says its mode', { 'sec-fetch-mode': 'cors' }],
+  ])('%s does not take the owner token; the next page load still shows it', async (_name, headers) => {
+    const h = await start()
+    const browser = h.browser()
+    await signInHeld(h, browser)
+    h.orchestrator.release('create')
+    await h.settle()
+
+    const background = await browser.get('/account', { headers })
+    const navigation = await browser.get('/account', {
+      headers: { 'sec-fetch-site': 'same-origin', 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document' },
+    })
+
+    const [token] = h.orchestrator.tokens()
+    expect(background.status).toBe(200)
+    expect(background.body).not.toContain(String(token))
+    expect(navigation.body).toContain(String(token))
+    expect(navigation.body).toContain('shown once')
+  })
+
   test('another browser of the same person never sees a token the first one took', async () => {
     const h = await start()
     const first = h.browser()

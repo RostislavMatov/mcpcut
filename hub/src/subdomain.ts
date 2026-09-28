@@ -39,6 +39,29 @@ export const RESERVED_SUBDOMAINS: ReadonlySet<string> = new Set([
   'staging',
   'ns1',
   'ns2',
+  // Wildcard DNS resolves every label, so these would read as the service's
+  // own sign-in, support, billing or mail-client endpoints.
+  'login',
+  'signin',
+  'signup',
+  'oauth',
+  'sso',
+  'secure',
+  'security',
+  'support',
+  'help',
+  'billing',
+  'pay',
+  'console',
+  'dashboard',
+  'git',
+  'ftp',
+  'imap',
+  'pop',
+  'webmail',
+  'mta-sts',
+  'autoconfig',
+  'autodiscover',
 ])
 
 /** Suffixes tried before giving up (`-2` through this bound). Generous: a

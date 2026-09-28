@@ -222,6 +222,8 @@ rule — not one per tenant — can close it:
 ```bash
 sudo install -m 0755 docs/deploy/site/tenant-firewall.sh /usr/local/sbin/mcpcut-tenant-firewall
 sudo install -m 0644 docs/deploy/site/mcpcut-tenant-firewall.service /etc/systemd/system/
+sudo install -m 0644 -D docs/deploy/site/mcpcut-tenant-firewall.docker-dropin.conf \
+  /etc/systemd/system/docker.service.d/mcpcut-tenant-firewall.conf
 sudo systemctl daemon-reload
 sudo systemctl enable --now mcpcut-tenant-firewall.service
 ```
@@ -234,7 +236,18 @@ reach Caddy on the same bridge (ports 8090/8091) and drops anything a tenant
 bridge tries to reach in a private, carrier-grade-NAT or link-local range —
 ordinary internet traffic is untouched. `mcpcut-tenant-firewall.service` is
 tied to `docker.service` (`PartOf=`) because Docker recreates `DOCKER-USER`,
-with only its own default rule, on every daemon restart. This is a host
+with only its own default rule, on every daemon restart; the `docker.service`
+drop-in also runs the script right before every daemon start (the `INPUT`
+rules match `mct+` by name, so they hold from the moment a tenant bridge
+appears) and right after it (the `DOCKER-USER` rules, which take effect once
+dockerd has hooked that chain into `FORWARD`). That narrows, not closes, the
+seconds after boot when tenant containers are already back, and covers a
+crashed dockerd that systemd restarts on its own. The drop-in takes effect at
+the next daemon start; no restart is needed to install it. Without the `br_netfilter` module (`sysctl
+net.bridge.bridge-nf-call-iptables` absent), traffic between a tenant and
+Caddy on the same bridge never reaches `DOCKER-USER`: the tenant can dial any
+port Caddy listens on, which is only `:80` (redirects) and `:8443` (needs
+Cloudflare's client certificate). This is a host
 firewall concern, not something the provisioner or the hub enforces in code —
 skipping it leaves the hole the smoke found.
 

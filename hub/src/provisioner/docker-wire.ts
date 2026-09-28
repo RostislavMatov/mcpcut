@@ -25,6 +25,10 @@ const MAX_POOLED_SOCKETS = 8
 const ERRNO_CODE_PATTERN = /^[A-Z0-9_]{1,40}$/
 /** C0/C1 controls, zero-width and bidi overrides: none of them belongs in a log line. */
 const UNSAFE_CHARS = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]+/g
+/** `text` with every run of unsafe characters folded to one space, fit for a log line. */
+export function printable(text: string): string {
+  return text.replace(UNSAFE_CHARS, ' ')
+}
 /** Shorter values (`1`, `true`) are not secrets, and replacing them would garble the message. */
 const MIN_REDACTED_LENGTH = 6
 const REDACTED = '[redacted]'
@@ -154,11 +158,10 @@ function dockerMessageOf(body: Buffer, redact: readonly string[]): string | unde
   }
   const raw = (parsed as { message?: unknown } | null)?.message
   if (typeof raw !== 'string') return undefined
-  const clean = (text: string): string => text.replace(UNSAFE_CHARS, ' ')
   const redacted = redact
-    .map(clean)
+    .map(printable)
     .filter((value) => value.length >= MIN_REDACTED_LENGTH)
-    .reduce((text, value) => text.split(value).join(REDACTED), clean(raw))
+    .reduce((text, value) => text.split(value).join(REDACTED), printable(raw))
     .trim()
   if (redacted === '') return undefined
   return redacted.length <= DOCKER_MESSAGE_MAX_CHARS ? redacted : `${redacted.slice(0, DOCKER_MESSAGE_MAX_CHARS - 1)}${ELLIPSIS}`

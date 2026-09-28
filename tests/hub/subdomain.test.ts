@@ -67,6 +67,15 @@ describe('assignSubdomain: reserved names', () => {
     expect(assignSubdomain('admin', occupiedSetOf([]))).toBe('admin-2')
   })
 
+  // Wildcard DNS makes every name resolve, so a tenant must not get one a
+  // visitor would read as the service's own sign-in, support or mail page.
+  test.each(['login', 'signin', 'oauth', 'secure', 'security', 'support', 'help', 'billing', 'mta-sts', 'autodiscover'])(
+    '"%s" is reserved',
+    (name) => {
+      expect(assignSubdomain(name, occupiedSetOf([]))).toBe(`${name}-2`)
+    },
+  )
+
   test('the suffix itself is also checked against reserved names', () => {
     const occupied = occupiedSetOf(['admin-2'])
     expect(assignSubdomain('admin', occupied)).toBe('admin-3')

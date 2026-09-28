@@ -209,6 +209,14 @@ describe('refusals', () => {
     expect(ctx.fake().calls().length).toBe(before)
   })
 
+  test('a refused subdomain is logged without its control characters', async () => {
+    await send('POST', '/tenants', { body: createBody({ subdomain: 'x\n[provisioner] create bob: ok' }) })
+
+    const lines = serverLogs.join('\n').split('\n')
+    expect(lines.some((line) => line.startsWith('[provisioner] create bob'))).toBe(false)
+    expect(lines.some((line) => line.startsWith('[provisioner] create x [provisioner] create bob: ok: invalid-input'))).toBe(true)
+  })
+
   test('a non-JSON content type → 415', async () => {
     const reply = await send('POST', '/tenants', { body: createBody(), contentType: 'application/x-www-form-urlencoded' })
 

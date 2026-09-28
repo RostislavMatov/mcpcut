@@ -170,15 +170,17 @@ function requireLive(ctx: HubContext): LiveSession {
 
 /**
  * `pending`: the install is still being made — "preparing", refreshing
- * itself. Ready with an owner token waiting: the token, once (P2). Otherwise
- * the account page, whose "issue a new owner token" covers a token lost to a
- * restart or the TTL. A stopped install is started first, in the background (P6).
+ * itself. Ready with an owner token waiting: the token, once, on a page load
+ * (P2). Otherwise the account page, whose "issue a new owner token" covers a
+ * token lost to a restart or the TTL. A stopped install is started first, in the background (P6).
  */
 function account(deps: HubDeps, ctx: HubContext): HubResult {
   const { account: record, session } = requireLive(ctx)
   if (record.status === 'pending') return page(200, renderPreparingPage({ login: record.login, csrfToken: session.csrfToken }))
   const starting = deps.waker.wake(record)
-  const waiting = deps.pendingTokens.takeToken({ githubId: record.githubId, accountCreatedAt: record.createdAt })
+  const waiting = isPageLoad(ctx.headers)
+    ? deps.pendingTokens.takeToken({ githubId: record.githubId, accountCreatedAt: record.createdAt })
+    : undefined
   if (waiting !== undefined) {
     return page(200, renderTokenOncePage({ login: record.login, token: waiting, csrfToken: session.csrfToken }))
   }
@@ -194,6 +196,21 @@ function account(deps: HubDeps, ctx: HubContext): HubResult {
       ...idleDeadlines(record),
     }),
   )
+}
+
+/**
+ * Whether this request loads a page the person sees, not a background fetch,
+ * a frame, or a prefetch/prerender the person may never look at. A sibling
+ * tenant's page on `*.mcpcut.com` is same-site with the hub, so its requests
+ * carry the SameSite=Strict session cookie; only a top-level navigation may
+ * take the one-time owner token. A browser that sends no Fetch Metadata (older
+ * than 2023, or a test client) counts as a page load.
+ */
+function isPageLoad(headers: IncomingHttpHeaders): boolean {
+  const dest = headerValue(headers, 'sec-fetch-dest')
+  const mode = headerValue(headers, 'sec-fetch-mode')
+  const speculative = headerValue(headers, 'sec-purpose') !== undefined || headerValue(headers, 'purpose') !== undefined
+  return (dest === undefined || dest === 'document') && (mode === undefined || mode === 'navigate') && !speculative
 }
 
 function installStateOf(deps: HubDeps, record: AccountRecord, starting: boolean): InstallState {

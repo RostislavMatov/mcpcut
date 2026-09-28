@@ -5,6 +5,7 @@ import { headerValue, parseTarget, readBody } from '../http.js'
 import { describeOrchestratorError } from '../orchestrator.js'
 import { ProvisionerError, type ProvisionerErrorCode } from './errors.js'
 import type { ProvisionerService } from './service.js'
+import { printable } from './docker-wire.js'
 import { PROVISIONER_SOCKET_TIMEOUT_MS } from './timeouts.js'
 
 /**
@@ -190,13 +191,15 @@ function switchPower(deps: Deps, subdomain: string, operation: 'stop' | 'start')
 
 /** Runs one operation, logs its outcome (never its body), maps a failure to its status. */
 async function run(deps: Deps, operation: string, subdomain: string, task: () => Promise<Answer>): Promise<Answer> {
+  // A create body's subdomain is logged before it is validated; one line per event.
+  const shown = printable(subdomain)
   try {
     const answer = await task()
-    if (operation !== 'status') deps.log(`[provisioner] ${operation} ${subdomain}: ok`)
+    if (operation !== 'status') deps.log(`[provisioner] ${operation} ${shown}: ok`)
     return answer
   } catch (error: unknown) {
     if (!(error instanceof ProvisionerError)) throw error
-    deps.log(`[provisioner] ${operation} ${subdomain}: ${error.code} — ${describeOrchestratorError(error)}`)
+    deps.log(`[provisioner] ${operation} ${shown}: ${error.code} — ${printable(describeOrchestratorError(error))}`)
     return { status: STATUS_OF[error.code], body: { error: error.code, message: error.message } }
   }
 }
