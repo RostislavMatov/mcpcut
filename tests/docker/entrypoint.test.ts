@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
@@ -37,12 +37,14 @@ let workDir: string
 let binDir: string
 let logPath: string
 let configPath: string
+let dataDir: string
 
 beforeEach(async () => {
   workDir = await mkdtemp(join(tmpdir(), 'mcpcut-entrypoint-'))
   binDir = join(workDir, 'bin')
   logPath = join(workDir, 'argv.log')
   configPath = join(workDir, 'config', 'config.json')
+  dataDir = join(workDir, 'data')
   await writeFakeNode()
 })
 
@@ -203,7 +205,7 @@ describe.skipIf(process.platform === 'win32')('docker/entrypoint.sh', () => {
   })
 
   test('MCPCUT_TENANT=1 adds --tenant to the setup call', () => {
-    runEntrypoint(['ui'], { MCPCUT_TENANT: '1' })
+    runEntrypoint(['ui'], { MCPCUT_TENANT: '1', MCPCUT_DATA_DIR: dataDir })
 
     expect(loggedArgv()[0]).toContain(' --tenant')
   })
@@ -227,14 +229,54 @@ describe.skipIf(process.platform === 'win32')('docker/entrypoint.sh', () => {
    * start loudly, before `setup` writes a config in either mode.
    */
   test.each(['1', 'true'])('MCPCUT_TENANT=%s puts --tenant just before --no-admin', (value) => {
-    const { status, stderr } = runEntrypoint(['ui'], { MCPCUT_TENANT: value })
+    const { status, stderr } = runEntrypoint(['ui'], { MCPCUT_TENANT: value, MCPCUT_DATA_DIR: dataDir })
 
     expect(stderr).toBe('')
     expect(status).toBe(0)
     expect(loggedArgv()).toEqual([
-      SETUP_ARGV.replace(' --no-admin', ' --tenant --no-admin'),
+      SETUP_ARGV.replace('/home/node/.mcpcut/data', dataDir).replace(' --no-admin', ' --tenant --no-admin'),
       '/app/dist/cli.js ui',
     ])
+  })
+
+  /**
+   * Q34 (found by a live smoke on S2): with no `policy.json`, an install runs
+   * journaling-only — a tenant's owner can flip a tool's rule in the UI, but
+   * without a file to hold it, approvals were unreachable in hosted mode. The
+   * first start writes a starting one, right after `setup` succeeds.
+   */
+  describe('tenant mode writes a starting policy.json (fix `tenant-network-isolation`)', () => {
+    test.each(['1', 'true'])('MCPCUT_TENANT=%s writes it, mode 0600', (value) => {
+      const { status, stderr } = runEntrypoint(['ui'], { MCPCUT_TENANT: value, MCPCUT_DATA_DIR: dataDir })
+
+      expect(status).toBe(0)
+      expect(stderr).toBe('')
+      const policyPath = join(dataDir, 'policy.json')
+      expect(readFileSync(policyPath, 'utf8')).toBe(
+        '{"version":1,"defaultDecision":"require-approval","classDefaults":{"read":"allow"}}\n',
+      )
+      expect(statSync(policyPath).mode & 0o777).toBe(0o600)
+    })
+
+    test('a second start does not overwrite a policy.json the owner already edited', () => {
+      runEntrypoint(['ui'], { MCPCUT_TENANT: '1', MCPCUT_DATA_DIR: dataDir })
+      const policyPath = join(dataDir, 'policy.json')
+      const edited = '{"version":1,"defaultDecision":"allow","classDefaults":{}}\n'
+      writeFileSync(policyPath, edited, 'utf8')
+      // The config now exists, so `first-start.sh` itself exits at the top on
+      // this second call — this is the same "exactly once" guard the rest of
+      // the file relies on, not a second check written for the policy file.
+      runEntrypoint(['ui'], { MCPCUT_TENANT: '1', MCPCUT_DATA_DIR: dataDir })
+
+      expect(readFileSync(policyPath, 'utf8')).toBe(edited)
+    })
+
+    test('without MCPCUT_TENANT, first start writes no policy.json at all', () => {
+      const { status } = runEntrypoint(['ui'], { MCPCUT_DATA_DIR: dataDir })
+
+      expect(status).toBe(0)
+      expect(existsSync(join(dataDir, 'policy.json'))).toBe(false)
+    })
   })
 
   test.each(['0', 'false', 'yes', 'TRUE', ' 1'])(

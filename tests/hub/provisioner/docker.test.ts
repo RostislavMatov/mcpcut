@@ -64,6 +64,25 @@ describe('networks', () => {
     expect(call?.body).toMatchObject({ Name: 'mcpcut-t-alice', Driver: 'bridge', Internal: false, Labels: { 'mcpcut.tenant': 'alice' } })
   })
 
+  test('createNetwork with Options sends them in the create body and the fake stores them', async () => {
+    const { id } = await ctx
+      .client()
+      .createNetwork('mcpcut-t-alice', { 'mcpcut.tenant': 'alice' }, { 'com.docker.network.bridge.name': 'mctabc123def' })
+
+    const [network] = ctx.fake().networks()
+    expect(network?.id).toBe(id)
+    expect(network?.options).toEqual({ 'com.docker.network.bridge.name': 'mctabc123def' })
+    expect(ctx.fake().calls()[0]?.body).toMatchObject({ Options: { 'com.docker.network.bridge.name': 'mctabc123def' } })
+  })
+
+  test('createNetwork without Options sends no Options key at all', async () => {
+    await ctx.client().createNetwork('mcpcut-t-alice', {})
+
+    const call = ctx.fake().calls()[0]
+    expect(call?.body).not.toHaveProperty('Options')
+    expect(ctx.fake().networks()[0]?.options).toEqual({})
+  })
+
   test('a duplicate name is a 409, not notFound', async () => {
     await ctx.client().createNetwork('n1', {})
 
@@ -275,6 +294,17 @@ describe('names never escape their path segment', () => {
   test('refuses labels and label filters with control characters', async () => {
     await expect(ctx.client().createNetwork('n1', { 'a\nb': 'c' })).rejects.toThrow(TypeError)
     await expect(ctx.client().listContainers({ label: 'a=b\r\n' })).rejects.toThrow(TypeError)
+    expect(ctx.fake().calls()).toEqual([])
+  })
+
+  test.each([
+    { 'a\nb': 'c' },
+    { a: 'b\r\n' },
+    { '': 'c' },
+    { a: 'x'.repeat(4097) },
+    { ['k'.repeat(256)]: 'v' },
+  ])('createNetwork refuses foreign/malformed options before any call: %j', async (options) => {
+    await expect(ctx.client().createNetwork('n1', {}, options)).rejects.toThrow(TypeError)
     expect(ctx.fake().calls()).toEqual([])
   })
 })

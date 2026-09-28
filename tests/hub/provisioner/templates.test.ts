@@ -1,15 +1,18 @@
 import { describe, expect, test } from 'vitest'
 import {
   adminNameOf,
+  bridgeInterfaceName,
   containerSpec,
   isTenantLogin,
   isTenantSubdomain,
   MAX_TENANT_SUBDOMAIN_LENGTH,
+  TENANT_BRIDGE_PREFIX,
   TENANT_HOME_MOUNT,
   TENANT_LABEL,
   LOGIN_LABEL,
   tenantLabels,
   tenantNames,
+  tenantNetworkOptions,
   tenantPublicUrl,
 } from '../../../hub/src/provisioner/templates.js'
 
@@ -64,6 +67,39 @@ describe('isTenantSubdomain', () => {
 
   test('refuses a non-string', () => {
     expect(isTenantSubdomain(42 as unknown as string)).toBe(false)
+  })
+})
+
+describe('bridgeInterfaceName (fix `tenant-network-isolation`)', () => {
+  test('starts with the fixed prefix and is at most 15 characters (Linux IFNAMSIZ)', () => {
+    const name = bridgeInterfaceName('alice')
+
+    expect(name.startsWith(TENANT_BRIDGE_PREFIX)).toBe(true)
+    expect(name.length).toBeLessThanOrEqual(15)
+  })
+
+  test('is stable for the same subdomain', () => {
+    expect(bridgeInterfaceName('alice')).toBe(bridgeInterfaceName('alice'))
+  })
+
+  test('differs for different subdomains', () => {
+    expect(bridgeInterfaceName('alice')).not.toBe(bridgeInterfaceName('bob'))
+  })
+
+  test('is at most 15 characters even for the longest allowed subdomain', () => {
+    const longest = 'x'.repeat(MAX_TENANT_SUBDOMAIN_LENGTH)
+
+    expect(bridgeInterfaceName(longest).length).toBeLessThanOrEqual(15)
+  })
+
+  test('refuses a subdomain that is not a valid one', () => {
+    expect(() => bridgeInterfaceName('../etc')).toThrow(TypeError)
+  })
+})
+
+describe('tenantNetworkOptions', () => {
+  test('carries the bridge interface name under the Docker driver option key', () => {
+    expect(tenantNetworkOptions('alice')).toEqual({ 'com.docker.network.bridge.name': bridgeInterfaceName('alice') })
   })
 })
 

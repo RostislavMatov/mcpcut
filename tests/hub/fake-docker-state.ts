@@ -14,6 +14,8 @@ export interface FakeNetwork {
   readonly id: string
   readonly name: string
   readonly labels: Readonly<Record<string, string>>
+  /** The `Options` field of the create body (driver options, e.g. a fixed bridge interface name); `{}` when omitted. */
+  readonly options: Readonly<Record<string, string>>
   /** Container ids attached. */
   readonly containers: ReadonlySet<string>
 }
@@ -103,7 +105,7 @@ export function createNetwork(store: FakeStore, body: unknown): Reply {
   if (typeof name !== 'string' || name === '') return badRequest('network name is required')
   if (findNetwork(store, name) !== undefined) return conflict(`network with name ${name} already exists`)
   const id = store.nextId()
-  store.networks.set(id, { id, name, labels: labelsOf(input['Labels']), containers: new Set() })
+  store.networks.set(id, { id, name, labels: labelsOf(input['Labels']), options: labelsOf(input['Options']), containers: new Set() })
   return { status: 201, body: { Id: id, Warning: '' } }
 }
 

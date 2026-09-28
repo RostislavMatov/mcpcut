@@ -9,6 +9,9 @@
 
 export type Labels = Readonly<Record<string, string>>
 
+/** Driver options for `POST /networks/create` (`Options` in Docker's own body), e.g. a fixed bridge interface name. */
+export type NetworkOptions = Readonly<Record<string, string>>
+
 export interface MountSpec {
   readonly Type: 'volume' | 'tmpfs'
   readonly Source?: string

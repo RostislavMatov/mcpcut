@@ -206,6 +206,38 @@ socket's own permissions instead (`chmod 666`) would let anything reachable
 by any process on the host talk to Docker directly — `DOCKER_GID` grants that
 capability to this one container only.
 
+### Isolating a tenant's network from the host itself
+
+A live smoke on S2 found that Docker's own network isolation (O4 — one
+network per tenant, no route to another tenant's containers) says nothing
+about the HOST'S OWN services: a tenant's container can reach whatever is
+bound there — SSH, a VPN listening on 443, anything else — by dialing its
+own bridge's gateway address, the same way it would dial any neighbour on
+that bridge. Every tenant network gets a predictable bridge interface name
+for exactly this reason (`hub/src/provisioner/templates.ts`,
+`bridgeInterfaceName`/`TENANT_BRIDGE_PREFIX`: the Docker driver option
+`com.docker.network.bridge.name = mct<12 hex chars>`), so one host firewall
+rule — not one per tenant — can close it:
+
+```bash
+sudo install -m 0755 docs/deploy/site/tenant-firewall.sh /usr/local/sbin/mcpcut-tenant-firewall
+sudo install -m 0644 docs/deploy/site/mcpcut-tenant-firewall.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now mcpcut-tenant-firewall.service
+```
+
+The script (idempotent — see its own header comment) inserts, ahead of
+whatever the host's `INPUT` chain already allows, a rule accepting a tenant
+bridge's established/related traffic and a rule dropping any new connection
+from it; in Docker's `DOCKER-USER` hook chain it lets a tenant's install
+reach Caddy on the same bridge (ports 8090/8091) and drops anything a tenant
+bridge tries to reach in a private, carrier-grade-NAT or link-local range —
+ordinary internet traffic is untouched. `mcpcut-tenant-firewall.service` is
+tied to `docker.service` (`PartOf=`) because Docker recreates `DOCKER-USER`,
+with only its own default rule, on every daemon restart. This is a host
+firewall concern, not something the provisioner or the hub enforces in code —
+skipping it leaves the hole the smoke found.
+
 ### Operator commands
 
 Like the hub's own operator CLI above, there is no panel for this — an

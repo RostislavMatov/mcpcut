@@ -11,6 +11,7 @@ import {
   LOGIN_LABEL,
   tenantLabels,
   tenantNames,
+  tenantNetworkOptions,
   TENANT_LABEL,
   type TenantNames,
 } from './templates.js'
@@ -178,7 +179,11 @@ async function buildTenant(ctx: Context, input: CreateTenantInput): Promise<{ re
     if (reverse !== undefined) undo = [{ what, undo: reverse }, ...undo]
   }
   try {
-    await step('network', async () => void (await docker.createNetwork(names.network, labels)), () => docker.removeNetwork(names.network))
+    await step(
+      'network',
+      async () => void (await docker.createNetwork(names.network, labels, tenantNetworkOptions(input.subdomain))),
+      () => docker.removeNetwork(names.network),
+    )
     await step('volume', async () => void (await docker.createVolume(names.volume, labels)), () => docker.removeVolume(names.volume))
     await step('container', async () => void (await docker.createContainer(names.container, spec)), () =>
       docker.removeContainer(names.container, { force: true }),

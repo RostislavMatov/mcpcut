@@ -1,5 +1,6 @@
+import { createHash } from 'node:crypto'
 import { isAssignableSubdomain } from '../subdomain.js'
-import type { ContainerSpec, Labels } from './docker-types.js'
+import type { ContainerSpec, Labels, NetworkOptions } from './docker-types.js'
 
 /**
  * The fixed shapes of a tenant's Docker objects (plan `tenant-orchestrator`,
@@ -16,6 +17,18 @@ export const TENANT_NAME_PREFIX = 'mcpcut-t-'
 export const TENANT_LABEL = 'mcpcut.tenant'
 export const LOGIN_LABEL = 'mcpcut.login'
 export const GITHUB_ID_LABEL = 'mcpcut.github-id'
+
+/**
+ * Every tenant network's bridge interface starts with this on the host (fix
+ * `tenant-network-isolation`): a single `iptables`/`ip6tables` rule matching
+ * `mct+` covers every tenant, present or future, with no per-tenant rule and
+ * no reload when one is created or removed — the same reasoning as Caddy's
+ * one `*.mcpcut.com` block (O5).
+ */
+export const TENANT_BRIDGE_PREFIX = 'mct'
+/** Linux `IFNAMSIZ` caps an interface name at 15 usable characters (16 with the trailing NUL). */
+const MAX_BRIDGE_INTERFACE_LENGTH = 15
+const BRIDGE_HASH_HEX_LENGTH = MAX_BRIDGE_INTERFACE_LENGTH - TENANT_BRIDGE_PREFIX.length
 
 /** Where the install's home (`config.json` and `data/`) lives: the tenant's volume. */
 export const TENANT_HOME_MOUNT = '/home/node/.mcpcut'
@@ -103,6 +116,27 @@ export function tenantLabels(subdomain: string, login?: string, githubId?: numbe
 
 export function tenantPublicUrl(subdomain: string, publicDomain: string): string {
   return `https://${subdomain}.${publicDomain}`
+}
+
+/**
+ * The predictable bridge interface name Docker gives a tenant's network on
+ * the host, so a host firewall rule can match every tenant's traffic with one
+ * `-i mct+` clause. `sha256`, not the subdomain itself, because a subdomain
+ * can be up to `MAX_TENANT_SUBDOMAIN_LENGTH` characters — far more than
+ * `IFNAMSIZ` leaves room for after the prefix. Truncating a hash to 12 hex
+ * characters risks a collision only across many more tenants than the host's
+ * own ceiling (`DEFAULT_MAX_TENANTS = 20`) ever allows, so it is accepted
+ * without a collision check.
+ */
+export function bridgeInterfaceName(subdomain: string): string {
+  if (!isTenantSubdomain(subdomain)) throw new TypeError('tenant: the subdomain is not a valid tenant subdomain')
+  const hash = createHash('sha256').update(subdomain, 'utf8').digest('hex').slice(0, BRIDGE_HASH_HEX_LENGTH)
+  return `${TENANT_BRIDGE_PREFIX}${hash}`
+}
+
+/** The tenant network's driver options: a fixed bridge interface name, for the host firewall (fix `tenant-network-isolation`). */
+export function tenantNetworkOptions(subdomain: string): NetworkOptions {
+  return Object.freeze({ 'com.docker.network.bridge.name': bridgeInterfaceName(subdomain) })
 }
 
 /** The one container a tenant gets (O2/O3/O4). Frozen all the way down. */

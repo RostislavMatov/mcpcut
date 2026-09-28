@@ -159,7 +159,10 @@ install, so the section survives every later run that does not repeat the
 flag. In Docker, `MCPCUT_TENANT=1` (or `true`) has the entrypoint add
 `--tenant` to its own first `setup --yes`; any other non-empty value, `0`
 included, stops the container with an error rather than guessing (see
-`docker-compose.yml`).
+`docker-compose.yml`). In Docker, a tenant install starts with this policy
+already in place (`defaultDecision: require-approval`, `classDefaults.read:
+allow`, quarantine at its own fail-closed default) — without one, approvals
+would be unreachable, since a tenant cannot write a file on the host itself.
 
 **The request budget.** Every HTTP request an agent sends to `serve` — a
 `POST`, the `GET` that opens the server-to-agent stream, a `DELETE` — on the

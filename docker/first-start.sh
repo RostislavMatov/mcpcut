@@ -55,6 +55,19 @@
 # first start with an error instead of being read as "on" or "off" (security
 # review L2 — `${MCPCUT_TENANT:+…}` turned `MCPCUT_TENANT=0` into tenant mode):
 # the mode is fixed at `setup`, so a typo must not quietly pick one.
+#
+# A tenant install also gets a STARTING `policy.json` (fix
+# `tenant-network-isolation`, found by a live smoke): with none, an install
+# runs in journaling-only mode (`src/policy/load.ts`), and a tenant has no way
+# to write one — `policy set`/the UI's tool rules only ever edit an EXISTING
+# file, and a hosted tenant cannot reach the host's filesystem to create the
+# first one. Without this, every tool call the tenant's agents make is
+# journaled but never held for approval, no matter what the owner later picks
+# in the UI. Written ONLY in tenant mode, ONLY when `$DATA_DIR/policy.json`
+# does not already exist, and only right after `setup` succeeds — never
+# touched again by this script, so a later `policy set`/UI edit is never
+# clobbered by a restart. Quarantine is left at its own default (enabled,
+# fail-closed) rather than spelled out here (owner decision 2026-09-25).
 set -eu
 
 # A function, not a string: an unquoted `$CLI` would word-split on whatever
@@ -83,8 +96,10 @@ case "${MCPCUT_TENANT:-}" in
     exit 2 ;;
 esac
 
+DATA_DIR="${MCPCUT_DATA_DIR:-/home/node/.mcpcut/data}"
+
 cli setup --yes --supervisor external \
-  --data-dir "${MCPCUT_DATA_DIR:-/home/node/.mcpcut/data}" \
+  --data-dir "$DATA_DIR" \
   --ui-host "${MCPCUT_UI_HOST:-0.0.0.0}" --ui-port "${MCPCUT_UI_PORT:-8091}" \
   --serve-host "${MCPCUT_SERVE_HOST:-0.0.0.0}" --serve-port "${MCPCUT_SERVE_PORT:-8090}" \
   ${MCPCUT_UI_PROBE_HOST:+--ui-probe-host "$MCPCUT_UI_PROBE_HOST"} \
@@ -93,3 +108,16 @@ cli setup --yes --supervisor external \
   ${MCPCUT_SERVE_PUBLIC_URL:+--serve-public-url "$MCPCUT_SERVE_PUBLIC_URL"} \
   ${TENANT_FLAG:+"$TENANT_FLAG"} \
   --no-admin
+
+if [ -n "$TENANT_FLAG" ]; then
+  POLICY_FILE="$DATA_DIR/policy.json"
+  if [ ! -e "$POLICY_FILE" ]; then
+    mkdir -p "$DATA_DIR"
+    TMP="$POLICY_FILE.tmp.$$"
+    (
+      umask 077
+      printf '%s\n' '{"version":1,"defaultDecision":"require-approval","classDefaults":{"read":"allow"}}' > "$TMP"
+    )
+    mv "$TMP" "$POLICY_FILE"
+  fi
+fi

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import { ProvisionerError } from '../../../hub/src/provisioner/errors.js'
 import { READY_PROBE_SCRIPT } from '../../../hub/src/provisioner/tenant-exec.js'
-import { containerSpec } from '../../../hub/src/provisioner/templates.js'
+import { bridgeInterfaceName, containerSpec } from '../../../hub/src/provisioner/templates.js'
 import {
   CADDY,
   errorOf,
@@ -48,6 +48,7 @@ describe('create', () => {
     expect(container?.labels).toEqual({ 'mcpcut.tenant': 'alice', 'mcpcut.login': 'Alice', 'mcpcut.github-id': '1001' })
     expect(container?.running).toBe(true)
     expect(ctx.fake().networks()[0]?.labels).toEqual({ 'mcpcut.tenant': 'alice' })
+    expect(ctx.fake().networks()[0]?.options).toEqual({ 'com.docker.network.bridge.name': bridgeInterfaceName('alice') })
     expect(ctx.fake().volumes()[0]?.labels).toEqual({ 'mcpcut.tenant': 'alice' })
     expect(caddyNetworks()).toEqual(['mcpcut-t-alice'])
   })

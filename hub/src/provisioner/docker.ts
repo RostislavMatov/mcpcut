@@ -8,6 +8,7 @@ import type {
   Labels,
   ListContainersFilter,
   NetworkInfo,
+  NetworkOptions,
   VolumeInfo,
 } from './docker-types.js'
 import { createWire, expectStatus, parseAnswer, type WireRequest, type WireResponse } from './docker-wire.js'
@@ -43,6 +44,9 @@ const NUL = '\u0000'
 const MAX_STOP_TIMEOUT_S = 600
 const STOP_ANSWER_MARGIN_S = 10
 const MS_PER_S = 1000
+/** Generous bounds on a network driver option (e.g. `com.docker.network.bridge.name`); Docker itself does not cap these. */
+const MAX_OPTION_KEY_LENGTH = 255
+const MAX_OPTION_VALUE_LENGTH = 4096
 
 export interface DockerClientOptions {
   /** Absolute path of the daemon's socket, e.g. `/var/run/docker.sock`. */
@@ -57,7 +61,8 @@ export interface CreatedContainer {
 }
 
 export interface DockerClient {
-  createNetwork(name: string, labels: Labels): Promise<{ readonly id: string }>
+  /** `options` are the network driver's own options (`Options` in Docker's body), e.g. a fixed bridge interface name. */
+  createNetwork(name: string, labels: Labels, options?: NetworkOptions): Promise<{ readonly id: string }>
   connectNetwork(network: string, container: string): Promise<void>
   disconnectNetwork(network: string, container: string): Promise<void>
   removeNetwork(name: string): Promise<void>
@@ -109,7 +114,7 @@ export function createDockerClient(options: DockerClientOptions): DockerClient {
     return response
   }
   return {
-    createNetwork: (name, labels) => createNetwork(call, name, labels),
+    createNetwork: (name, labels, options) => createNetwork(call, name, labels, options),
     connectNetwork: (network, container) => attach(call, 'connect', network, container),
     disconnectNetwork: (network, container) => attach(call, 'disconnect', network, container),
     removeNetwork: async (name) => {
@@ -163,12 +168,24 @@ async function attach(call: Call, action: 'connect' | 'disconnect', network: str
   await call({ operation: `network ${action}`, method: 'POST', path, body: { Container: checkedName(container) } }, [200])
 }
 
-async function createNetwork(call: Call, name: string, labels: Labels): Promise<{ readonly id: string }> {
+async function createNetwork(
+  call: Call,
+  name: string,
+  labels: Labels,
+  options?: NetworkOptions,
+): Promise<{ readonly id: string }> {
   const request: WireRequest = {
     operation: 'network create',
     method: 'POST',
     path: '/networks/create',
-    body: { Name: checkedName(name), Driver: 'bridge', Internal: false, Attachable: false, Labels: checkedLabels(labels) },
+    body: {
+      Name: checkedName(name),
+      Driver: 'bridge',
+      Internal: false,
+      Attachable: false,
+      Labels: checkedLabels(labels),
+      ...(options === undefined ? {} : { Options: checkedOptions(options) }),
+    },
   }
   return { id: parseAnswer(await call(request, [201]), request.operation, IdAnswer).Id }
 }
@@ -274,6 +291,26 @@ function checkedLabels(labels: Labels): Labels {
   )
   if (bad) throw new TypeError('Docker client: labels must be non-empty keys and string values free of control characters')
   return labels
+}
+
+/** Same shape of check as `checkedLabels`, plus a length bound: a network driver option is never a caller-supplied blob. */
+function checkedOptions(options: NetworkOptions): NetworkOptions {
+  const bad = Object.entries(options).some(
+    ([key, value]) =>
+      key === '' ||
+      key.length > MAX_OPTION_KEY_LENGTH ||
+      CONTROL_CHARS.test(key) ||
+      typeof value !== 'string' ||
+      value.length > MAX_OPTION_VALUE_LENGTH ||
+      CONTROL_CHARS.test(value),
+  )
+  if (bad) {
+    throw new TypeError(
+      `Docker client: network options must be non-empty keys and string values, free of control characters, ` +
+        `keys up to ${MAX_OPTION_KEY_LENGTH} chars and values up to ${MAX_OPTION_VALUE_LENGTH} chars`,
+    )
+  }
+  return options
 }
 
 function checkedStopTimeout(timeoutS: number): number {

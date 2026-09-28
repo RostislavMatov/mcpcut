@@ -1,0 +1,35 @@
+# System (not user) unit: applies docs/deploy/site/tenant-firewall.sh's
+# rules to the HOST's own netfilter tables (fix `tenant-network-isolation`).
+# Unlike every other example in docs/deploy/, this one runs as root and lives
+# in the system unit directory — it edits INPUT and DOCKER-USER on the host
+# itself, not a service belonging to one user's install.
+#
+# Install:
+#   sudo install -m 0755 tenant-firewall.sh /usr/local/sbin/mcpcut-tenant-firewall
+#   sudo install -m 0644 mcpcut-tenant-firewall.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now mcpcut-tenant-firewall.service
+#
+# `PartOf=docker.service`, not just `After=`/`Requires=`: Docker recreates
+# `DOCKER-USER` from scratch — with only its own default rule — every time
+# the daemon (re)starts, which would silently drop this unit's rules from
+# that chain until the next boot. `PartOf` makes systemd restart THIS unit
+# whenever `docker.service` restarts, so the tenant rules are always
+# reapplied together with Docker's own. `RemainAfterExit=yes`: the script
+# itself has no long-running process — it edits the tables once and exits —
+# so without this the unit would show `inactive` right after a successful
+# run, and `systemctl status` would misreport whether the rules are in place.
+[Unit]
+Description=mcpcut tenant network isolation (iptables/ip6tables rules for mct+)
+Documentation=file:/usr/local/sbin/mcpcut-tenant-firewall
+After=docker.service
+Requires=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/mcpcut-tenant-firewall
+
+[Install]
+WantedBy=multi-user.target
