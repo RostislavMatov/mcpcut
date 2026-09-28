@@ -1,4 +1,7 @@
 import { EventEmitter } from 'node:events'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
 import { describe, expect, test } from 'vitest'
 import { runTui, type TuiCommandOptions } from '../../src/cli/tui-cmd.js'
 import type { UiCliIo } from '../../src/cli/ui-constants.js'
@@ -8,6 +11,7 @@ import { WIZARD_TITLE_FIRST_RUN } from '../../src/tui/constants.js'
 import { defaultInstallConfig } from '../../src/setup/defaults.js'
 import type { InstallConfigLoad } from '../../src/setup/load.js'
 import type { FetchLike } from '../../src/tui/remote/client.js'
+import { savedRemotePathFor, writeSavedRemote } from '../../src/tui/remote/saved.js'
 import { createFakeTerminal, waitForScreen, type FakeTerminal } from '../tui/support/fake-terminal.js'
 
 /**
@@ -60,6 +64,9 @@ function stateOnlyFetch(): FetchLike {
 }
 
 const quietDispatch = async (): Promise<number> => 0
+
+/** A reopen seam that starts nothing: Esc over a local install asks for one. */
+const stayPut = async (): Promise<number> => 0
 
 function connectOpts(fake: FakeTerminal, install: InstallConfigLoad, patch: Partial<TuiCommandOptions> = {}): TuiCommandOptions {
   return {
@@ -164,13 +171,22 @@ describe('runTui: --connect opens the connect form directly', () => {
   test('opens even over a broken local config: it needs no data directory', async () => {
     const io = fakeIo()
     const fake = createFakeTerminal()
+    const reopened: string[][] = []
 
-    const running = runTui([], io, connectOpts(fake, invalidInstall))
+    const running = runTui([], io, connectOpts(fake, invalidInstall, {
+      reopen: async (argv) => {
+        reopened.push([...argv])
+        return 0
+      },
+    }))
     await waitForScreen(fake, (screen) => screen.includes('Host:'), 'the connect form')
     fake.type('\x1b')
 
     await expect(running).resolves.toBe(0)
     expect(io.err()).toBe('')
+    // A broken config has no console to go back to: a bare `mcpcut` would only
+    // print the config problem, so Esc quits here as it always did.
+    expect(reopened).toEqual([])
   })
 
   describe('Esc: back to "choose", unless a local install already exists', () => {
@@ -187,16 +203,95 @@ describe('runTui: --connect opens the connect form directly', () => {
       expect(await running).toBe(0)
     })
 
-    test('a local install already exists: Esc quits outright, never offering "set up"', async () => {
+    test('a local install already exists: Esc goes back to it (a bare mcpcut), never offering "set up"', async () => {
       const io = fakeIo()
       const fake = createFakeTerminal()
+      const reopened: string[][] = []
 
-      const running = runTui([], io, connectOpts(fake, okInstall))
-      await waitForScreen(fake, (screen) => screen.includes('Host:'), 'the connect form')
+      const running = runTui([], io, connectOpts(fake, okInstall, {
+        reopen: async (argv) => {
+          reopened.push([...argv])
+          return 0
+        },
+      }))
+      await waitForScreen(fake, (screen) => screen.includes('Esc back to this machine'), 'the connect form')
       fake.type('\x1b')
 
       expect(await running).toBe(0)
+      expect(reopened).toEqual([[]])
       expect(fake.frames().some((frame) => frame.includes(WIZARD_TITLE_FIRST_RUN))).toBe(false)
+    })
+  })
+})
+
+/**
+ * `--connect` with no argument over a remembered address (2026-09-28): the
+ * reopen a local console's Ctrl-O and Home ▸ connect ask for carries no
+ * address, so the form offers the last service this machine connected to
+ * instead of an empty Host. Only a prefill — nothing is dialed until Enter.
+ */
+describe('runTui: --connect with no argument offers the remembered address', () => {
+  async function withHome(run: (home: string) => Promise<void>): Promise<void> {
+    const home = await mkdtemp(join(tmpdir(), 'mcpcut-connect-entry-'))
+    try {
+      await run(home)
+    } finally {
+      await rm(home, { recursive: true, force: true })
+    }
+  }
+
+  test('a saved address prefills the form and dials nothing by itself', async () => {
+    await withHome(async (home) => {
+      await writeSavedRemote(savedRemotePathFor({}, home), 'https://saved.example:8443')
+      const io = fakeIo()
+      const fake = createFakeTerminal()
+      const dialed: string[] = []
+      const countingFetch = (async (input: unknown) => {
+        dialed.push(String(input))
+        return jsonResponse(200, { api: 1, firstRun: false })
+      }) as FetchLike
+
+      const running = runTui([], io, connectOpts(fake, okInstall, { reopen: stayPut, home, remoteFetch: countingFetch }))
+      await waitForScreen(fake, (screen) => screen.includes('saved.example'), 'the remembered host')
+      const screenText = fake.screen()
+      fake.type('\x1b')
+
+      await expect(running).resolves.toBe(0)
+      expect(screenText).toContain('8443')
+      expect(dialed).toEqual([])
+    })
+  })
+
+  test('an explicit address wins over the saved one', async () => {
+    await withHome(async (home) => {
+      await writeSavedRemote(savedRemotePathFor({}, home), 'https://saved.example:8443')
+      const io = fakeIo()
+      const fake = createFakeTerminal()
+
+      const running = runTui([], io, connectOpts(fake, okInstall, { reopen: stayPut, home, connectArg: 'https://typed.example:8091' }))
+      await waitForScreen(fake, (screen) => screen.includes('typed.example'), 'the typed host')
+      const screenText = fake.screen()
+      fake.type('\x1b')
+
+      await expect(running).resolves.toBe(0)
+      expect(screenText).not.toContain('saved.example')
+    })
+  })
+
+  test('a corrupted saved file is one warning and an empty form, never a crash', async () => {
+    await withHome(async (home) => {
+      const path = savedRemotePathFor({}, home)
+      await mkdir(dirname(path), { recursive: true })
+      await writeFile(path, '{not json')
+      const io = fakeIo()
+      const fake = createFakeTerminal()
+
+      const running = runTui([], io, connectOpts(fake, okInstall, { reopen: stayPut, home }))
+      await waitForScreen(fake, (screen) => screen.includes('Host:'), 'the connect form')
+      fake.type('\x1b')
+
+      await expect(running).resolves.toBe(0)
+      expect(io.err()).toContain('warning: saved remote address')
     })
   })
 })

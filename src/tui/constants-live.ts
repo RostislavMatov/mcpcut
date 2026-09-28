@@ -111,6 +111,21 @@ export const FIRST_OWNER_FOOTER = 'Enter create · Esc quit'
 export const FIRST_OWNER_TOKEN_QUESTION = 'Saved it? [y/N] — y signs you in'
 
 /**
+ * The footer part a LOCAL console's sign-in and first-owner screens add
+ * (2026-09-28, owner complaint: with a local install there was nowhere to type
+ * a remote address without knowing `mcpcut --connect`). Remote screens carry
+ * `Ctrl-D disconnect` instead — the same destination, reached from the other side.
+ */
+export const CONNECT_ELSEWHERE_FOOTER = 'Ctrl-O connect to another service'
+
+/**
+ * The flag a console reopens on to reach the connect form (`mcpcut --connect`,
+ * ADR-0014 §13). Named once for the three ways there: Ctrl-O, Home ▸ connect
+ * and `disconnect` (which appends the address it was driving).
+ */
+export const CONNECT_FORM_FLAG = '--connect'
+
+/**
  * The sign-in screen's remote-address line (ADR-0014): so an operator who
  * opened this console over `--remote`/`MCPCUT_REMOTE` always knows which
  * install a keystroke is about to reach, before they type a token.
@@ -160,6 +175,12 @@ export const WELCOME_CONNECT_TITLE = 'Connect to a service on another host'
 export const WELCOME_CONNECT_FOOTER =
   'Enter connect · Tab/↓ next · Shift-Tab/↑ previous · ←/→ change · Esc back'
 export const WELCOME_CONNECT_BUSY_TEXT = 'connecting…'
+/**
+ * The same form opened over a local install: Esc goes back to its console
+ * (2026-09-28). Terser about moving than the ordinary footer, so the whole
+ * line still fits 80 columns with the longer Esc.
+ */
+export const WELCOME_CONNECT_LOCAL_FOOTER = 'Enter connect · Tab/↑↓ move · ←/→ change · Esc back to this machine'
 
 /**
  * Appended to a failed probe's own message when the attempt was `https`: the

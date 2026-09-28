@@ -1,4 +1,5 @@
 import { CLI_NAME } from '../../setup/constants.js'
+import { CONNECT_FORM_FLAG } from '../constants-live.js'
 import type { ActionSpec, SectionSpec } from './types.js'
 
 /**
@@ -44,6 +45,33 @@ const disconnectAction: ActionSpec = {
 }
 
 /**
+ * `disconnect`'s local mirror (2026-09-28, owner complaint: on a machine with
+ * a local install there was nowhere inside the console to type a remote
+ * address — only the `--connect` flag reached the form). Visible ONLY on a
+ * local console (`requires: 'local'`); a remote one leaves through
+ * `disconnect` instead.
+ *
+ * `leavesConsole` rather than a flag of its own: unlike `disconnect`, this
+ * reopen is a plain CLI invocation the catalogue CAN build — `mcpcut
+ * --connect` with no address, whose form opens on the remembered address or
+ * empty (`tui-welcome.ts`) — so it takes the one path `Services ▸ setup`
+ * already takes. No `confirm`: leaving for a form costs nothing, and Esc there
+ * quits. `command` is the flag itself; the usage table lists no flag forms as
+ * commands, so the catalogue parity test names it as a console-only action.
+ */
+const connectAction: ActionSpec = {
+  id: 'connect',
+  title: 'connect',
+  minRole: 'viewer',
+  command: CONNECT_FORM_FLAG,
+  requires: 'local',
+  leavesConsole: true,
+  fields: [],
+  argv: () => [CONNECT_FORM_FLAG],
+  hint: 'Connect this console to a service on another host',
+}
+
+/**
  * The part of Home's intro that holds on every install, whoever supervises it.
  * The pool comes first (ADR-0015): `Agents ▸ config` prints the client block
  * that reaches every server the agent is granted at one address; the two
@@ -70,6 +98,6 @@ export const HOME_SECTION: SectionSpec = {
     'Services are run by compose or systemd',
     '(supervisor: external): mcpcut only reports.',
   ],
-  actions: [statusAction, disconnectAction],
+  actions: [statusAction, connectAction, disconnectAction],
   refreshActionId: 'status',
 }

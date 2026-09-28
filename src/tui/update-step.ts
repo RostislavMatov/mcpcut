@@ -1,4 +1,5 @@
 import type { SectionSpec } from './catalogue/types.js'
+import { CONNECT_FORM_FLAG } from './constants-live.js'
 import type { KeyEvent } from './keys.js'
 import { bodyLayoutOf } from './layout.js'
 import type {
@@ -80,7 +81,34 @@ export function isRemoteInstall(model: Model): boolean {
  * would have.
  */
 export function disconnectStep(model: Model): Step {
-  return { model, effects: [{ kind: 'disconnect', argv: ['--connect', model.install?.remoteAddress ?? ''] }] }
+  return { model, effects: [{ kind: 'disconnect', argv: [CONNECT_FORM_FLAG, model.install?.remoteAddress ?? ''] }] }
+}
+
+/**
+ * The Ctrl-O chord: "connect to another service" on a LOCAL console's sign-in
+ * and first-owner screens (2026-09-28). Free everywhere else in the console:
+ * Ctrl-C quits and Ctrl-D disconnects a remote one; no reducer reads another
+ * Ctrl letter, and no form field takes one (`keys.ts` never lets it through
+ * as text). Mnemonic: "Other service" / "Open elsewhere".
+ */
+const CONNECT_ELSEWHERE_CHAR = 'o'
+
+/** Whether a keystroke is the Ctrl-O "connect to another service" chord. */
+export function isConnectElsewhereKey(key: KeyEvent): boolean {
+  return key.kind === 'ctrl' && key.char === CONNECT_ELSEWHERE_CHAR
+}
+
+/**
+ * Leaves a LOCAL console for the connect form: reopens on `mcpcut --connect`
+ * with no address, so the form opens on the remembered one when there is one
+ * and empty otherwise (`tui-welcome.ts`). Nothing is forgotten — a local
+ * console has no saved address of its own to drop, unlike `disconnectStep`.
+ * Shared by the Ctrl-O chord (`update-signin.ts`, `update-first-owner.ts`);
+ * Home ▸ connect builds the same argv from the same flag through the
+ * catalogue (`catalogue/home.ts`).
+ */
+export function connectElsewhereStep(model: Model): Step {
+  return { model, effects: [{ kind: 'reopen', argv: [CONNECT_FORM_FLAG] }] }
 }
 
 /**

@@ -226,8 +226,10 @@ describe('the Home section', () => {
     ])
     // `disconnect` (`requires: 'remote'`) is filtered out on a non-remote
     // install, whatever supervisor it names — so this is no longer the same
-    // array as `HOME_SECTION.actions`, which still carries both.
-    expect(external?.actions.map((action) => action.id)).toEqual(['status'])
+    // array as `HOME_SECTION.actions`, which carries all three. `connect`
+    // (`requires: 'local'`, 2026-09-28) stays: supervision says nothing
+    // about which host the console is on.
+    expect(external?.actions.map((action) => action.id)).toEqual(['status', 'connect'])
   })
 
   test('on an install mcpcut supervises, the intro is unchanged and disconnect stays hidden', () => {
@@ -235,7 +237,7 @@ describe('the Home section', () => {
 
     expect(owned?.intro).toEqual(HOME_SECTION.intro)
     expect(owned?.intro.at(-1)).toBe('A service marked ○ in the header: Services ▸ start.')
-    expect(owned?.actions.map((action) => action.id)).toEqual(['status'])
+    expect(owned?.actions.map((action) => action.id)).toEqual(['status', 'connect'])
   })
 
   test('remote: disconnect joins status, and only there', () => {
@@ -246,8 +248,8 @@ describe('the Home section', () => {
     expect(remote?.actions.map((action) => action.id)).toEqual(['status', 'disconnect'])
   })
 
-  test('status is Home’s refresh action; disconnect is its remote-only second action', () => {
-    expect(home?.actions.map((action) => action.id)).toEqual(['status', 'disconnect'])
+  test('status is Home’s refresh action; connect (local) and disconnect (remote) never meet', () => {
+    expect(home?.actions.map((action) => action.id)).toEqual(['status', 'connect', 'disconnect'])
     expect(home?.actions[0]?.argv({})).toEqual(['status'])
     expect(home?.refreshActionId).toBe('status')
   })
@@ -263,6 +265,7 @@ describe('the Home section', () => {
  */
 const CATALOGUE_PAIR_KEYS: readonly string[] = [
   'status',
+  '--connect',
   'disconnect',
   'admin list',
   'admin add',

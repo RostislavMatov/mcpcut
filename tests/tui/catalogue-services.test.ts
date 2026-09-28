@@ -179,7 +179,7 @@ describe('an install somebody else supervises is offered less', () => {
     expect(meetsRequirement(actionOf('setup'), EXTERNAL_FACTS)).toBe(true)
   })
 
-  test('disconnect, start, stop and setup are the only actions that declare a requirement', () => {
+  test('connect, disconnect, start, stop and setup are the only actions that declare a requirement', () => {
     const requiring = SECTIONS.flatMap((section) =>
       section.actions
         .filter((action) => action.requires !== undefined)
@@ -187,8 +187,15 @@ describe('an install somebody else supervises is offered less', () => {
     )
 
     // Home comes before Services in `SECTIONS` (`catalogue/index.ts`), so its
-    // `disconnect` (`requires: 'remote'`, 2026-09-20) leads the list.
-    expect(requiring).toEqual(['home/disconnect', 'services/start', 'services/stop', 'services/setup'])
+    // `connect` (`requires: 'local'`, 2026-09-28) and `disconnect`
+    // (`requires: 'remote'`, 2026-09-20) lead the list.
+    expect(requiring).toEqual([
+      'home/connect',
+      'home/disconnect',
+      'services/start',
+      'services/stop',
+      'services/setup',
+    ])
   })
 
   test('under an external supervisor start and stop are gone from the tab', () => {
@@ -233,7 +240,7 @@ describe('an install somebody else supervises is offered less', () => {
 
     for (const [index, section] of sections.entries()) {
       if (section.id === 'home') {
-        expect(section.actions.map((action) => action.id)).toEqual(['status'])
+        expect(section.actions.map((action) => action.id)).toEqual(['status', 'connect'])
         expect(section).not.toBe(SECTIONS[index])
       } else {
         expect(section, section.id).toBe(SECTIONS[index])

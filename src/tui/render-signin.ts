@@ -9,6 +9,7 @@ import {
   SIGNIN_TOKEN_LABEL,
 } from './constants.js'
 import {
+  CONNECT_ELSEWHERE_FOOTER,
   REMOTE_ADDRESS_PREFIX,
   REMOTE_INSECURE_NOTICE,
   SIGNIN_SERVICES_DOWN_HINT,
@@ -42,6 +43,9 @@ export const SIGNIN_FOOTER = 'Enter sign in · Esc quit'
 /** The same footer, plus the chord a remote console answers Ctrl-D to (2026-09-20). */
 export const SIGNIN_REMOTE_FOOTER = `${SIGNIN_FOOTER} · Ctrl-D disconnect`
 
+/** The same footer, plus the chord a LOCAL console answers Ctrl-O to (2026-09-28). */
+export const SIGNIN_LOCAL_FOOTER = `${SIGNIN_FOOTER} · ${CONNECT_ELSEWHERE_FOOTER}`
+
 /** What the token field says while the store is being asked about it. */
 export const SIGNIN_BUSY_TEXT = 'signing in…'
 
@@ -66,7 +70,7 @@ export function renderSignIn(
     ...block,
   ]
   const footerRow = rows - FOOTER_ROWS
-  const footer = install?.remote === true ? SIGNIN_REMOTE_FOOTER : SIGNIN_FOOTER
+  const footer = install?.remote === true ? SIGNIN_REMOTE_FOOTER : SIGNIN_LOCAL_FOOTER
 
   return [...fillTo(above, footerRow, columns), padRight(footer, columns)]
 }

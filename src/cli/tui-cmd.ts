@@ -200,7 +200,7 @@ export async function runTui(
   // broken local config: that is exactly the operator `--connect` exists to
   // get unstuck, by dialing somewhere else instead of fixing this machine.
   if (opts.entry === 'connect') {
-    return await openConnectEntry(opts, env, install, consoleDeps, reopen, reopenCell)
+    return await openConnectEntry(opts, io, env, install, consoleDeps, reopen, reopenCell)
   }
 
   // Belt and braces: the dispatcher gates a broken config ahead of this

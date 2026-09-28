@@ -391,11 +391,11 @@ describe('update: Home’s disconnect action', () => {
     expect(mainOf(step.model).busy).toBeUndefined()
   })
 
-  test('is not offered at all on a local console', () => {
+  test('is not offered at all on a local console, where connect stands in its place', () => {
     const model = mainModel({ sectionIndex: HOME_TAB }, 'owner')
 
     const home = mainOf(model).sections[HOME_TAB]
-    expect(home?.actions.map((action) => action.id)).toEqual(['status'])
+    expect(home?.actions.map((action) => action.id)).toEqual(['status', 'connect'])
   })
 
   test('is the second action of Home on a remote console', () => {

@@ -273,6 +273,14 @@ export type WelcomeStage =
        * out (ADR-0014, owner request 2026-09-20).
        */
       readonly escapesToChoose?: boolean
+      /**
+       * Esc reopens a bare `mcpcut` instead — back to THIS machine's console
+       * (2026-09-28). Set when the form was opened over a readable local
+       * install, which is where a local console's Ctrl-O and Home ▸ connect
+       * come from; wins over `escapesToChoose`. Absent over a broken config:
+       * a bare `mcpcut` there would only print the problem, so Esc quits.
+       */
+      readonly escapesToLocal?: true
     }
 
 export type Screen =

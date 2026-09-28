@@ -79,6 +79,15 @@ remembered); the token is typed at the sign-in screen and lives in memory
 only, however you connected. While connected the header names the service:
 `McpCut console · kate (owner) @ plane.example.com:8091`.
 
+**From a machine with its own install.** There a bare `mcpcut` opens the
+local install, so the way to another service is inside the console: `Ctrl-O`
+on the sign-in (or first-owner) screen, or `Home ▸ connect` once signed in.
+Both open the same connect form as `mcpcut --connect`, filled in with the
+last address this machine connected to, if any; `Esc` there brings you back
+to this machine's console. To leave
+a remote console, use `Home ▸ disconnect`, or `Ctrl-D` on its sign-in screen:
+it forgets the remembered address and opens the form again.
+
 Every action still runs the very CLI command it shows you — on the **server**,
 inside the `ui` process, under your admin token (`Authorization: Bearer`, on
 every request; there is no cookie and no server-side console session, so a

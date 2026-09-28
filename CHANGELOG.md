@@ -8,6 +8,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Connect to another service from inside a local console**: `Ctrl-O` on
+  the sign-in or first-owner screen, or `Home ▸ connect`, opens the connect
+  form (prefilled with the last remembered address) — no `--connect` flag needed.
 - **Tenant mode.** A `tenant` section in `config.json` — written by
   `mcpcut setup --yes --tenant`, or by `MCPCUT_TENANT=1` in Docker — turns an
   install into one meant to be handed to somebody who is not its operator: it

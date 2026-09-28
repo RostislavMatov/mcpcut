@@ -72,6 +72,8 @@ export interface ConnectEntry {
    * that is already there (ADR-0014, owner request 2026-09-20).
    */
   readonly escapesToChoose?: boolean
+  /** Esc goes back to the local console (a bare `mcpcut`) — see the stage's own field (2026-09-28). */
+  readonly escapesToLocal?: true
 }
 
 /**
@@ -91,6 +93,7 @@ export function welcomeConnectModel(size: TerminalSize, wizard: WizardScreen, en
         busy: false,
         ...(entry.notice !== undefined ? { notice: entry.notice } : {}),
         ...(entry.escapesToChoose === false ? { escapesToChoose: false } : {}),
+        ...(entry.escapesToLocal === true ? { escapesToLocal: true } : {}),
       },
     },
     size,
@@ -184,9 +187,17 @@ function onConnectKey(
     : withStage(model, screen, { kind: 'connect', form, busy: false, ...escapeCarryOf(stage) })
 }
 
-/** `escapesToChoose`, carried forward only when it says "quit" — the default needs no key at all. */
-function escapeCarryOf(stage: Extract<WelcomeStage, { kind: 'connect' }>): { escapesToChoose?: false } {
-  return stage.escapesToChoose === false ? { escapesToChoose: false } : {}
+/**
+ * Where Esc goes, carried forward: `escapesToChoose` only when it says "quit"
+ * and `escapesToLocal` only when set — the default needs no key at all.
+ */
+function escapeCarryOf(
+  stage: Extract<WelcomeStage, { kind: 'connect' }>,
+): { escapesToChoose?: false; escapesToLocal?: true } {
+  return {
+    ...(stage.escapesToChoose === false ? { escapesToChoose: false } : {}),
+    ...(stage.escapesToLocal === true ? { escapesToLocal: true } : {}),
+  }
 }
 
 /**
@@ -194,13 +205,17 @@ function escapeCarryOf(stage: Extract<WelcomeStage, { kind: 'connect' }>): { esc
  * stage was opened directly over an install that already exists
  * (`escapesToChoose: false`, `mcpcut --connect`) — "choose" would then offer
  * "set up a service" over the very install the operator is already running
- * (ADR-0014, owner request 2026-09-20).
+ * (ADR-0014, owner request 2026-09-20). Over a readable local install
+ * (`escapesToLocal`, 2026-09-28) it reopens a bare `mcpcut` instead: the
+ * local install wins the bare-launch precedence, so that is the way back to
+ * the console Ctrl-O or Home ▸ connect left.
  */
 function onConnectEscape(
   model: Model,
   screen: WelcomeScreen,
   stage: Extract<WelcomeStage, { kind: 'connect' }>,
 ): Step {
+  if (stage.escapesToLocal === true) return { model, effects: [{ kind: 'reopen', argv: [] }] }
   if (stage.escapesToChoose === false) return quit(model, EXIT_OK)
 
   return withStage(model, screen, { kind: 'choose', index: CONNECT_INDEX })

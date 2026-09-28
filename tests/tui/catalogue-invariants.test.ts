@@ -117,6 +117,9 @@ function filledValuesOf(action: ActionSpec): FormValues {
   return Object.fromEntries(action.fields.map((field) => [field.name, fillOf(field)]))
 }
 
+/** The leading dashes of a flag-form command (`--connect`). */
+const FLAG_DASHES_PATTERN = /^-+/
+
 /** `section/id`, the key these tests name an action by. */
 function keysOf(predicate: (action: ActionSpec) => boolean): readonly string[] {
   return SECTIONS.flatMap((section) =>
@@ -166,7 +169,9 @@ describe('every action names the command it runs', () => {
 
   test('the title says the command, and the id is a key a frame can hold', () => {
     for (const [section, action] of eachAction()) {
-      const word = action.subcommand ?? action.command
+      // A flag-form command (Home's `connect` reopens on `--connect`,
+      // 2026-09-28) is titled by the word, not the dashes.
+      const word = (action.subcommand ?? action.command).replace(FLAG_DASHES_PATTERN, '')
 
       expect(action.title.split(' '), `title of ${section.id}/${action.id}`).toContain(word)
       expect(action.id, `id of ${section.id}/${action.id}`).toMatch(ACTION_ID_PATTERN)

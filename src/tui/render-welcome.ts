@@ -4,6 +4,7 @@ import {
   WELCOME_CHOOSE_FOOTER,
   WELCOME_CONNECT_BUSY_TEXT,
   WELCOME_CONNECT_FOOTER,
+  WELCOME_CONNECT_LOCAL_FOOTER,
   WELCOME_CONNECT_TITLE,
   WELCOME_OPTION_CONNECT,
   WELCOME_OPTION_INSTALL,
@@ -41,9 +42,16 @@ export function renderWelcome(screen: WelcomeScreen, size: TerminalSize, style: 
   const block = blockOf(screen.stage, width).map((line) => padRight(`${indent}${line}`, columns))
   const top = Math.max(BLOCK_MIN_ROW, Math.floor(rows / BLOCK_DIVISOR))
   const above = [style.bold(padRight(CONSOLE_TITLE, columns)), ...blankRows(top - 1, columns), ...block]
-  const footer = screen.stage.kind === 'choose' ? WELCOME_CHOOSE_FOOTER : WELCOME_CONNECT_FOOTER
+  const footer = footerOf(screen.stage)
 
   return [...fillTo(above, rows - FOOTER_ROWS, columns), padRight(footer, columns)]
+}
+
+/** The keys each stage answers; the connect form names where Esc goes. */
+function footerOf(stage: WelcomeStage): string {
+  if (stage.kind === 'choose') return WELCOME_CHOOSE_FOOTER
+
+  return stage.escapesToLocal === true ? WELCOME_CONNECT_LOCAL_FOOTER : WELCOME_CONNECT_FOOTER
 }
 
 function blockOf(stage: WelcomeStage, width: number): readonly string[] {

@@ -18,7 +18,16 @@ import {
 } from './model.js'
 import type { RunResult } from './output.js'
 import { isYes } from './update-form.js'
-import { disconnectStep, isDisconnectKey, isRemoteInstall, noEffects, quit, withScreen } from './update-step.js'
+import {
+  connectElsewhereStep,
+  disconnectStep,
+  isConnectElsewhereKey,
+  isDisconnectKey,
+  isRemoteInstall,
+  noEffects,
+  quit,
+  withScreen,
+} from './update-step.js'
 import { mintedAdminOf, MINTED_ADMIN_PREFIX, MINTED_TOKEN_PREFIX } from './wizard-fields.js'
 
 /**
@@ -119,6 +128,9 @@ function onFormKey(model: Model, stage: FormStage, key: KeyEvent): Step {
   // as it always has: it falls through to the ordinary handling below, which
   // has no use for a Ctrl combination either.
   if (isDisconnectKey(key) && isRemoteInstall(model)) return disconnectStep(model)
+  // Ctrl-O (2026-09-28): the local mirror — leave for the connect form. Same
+  // stage rule: never `hold`, and never while `admin add` is in flight (above).
+  if (isConnectElsewhereKey(key) && !isRemoteInstall(model)) return connectElsewhereStep(model)
   if (key.kind === 'escape') return quit(model, EXIT_OK)
   if (key.kind === 'enter') return submit(model, stage)
 

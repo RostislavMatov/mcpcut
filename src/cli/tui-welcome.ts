@@ -119,9 +119,15 @@ export async function openWelcome(
  * is worth keeping to edit, not a reason to refuse. Esc quits outright when a
  * local install already exists (`escapesToChoose: false`): "choose" would
  * then offer "set up a service" over the very install already running.
+ *
+ * With no argument the form opens on the REMEMBERED address, when there is
+ * one (2026-09-28): that bare `--connect` is what a local console's Ctrl-O and
+ * Home ▸ connect reopen on, and the last service this machine connected to is
+ * the likeliest one to type. A prefill only — nothing is dialed until Enter.
  */
 export async function openConnectEntry(
   opts: TuiCommandOptions,
+  io: UiCliIo,
   env: NodeJS.ProcessEnv,
   install: InstallConfigLoad,
   consoleDeps: Omit<ConsoleDeps, 'initial'>,
@@ -129,7 +135,10 @@ export async function openConnectEntry(
   reopenCell: ReopenCell,
 ): Promise<number> {
   const wizard = wizardScreenOf(prefillOf(opts, env, install))
-  const entry = connectEntryFromArg(opts.connectArg, install)
+  const entry =
+    opts.connectArg === undefined
+      ? await rememberedConnectEntry(opts, io, env, install)
+      : connectEntryFromArg(opts.connectArg, install)
   return await runWelcomeConsole(
     wizard,
     (size) => welcomeConnectModel(size, wizard, entry),
@@ -139,15 +148,48 @@ export async function openConnectEntry(
   )
 }
 
-/** The connect-stage entry built from `--connect`'s own (possibly absent, possibly bad) argument. */
-function connectEntryFromArg(raw: string | undefined, install: InstallConfigLoad): ConnectEntry {
-  const escapesToChoose = install.kind === 'absent'
-  if (raw === undefined) return { escapesToChoose }
-
+/** The connect-stage entry built from `--connect`'s own (possibly bad) argument. */
+function connectEntryFromArg(raw: string, install: InstallConfigLoad): ConnectEntry {
+  const escape = escapeOf(install)
   const parsed = parseRemoteUrl(raw)
-  return parsed.ok
-    ? { url: parsed.url, escapesToChoose }
-    : { hostText: raw, notice: parsed.message, escapesToChoose }
+  return parsed.ok ? { url: parsed.url, ...escape } : { hostText: raw, notice: parsed.message, ...escape }
+}
+
+/**
+ * The connect-stage entry of a bare `--connect`: the remembered address when
+ * `remote.json` holds a valid one, an empty form otherwise. A corrupted file
+ * is the same one stderr line the bare launch prints, and then an empty form —
+ * `--connect` exists to get an operator unstuck, never to refuse.
+ */
+async function rememberedConnectEntry(
+  opts: TuiCommandOptions,
+  io: UiCliIo,
+  env: NodeJS.ProcessEnv,
+  install: InstallConfigLoad,
+): Promise<ConnectEntry> {
+  const escape = escapeOf(install)
+  const savedPath = savedRemotePathFor(env, opts.home)
+  const saved = await readSavedRemote(savedPath)
+  if (saved.kind === 'invalid') io.stderr.write(savedRemoteInvalidWarning(savedPath, saved.message))
+  if (saved.kind !== 'ok') return escape
+
+  // `readSavedRemote` already re-validated the url; parsing again is how a
+  // string becomes the `RemoteUrl` the form is filled from.
+  const parsed = parseRemoteUrl(saved.url)
+  return parsed.ok ? { url: parsed.url, ...escape } : escape
+}
+
+/**
+ * Where Esc leaves the `--connect` form, by what is on this machine: no
+ * install — back to "choose"; a readable one — back to its console, a bare
+ * `mcpcut` (2026-09-28: Ctrl-O and Home ▸ connect must not be a one-way
+ * door); a broken one — out, since a bare `mcpcut` would only print the
+ * config problem.
+ */
+function escapeOf(install: InstallConfigLoad): Pick<ConnectEntry, 'escapesToChoose' | 'escapesToLocal'> {
+  if (install.kind === 'absent') return { escapesToChoose: true }
+
+  return install.kind === 'ok' ? { escapesToChoose: false, escapesToLocal: true } : { escapesToChoose: false }
 }
 
 /**

@@ -1,6 +1,7 @@
 import { padRight, sanitizeLine, type Style } from './ansi.js'
 import { CARET, CONSOLE_TITLE, FOOTER_ROWS, SECRET_MASK_CHAR, WIZARD_TOKEN_FOOTER } from './constants.js'
 import {
+  CONNECT_ELSEWHERE_FOOTER,
   FIRST_OWNER_BUSY_TEXT,
   FIRST_OWNER_FOOTER,
   FIRST_OWNER_HINT,
@@ -55,15 +56,17 @@ export function renderFirstOwner(
 
 /**
  * `hold` keeps its own footer (the token question answers `y`/`q`, not
- * Ctrl-D). The FORM stage adds "Ctrl-D disconnect" only on a remote console
- * (2026-09-20) — the token-hold stage never advertises the chord at all,
- * since it never answers to it (`update-first-owner.ts`'s own routing keeps
- * Ctrl-D out of that stage regardless of what a footer said).
+ * Ctrl-D). The FORM stage adds "Ctrl-D disconnect" on a remote console
+ * (2026-09-20) and "Ctrl-O connect to another service" on a local one
+ * (2026-09-28) — the token-hold stage advertises neither chord, since it
+ * answers to neither (`update-first-owner.ts`'s own routing keeps both out of
+ * that stage regardless of what a footer said).
  */
 function footerOf(stage: FirstOwnerStage, install: InstallFacts | undefined): string {
   if (stage.kind === 'hold') return WIZARD_TOKEN_FOOTER
 
-  return install?.remote === true ? `${FIRST_OWNER_FOOTER} · Ctrl-D disconnect` : FIRST_OWNER_FOOTER
+  const chord = install?.remote === true ? 'Ctrl-D disconnect' : CONNECT_ELSEWHERE_FOOTER
+  return `${FIRST_OWNER_FOOTER} · ${chord}`
 }
 
 function blockOf(stage: FirstOwnerStage, width: number, install: InstallFacts | undefined): readonly string[] {

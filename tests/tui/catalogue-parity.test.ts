@@ -52,8 +52,14 @@ const NOT_YET_COVERED: readonly CommandPair[] = []
  * `catalogue/home.ts`) — so it is exempted from "every action runs a command
  * the table describes" EXPLICITLY, by name, rather than by loosening that
  * test's rule for every action.
+ *
+ * Home's `connect` (2026-09-28) is the local mirror: it reopens on the bare
+ * `--connect` flag (`ActionSpec.leavesConsole`), a real invocation of the CLI
+ * but a FLAG form the table's pairs never include (`pairsOfRow` drops every
+ * word that starts with `-`, as it drops `--remote`) — so it is named here
+ * for the same reason `disconnect` is, not by widening `usagePairs` to flags.
  */
-const CONSOLE_ONLY_ACTIONS: readonly CommandPair[] = [{ command: 'disconnect' }]
+const CONSOLE_ONLY_ACTIONS: readonly CommandPair[] = [{ command: 'disconnect' }, { command: '--connect' }]
 
 /** A row of the table: two spaces, a binary name, the command, then the rest. */
 const ROW_PATTERN = new RegExp(`^${ROW_INDENT}(?:mcpcut|mcpcut) (\\S+)(?: (.*))?$`)

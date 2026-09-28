@@ -111,7 +111,9 @@ interface ActionSpecCommon extends CommandPair {
  * spawns the wizard as a CHILD PROCESS ON THIS MACHINE (`leavesConsole`) —
  * over `--remote` that child would configure the operator's own laptop, not
  * the install the console is driving, so the action is withdrawn rather than
- * offered and confusing. `'remote'` joined on 2026-09-20: the exact opposite
+ * offered and confusing. Home's `connect` (2026-09-28) needs it too: it
+ * reopens `--connect` to reach ANOTHER host, which over `--remote` is what
+ * `disconnect` is for. `'remote'` joined on 2026-09-20: the exact opposite
  * sense — an action that makes sense ONLY over `--remote` (Home's
  * `disconnect`: there is nothing to disconnect FROM on a local console).
  */

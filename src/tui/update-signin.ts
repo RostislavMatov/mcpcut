@@ -15,7 +15,16 @@ import {
   type TerminalSize,
 } from './model.js'
 import type { ServiceSummary } from './services-summary.js'
-import { disconnectStep, isDisconnectKey, isRemoteInstall, noEffects, quit, withScreen } from './update-step.js'
+import {
+  connectElsewhereStep,
+  disconnectStep,
+  isConnectElsewhereKey,
+  isDisconnectKey,
+  isRemoteInstall,
+  noEffects,
+  quit,
+  withScreen,
+} from './update-step.js'
 
 /**
  * The sign-in screen (mcpcut phase 2, Task 9).
@@ -96,6 +105,9 @@ function applyKey(model: Model, screen: SigninScreen, key: KeyEvent): Step {
   // while busy: a sign-in already sent must be let alone. Locally this chord
   // does nothing at all, as it always has (`isRemoteInstall`).
   if (isDisconnectKey(key) && !screen.busy && isRemoteInstall(model)) return disconnectStep(model)
+  // Its local counterpart (2026-09-28): Ctrl-O leaves for the connect form,
+  // under the same "not while busy" rule. A remote console has Ctrl-D for that.
+  if (isConnectElsewhereKey(key) && !screen.busy && !isRemoteInstall(model)) return connectElsewhereStep(model)
   // One sign-in at a time: a second Enter while the store is answering would queue a second lookup.
   if (key.kind === 'enter') return screen.busy ? noEffects(model) : submitToken(model, screen)
 
