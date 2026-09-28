@@ -17,7 +17,7 @@ jobs:
 
   publish:
     needs: ci
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     # Job-level only: a top-level group would share its name with the called
     # CI workflow's group and cancel it.

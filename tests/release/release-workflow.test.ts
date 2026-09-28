@@ -43,6 +43,16 @@ describe('release.yml', () => {
     expect(thirdParty.filter((line) => !/uses: [\w.-]+\/[\w.-]+@[0-9a-f]{40}\b/.test(line))).toEqual([])
   })
 
+  test.each(['release.yml', 'ci.yml'])('every job in %s runs on a pinned runner image, never a moving *-latest label', (name) => {
+    // GitHub moves `ubuntu-latest` to Ubuntu 26 from 2026-10-19, in the
+    // middle of the launch month. A pinned image changes only in a commit
+    // that says so, once the build has been seen green on the new one.
+    const runners = workflow(name).split('\n').filter((line) => /^\s*runs-on: /.test(line))
+
+    expect(runners.length).toBeGreaterThan(0)
+    expect(runners.filter((line) => /-latest\b/.test(line))).toEqual([])
+  })
+
   test('the tag name reaches the shell through the environment, never through ${{ }}', () => {
     // `${{ github.ref_name }}` inside `run:` is pasted into the script before
     // the shell parses it — a tag name is attacker-shaped text. The file needs
