@@ -24,6 +24,10 @@
 <meta name="twitter:image" content="https://mcpcut.com/og.png">
 </head>
 <body>
+<!-- Cloudflare takes a versioned package name for an e-mail address and serves
+     "[email protected]" in its place; the script meant to decode it does not
+     run under this page's CSP. There is no address on this page to hide. -->
+<!--email_off-->
 <a class="skip" href="#quick-start">Skip to the Quick start</a>
 
 <header class="top">
@@ -183,5 +187,6 @@ npx -y mcpcut@0.2.0 verify --report ./report</pre>
   <a href="/terms">Terms</a>
   <a href="/privacy">Privacy</a>
 </footer>
+<!--/email_off-->
 </body>
 </html>

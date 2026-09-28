@@ -47,6 +47,16 @@ const OG_IMAGE_HEIGHT = 630
 /** How far a "preview" label may stand from the network feature it qualifies (characters of text). */
 const QUALIFIER_WINDOW = 80
 
+/**
+ * Cloudflare's Email Address Obfuscation leaves the text between these two
+ * comments as written (developers.cloudflare.com/waf/tools/scrape-shield/
+ * email-address-obfuscation, "Prevent Cloudflare from obfuscating email").
+ */
+const EMAIL_OFF_BLOCK = /<!--email_off-->[\s\S]*?<!--\/email_off-->/g
+
+/** What an address harvester — and Cloudflare with it — takes for an e-mail: `mcpcut@0.2.0` included. */
+const EMAIL_SHAPED = /[\w.%+-]+@[\w-]+(?:\.[\w-]+)+/g
+
 const FONT_FILES: ReadonlyArray<readonly [string, Buffer | string]> = [
   ['fonts/silkscreen-400.woff2', SILKSCREEN_400.body],
   ['fonts/silkscreen-700.woff2', SILKSCREEN_700.body],
@@ -174,6 +184,15 @@ describe('site/ — self-contained under a strict CSP', () => {
     expect(html).not.toMatch(/<style/i)
     expect(html).not.toMatch(/\sstyle\s*=/i)
     expect(html).not.toMatch(/\son[a-z]+\s*=/i)
+  })
+
+  test('keeps every e-mail-shaped string away from Cloudflare', () => {
+    // With Email Address Obfuscation on, Cloudflare serves `mcpcut@0.2.0` as
+    // `[email protected]` and injects a script to decode it — a script the
+    // CSP above refuses. Seen live on 2026-09-28: every install command on
+    // mcpcut.com read `npx -y [email protected] …`. The page has no address
+    // to hide, so nothing shaped like one may sit outside an email_off block.
+    expect(html.replace(EMAIL_OFF_BLOCK, '').match(EMAIL_SHAPED) ?? []).toEqual([])
   })
 
   test('loads every stylesheet, font, icon and image from this directory', () => {
