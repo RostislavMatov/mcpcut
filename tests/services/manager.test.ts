@@ -3,7 +3,6 @@ import { once } from 'node:events'
 import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer as createHttpServer, type Server as HttpServer } from 'node:http'
-import { createServer as createNetServer, type AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -25,6 +24,7 @@ import { logFilePathFor, pidFilePathFor, runDirFor } from '../../src/services/pa
 import { probeService } from '../../src/services/probe.js'
 import { defaultInstallConfig } from '../../src/setup/defaults.js'
 import type { InstallConfig } from '../../src/setup/schema.js'
+import { reservedPort } from '../support/ports.js'
 
 /**
  * The service manager (mcpcut phase 1, Task 11): what stands between `mcpcut
@@ -77,23 +77,14 @@ async function waitUntil(predicate: () => boolean | Promise<boolean>, what: stri
   }
 }
 
-/** A port nothing holds: bind an ephemeral one, learn its number, give it back. */
-async function freePort(): Promise<number> {
-  const server = createNetServer()
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
-  const { port } = server.address() as AddressInfo
-  await new Promise<void>((resolve) => server.close(() => resolve()))
-  return port
-}
-
 beforeEach(async () => {
   dataDir = await mkdtemp(join(tmpdir(), 'mcpcut-manager-'))
   onDispose(() => rm(dataDir, { recursive: true, force: true }))
   const base = defaultInstallConfig(dataDir)
   config = {
     ...base,
-    ui: { ...base.ui, port: await freePort() },
-    serve: { ...base.serve, port: await freePort() },
+    ui: { ...base.ui, port: await reservedPort() },
+    serve: { ...base.serve, port: await reservedPort() },
   }
 })
 

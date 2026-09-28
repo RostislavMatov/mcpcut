@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { createServer as createHttpServer } from 'node:http'
-import { createServer as createNetServer, type AddressInfo } from 'node:net'
+import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
@@ -14,6 +14,7 @@ import type { PidRecord } from '../../src/services/pid-file.js'
 import type { probeService } from '../../src/services/probe.js'
 import { defaultInstallConfig } from '../../src/setup/defaults.js'
 import type { InstallConfig } from '../../src/setup/schema.js'
+import { reservedPort } from '../support/ports.js'
 
 /**
  * `probeHost` (Q32): the address `status` dials for a service it has no pid
@@ -45,15 +46,6 @@ beforeEach(async () => {
   cleanups.push(() => rm(dataDir, { recursive: true, force: true }))
   config = defaultInstallConfig(dataDir)
 })
-
-/** A port nothing holds: bind an ephemeral one, learn its number, give it back. */
-async function freePort(): Promise<number> {
-  const server = createNetServer()
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
-  const { port } = server.address() as AddressInfo
-  await new Promise<void>((resolve) => server.close(() => resolve()))
-  return port
-}
 
 /** An HTTP server answering `/login` on loopback, standing in for the neighbour container. */
 async function startForeignUi(): Promise<number> {
@@ -168,7 +160,7 @@ describe('status without a pid file dials probeHost (Q32)', () => {
     config = {
       ...config,
       supervisor: 'external',
-      serve: { ...config.serve, port: await freePort(), probeHost: 'no-such-service.invalid' },
+      serve: { ...config.serve, port: await reservedPort(), probeHost: 'no-such-service.invalid' },
     }
 
     const status = await statusOf('serve')

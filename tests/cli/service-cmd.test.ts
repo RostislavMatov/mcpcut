@@ -1,5 +1,4 @@
 import { mkdtemp, rm } from 'node:fs/promises'
-import { createServer as createNetServer, type AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -16,6 +15,7 @@ import type {
 import { defaultInstallConfig } from '../../src/setup/defaults.js'
 import type { InstallConfigLoad } from '../../src/setup/load.js'
 import type { InstallConfig } from '../../src/setup/schema.js'
+import { reservedPort } from '../support/ports.js'
 
 /**
  * `mcpcut start|stop|status|logs` (mcpcut phase 1, Task 12): the four commands
@@ -552,22 +552,13 @@ describe('the commands against the real manager', () => {
   let dataDir: string
   let config: InstallConfig
 
-  /** A port nothing holds: bind an ephemeral one, learn its number, give it back. */
-  async function freePort(): Promise<number> {
-    const server = createNetServer()
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
-    const { port } = server.address() as AddressInfo
-    await new Promise<void>((resolve) => server.close(() => resolve()))
-    return port
-  }
-
   beforeEach(async () => {
     dataDir = await mkdtemp(join(tmpdir(), 'mcpcut-service-cmd-'))
     const base = defaultInstallConfig(dataDir)
     config = {
       ...base,
-      ui: { ...base.ui, port: await freePort() },
-      serve: { ...base.serve, port: await freePort() },
+      ui: { ...base.ui, port: await reservedPort() },
+      serve: { ...base.serve, port: await reservedPort() },
     }
   })
 

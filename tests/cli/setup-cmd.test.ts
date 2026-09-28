@@ -1,5 +1,5 @@
 import { chmod, mkdtemp, readFile, rm, stat, writeFile, mkdir } from 'node:fs/promises'
-import { createServer as createNetServer, type AddressInfo, type Socket } from 'node:net'
+import { createServer as createNetServer, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -22,6 +22,7 @@ import { installConfigSchema } from '../../src/setup/schema.js'
 import { valuesOf } from '../../src/tui/form.js'
 import { setupArgvOf, WIZARD_FIELD, wizardScreenOf } from '../../src/tui/wizard-fields.js'
 import { VAULT_KEY_FILE_NAME } from '../../src/vault/constants.js'
+import { reservedPort } from '../support/ports.js'
 
 /**
  * `mcpcut setup --yes` (phase 1, Task 14): the one command that turns a bare
@@ -87,15 +88,6 @@ function fakeIo(): {
   }
 }
 
-/** A port nothing holds: bind an ephemeral one, learn its number, give it back. */
-async function freePort(): Promise<number> {
-  const server = createNetServer()
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
-  const { port } = server.address() as AddressInfo
-  await new Promise<void>((resolve) => server.close(() => resolve()))
-  return port
-}
-
 /**
  * Holds `port` for the duration of one test, so a bind check has something to
  * trip over. Every accepted socket is destroyed on the way out: the UI probe
@@ -146,9 +138,9 @@ async function fullRunArgs(extra: readonly string[] = []): Promise<string[]> {
     '--data-dir',
     dataDir,
     '--ui-port',
-    String(await freePort()),
+    String(await reservedPort()),
     '--serve-port',
-    String(await freePort()),
+    String(await reservedPort()),
     ...extra,
   ]
 }
@@ -289,7 +281,7 @@ describe('setup --yes: the first run of an install', () => {
 
   test('resolves a relative --data-dir against the working directory, never the home', async () => {
     const io = fakeIo()
-    const args = ['--yes', '--data-dir', 'plane-data', '--ui-port', String(await freePort()), '--serve-port', String(await freePort())]
+    const args = ['--yes', '--data-dir', 'plane-data', '--ui-port', String(await reservedPort()), '--serve-port', String(await reservedPort())]
 
     const exitCode = await runSetupCommand(args, io, { env, home, cwd: home })
 
@@ -320,7 +312,7 @@ describe('setup --yes: the overlay rule', () => {
     expect(await runSetupCommand(args, fakeIo(), { env, home })).toBe(0)
 
     const io = fakeIo()
-    const exitCode = await runSetupCommand(['--yes', '--ui-port', String(await freePort())], io, {
+    const exitCode = await runSetupCommand(['--yes', '--ui-port', String(await reservedPort())], io, {
       env,
       home,
     })
@@ -344,7 +336,7 @@ describe('setup --yes: the overlay rule', () => {
     expect(installConfigSchema.parse(await readConfig()).serve.publicUrl).toBe('https://mcp.example.com')
 
     // Act: a rerun about something else entirely.
-    const exitCode = await runSetupCommand(['--yes', '--serve-port', String(await freePort())], fakeIo(), {
+    const exitCode = await runSetupCommand(['--yes', '--serve-port', String(await reservedPort())], fakeIo(), {
       env,
       home,
     })
@@ -370,7 +362,7 @@ describe('setup --yes: the overlay rule', () => {
     })
 
     // Act: a rerun about something else entirely never types --tenant again.
-    const exitCode = await runSetupCommand(['--yes', '--serve-port', String(await freePort())], fakeIo(), {
+    const exitCode = await runSetupCommand(['--yes', '--serve-port', String(await reservedPort())], fakeIo(), {
       env,
       home,
     })
@@ -499,12 +491,12 @@ describe('setup --yes: a check that fails', () => {
   test(
     'refuses on an occupied port and leaves no config, no vault and no admin behind',
     async () => {
-      const uiPort = await freePort()
+      const uiPort = await reservedPort()
       await holdPort(uiPort)
       const io = fakeIo()
 
       const exitCode = await runSetupCommand(
-        ['--yes', '--data-dir', dataDir, '--ui-port', String(uiPort), '--serve-port', String(await freePort())],
+        ['--yes', '--data-dir', dataDir, '--ui-port', String(uiPort), '--serve-port', String(await reservedPort())],
         io,
         { env, home },
       )

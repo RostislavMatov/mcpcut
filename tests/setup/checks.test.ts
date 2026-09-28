@@ -16,6 +16,7 @@ import {
 import { RUN_DIR_NAME } from '../../src/services/constants.js'
 import { WRITE_PROBE_FILE_NAME } from '../../src/setup/constants.js'
 import { writeCorruptDatabase } from '../support/corrupt-db.js'
+import { reservedPort } from '../support/ports.js'
 
 /**
  * The `setup` preflight (phase 1, task 13). Real directories, real sockets,
@@ -59,13 +60,6 @@ function closeServer(server: Server): Promise<void> {
       resolve()
     })
   })
-}
-
-/** A port nothing listens on: bound to learn the number, then released. */
-async function freePort(host: string): Promise<number> {
-  const { server, port } = await listenOn(host)
-  await closeServer(server)
-  return port
 }
 
 function modeOf(mode: number): number {
@@ -134,7 +128,7 @@ describe('checkDataDir', () => {
 
 describe('checkPortFree', () => {
   test('reports a port nothing listens on as free', async () => {
-    const port = await freePort('127.0.0.1')
+    const port = await reservedPort()
 
     const result = await checkPortFree('ui', '127.0.0.1', port)
 

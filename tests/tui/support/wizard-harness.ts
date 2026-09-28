@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { mkdtemp, rm } from 'node:fs/promises'
-import { createServer as createNetServer, type AddressInfo, type Socket } from 'node:net'
+import { createServer as createNetServer, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -18,6 +18,7 @@ import { loadInstallConfigSync } from '../../../src/setup/load.js'
 import { plainStyle } from '../../../src/tui/ansi.js'
 import { EXIT_OK, WIZARD_FORM_FOOTER } from '../../../src/tui/constants.js'
 import { createFakeTerminal, waitForScreen, type FakeTerminal } from './fake-terminal.js'
+import { reservedPort } from '../../support/ports.js'
 
 /**
  * The stand the first-run wizard is driven on end to end (mcpcut phase 3,
@@ -84,28 +85,12 @@ export function fakeIo(): FakeIo {
 }
 
 /**
- * A port nothing holds: bind an ephemeral one, learn its number, give it back.
- *
- * One retry, because the answer is a guess by construction — the port is free
- * when it is handed over and anything on the box may take it in between.
+ * A port nothing holds, from this worker's own slice below the ephemeral
+ * range: a released ephemeral port was a guess another worker could take
+ * before the stand bound it (`tests/support/ports.ts`).
  */
 export async function freePort(): Promise<number> {
-  try {
-    return await bindEphemeralPort()
-  } catch {
-    return await bindEphemeralPort()
-  }
-}
-
-function bindEphemeralPort(): Promise<number> {
-  return new Promise<number>((resolve, reject) => {
-    const server = createNetServer()
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address() as AddressInfo
-      server.close(() => resolve(port))
-    })
-  })
+  return await reservedPort()
 }
 
 /**
