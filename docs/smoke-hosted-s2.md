@@ -33,12 +33,22 @@ were created with the provisioner's operator commands (`provision-create|status|
 | unknown subdomain | 502 |
 | `mcpcut.com`, `www` (301), `mcp.mcpcut.com/mcp` (401) via Cloudflare | as expected |
 
+## Second pass (2026-09-28), after the isolation and policy fixes
+| Check | Result |
+|---|---|
+| tenant bridge interface | `mct930706cd5cc1` (predictable `mct` prefix) |
+| starter policy in a new install | `policy.json` 0600, `require-approval` by default, reads allowed |
+| from a tenant: host gateway `:22`, `:443`, host public IP `:22` | blocked (host firewall `mcpcut-tenant-firewall.service`) |
+| from a tenant: `1.1.1.1:443` | reachable (the internet stays open) |
+| from a tenant: other tenants, hub, provisioner | not resolvable |
+| remote console over Cloudflare: `server add` (DeepWiki), `quarantine approve --all`, `agent create`, `agent grant`, `policy set … require-approval` | all exit 0 |
+| agent over Cloudflare: `initialize`, `tools/list` | 200; `dw__ask_wiki_question`, `dw__read_wiki_contents`, `dw__read_wiki_structure` |
+| gated call with no decision | held **60 s**, answered `-32002` (approval timed out) — Cloudflare did not cut the response |
+| gated call approved while waiting | not shown: the smoke script approved the first (already timed-out) request's id; covered by the local e2e tests |
+
 ## Open
-- **The host is reachable from a tenant network** (Docker bridge gateway: SSH and the VPN on 443). The install
-  itself cannot use it — its SSRF guard refuses private addresses and a tenant runs no code of its own (stdio is
-  refused) — but the network does not stop it. Fix on the host: a `DOCKER-USER` iptables rule dropping traffic
-  from `mcpcut-t-*` bridges to the host and to RFC 1918 ranges (host change — owner's decision).
-- Waiting 60 s on an approval through Cloudflare (100 s limit) — not run (needs an agent with a gated tool).
+- ~~The host is reachable from a tenant network~~ — closed 2026-09-28 (`05eeede` + the host unit).
+- ~~Waiting 60 s on an approval through Cloudflare~~ — passed 2026-09-28.
 - Cloudflare Authenticated Origin Pulls — not enabled yet (matters once the hub is up: its per-IP sign-up limit
   trusts `CF-Connecting-IP`).
 - The hub: waits for the GitHub OAuth App.

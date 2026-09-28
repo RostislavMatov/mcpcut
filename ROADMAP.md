@@ -135,9 +135,9 @@ publisher настроен (G5: `release.yml`, только stage, «2FA + disal
 - **Фаза 5 — деплой и живой смок на S2 выполнены 2026-09-27** (`docs/smoke-hosted-s2.md`): стек развёрнут, Cloudflare
   переключён (wildcard, `mcp` через прокси, Origin CA на `*.mcpcut.com`), установки создаются за 40 с, ~75 МиБ,
   изоляция соседей подтверждена; смок нашёл и закрыл 3 бага (Dockerfile `chmod`, `status` и 303 `/setup`,
-  готовность через CLI под 0,25 CPU). Открыто: хост (SSH, VPN 443) достижим из сети арендатора — iptables
-  `DOCKER-USER` (решение владельца); ожидание одобрения 60 с через Cloudflare не прогонялось; Authenticated Origin
-  Pulls; hub ждёт GitHub OAuth App; решение о вливании в `main` и выпуске 0.2.0.
+  готовность через CLI под 0,25 CPU). 28.09: изоляция хоста (мосты `mct*` + `mcpcut-tenant-firewall.service`), стартовая политика
+  арендатора, одобрение 60 с через Cloudflare — пройдены; ветка влита в `main`. Открыто: hub ждёт GitHub OAuth App;
+  Authenticated Origin Pulls — вместе с hub; выпуск 0.2.0 — с «да» владельца.
 - Хвосты деплоя фазы 3 (найдены при подготовке `docs/deploy/site/`, ADR-0017 «Поправка … фаза 3»):
   `export --report` без `--out` внутри контейнера арендатора падает `EROFS` (пишет в `mcpcut-report` под
   `/app`, а корень файловой системы там только для чтения — O3) — решить, сузить ли дефолт под режимом
