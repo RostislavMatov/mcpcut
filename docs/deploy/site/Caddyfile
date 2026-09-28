@@ -56,6 +56,25 @@
 	https_port 8443
 }
 
+(origin_tls) {
+	# Cloudflare Origin CA + Authenticated Origin Pulls (H6, ADR-0017): every
+	# block below is reached through Cloudflare only, and the origin asks for
+	# Cloudflare's client certificate, so nobody who finds the host's address
+	# can reach it directly — and `CF-Connecting-IP`, which the hub's per-IP
+	# sign-up limit (HA12) trusts, cannot be forged. Needs the zone setting
+	# "Authenticated Origin Pulls" ON (SSL/TLS -> Origin Server) and Cloudflare's
+	# origin-pull CA at the path below
+	# (https://developers.cloudflare.com/ssl/static/authenticated_origin_pull_ca.pem).
+	# Turn the zone setting on first: Cloudflare presenting a certificate the
+	# origin does not ask for is harmless, the reverse takes the site down.
+	tls /etc/caddy/origin/cert.pem /etc/caddy/origin/key.pem {
+		client_auth {
+			mode require_and_verify
+			trust_pool file /etc/caddy/origin/cf-origin-pull-ca.pem
+		}
+	}
+}
+
 (page_headers) {
 	header {
 		Content-Security-Policy "default-src 'none'; style-src 'self'; font-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
@@ -67,22 +86,7 @@
 }
 
 mcpcut.com:8443, www.mcpcut.com:8443 {
-	tls /etc/caddy/origin/cert.pem /etc/caddy/origin/key.pem
-	# Cloudflare Authenticated Origin Pulls (H6, ADR-0017 phase 2): proves a
-	# request at this vhost actually transited Cloudflare, so `CF-Connecting-
-	# IP` below cannot be forged by hitting the origin IP directly and walking
-	# straight through the hub's per-IP signup rate limit (HA12). Turn on
-	# together with the matching zone setting (SSL/TLS → Origin Server →
-	# Authenticated Origin Pulls): fetch Cloudflare's origin-pull CA to the
-	# path below, then move this block inside the `tls` directive above
-	# (`tls cert.pem key.pem { client_auth { ... } }`). Left commented so a
-	# deploy that has not done the zone side yet does not go dark; the same
-	# setting, once on, applies to the `mcp.mcpcut.com` and `*.mcpcut.com`
-	# blocks below too — it is a zone-wide Cloudflare setting, not per-block.
-	# client_auth {
-	# 	mode require_and_verify
-	# 	trust_pool file /etc/caddy/origin/cf-origin-pull-ca.pem
-	# }
+	import origin_tls
 	@www host www.mcpcut.com
 	redir @www https://mcpcut.com{uri} 301
 	# hub (ADR-0017 phase 2, `mcpcut-hub`): sign-in and accounts. It sets its
@@ -112,7 +116,7 @@ mcp.mcpcut.com:8443 {
 	# directly). Cloudflare still cuts a response idle for 100 s; an agent
 	# waiting on a human approval must not be cut — a live smoke watches this
 	# (see the wildcard block below, which carries the same risk for tenants).
-	tls /etc/caddy/origin/cert.pem /etc/caddy/origin/key.pem
+	import origin_tls
 	reverse_proxy serve:8090
 }
 
@@ -133,7 +137,7 @@ mcp.mcpcut.com:8443 {
 # and this block fronts a different tenant's install on every request, not
 # one static page.
 *.mcpcut.com:8443 {
-	tls /etc/caddy/origin/cert.pem /etc/caddy/origin/key.pem
+	import origin_tls
 	# Cloudflare cuts a response idle for 100 s (see the header comment); an
 	# agent of this tenant waiting on a human approval must not be cut. A live
 	# smoke exercises an approval close to that limit.
