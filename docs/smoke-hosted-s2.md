@@ -46,9 +46,20 @@ were created with the provisioner's operator commands (`provision-create|status|
 | gated call with no decision | held **60 s**, answered `-32002` (approval timed out) — Cloudflare did not cut the response |
 | gated call approved while waiting | not shown: the smoke script approved the first (already timed-out) request's id; covered by the local e2e tests |
 
+## The hub, live (2026-09-28)
+With the GitHub OAuth App (callback `https://mcpcut.com/auth/github/callback`) and Cloudflare Authenticated Origin
+Pulls on (direct TLS to the origin refused, `d064f2c`):
+
+| Check | Result |
+|---|---|
+| `/signin` via Cloudflare | 302 to `github.com/login/oauth/authorize` with the app's `client_id`, the callback, `state`, PKCE `S256` |
+| `/terms`, `/privacy` | 200; `/account` signed out → 303 |
+| a real sign-in in a browser (the owner) | account created, install `rostislavmatov.mcpcut.com` ready in the background, owner token shown once; "issue a new owner token" rotated it |
+| a second GitHub account | its own install, `<another-user>.mcpcut.com` |
+| both consoles via Cloudflare | `/login` 200, `/mcp` without a token 401; ~77 MiB each |
+
 ## Open
 - ~~The host is reachable from a tenant network~~ — closed 2026-09-28 (`05eeede` + the host unit).
 - ~~Waiting 60 s on an approval through Cloudflare~~ — passed 2026-09-28.
-- Cloudflare Authenticated Origin Pulls — not enabled yet (matters once the hub is up: its per-IP sign-up limit
-  trusts `CF-Connecting-IP`).
-- The hub: waits for the GitHub OAuth App.
+- ~~Authenticated Origin Pulls~~, ~~the hub~~ — done 2026-09-28.
+- The GitHub client secret went through the chat — generate a new one and replace the file on S2.
