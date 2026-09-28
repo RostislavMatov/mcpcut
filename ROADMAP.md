@@ -149,8 +149,8 @@ publisher настроен (G5: `release.yml`, только stage, «2FA + disal
   страницы (`default-src 'none'`): у каждого посетителя mcpcut.com все команды Quick start были нерабочими.
   `site/index.html` теперь целиком внутри `<!--email_off-->…<!--/email_off-->`, страж — `tests/site/landing.test.ts`.
   Hub (`mcpcut` без версии в блоке `mcpServers`) и консоль (CSP пускает `'self'`-скрипт декодера) не затронуты.
-  **Ждёт владельца:** передеплоить `site/` — на проде страница старше 27.09 (`mcpcut@0.1.2`, нет «Sign in with
-  GitHub»); по желанию выключить Email Address Obfuscation во всей зоне (Security → Settings или API
+  **Ждёт владельца:** передеплоить `site/` — на проде страница от 27.09 (`last-modified` 17:42 GMT: `mcpcut@0.1.2`,
+  без этого исправления); по желанию выключить Email Address Obfuscation во всей зоне (Security → Settings или API
   `email_obfuscation: off`) — адресов, которые стоило бы прятать, на mcpcut.com нет.
 - Хвосты деплоя фазы 3 (найдены при подготовке `docs/deploy/site/`, ADR-0017 «Поправка … фаза 3»):
   `export --report` без `--out` внутри контейнера арендатора падает `EROFS` (пишет в `mcpcut-report` под
