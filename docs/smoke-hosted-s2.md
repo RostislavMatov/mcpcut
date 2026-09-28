@@ -55,7 +55,7 @@ Pulls on (direct TLS to the origin refused, `d064f2c`):
 | `/signin` via Cloudflare | 302 to `github.com/login/oauth/authorize` with the app's `client_id`, the callback, `state`, PKCE `S256` |
 | `/terms`, `/privacy` | 200; `/account` signed out → 303 |
 | a real sign-in in a browser (the owner) | account created, install `rostislavmatov.mcpcut.com` ready in the background, owner token shown once; "issue a new owner token" rotated it |
-| a second GitHub account | its own install, `<another-user>.mcpcut.com` |
+| a second, unrelated person signing in | their own install on their own subdomain |
 | both consoles via Cloudflare | `/login` 200, `/mcp` without a token 401; ~77 MiB each |
 
 ## Open

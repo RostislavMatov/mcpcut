@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-09-28
+
 ### Added
 
 - **Connect to another service from inside a local console**: `Ctrl-O` on
@@ -25,9 +27,24 @@ All notable changes to this project are documented here. The format follows
   second (bursting to 20) and 10 000 per sliding day per install, then answers
   `429` with `Retry-After`; tune with `tenant.maxRequestsPerSecond` /
   `maxRequestsPerDay` ([Tenant mode](docs/guide/install.md#tenant-mode-hosted)).
+- **The hub (`hub/`)** — the service behind mcpcut.com, in the repository but
+  not in the npm package: sign-in with GitHub (PKCE, the GitHub token revoked
+  right after the profile is read), one mcpcut install per person on their own
+  subdomain created by a provisioner (the only process with the Docker socket,
+  fixed container templates: 256 MiB, 0.25 CPU, no capabilities, read-only
+  root, its own network and volume), an install created in the background and
+  its owner token shown once, idle installs stopped at 60 days and removed at
+  90, and host isolation for tenant networks. See `hub/README.md` and
+  [ADR-0017](docs/adr/0017-hosted-install-per-tenant.md).
 - **`admin add`/`admin rotate --json`** prints one line
   `{"admin","role","token"}` on stdout for a script to parse, moving the
   human notices to stderr instead of interleaving them with it.
+
+### Fixed
+
+- **`status` read a UI with no admin yet as down.** Such a UI answers
+  `/login` with a redirect to `/setup`; the probe now accepts exactly that
+  redirect (any other one is still not the UI answering).
 
 ## [0.1.2] — 2026-09-26
 
@@ -652,7 +669,8 @@ publication — several are security fixes, so they are kept.
   real loopback address are unaffected, since the URL parser normalizes them
   first. Found by the security review of the bridge, 2026-09-21.
 
-[Unreleased]: https://github.com/RostislavMatov/mcpcut/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/RostislavMatov/mcpcut/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/RostislavMatov/mcpcut/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/RostislavMatov/mcpcut/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/RostislavMatov/mcpcut/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/RostislavMatov/mcpcut/releases/tag/v0.1.0
