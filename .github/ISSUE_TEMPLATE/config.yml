@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: It works for me
+    url: https://github.com/RostislavMatov/mcpcut/discussions/1
+    about: One line about your client and OS tells whether mcpcut is useful to anyone — that helps more than you think.
+  - name: A question
+    url: https://github.com/RostislavMatov/mcpcut/discussions/categories/q-a
+    about: Ask in Discussions.
+  - name: A security vulnerability
+    url: https://github.com/RostislavMatov/mcpcut/security/advisories/new
+    about: Report it privately, never in a public issue — see SECURITY.md.

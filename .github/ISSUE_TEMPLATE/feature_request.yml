@@ -1,0 +1,17 @@
+name: Idea or missing piece
+description: Something mcpcut should do, or does in a way that does not fit your setup.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: situation
+    attributes:
+      label: What you are trying to do
+      description: The situation rather than the solution — which agent, which servers, what should happen.
+    validations:
+      required: true
+  - type: textarea
+    id: gap
+    attributes:
+      label: What is missing or in the way
+    validations:
+      required: true

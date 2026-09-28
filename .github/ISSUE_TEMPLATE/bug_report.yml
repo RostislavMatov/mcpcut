@@ -1,0 +1,50 @@
+name: Bug or first-run problem
+description: Something does not work — including anything that got in your way in the first minute.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for trying mcpcut. A few facts make a problem reproducible. The journal redacts secrets before it writes anything, but check what you paste here all the same.
+  - type: input
+    id: version
+    attributes:
+      label: mcpcut version
+      description: "Output of `npx -y mcpcut --version` or `mcpcut --version`."
+      placeholder: mcpcut 0.2.0
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Node.js, OS and MCP client
+      placeholder: Node 24.9, macOS 15, Claude Code
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: How you run it
+      options:
+        - wrap in front of one server (npx)
+        - installed mcpcut (setup, web UI or console)
+        - Docker
+        - hosted preview on mcpcut.com
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you saw, what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Command and output
+      description: The command you ran and what it printed. Pasted as text, it is formatted for you.
+      render: shell
+    validations:
+      required: false
