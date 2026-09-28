@@ -137,9 +137,21 @@ publisher настроен (G5: `release.yml`, только stage, «2FA + disal
   изоляция соседей подтверждена; смок нашёл и закрыл 3 бага (Dockerfile `chmod`, `status` и 303 `/setup`,
   готовность через CLI под 0,25 CPU). 28.09: изоляция хоста (мосты `mct*` + `mcpcut-tenant-firewall.service`), стартовая политика
   арендатора, одобрение 60 с через Cloudflare — пройдены; ветка влита в `main`. 28.09 (позже): hub развёрнут, Cloudflare
-  Authenticated Origin Pulls включён, живой вход через GitHub пройден (две учётки, установки на поддоменах). **0.2.0 выпущен 28.09.** Хвост: флейк
+  Authenticated Origin Pulls включён, живой вход через GitHub пройден (две учётки, установки на поддоменах). **0.2.0 выпущен 28.09.** ~~Хвост: флейк
   `tests/cli/setup-cmd.test.ts` › «starts nothing … external supervisor» на Linux CI — `freePort()` отдаёт порт,
-  который параллельный тест успевает занять до проверки привязки в `setup` (первая попытка CI 0.2.0; повтор зелёный).
+  который параллельный тест успевает занять до проверки привязки в `setup` (первая попытка CI 0.2.0; повтор зелёный).~~
+  — **закрыто 2026-09-28**: порт для кода, который привязывается позже, выдаёт `tests/support/ports.ts` — из среза
+  своего воркера (`VITEST_POOL_ID`) ниже эфемерного диапазона, откуда ОС сама порт не отдаёт. На него переведены все
+  шесть мест с тем же приёмом (`setup-cmd`, `service-cmd`, `manager`, `manager-probe-host`, `setup/checks`,
+  `wizard-harness`); на Linux тест сверяет срезы с `/proc/sys/net/ipv4/ip_local_port_range`.
+- **Лендинг: Cloudflare ломал команды установки** (найдено 2026-09-28, код исправлен в тот же день). Email Address
+  Obfuscation принимает `mcpcut@<версия>` за адрес и отдаёт `[email protected]`, а скрипт-декодер не проходит CSP
+  страницы (`default-src 'none'`): у каждого посетителя mcpcut.com все команды Quick start были нерабочими.
+  `site/index.html` теперь целиком внутри `<!--email_off-->…<!--/email_off-->`, страж — `tests/site/landing.test.ts`.
+  Hub (`mcpcut` без версии в блоке `mcpServers`) и консоль (CSP пускает `'self'`-скрипт декодера) не затронуты.
+  **Ждёт владельца:** передеплоить `site/` — на проде страница старше 27.09 (`mcpcut@0.1.2`, нет «Sign in with
+  GitHub»); по желанию выключить Email Address Obfuscation во всей зоне (Security → Settings или API
+  `email_obfuscation: off`) — адресов, которые стоило бы прятать, на mcpcut.com нет.
 - Хвосты деплоя фазы 3 (найдены при подготовке `docs/deploy/site/`, ADR-0017 «Поправка … фаза 3»):
   `export --report` без `--out` внутри контейнера арендатора падает `EROFS` (пишет в `mcpcut-report` под
   `/app`, а корень файловой системы там только для чтения — O3) — решить, сузить ли дефолт под режимом
