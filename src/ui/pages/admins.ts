@@ -148,6 +148,18 @@ export function renderAdminsPage(view: {
 }
 
 /**
+ * What the token is for, with the admin's real name: the sign-in page takes it
+ * as is. A rotation says the old token is dead — if the owner rotated their
+ * own, this session ended with it and "Back to admins" lands on that page.
+ */
+function tokenNextStep(admin: string, action: 'created' | 'rotated'): Html {
+  const signIn = html`<a href="${safeUrl('/login')}">the sign-in page</a>`
+  return action === 'created'
+    ? html`Give it to ${admin}: they sign in on ${signIn} with it.`
+    : html`The old token no longer works: ${admin} signs in again on ${signIn} with this one.`
+}
+
+/**
  * The one-time token reveal after `add` or `rotate`. The plaintext token is
  * interpolated ONLY here, in the direct HTTP response to the action, with a
  * loud warning; it is never persisted, logged or re-rendered on a later load.
@@ -163,6 +175,7 @@ export function renderAdminTokenOnce(view: {
     <div class="panel-bd">
       <p class="callout">Save this token now — it is shown once and cannot be recovered.</p>
       <pre class="token" data-token>${view.token}</pre>
+      <p>${tokenNextStep(view.admin, view.action)}</p>
       <p><a href="${safeUrl('/admins')}">Back to admins</a></p>
     </div>
   </section>`

@@ -5,7 +5,7 @@ import type { UiSession } from '../auth.js'
 import { html, join, type Html } from '../html.js'
 import { csrfField } from './csrf-field.js'
 import { renderGroupDrawers, type GroupDrawerId } from './groups-form.js'
-import { renderDrawerLink, renderGroupCard, renderNameList } from './groups-parts.js'
+import { renderDrawerLink, renderDrawerTextLink, renderGroupCard, renderNameList } from './groups-parts.js'
 import { renderInterstitial } from './interstitial.js'
 import { renderLayout, type CurrentAdmin } from './layout.js'
 import { plural } from './plural.js'
@@ -66,8 +66,15 @@ function panelActions(view: GroupsView): Html {
   return html`${renderDrawerLink('grant-group', 'grant', 'Grant a server')}${renderDrawerLink('join-group', 'join', 'Add an agent')}`
 }
 
+/** The empty page names the next step: the create drawer for an owner, who can for anyone else. */
+function renderNoGroups(canManage: boolean): Html {
+  return canManage
+    ? html`<p class="empty">No groups yet. ${renderDrawerTextLink('create-group', 'add', 'Create a group')} to grant servers to several agents at once.</p>`
+    : html`<p class="empty">No groups yet. An owner creates them.</p>`
+}
+
 function cardList(view: GroupsView): Html {
-  if (view.groups.length === 0) return html`<p class="empty">no groups yet</p>`
+  if (view.groups.length === 0) return renderNoGroups(view.canManage)
   const ctx = {
     csrfToken: view.session.csrfToken,
     canManage: view.canManage,

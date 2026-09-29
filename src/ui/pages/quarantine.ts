@@ -2,7 +2,7 @@ import { QUARANTINE_RESOLVE_MIN_ROLE } from '../../admin/authz.js'
 import type { InventoryStoreData, ServerInventory } from '../../policy/inventory-store.js'
 import { diffToolSchemas, type SchemaChange, type SurfaceDelta } from '../../policy/schema-diff.js'
 import type { ToolDescriptor } from '../../protocol/mcp.js'
-import { html, join, type Html } from '../html.js'
+import { html, join, safeUrl, type Html } from '../html.js'
 import { renderLayout, type CurrentAdmin } from './layout.js'
 import { renderQuarantineCard } from './quarantine-parts.js'
 import { roleAllows } from './role-gate.js'
@@ -102,7 +102,7 @@ function renderLiveRegion(input: QuarantinePageInput): Html {
   const canResolve = canResolveQuarantine(input.currentAdmin)
   const body =
     input.cards.length === 0
-      ? html`<p class="empty">No quarantined tools.</p>`
+      ? html`<p class="empty">No quarantined tools. A tool waits here when its server first lists it or changes its schema, until it is approved; each server's tools are in <a href="${safeUrl('/servers')}">Servers</a>.</p>`
       : html`<div class="qr-cards">${join(input.cards.map((card) => renderQuarantineCard(card, input.csrfToken, canResolve)))}</div>`
   return html`<section
     class="quarantine"

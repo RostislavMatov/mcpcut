@@ -141,7 +141,7 @@ describe('GET /groups', () => {
 
   test('an empty registry of groups renders the empty state, not a broken table', async () => {
     const html = bodyOf(await handlers.groupsPage(getCtx(session('owner'))))
-    expect(html).toContain('no groups yet')
+    expect(html).toContain('No groups yet.')
   })
 
   test('viewer and operator see no owner controls; owner sees all three drawers', async () => {

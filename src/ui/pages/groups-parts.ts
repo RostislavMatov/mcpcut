@@ -58,12 +58,19 @@ function grantRow(group: string, server: string, grant: AgentGrant, ctx: GroupCa
   </tr>`
 }
 
+/** The empty grant table names the next step: the grant drawer, or who opens it. */
+function noGrantsText(canManage: boolean): Html {
+  return canManage
+    ? html`No servers granted. ${renderDrawerTextLink('grant-group', 'grant', 'Grant a server')}`
+    : html`No servers granted. An owner grants them.`
+}
+
 /** The whole grant table for one group (or an empty-state row). */
 function grantTable(group: GroupRecord, ctx: GroupCardContext): Html {
   const servers = Object.keys(group.grants).sort()
   const rows =
     servers.length === 0
-      ? html`<tr><td colspan="5" class="faint">no servers granted</td></tr>`
+      ? html`<tr><td colspan="5" class="faint">${noGrantsText(ctx.canManage)}</td></tr>`
       : join(
           servers.map((server) =>
             grantRow(group.name, server, group.grants[server] as AgentGrant, ctx),
@@ -98,7 +105,11 @@ function memberItem(group: GroupRecord, agent: string, ctx: GroupCardContext): H
 }
 
 function memberList(group: GroupRecord, ctx: GroupCardContext): Html {
-  if (group.members.length === 0) return html`<p class="empty">no members</p>`
+  if (group.members.length === 0) {
+    return ctx.canManage
+      ? html`<p class="empty">No members. ${renderDrawerTextLink('join-group', 'join', 'Add an agent')}</p>`
+      : html`<p class="empty">No members. An owner adds agents.</p>`
+  }
   return html`<ul class="gr-member-list">${join(group.members.map((agent) => memberItem(group, agent, ctx)))}</ul>`
 }
 
@@ -141,6 +152,11 @@ export function renderNameList(label: string, names: readonly string[]): Html {
   const items = join(names.map((name) => html`<li><code>${name}</code></li>`))
   return html`<p class="small muted">${label}</p>
     <ul class="rows gr-holders">${items}</ul>`
+}
+
+/** The same drawer opener as a plain in-text link, for an empty state's next step. */
+export function renderDrawerTextLink(targetId: string, param: string, label: string): Html {
+  return html`<a href="${safeUrl(`/groups?${param}=1#${targetId}`)}" data-open-details="${targetId}">${label}</a>`
 }
 
 /** A link that opens one of the page's overlay drawers (and works without JS). */

@@ -96,14 +96,17 @@ function renderRow(decision: RecentDecisionView, input: JournalPanelInput): Html
   </a>`
 }
 
+/** An empty table names what fills it, or — under a filter — the way back to every server. */
 function renderEmpty(input: JournalPanelInput): Html {
-  if (input.total === 0) return html`<p class="empty">No decisions journalled yet.</p>`
-  return html`<p class="empty">No calls match this filter.</p>`
+  if (input.total === 0) {
+    return html`<p class="empty">No decisions journalled yet. They appear with the first call through mcpcut: an agent from <a href="${safeUrl('/agents')}">Agents</a>, or mcpcut wrap -- &lt;server command&gt;.</p>`
+  }
+  return html`<p class="empty">No calls match this filter. <a href="${safeUrl('/')}">Show all servers</a></p>`
 }
 
 function renderFooter(input: JournalPanelInput): Html {
   const note = input.truncated
-    ? html`<span class="faint">read stopped early — open the journal for the rest</span>`
+    ? html`<span class="faint">read stopped early — <a href="${safeUrl('/journal')}">open the journal</a> for the rest</span>`
     : html`<span class="faint">journal retained locally</span>`
   return html`<div class="panel-ft"><span>${String(input.decisions.length)} of ${String(input.total)} calls shown</span>${note}</div>`
 }
@@ -132,12 +135,16 @@ function kv(key: string, value: string, slug: string, shown: Html = html`${value
   return html`<div class="kv-line"><span class="label">${key}</span><span class="kv-v ellipsis" data-d="${slug}" title="${value}">${shown}</span></div>`
 }
 
-/** The right "Call detail" panel for the selected row (or its empty state). */
+/**
+ * The right "Call detail" panel for the selected row. With no row selected the
+ * list it could come from is empty (`selectDecision` falls back to the newest),
+ * so the empty state says what will show, not "pick a row" from nothing.
+ */
 export function renderCallDetail(decision: RecentDecisionView | undefined): Html {
   if (decision === undefined) {
     return html`<section class="panel dash-detail" aria-label="Call detail">
       <div class="panel-hd"><h2>Call detail</h2><span class="label">—</span></div>
-      <p class="empty">Pick a row in the journal to inspect the decision behind it.</p>
+      <p class="empty">The newest call shows here once the journal has one; pick any row to inspect it instead.</p>
     </section>`
   }
   return html`<section class="panel dash-detail" aria-label="Call detail">

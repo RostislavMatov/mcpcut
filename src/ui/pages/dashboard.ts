@@ -7,7 +7,8 @@ import {
   type ApprovalsPageInput,
 } from './approval-queue.js'
 import { renderCallDetail, renderJournalPanel, selectDecision } from './dashboard-parts.js'
-import { renderLayout } from './layout.js'
+import { renderLayout, type CurrentAdmin } from './layout.js'
+import { roleAllows } from './role-gate.js'
 
 /**
  * The dashboard served at `/`, laid out exactly as Dashboard.dc.html of the
@@ -144,6 +145,9 @@ function renderTiles(input: DashboardPageInput): Html {
   </section>`
 }
 
+/** Who may register a server: the `POST /servers/add` row of `ROUTE_TABLE`. */
+const SERVER_REGISTER_MIN_ROLE = 'owner'
+
 /** Width buckets of the per-server activity bar (`.svw-0`…`.svw-7`). */
 const SERVER_BAR_MAX_BUCKET = 7
 
@@ -164,10 +168,21 @@ function renderServerCell(
   </a>`
 }
 
-function renderServersStrip(s: DashboardSummary): Html {
+/**
+ * The empty strip names the next step (owner's rule 2026-09-29), as on
+ * `/servers`: the register form for an owner — the `POST /servers/add` row's
+ * threshold — and who can for anyone else.
+ */
+function renderNoServers(admin: CurrentAdmin | undefined): Html {
+  return roleAllows(admin, SERVER_REGISTER_MIN_ROLE)
+    ? html`<p class="empty">No servers registered. <a href="${safeUrl('/servers?add=1#add-server')}">Register a server</a> — its calls then show up here.</p>`
+    : html`<p class="empty">No servers registered. An owner registers them.</p>`
+}
+
+function renderServersStrip(s: DashboardSummary, admin: CurrentAdmin | undefined): Html {
   const cells =
     s.servers.length === 0
-      ? html`<p class="empty">No servers registered.</p>`
+      ? renderNoServers(admin)
       : html`<div class="dash-servers">${join(s.servers.map((r) => renderServerCell(r, s.quarantinedServers, s.recentDecisions)))}</div>`
   return html`<section class="panel" aria-label="Servers">
     <div class="panel-hd"><h2>Servers</h2><span class="small muted">${String(s.servers.length)} registered · ${String(s.quarantinedCount)} tool(s) quarantined</span></div>
@@ -229,7 +244,7 @@ export function renderDashboardPage(input: DashboardPageInput): string {
       ? html`${renderTiles(input)}${renderQueuePanel(input)}`
       : html`${renderTiles(input)}
         ${renderMain(input, s)}
-        ${renderServersStrip(s)}`
+        ${renderServersStrip(s, input.currentAdmin)}`
   return renderLayout({
     title: 'Dashboard',
     content: body,
