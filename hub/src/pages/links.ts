@@ -12,8 +12,12 @@ export const REPOSITORY_ISSUES_URL = 'https://github.com/RostislavMatov/mcpcut/i
 /** "Did it work for you?" — where a person tells us so in one click. */
 export const FEEDBACK_URL = 'https://github.com/RostislavMatov/mcpcut/discussions/1'
 
-/** The tenant's console (`https://alice.mcpcut.com/`), shown as its host name. */
+/**
+ * The tenant's console (`https://alice.mcpcut.com/`), shown as its host name.
+ * The host is cut off the scheme rather than parsed: `URL()` throws on a
+ * malformed address, and on the one-time token page a 500 would lose the token.
+ */
 export function consoleLink(serveUrl: string): Html {
-  const host = new URL(serveUrl).host
+  const host = serveUrl.replace(/^https?:\/\//, '')
   return html`<a href="${safeUrl(`${serveUrl}/`)}">${host}</a>`
 }

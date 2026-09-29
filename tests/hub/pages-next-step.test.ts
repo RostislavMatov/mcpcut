@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import { renderAccountPage, type AccountView, type InstallState } from '../../hub/src/pages/account.js'
+import { consoleLink } from '../../hub/src/pages/links.js'
 import { renderSigninRefusedPage } from '../../hub/src/pages/signin-refused.js'
 import { renderTokenOncePage } from '../../hub/src/pages/token-once.js'
 
@@ -61,6 +62,15 @@ describe('owner token, shown once', () => {
     const page = renderTokenOncePage({ login: 'alice', token: 'mcpo_x', csrfToken: 'c', serveUrl: CONSOLE })
     expect(page).toMatch(/Next: sign in to your console at <a href="https:\/\/alice\.mcpcut\.com\/">alice\.mcpcut\.com<\/a> with it\./)
     expect(page).toContain('<a href="/account">Continue to your account</a>')
+  })
+})
+
+describe('console link', () => {
+  test('never throws on the one-time token page, even for an address URL() rejects', () => {
+    const render = () => consoleLink('https://bad host.example')
+
+    expect(render).not.toThrow()
+    expect(String(render())).toContain('>bad host.example</a>')
   })
 })
 
