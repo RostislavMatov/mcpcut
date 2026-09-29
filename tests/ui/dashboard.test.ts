@@ -216,15 +216,17 @@ describe('dashboard handler composition', () => {
 })
 
 describe('dashboard — Dashboard.dc.html layout (journal panel, call detail, sparklines)', () => {
-  test('journal panel: filter pills, Lat/Status columns, shown counter, sparklines, server bars', () => {
+  test('journal panel: filter pills, Lat/Status columns, shown counter, server bars, no invented sparklines', () => {
     const doc = renderDashboardPage({ cards: [], csrfToken: 'c', summary: SUMMARY })
     expect(doc).toContain('>ALL</a>')
     expect(doc).toContain('href="/?server=github"')
     expect(doc).toContain('<span>Lat</span>')
     expect(doc).toContain('<span>Status</span>')
     expect(doc).toContain('2 of 2 calls shown')
-    expect(doc).toContain('tile-bars')
-    expect(doc).toContain('tb-h')
+    // No decorative sparklines on the tiles (owner 2026-09-29): a wave drawn
+    // next to "0" read as invented activity in a product about an honest record.
+    expect(doc).not.toContain('tile-bars')
+    expect(doc).not.toContain('tb-h')
     expect(doc).toContain('sv-bar')
     expect(doc).toContain('class="dash-side"')
   })

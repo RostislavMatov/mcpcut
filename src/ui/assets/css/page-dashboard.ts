@@ -1,10 +1,10 @@
 /**
  * `/` — the Dashboard, laid out exactly as Dashboard.dc.html of the McpCut
- * design (2026-08-24): four sparkline tiles in a fixed row, then a
+ * design (2026-08-24): four number tiles in a fixed row, then a
  * 1.9fr/1fr grid — the call journal table on the left, the approval queue
  * (white border) stacked over the call-detail card on the right — and the
- * servers grid with activity bars along the bottom. Sparkline/bar heights and
- * widths are class buckets (`.tb-h*`, `.svw-*`) because the CSP forbids
+ * servers grid with activity bars along the bottom. Bar widths are class
+ * buckets (`.svw-*`) because the CSP forbids
  * inline styles; the markup picks a bucket deterministically.
  */
 export const CSS_PAGE_DASHBOARD = `
@@ -13,24 +13,6 @@ export const CSS_PAGE_DASHBOARD = `
 .tile { border-bottom: 2px solid var(--rule); color: var(--fg); }
 a.tile:hover { border-color: var(--line); }
 .tile-strong, a.tile-strong:hover { border-color: var(--fg); }
-
-.tile-bars, .tile-strong .tile-bars {
-  display: flex;
-  align-items: flex-end;
-  gap: 2px;
-  height: 26px;
-  background: none;
-}
-.tb { flex: 1 1 0; min-width: 2px; background: rgba(255, 255, 255, 0.3); }
-.tb.on { background: var(--fg); }
-.tb-h0 { height: 5px; }
-.tb-h1 { height: 8px; }
-.tb-h2 { height: 11px; }
-.tb-h3 { height: 14px; }
-.tb-h4 { height: 17px; }
-.tb-h5 { height: 20px; }
-.tb-h6 { height: 23px; }
-.tb-h7 { height: 26px; }
 
 .dash-grid {
   display: grid;

@@ -1,3 +1,4 @@
+import { PRODUCT_VERSION } from '../../src/brand.js'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -780,6 +781,18 @@ describe('connect: vault failure messages', () => {
         'add each with: mcpcut vault set <name>',
     )
   })
+
+  test('under npx the vault remedies are the npx form, which is what works there', () => {
+    const npx = { npm_command: 'exec' }
+
+    expect(
+      formatVaultFailure('headers', { status: 'vault-error', failure: { status: 'not-initialized' } }, npx),
+    ).toBe(`the vault is not initialized; run: npx -y mcpcut@${PRODUCT_VERSION} vault init\n`)
+    expect(formatVaultFailure('env', { status: 'missing-secrets', missing: ['api-key'] }, npx)).toContain(
+      `add each with: npx -y mcpcut@${PRODUCT_VERSION} vault set <name>`,
+    )
+  })
+
 })
 
 // ---------------------------------------------------------------------------

@@ -12,7 +12,8 @@ import { roleAllows } from './role-gate.js'
 
 /**
  * The dashboard served at `/`, laid out exactly as Dashboard.dc.html of the
- * McpCut design: four sparkline tiles, then the call journal table (left)
+ * McpCut design: four number tiles (the design's sparklines dropped 2026-09-29: decoration next to real
+ * numbers read as invented activity), then the call journal table (left)
  * beside the approval queue and the call-detail card (right), and the servers
  * grid along the bottom. Filtering (`?server=`) and row selection (`?sel=`)
  * are plain GET parameters, so the whole page works without JavaScript.
@@ -89,36 +90,12 @@ export function toRecentDecisions(
   return out.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0)).slice(0, limit)
 }
 
-/**
- * Sparkline geometry: bars per tile, the number of height buckets defined as
- * `.tb-h0`…`.tb-h7` in `css/page-dashboard.ts`, how many trailing bars render
- * solid white, and one wave seed per tile (the design's values). Heights are
- * a deterministic sine wave — decoration, not data — so the render is stable
- * for tests and identical on every load.
- */
-const TILE_BAR_COUNT = 16
-const TILE_BAR_BUCKETS = 8
-const TILE_BAR_LIT = 4
-const TILE_SEEDS = [0.7, 2.1, 1.3, 0.4] as const
-
-function tileBars(seed: number): Html {
-  const bars: Html[] = []
-  for (let i = 0; i < TILE_BAR_COUNT; i++) {
-    const wave = Math.abs(Math.sin((i + 1) * seed))
-    const bucket = Math.min(TILE_BAR_BUCKETS - 1, Math.floor(wave * TILE_BAR_BUCKETS))
-    const lit = i >= TILE_BAR_COUNT - TILE_BAR_LIT ? ' on' : ''
-    bars.push(html`<span class="tb tb-h${String(bucket)}${lit}"></span>`)
-  }
-  return html`<span class="tile-bars" aria-hidden="true">${join(bars)}</span>`
-}
-
 function tile(
   label: string,
   value: string,
   unit: string,
   href: string,
   strong: boolean,
-  seed: number,
   liveKey?: string,
 ): Html {
   const cls = strong ? 'tile tile-strong' : 'tile'
@@ -126,7 +103,6 @@ function tile(
   return html`<a class="${cls}" href="${safeUrl(href)}">
     <span class="label">${label}</span>
     <span class="tile-row"><span class="tile-value num"${live}>${value}</span><span class="tile-unit">${unit}</span></span>
-    ${tileBars(seed)}
   </a>`
 }
 
@@ -135,13 +111,13 @@ function renderTiles(input: DashboardPageInput): Html {
   const s = input.summary
   // The Held tile is the only one a queue swap can change; the other three
   // describe registry/inventory state no approval touches.
-  const heldTile = tile('Held', String(held), 'awaiting approval', '/', held > 0, TILE_SEEDS[0], TILE_HELD_LIVE_KEY)
+  const heldTile = tile('Held', String(held), 'awaiting approval', '/', held > 0, TILE_HELD_LIVE_KEY)
   if (s === undefined) return html`<section class="tiles dash-tiles">${heldTile}</section>`
   return html`<section class="tiles dash-tiles">
     ${heldTile}
-    ${tile('Quarantined', String(s.quarantinedCount), `${s.approvedToolCount} tools approved`, '/quarantine', s.quarantinedCount > 0, TILE_SEEDS[1])}
-    ${tile('Servers', String(s.servers.length), 'registered', '/servers', false, TILE_SEEDS[2])}
-    ${tile('Agents', String(s.agentsActive), `of ${s.agentsTotal} active`, '/agents', false, TILE_SEEDS[3])}
+    ${tile('Quarantined', String(s.quarantinedCount), `${s.approvedToolCount} tools approved`, '/quarantine', s.quarantinedCount > 0)}
+    ${tile('Servers', String(s.servers.length), 'registered', '/servers', false)}
+    ${tile('Agents', String(s.agentsActive), `of ${s.agentsTotal} active`, '/agents', false)}
   </section>`
 }
 

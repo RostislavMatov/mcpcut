@@ -39,6 +39,16 @@ All notable changes to this project are documented here. The format follows
   `Next: mcpcut start, then open http://127.0.0.1:8091/ and sign in with your
   admin token.` — with the real address (the public one when set), without
   `start` once `--start` has run, and in the `npx` form under `npx`.
+- **The dashboard tiles show numbers only.** The small bar charts under
+  Held, Quarantined, Servers and Agents were decoration, not data, and next
+  to a zero they looked like activity that never happened; they are gone.
+  The per-server activity bars, which count real calls, stay.
+- **Vault remedies under `npx` name the `npx` command.** A server whose
+  vault is not initialized, or lacks a secret, now says
+  `npx -y mcpcut@<version> vault init` / `vault set <name>` when mcpcut runs
+  through `npx`.
+- **`package.json` carries `mcpName`** (`io.github.RostislavMatov/mcpcut`),
+  which the official MCP Registry checks before it lists the npm package.
 
 ### Fixed
 

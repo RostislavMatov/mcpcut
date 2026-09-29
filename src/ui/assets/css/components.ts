@@ -339,14 +339,6 @@ details[open] > summary .caret { transform: scaleY(-1); }
 .tile-row { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--gap); }
 .tile-value { font-family: var(--font-pixel); font-size: 26px; line-height: 1; }
 .tile-unit { font-size: 11px; color: var(--fg-dim); }
-.tile-bars {
-  height: 26px;
-  background:
-    repeating-linear-gradient(90deg, rgba(255,255,255,0.3) 0 5px, transparent 5px 7px);
-  -webkit-mask-image: linear-gradient(180deg, transparent 0 30%, #000 30% 100%);
-  mask-image: linear-gradient(180deg, transparent 0 30%, #000 30% 100%);
-}
-.tile-strong .tile-bars { background: repeating-linear-gradient(90deg, var(--fg) 0 5px, transparent 5px 7px); }
 .tile a { border: none; }
 
 /* --- Pager ---------------------------------------------------------------- */

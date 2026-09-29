@@ -1,4 +1,5 @@
 import type { Writable } from 'node:stream'
+import { cliCommand } from '../cli/next-step.js'
 import { SYSTEM_ENV_ALLOWLIST } from '../config.js'
 import { buildServerEnv } from '../proxy/server-env.js'
 import type { ResolveEnvRefsFn } from '../proxy/server-env.js'
@@ -130,7 +131,9 @@ export interface PrepareUpstreamArgs {
 export function formatVaultFailure(
   what: string,
   result: Exclude<ResolveVaultRefsResult, { readonly status: 'resolved' }>,
+  env: NodeJS.ProcessEnv = process.env,
 ): string {
+  const cmd = cliCommand(env)
   if (result.status === 'missing-secrets') {
     // ONE line, remedy included. This string is not only a stderr line: the
     // probe engine carries it as the `vault-refused` status message, and every
@@ -139,14 +142,14 @@ export function formatVaultFailure(
     // `server add|list|show` (user-journey smoke 2026-09-18, UX-3).
     return (
       `missing vault secret(s) for the server's ${what}: ${result.missing.join(', ')} — ` +
-      `add each with: mcpcut vault set <name>\n`
+      `add each with: ${cmd} vault set <name>\n`
     )
   }
   if (result.status === 'invalid-refs') {
     return `invalid vault reference(s) in the server's ${what}: ${result.refs.join(', ')}\n`
   }
   if (result.failure.status === 'not-initialized') {
-    return 'the vault is not initialized; run: mcpcut vault init\n'
+    return `the vault is not initialized; run: ${cmd} vault init\n`
   }
   return `the vault could not be read: ${result.failure.message}\n`
 }
