@@ -1,6 +1,7 @@
 import { parseArgs } from 'node:util'
 import { JOURNAL_DIR } from '../config.js'
 import { listUnimportedLegacySessions } from '../journal/import.js'
+import { isValidSessionId } from '../journal/session-id.js'
 import {
   isValidJournalDirection,
   isValidJournalKind,
@@ -8,7 +9,9 @@ import {
   JOURNAL_KINDS,
   listSessions,
   readSessionWithStats,
+  type SessionSummary,
 } from '../journal/reader.js'
+import { recordFirstSessionHint, showSessionHint, unknownSessionMessage } from './next-step.js'
 import { formatRecordsJson, formatRecordsReadable, formatSessionsTable } from './session-view.js'
 
 /**
@@ -67,12 +70,32 @@ export async function runSessionsCommand(
   io.stdout.write(sessions.length === 0 ? 'No sessions found.\n' : formatSessionsTable(sessions))
   const unimported = await unimportedLegacySessions(journalDir)
   if (unimported.length > 0) {
+    // With nothing imported yet, migrate IS the next step: no second hint.
     io.stderr.write(
       `${unimported.length} legacy *.jsonl session file(s) are not imported; ` +
         'run `mcpcut migrate` to see them.\n',
     )
   }
+  if (sessions.length > 0 || unimported.length === 0) io.stderr.write(nextSessionHint(sessions))
   return 0
+}
+
+/**
+ * The newest session, ready to paste, or how to record the first one. The
+ * list is newest-first (`listSessions`), so the latest is its head.
+ */
+function nextSessionHint(sessions: readonly SessionSummary[]): string {
+  const latest = sessions[0]
+  return latest === undefined ? recordFirstSessionHint() : showSessionHint(latest.sessionId)
+}
+
+/** The same hint on a usage-error path, where a journal that cannot be listed must not turn exit 1 into a crash. */
+async function bestEffortSessionHint(journalDir: string | undefined): Promise<string> {
+  try {
+    return nextSessionHint(await listSessions(journalDir))
+  } catch {
+    return ''
+  }
 }
 
 /**
@@ -109,43 +132,71 @@ export async function runShowCommand(
     },
     allowPositionals: true,
   })
+  const { direction, kind, json } = values
 
   const sessionId = positionals[0]
   if (sessionId === undefined) {
     io.stderr.write(`Missing <sessionId> in show command.\n\n${SHOW_USAGE}`)
+    io.stderr.write(await bestEffortSessionHint(journalDir))
     return 1
   }
-
-  const direction = values.direction
-  if (direction !== undefined && !isValidJournalDirection(direction)) {
-    io.stderr.write(
-      `Invalid --direction "${direction}". Allowed values: ${JOURNAL_DIRECTIONS.join(', ')}\n\n${SHOW_USAGE}`,
-    )
+  const filterError = invalidFilterMessage(direction, kind)
+  if (filterError !== undefined) {
+    io.stderr.write(`${filterError}\n\n${SHOW_USAGE}`)
     return 1
   }
-
-  const kind = values.kind
-  if (kind !== undefined && !isValidJournalKind(kind)) {
-    io.stderr.write(`Invalid --kind "${kind}". Allowed values: ${JOURNAL_KINDS.join(', ')}\n\n${SHOW_USAGE}`)
-    return 1
-  }
+  if (!isValidSessionId(sessionId)) return refuseUnknownSession(io, sessionId)
 
   const { records, skippedLineCount } = await readSessionWithStats(sessionId, {
     ...(journalDir !== undefined ? { dir: journalDir } : {}),
     ...(values.method !== undefined ? { method: values.method } : {}),
-    ...(direction !== undefined ? { direction } : {}),
+    ...(direction !== undefined && isValidJournalDirection(direction) ? { direction } : {}),
     ...(kind !== undefined ? { kind } : {}),
   })
 
-  io.stdout.write(values.json === true ? formatRecordsJson(records) : formatRecordsReadable(records))
+  const isLegacyOnly = (await unimportedLegacySessions(journalDir)).includes(sessionId)
+  if (records.length === 0 && !isLegacyOnly && !(await sessionExists(sessionId, journalDir))) {
+    return refuseUnknownSession(io, sessionId)
+  }
+
+  io.stdout.write(json === true ? formatRecordsJson(records) : formatRecordsReadable(records))
   if (skippedLineCount > 0) {
     io.stderr.write(`Skipped ${skippedLineCount} unreadable journal line(s).\n`)
   }
-  const unimported = await unimportedLegacySessions(journalDir)
-  if (unimported.includes(sessionId)) {
+  if (isLegacyOnly) {
     io.stderr.write(
       `${sessionId} has an un-imported legacy *.jsonl file; run \`mcpcut migrate\` to see it.\n`,
     )
   }
   return 0
+}
+
+/** Names the first bad filter value and what it may be instead, or `undefined` when both are fine. */
+function invalidFilterMessage(direction: string | undefined, kind: string | undefined): string | undefined {
+  if (direction !== undefined && !isValidJournalDirection(direction)) {
+    return `Invalid --direction "${direction}". Allowed values: ${JOURNAL_DIRECTIONS.join(', ')}`
+  }
+  if (kind !== undefined && !isValidJournalKind(kind)) {
+    return `Invalid --kind "${kind}". Allowed values: ${JOURNAL_KINDS.join(', ')}`
+  }
+  return undefined
+}
+
+/**
+ * An id the journal never held (or never could): an error that points back
+ * at the list. Stdout stays what it always was for no records — empty, in
+ * both views (`--json` is JSONL) — so a script learns it from the exit code.
+ */
+function refuseUnknownSession(io: JournalCliIo, sessionId: string): number {
+  io.stderr.write(unknownSessionMessage(sessionId))
+  return 1
+}
+
+/**
+ * Asked only when a read came back empty: a filter that matched nothing in a
+ * real session is an answer, an id the journal never held is an error.
+ */
+async function sessionExists(sessionId: string, journalDir: string | undefined): Promise<boolean> {
+  const sessions = await listSessions(journalDir)
+  return sessions.some((session) => session.sessionId === sessionId)
 }

@@ -2,6 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { recordFirstSessionHint, showSessionHint } from '../../src/cli/next-step.js'
 import {
   runSessionsCommand,
   runShowCommand,
@@ -80,7 +81,8 @@ describe('runSessionsCommand: the legacy hint', () => {
 
     expect(exitCode).toBe(0)
     expect(io.out()).toContain('db-only')
-    expect(io.err()).toBe('')
+    // Only the next step, never the migrate nudge.
+    expect(io.err()).toBe(showSessionHint('db-only'))
   })
 
   test('fires once, with the file count, when un-imported legacy files exist', async () => {
@@ -105,7 +107,7 @@ describe('runSessionsCommand: the legacy hint', () => {
     const exitCode = await runSessionsCommand(io, journalDir)
 
     expect(exitCode).toBe(0)
-    expect(io.err()).toBe('')
+    expect(io.err()).toBe(showSessionHint('legacy-1'))
   })
 
   test('degrades to no hint instead of failing when the probe cannot read the directory', async () => {
@@ -119,7 +121,7 @@ describe('runSessionsCommand: the legacy hint', () => {
     const exitCode = await runSessionsCommand(io, notADir)
 
     expect(exitCode).toBe(0)
-    expect(io.err()).toBe('')
+    expect(io.err()).toBe(recordFirstSessionHint())
   })
 })
 
@@ -164,7 +166,8 @@ describe('runShowCommand: the legacy hint', () => {
  * off the screen above it. The command now prints its own synopsis.
  */
 describe('runShowCommand: an argument error prints this command, not the whole CLI', () => {
-  const OTHER_COMMAND_ROW = 'mcpcut wrap'
+  // A row of the full table that no next-step hint names.
+  const OTHER_COMMAND_ROW = 'mcpcut serve'
 
   test('an invalid --kind names the allowed values and stays short', async () => {
     const io = fakeIo()
@@ -190,5 +193,116 @@ describe('runShowCommand: an argument error prints this command, not the whole C
       expect(io.err(), args.join(' ')).not.toContain(OTHER_COMMAND_ROW)
       expect(io.err(), args.join(' ')).toContain('mcpcut show <sessionId>')
     }
+  })
+})
+
+/**
+ * The next step (owner's rule 2026-09-29): an empty journal says how to fill
+ * it, a list offers the latest session by id, and an unknown id is an error
+ * that points back at the list instead of an empty screen and exit 0.
+ */
+describe('sessions and show end with the next command', () => {
+  test('an empty journal says how to record the first session', async () => {
+    const io = fakeIo()
+
+    const exitCode = await runSessionsCommand(io, journalDir)
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toBe('No sessions found.\n')
+    expect(io.err()).toContain('wrap -- <server command>')
+  })
+
+  test('a list offers the newest session, ready to paste', async () => {
+    await writeDbSession('the-session')
+    const io = fakeIo()
+
+    await runSessionsCommand(io, journalDir)
+
+    expect(io.err()).toContain('show the-session')
+  })
+
+  test('an unknown session id is an error naming the list command', async () => {
+    await writeDbSession('real-session')
+    const io = fakeIo()
+
+    const exitCode = await runShowCommand(['nope'], io, journalDir)
+
+    expect(exitCode).toBe(1)
+    expect(io.out()).toBe('')
+    expect(io.err()).toContain('No session "nope" in the journal')
+    expect(io.err()).toContain('sessions')
+  })
+
+  test('a filter that matches nothing in a real session is not an error', async () => {
+    await writeDbSession('real-session')
+    const io = fakeIo()
+
+    const exitCode = await runShowCommand(['real-session', '--kind', 'decision'], io, journalDir)
+
+    expect(exitCode).toBe(0)
+    expect(io.err()).not.toContain('No session')
+  })
+
+  test('a missing id offers the newest session when there is one', async () => {
+    await writeDbSession('the-session')
+    const io = fakeIo()
+
+    const exitCode = await runShowCommand([], io, journalDir)
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('show the-session')
+  })
+})
+
+describe('show and sessions: the edges of the next step', () => {
+  test('an unknown id with --json keeps stdout empty JSONL, and exits 1', async () => {
+    const io = fakeIo()
+
+    const exitCode = await runShowCommand(['nope', '--json'], io, journalDir)
+
+    expect(exitCode).toBe(1)
+    expect(io.out()).toBe('')
+    expect(io.err()).toContain('No session "nope"')
+  })
+
+  test('an id that could never be a session gets the same answer, terminal-safe', async () => {
+    const io = fakeIo()
+
+    const exitCode = await runShowCommand(['bad\u001b[2Jid'], io, journalDir)
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('No session')
+    expect(io.err()).not.toContain('\u001b')
+  })
+
+  test('a --method filter that matches nothing in a real session is not an error', async () => {
+    await writeDbSession('real-session')
+    const io = fakeIo()
+
+    const exitCode = await runShowCommand(['real-session', '--method', 'ping'], io, journalDir)
+
+    expect(exitCode).toBe(0)
+    expect(io.err()).toBe('')
+  })
+
+  test('a journal of un-imported files alone points only at migrate', async () => {
+    await writeLegacySession('legacy-only')
+    const io = fakeIo()
+
+    await runSessionsCommand(io, journalDir)
+
+    expect(io.err()).toContain('mcpcut migrate')
+    expect(io.err()).not.toContain('To record one')
+  })
+
+  test('a missing id still answers with usage when the journal cannot be listed', async () => {
+    const notADir = join(journalDir, 'not-a-dir')
+    await writeFile(notADir, 'plain file', 'utf8')
+    const io = fakeIo()
+
+    const exitCode = await runShowCommand([], io, notADir)
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('Missing <sessionId>')
   })
 })

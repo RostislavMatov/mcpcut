@@ -81,6 +81,7 @@ describe('verify: no database at all', () => {
 
     expect(exitCode).toBe(1)
     expect(io.err()).toMatch(/No journal database found/)
+    expect(io.err()).toContain('wrap -- <server command>')
     await expect(stat(journalDbPathFor(journalDir))).rejects.toThrow()
   })
 })

@@ -210,6 +210,7 @@ describe('prune: refusing to run', () => {
 
     expect(code).toBe(1)
     expect(io.err()).toContain('No journal database found')
+    expect(io.err()).toContain('wrap -- <server command>')
   })
 })
 

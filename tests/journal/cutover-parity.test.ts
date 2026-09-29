@@ -295,8 +295,9 @@ function expectParity(fresh: CommandOutcome, migrated: CommandOutcome): void {
   expect(fresh.exitCode).toBe(0)
   expect(migrated.exitCode).toBe(0)
   expect(migrated.out).toBe(fresh.out)
-  expect(fresh.err).toBe('')
-  expect(migrated.err).toBe('')
+  // The same next-step hint on both sides, and never the migrate nudge.
+  expect(migrated.err).toBe(fresh.err)
+  expect(fresh.err).not.toContain('migrate')
 }
 
 describe('cutover parity: the records themselves', () => {

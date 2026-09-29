@@ -13,6 +13,7 @@ import { loadSigningPrivateKey } from '../journal/signing.js'
 import { formatReadableField } from '../journal/format.js'
 import { recordAccessChange, type AccessWriteOptions } from './access-cmd-write.js'
 import { requireAdminFromEnv, type AdminRefusalWording, type RequiredAdmin } from './admin-token.js'
+import { noJournalMessage } from './next-step.js'
 
 /**
  * `mcpcut prune --older-than <duration> [--yes]` (M5 wave 6, task 6.1).
@@ -177,7 +178,7 @@ export async function runPruneCommand(
   // bring a journal database into existence.
   const handle = await openJournalDbIfPresent(journalDir)
   if (handle === null) {
-    io.stderr.write(`No journal database found under "${journalDir}"; nothing has been journaled there yet.\n`)
+    io.stderr.write(noJournalMessage(journalDir))
     return EXIT_USAGE_ERROR
   }
 

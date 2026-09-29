@@ -6,6 +6,7 @@ import {
 } from '../journal/signing.js'
 import type { AdminRefusalWording } from './admin-token.js'
 import { adminOf, recordHostOp, resolveHostOpActor } from './host-op-write.js'
+import { exportReportHint } from './next-step.js'
 
 /**
  * `mcpcut keygen` (M5 wave 4, task 4.2): generates this installation's
@@ -92,6 +93,7 @@ export async function runKeygenCommand(
       target: generated.publicKeyFingerprint,
       keyFingerprint: generated.publicKeyFingerprint,
     })
+    io.stderr.write(exportReportHint())
     return 0
   } catch (error: unknown) {
     if (error instanceof SigningKeyExistsError) {

@@ -17,6 +17,7 @@ import { isValidSessionId } from '../journal/session-id.js'
 import { loadSigningPrivateKey } from '../journal/signing.js'
 import type { SqliteHandle } from '../store/sqlite.js'
 import type { ExportCliIo } from './export-cmd.js'
+import { keygenHint, noJournalMessage, verifyReportHint } from './next-step.js'
 import { prepareReportOutDir, type PreparedOutDir } from './report-out-dir.js'
 
 /**
@@ -72,9 +73,7 @@ export async function runExportReportCommand(
 
   const handle = await openJournalDbIfPresent(opts.journalDir)
   if (handle === null) {
-    io.stderr.write(
-      `No journal database found under "${opts.journalDir}"; nothing has been journaled there yet.\n`,
-    )
+    io.stderr.write(noJournalMessage(opts.journalDir))
     return EXIT_ERROR
   }
 
@@ -90,7 +89,10 @@ export async function runExportReportCommand(
       io.stderr.write(prepared.refusal)
       return EXIT_ERROR
     }
-    return await writeReport(handle, opts.journalDir, session, prepared, io)
+    const exitCode = await writeReport(handle, opts.journalDir, session, prepared, io)
+    // The path as the operator typed it: the check runs from the same place.
+    if (exitCode === EXIT_OK) io.stderr.write(verifyReportHint(outDir))
+    return exitCode
   } catch (error: unknown) {
     // An I/O failure mid-export must not print the success summary below.
     // `writeReport` has already discarded what it created, so the exit code,
@@ -256,8 +258,7 @@ async function signIfKeyPresent(
   const keyLookup = await loadSigningPrivateKey(journalDir)
   if (!keyLookup.present) {
     io.stderr.write(
-      'No signing key present; writing an UNSIGNED report. ' +
-        'Generate one first with: mcpcut keygen\n',
+      `No signing key present; writing an UNSIGNED report. ${keygenHint()}`,
     )
     return { manifest, signature: null }
   }

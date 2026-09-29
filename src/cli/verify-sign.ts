@@ -9,6 +9,7 @@ import {
 import type { SqliteHandle } from '../store/sqlite.js'
 import type { AdminRefusalWording, RequiredAdmin } from './admin-token.js'
 import { recordHostOp, type HostOpIo, type HostOpOptions } from './host-op-write.js'
+import { keygenHint } from './next-step.js'
 
 /**
  * `verify --sign`'s own half of the M5 wave 4 signing feature (task 4.3):
@@ -84,8 +85,7 @@ export async function attemptSignChainHead(
     return {
       ok: false,
       message:
-        'No signing key present; the report will be unsigned. ' +
-        'Generate one first with: mcpcut keygen\n',
+        `No signing key present; the report will be unsigned. ${keygenHint()}`,
     }
   }
 

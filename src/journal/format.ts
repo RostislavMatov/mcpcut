@@ -34,8 +34,12 @@ export const MAX_READABLE_FIELD_CHARS = 200
  * run of control characters cannot be used to pad past the cap as noise.
  */
 export function formatReadableField(value: string): string {
-  const sanitized = value.replace(CONTROL_CHAR_PATTERN, CONTROL_CHAR_REPLACEMENT)
-  return truncate(sanitized, MAX_READABLE_FIELD_CHARS)
+  return truncate(replaceControlChars(value), MAX_READABLE_FIELD_CHARS)
+}
+
+/** The control-character half of `formatReadableField`, uncapped: for a value that must stay whole, such as a path in a command to paste. */
+export function replaceControlChars(value: string): string {
+  return value.replace(CONTROL_CHAR_PATTERN, CONTROL_CHAR_REPLACEMENT)
 }
 
 function truncate(text: string, maxLength: number): string {

@@ -25,9 +25,15 @@ export default defineConfig({
      * a green run would say nothing about a clean one. `MCPCUT_CONFIG` points
      * at a path that cannot exist; `MCPCUT_DATA_DIR` is emptied, which every
      * env seam here reads as "not set".
+     *
+     * `npm_command` is emptied for the same reason: a hint names the command
+     * as `npx -y mcpcut@…` when npm exec started the process
+     * (`src/cli/next-step.ts`), so `npx vitest` and `npm test` would
+     * otherwise print — and assert — different text.
      */
     env: {
       HOME: TEST_HOME,
+      npm_command: '',
       MCPCUT_CONFIG: '/nonexistent/mcpcut-test/config.json',
       MCPCUT_DATA_DIR: '',
     },

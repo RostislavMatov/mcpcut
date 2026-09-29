@@ -16,6 +16,7 @@ import { SIGNING_PUB_FILENAME } from '../journal/signing.js'
 import { runReportVerification } from './verify-report.js'
 import { adminOf, resolveHostOpActor } from './host-op-write.js'
 import { attemptSignChainHead, recordVerifySign, VERIFY_SIGN_REFUSAL } from './verify-sign.js'
+import { noJournalMessage } from './next-step.js'
 
 /**
  * `mcpcut verify [--session <id>]` -- the operator/auditor-facing half
@@ -218,9 +219,7 @@ export async function runVerifyCommand(
   // create the thing being verified.
   const handle = await openJournalDbIfPresent(journalDir)
   if (handle === null) {
-    io.stderr.write(
-      `No journal database found under "${journalDir}"; nothing has been journaled there yet.\n`,
-    )
+    io.stderr.write(noJournalMessage(journalDir))
     return EXIT_USAGE_ERROR
   }
 

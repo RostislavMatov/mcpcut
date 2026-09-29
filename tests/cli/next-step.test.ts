@@ -1,0 +1,147 @@
+import { afterEach, describe, expect, test, vi } from 'vitest'
+import { PRODUCT_VERSION } from '../../src/brand.js'
+import {
+  cliCommand,
+  exportReportHint,
+  keygenHint,
+  listApprovalsHint,
+  noJournalMessage,
+  noPendingApprovalsHint,
+  recordFirstSessionHint,
+  resolveApprovalHint,
+  shellArg,
+  showSessionHint,
+  unknownSessionMessage,
+  verifyReportHint,
+} from '../../src/cli/next-step.js'
+
+/**
+ * Every hint ends in a command the operator can paste as is. The Quick start
+ * runs mcpcut through `npx`, where a bare `mcpcut …` is "command not found",
+ * so the hint names the command the way this process was started.
+ */
+
+const NPX = `npx -y mcpcut@${PRODUCT_VERSION}`
+
+afterEach(() => {
+  vi.unstubAllEnvs()
+})
+
+function asNpx(): void {
+  vi.stubEnv('npm_command', 'exec')
+}
+
+function asInstalled(): void {
+  vi.stubEnv('npm_command', '')
+}
+
+describe('cliCommand', () => {
+  test('is the pinned npx form when npm exec (npx) started this process', () => {
+    expect(cliCommand({ npm_command: 'exec' })).toBe(NPX)
+  })
+
+  test('is the bare binary for a global install or any other launcher', () => {
+    expect(cliCommand({})).toBe('mcpcut')
+    expect(cliCommand({ npm_command: 'run-script' })).toBe('mcpcut')
+  })
+
+  test('reads the live environment by default', () => {
+    asNpx()
+    expect(cliCommand()).toBe(NPX)
+    asInstalled()
+    expect(cliCommand()).toBe('mcpcut')
+  })
+})
+
+describe('shellArg', () => {
+  test('leaves a plain path or id alone', () => {
+    expect(shellArg('/tmp/report-1')).toBe('/tmp/report-1')
+    expect(shellArg('01M3P0EZZ56F7K5EWPXH7Z4YYS')).toBe('01M3P0EZZ56F7K5EWPXH7Z4YYS')
+  })
+
+  test('single-quotes anything a shell would split or expand', () => {
+    expect(shellArg('/tmp/my report')).toBe("'/tmp/my report'")
+    expect(shellArg('$HOME/x')).toBe("'$HOME/x'")
+  })
+
+  test("escapes an embedded single quote so the paste stays one argument", () => {
+    expect(shellArg("it's")).toBe(`'it'\\''s'`)
+  })
+
+  test('keeps a long path whole: a cut path would paste as a different one', () => {
+    const long = `/tmp/${'a'.repeat(300)}`
+    expect(shellArg(long)).toBe(long)
+  })
+
+  test('replaces control characters so a hint cannot drive the terminal', () => {
+    expect(shellArg('a\u001b[2Jb')).not.toContain('\u001b')
+  })
+})
+
+describe('hints name the next command with real values', () => {
+  test('an empty journal says how to record the first session', () => {
+    asNpx()
+    const hint = recordFirstSessionHint()
+    expect(hint).toContain(`${NPX} wrap -- `)
+    expect(hint.endsWith('\n')).toBe(true)
+  })
+
+  test('a session list offers the latest session by id', () => {
+    asInstalled()
+    expect(showSessionHint('01ABC')).toContain('mcpcut show 01ABC')
+  })
+
+  test('an unknown session names it and points back at the list', () => {
+    asNpx()
+    const message = unknownSessionMessage('nope')
+    expect(message).toContain('"nope"')
+    expect(message).toContain(`${NPX} sessions`)
+  })
+
+  test('an empty approvals queue says what puts a call there', () => {
+    asInstalled()
+    const hint = noPendingApprovalsHint()
+    expect(hint).toContain('require-approval')
+    expect(hint).toContain('--policy')
+  })
+
+  test('a pending approval gets ready approve and deny commands', () => {
+    asNpx()
+    const hint = resolveApprovalHint('01XYZ')
+    expect(hint).toContain(`${NPX} approvals approve 01XYZ`)
+    expect(hint).toContain(`${NPX} approvals deny 01XYZ`)
+  })
+
+  test('an unknown approval id points at the pending list', () => {
+    asInstalled()
+    expect(listApprovalsHint()).toContain('mcpcut approvals list')
+  })
+
+  test('a fresh key leads to a signed report, and a report to its check', () => {
+    asInstalled()
+    expect(exportReportHint()).toContain('mcpcut export --report --out ./report')
+    expect(verifyReportHint('/tmp/my report')).toContain("mcpcut verify --report '/tmp/my report'")
+  })
+
+  test('a report directory named like an option is pasted as a path', () => {
+    asInstalled()
+    expect(verifyReportHint('-r')).toContain('verify --report ./-r')
+  })
+
+  test('a missing key names the keygen command', () => {
+    asNpx()
+    expect(keygenHint()).toContain(`${NPX} keygen`)
+  })
+
+  test('a missing journal names the directory and the way to fill it', () => {
+    asInstalled()
+    const message = noJournalMessage('/data/j')
+    expect(message).toContain('"/data/j"')
+    expect(message).toContain('nothing has been journaled there yet')
+    expect(message).toContain('mcpcut wrap -- ')
+  })
+
+  test('a journal path with control characters cannot drive the terminal', () => {
+    expect(noJournalMessage('/d\u001b[2J')).not.toContain('\u001b')
+  })
+})

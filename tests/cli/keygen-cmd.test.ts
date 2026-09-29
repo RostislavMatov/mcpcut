@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { runKeygenCommand } from '../../src/cli/keygen-cmd.js'
+import { exportReportHint } from '../../src/cli/next-step.js'
 import { publicKeyFingerprint, signingKeyPathFor, signingPubPathFor } from '../../src/journal/signing.js'
 
 /**
@@ -49,7 +50,8 @@ describe('keygen: first run', () => {
 
     expect(exitCode).toBe(0)
     expect(io.out()).toMatch(/-----BEGIN PUBLIC KEY-----/)
-    expect(io.err()).toBe('')
+    // No warning -- only the next step (owner's rule 2026-09-29).
+    expect(io.err()).toBe(exportReportHint())
 
     const privateMode = (await stat(signingKeyPathFor(journalDir))).mode & 0o777
     expect(privateMode).toBe(0o600)

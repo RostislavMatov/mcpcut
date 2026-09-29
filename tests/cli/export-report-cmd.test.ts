@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { runExportCommand } from '../../src/cli/export-cmd.js'
 import { writeAllBytes } from '../../src/cli/report-cmd.js'
 import { runKeygenCommand } from '../../src/cli/keygen-cmd.js'
+import { verifyReportHint } from '../../src/cli/next-step.js'
 import { journalDbPathFor, openJournalDbShared } from '../../src/journal/db.js'
 import { AS_OF_CONTRACT, REPORT_FILES, type ReportManifest } from '../../src/journal/report.js'
 import { verifyReportManifestSignature, type ReportSignatureFile } from '../../src/journal/report-signing.js'
@@ -162,7 +163,8 @@ describe('export --report: signed after keygen', () => {
     const exitCode = await run(['--report', '--out', outDir], io)
 
     expect(exitCode).toBe(0)
-    expect(io.err()).toBe('')
+    // No warning -- only the next step, with the real directory (owner's rule 2026-09-29).
+    expect(io.err()).toBe(verifyReportHint(outDir))
     expect(io.out()).not.toMatch(/UNSIGNED/)
 
     const files = (await readdir(outDir)).sort()
@@ -656,5 +658,28 @@ describe('export --report: pool sessions on stdout', () => {
       ['asOf', 'chain', 'contract', 'counts', 'formatVersion', 'records', 'scope', 'seqRange', 'sessionIds', 'summary'],
     )
     expect(manifest.formatVersion).toBe(1)
+  })
+})
+
+describe('export --report: the next step', () => {
+  test('an unsigned report names the keygen command and the check', async () => {
+    await writeRecordsViaSink('session-a', [recordOf('session-a', '01AAAAAAAAAAAAAAAAAAAAAAA0', 'tools/list')])
+    const io = fakeIo()
+
+    const exitCode = await run(['--report', '--out', outDir], io)
+
+    expect(exitCode).toBe(0)
+    expect(io.err()).toContain('keygen')
+    expect(io.err()).toContain(verifyReportHint(outDir))
+  })
+
+  test('no journal says how to fill one', async () => {
+    const io = fakeIo()
+
+    const exitCode = await run(['--report', '--out', outDir], io)
+
+    expect(exitCode).not.toBe(0)
+    expect(io.err()).toContain('No journal database found')
+    expect(io.err()).toContain('wrap -- <server command>')
   })
 })

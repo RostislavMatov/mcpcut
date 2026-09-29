@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Every first-minute command ends with the next one.** `sessions`, `show`,
+  `approvals`, `keygen`, `export --report`, `verify` and `prune` now print
+  (on stderr, so stdout and `--json` are unchanged) a command you can paste,
+  with the real session id, approval id or report path filled in: the newest
+  session to `show`, `approve`/`deny` for a pending call, `verify --report`
+  for a report just written, and how to record a first session or put a call
+  on hold when the list is empty. Run through `npx`, the hint reads
+  `npx -y mcpcut@<version> …` — a bare `mcpcut …` is not on the path there.
+
+### Fixed
+
+- `show <id>` with an id the journal never held printed nothing and exited 0;
+  it now says so on stderr, points at `sessions`, and **exits 1** (stdout is
+  still empty, `--json` included — a script sees only the exit code change).
+  A filter that matches nothing in a real session is still an empty answer
+  with exit 0.
+
 ## [0.2.0] — 2026-09-28
 
 ### Added
