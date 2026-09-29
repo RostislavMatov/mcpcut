@@ -162,8 +162,25 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./site:/srv/site:ro
       - ./origin:/etc/caddy/origin:ro
+      # Other sites on this host (the Caddyfile's last line imports them):
+      # port 443 belongs to another service here, so this Caddy is the only
+      # way in for any site behind Cloudflare.
+      - ./sites-extra:/etc/caddy/sites-extra:ro
       - caddy-data:/data
+    networks:
+      default:
+      edge:
+        # Fixed, so a site behind `edge` can trust exactly this address for
+        # X-Forwarded-For and nothing else on the network.
+        ipv4_address: 172.30.0.2
 networks:
+  # Where the sites in `sites-extra/` attach their backends (as the external
+  # network `mcpcut-site_edge`): they reach this Caddy and not `ui`, `serve`
+  # or `hub` on `default`.
+  edge:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
   # `hub` and `provisioner` only; not the network `caddy`/`ui`/`serve` share
   # (Compose's implicit `default`, unnamed here on purpose — see `hub`'s
   # comment above). `internal: true`: this pair never needs the internet, and

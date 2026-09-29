@@ -52,6 +52,12 @@
 # a loopback bind a future edit could widen. Config changes: restart Caddy.
 {
 	admin off
+	# Caddy turns this on by itself while any site asks for a client
+	# certificate; said out loud because a site without client_auth (see the
+	# sites-extra import at the end) must never become a way around it.
+	servers {
+		strict_sni_host on
+	}
 	http_port 80
 	https_port 8443
 }
@@ -178,3 +184,7 @@ mcp.mcpcut.com:8443 {
 		reverse_proxy mcpcut-t-{http.request.host.labels.2}:8091
 	}
 }
+
+# Other sites served from this host, one file each, mounted from
+# ./sites-extra (empty is fine: a glob that matches nothing imports nothing).
+import /etc/caddy/sites-extra/*.caddy
