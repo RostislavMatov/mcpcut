@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import type { GroupRecord } from '../../src/groups/schema.js'
 import type { UiSession } from '../../src/ui/auth.js'
+import { ROUTE_TABLE } from '../../src/ui/authz.js'
 import { renderAdminTokenOnce } from '../../src/ui/pages/admins.js'
 import { renderDashboardPage, type DashboardSummary, type RecentDecisionView } from '../../src/ui/pages/dashboard.js'
 import { renderGroupsPage } from '../../src/ui/pages/groups.js'
@@ -79,6 +80,12 @@ describe('dashboard: the servers panel', () => {
   test('empty, owner: links to Register a server', () => {
     const page = dashboard('owner')
     expect(page).toMatch(/<p class="empty">No servers registered\.[^<]*<a href="\/servers\?add=1#add-server">Register a server<\/a>/)
+  })
+
+  test('the link follows the route table: registering a server is an owner action', () => {
+    // The dashboard copies this threshold; a change to the row must revisit it.
+    const row = ROUTE_TABLE.find((entry) => entry.method === 'POST' && entry.pattern === '/servers/add')
+    expect(row?.minRole).toBe('owner')
   })
 
   test('empty, operator: an owner registers them, no link it cannot use', () => {

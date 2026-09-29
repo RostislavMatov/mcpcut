@@ -38,6 +38,10 @@ export const UNKNOWN_SERVER_MESSAGE = 'That server is not registered — it may 
 export const MISSING_SERVER_NAME_MESSAGE = "The form did not name a server — use the button on the server's card."
 export const UNKNOWN_GROUP_MESSAGE = 'That group does not exist — it may have been removed already.'
 
+/**
+ * The refusal page for `status`. `message` must be one of the fixed sentences
+ * above (or another author-written one) — never a raw error or request value.
+ */
 export function refusalNotice(
   ctx: UiRequestContext,
   status: number,

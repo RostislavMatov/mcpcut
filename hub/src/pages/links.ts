@@ -14,6 +14,6 @@ export const FEEDBACK_URL = 'https://github.com/RostislavMatov/mcpcut/discussion
 
 /** The tenant's console (`https://alice.mcpcut.com/`), shown as its host name. */
 export function consoleLink(serveUrl: string): Html {
-  const host = serveUrl.replace(/^https:\/\//, '')
+  const host = new URL(serveUrl).host
   return html`<a href="${safeUrl(`${serveUrl}/`)}">${host}</a>`
 }
