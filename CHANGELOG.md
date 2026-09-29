@@ -23,6 +23,26 @@ All notable changes to this project are documented here. The format follows
   says what to check and offers `mcpcut --connect <address>`; a run that gets
   no answer says to check the service and run the action again; a role
   refused over the network is told an owner can run it.
+- **The rest of the admin UI names the next step too.** On the dashboard, an
+  empty call journal says what fills it, a server filter with no match links
+  back to all servers, a cut-short list links to the journal, and an empty
+  servers panel links to *Register a server*. Quarantine says when a tool
+  lands there; Groups, and a group with no servers or members, open the
+  matching form. A new or rotated admin token says who signs in with it.
+- **mcpcut.com account pages lead on.** The owner token page links the
+  console it signs in to; the account page links that console, sends you to
+  its *Agents* page for an agent token (a hosted install has no CLI you can
+  reach), and asks *Did it work for you?* with a one-click link to the
+  project's feedback discussion. A missing install and a blocked sign-in link
+  the project's issues; a stopped install offers to check again.
+
+### Fixed
+
+- Removing, editing or refreshing a server that is not registered, or
+  removing a group that does not exist, showed bare text (`unknown server`)
+  on a blank page. It is now a notice that says what happened, with a link
+  back to Servers or Groups; the status code is unchanged. Removing or
+  demoting the last owner also says how to get past it.
 
 ## [0.2.1] — 2026-09-29
 
