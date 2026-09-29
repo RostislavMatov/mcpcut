@@ -76,7 +76,8 @@ describe('createOauthFlows', () => {
     const flows = createOauthFlows()
     const started = flows.begin()
 
-    const wrong = flows.complete({ flowId: started.flowId, state: `${started.state.slice(0, -1)}A` })
+    const lastChar = started.state.at(-1) === 'A' ? 'B' : 'A'
+    const wrong = flows.complete({ flowId: started.flowId, state: `${started.state.slice(0, -1)}${lastChar}` })
     const retry = flows.complete({ flowId: started.flowId, state: started.state })
 
     expect(wrong).toEqual({ ok: false, reason: 'state-mismatch' })
