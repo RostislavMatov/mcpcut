@@ -8,6 +8,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- **The README demo is re-recorded on the current CLI.** Each of its three
+  steps now ends with the next-step hint mcpcut prints; the recording script
+  no longer names a fixed package version, so it re-renders on any release.
 - **Empty admin UI screens say how to fill them.** Servers links to
   *Register a server*, Agents opens *Create an agent*, Approvals says a call
   waits there when a rule says `require-approval` and links to the server
