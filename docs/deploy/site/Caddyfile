@@ -87,6 +87,35 @@
 
 mcpcut.com:8443, www.mcpcut.com:8443 {
 	import origin_tls
+	# Visit counting for the launch (owner decision 2026-09-29): this site block
+	# only — never the tenant installs or mcp.mcpcut.com. No IP address is kept:
+	# the peer is always a Cloudflare edge, and the visitor's address in
+	# CF-Connecting-IP is replaced by a short hash, enough to count unique
+	# visitors. Cookies, Authorization and the OAuth `code`/`state` of the hub
+	# callback are dropped. Kept 14 days (`roll_keep_for`), then deleted.
+	log {
+		output file /data/access-log/mcpcut.com.log {
+			roll_size 10MiB
+			roll_keep 10
+			roll_keep_for 336h
+		}
+		format filter {
+			wrap json
+			fields {
+				request>remote_ip delete
+				request>client_ip delete
+				request>headers>Cf-Connecting-Ip hash
+				request>headers>X-Forwarded-For delete
+				request>headers>Cookie delete
+				request>headers>Authorization delete
+				request>uri query {
+					delete code
+					delete state
+				}
+				resp_headers delete
+			}
+		}
+	}
 	@www host www.mcpcut.com
 	redir @www https://mcpcut.com{uri} 301
 	# hub (ADR-0017 phase 2, `mcpcut-hub`): sign-in and accounts. It sets its
