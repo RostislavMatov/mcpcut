@@ -254,7 +254,7 @@ export function renderQueueRegion(input: ApprovalsPageInput): Html {
   const canResolve = roleAllows(input.currentAdmin, APPROVAL_RESOLVE_MIN_ROLE)
   const body =
     input.cards.length === 0
-      ? html`<p class="empty">No pending approvals.</p>`
+      ? html`<p class="empty">No pending approvals. A call waits here when a rule says require-approval for its tool — set rules on a server's tools in <a href="/servers">Servers</a>.</p>`
       : html`<div class="queue-cards">${join(input.cards.map((card) => renderCard(card, input.csrfToken, canResolve)))}</div>`
   return html`<section
     class="approvals"

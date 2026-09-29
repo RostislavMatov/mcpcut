@@ -279,6 +279,7 @@ describe('the session list narrows by what a summary row knows', () => {
     const read = fakePort({ listSessions: vi.fn(async () => []) })
     const body = await bodyOf(await handlerAt('2026-08-27', read)(ctx('')))
     expect(body).toContain('No sessions in the journal yet.')
+    expect(body).toContain('wrap -- &lt;server command&gt;')
   })
 
   test('the pager keeps the filters instead of silently widening the page', async () => {

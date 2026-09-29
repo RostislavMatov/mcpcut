@@ -60,7 +60,10 @@ export function renderSessionList(
 function emptyListText(state: JournalViewState): string {
   const f = state.filters
   const narrowed = f.text !== undefined || f.from !== undefined || f.to !== undefined
-  return narrowed ? 'No sessions match the current filters.' : 'No sessions in the journal yet.'
+  return narrowed
+    ? 'No sessions match the current filters.'
+    : 'No sessions in the journal yet. They appear with the first call through mcpcut: ' +
+        'an agent from Agents, or mcpcut wrap -- <server command>.'
 }
 
 function renderSessionRow(entry: SessionSummaryEntry): Html {

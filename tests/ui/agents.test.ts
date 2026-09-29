@@ -642,7 +642,7 @@ describe('McpCut agents page structure', () => {
     expect(html).toMatch(/<a class="tab" href="\/agents" aria-current="page">Agents<\/a>/)
     expect(html).toContain('action="/agents/create"')
     expect(html).toContain('action="/agents/grant"')
-    expect(html).toContain('no agents yet')
+    expect(html).toContain('No agents yet.')
   })
 
   test('the tab-bar meta counts agents and active agents', () => {

@@ -90,7 +90,7 @@ export function renderAgentsPage(view: {
   const cards = agents.map((agent) => renderAgentCard({ agent, groups, canManage, session, serveAddress }))
   const list =
     agents.length === 0
-      ? html`<p class="empty">no agents yet</p>`
+      ? renderNoAgents(canManage)
       : html`<div class="stack ag-list">${join(cards)}</div>`
   const content = html`<section class="panel ag-panel" aria-label="Agent permissions">
     <div class="panel-hd">
@@ -167,4 +167,11 @@ export function renderAgentNotice(view: {
     currentAdmin: currentAdmin(view.session),
     activeNav: 'agents',
   })
+}
+
+/** The empty list names the next step: the create drawer for an owner, who can for anyone else. */
+function renderNoAgents(canManage: boolean): Html {
+  return canManage
+    ? html`<p class="empty">No agents yet. <a href="#${CREATE_DRAWER_ID}" data-open-details="${CREATE_DRAWER_ID}">Create an agent</a>, then put its token in your MCP client.</p>`
+    : html`<p class="empty">No agents yet. An owner creates them.</p>`
 }

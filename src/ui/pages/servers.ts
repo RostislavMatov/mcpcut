@@ -151,7 +151,9 @@ function renderViewToggle(view: ServersView, mode: ServersViewMode): Html {
 
 function renderGrid(view: ServersView, mode: ServersViewMode): Html {
   if (view.servers.length === 0) {
-    return html`<p class="empty">No servers registered.</p>`
+    return view.canManage
+      ? html`<p class="empty">No servers registered. <a href="/servers?add=1#add-server">Register a server</a> — its tools then show up here for rules and review.</p>`
+      : html`<p class="empty">No servers registered. An owner registers them.</p>`
   }
   const options = cardOptionsOf(view)
   const viewClass = mode === 'list' ? 'srv-grid view-list' : 'srv-grid view-grid'

@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Empty admin UI screens say how to fill them.** Servers links to
+  *Register a server*, Agents opens *Create an agent*, Approvals says a call
+  waits there when a rule says `require-approval` and links to the server
+  rules, the journal names the first call that fills it. An admin whose role
+  cannot take the action is told an owner does.
+
 ## [0.2.1] — 2026-09-29
 
 ### Changed
