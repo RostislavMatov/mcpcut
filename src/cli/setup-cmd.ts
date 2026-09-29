@@ -28,6 +28,7 @@ import {
   unusableConfigRefusal,
 } from './setup-constants.js'
 import { prepareAdmin, prepareSigningKey, prepareVault, startServices } from './setup-steps.js'
+import { setupNextStep } from './setup-next-step.js'
 import { isInteractiveTerminal } from './tty.js'
 import type { UiCliIo } from './ui-constants.js'
 
@@ -145,7 +146,11 @@ async function runPreparedSetup(
   await prepareSigningKey(io, config.dataDir)
   if (!(await prepareAdmin(io, config.dataDir, args, opts.now))) return 1
 
-  return await startServices(io, config, args, manager)
+  const exitCode = await startServices(io, config, args, manager)
+  if (exitCode === 0) {
+    io.stdout.write(setupNextStep(config, { started: args.start, noAdmin: args.noAdmin }, context.env))
+  }
+  return exitCode
 }
 
 /**

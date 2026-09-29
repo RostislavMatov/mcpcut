@@ -35,6 +35,10 @@ All notable changes to this project are documented here. The format follows
   reach), and asks *Did it work for you?* with a one-click link to the
   project's feedback discussion. A missing install and a blocked sign-in link
   the project's issues; a stopped install offers to check again.
+- **`setup` ends with the next step.** After the owner token it says
+  `Next: mcpcut start, then open http://127.0.0.1:8091/ and sign in with your
+  admin token.` — with the real address (the public one when set), without
+  `start` once `--start` has run, and in the `npx` form under `npx`.
 
 ### Fixed
 

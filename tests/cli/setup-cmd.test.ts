@@ -233,6 +233,12 @@ describe('setup --yes: the first run of an install', () => {
     expect(io.out()).toMatch(new RegExp(`token: ${ADMIN_TOKEN_PREFIX}`))
     expect(io.out()).toContain(TOKEN_ONCE_NOTICE)
     expect(io.out()).toContain(TOKEN_STDOUT_REDIRECT_WARNING)
+
+    // The next step closes the report: nothing is running yet, so start first.
+    const uiPort = args[args.indexOf('--ui-port') + 1]
+    expect(io.out().trimEnd().split('\n').at(-1)).toBe(
+      `Next: mcpcut start, then open http://127.0.0.1:${uiPort}/ and sign in with your admin token.`,
+    )
   })
 
   test('prints the whole preflight, in order, before it writes anything', async () => {
