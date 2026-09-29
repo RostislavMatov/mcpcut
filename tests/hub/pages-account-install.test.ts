@@ -4,8 +4,8 @@ import { renderAccountPage, STARTING_REFRESH_SECONDS, type AccountView, type Ins
 /**
  * The install panel of `/account` (plan `hosted-path-and-ops`, Task C, P6):
  * the idle dates while it runs, "stopped — starting…" with a self-refresh
- * while a stopped install starts, and a plain "missing, contact the operator"
- * when the provisioner holds nothing for the account.
+ * while a stopped install starts, and a plain "missing" with a link to the
+ * project's issues when the provisioner holds nothing for the account.
  */
 
 function view(install: InstallState): AccountView {
@@ -47,11 +47,11 @@ describe('the install panel', () => {
     expect(page).not.toContain(REFRESH)
   })
 
-  test('missing: says so and names the operator, no dates', () => {
+  test('missing: says so and links where to tell the operator, no dates', () => {
     const page = renderAccountPage(view('missing'))
 
     expect(page).toContain('Your install is missing')
-    expect(page).toContain('contact the operator')
+    expect(page).toContain('tell the operator in <a href="https://github.com/RostislavMatov/mcpcut/issues">')
     expect(page).not.toContain('if unused')
   })
 })

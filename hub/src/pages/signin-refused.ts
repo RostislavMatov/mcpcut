@@ -1,5 +1,6 @@
 import { html, safeUrl, type Html } from '../../../src/ui/html.js'
 import { renderHubLayout } from './layout.js'
+import { REPOSITORY_ISSUES_URL } from './links.js'
 
 /**
  * The page shown when `GET /auth/github/callback` does not end in an
@@ -36,7 +37,7 @@ function messageOf(reason: SigninRefusalReason): Html {
     case 'too-young':
       return html`Your GitHub account is younger than ${reason.minAccountAgeDays} days. Try again on ${reason.retryOn}.`
     case 'blocked':
-      return html`This GitHub account has been blocked from mcpcut. If you think this is a mistake, open an issue on the project's GitHub repository.`
+      return html`This GitHub account has been blocked from mcpcut. If you think this is a mistake, open an issue in <a href="${safeUrl(REPOSITORY_ISSUES_URL)}">the project's GitHub issues</a>.`
     case 'recently-deleted':
       return html`An mcpcut account for this GitHub login was deleted recently. You can sign up again on or after ${reason.retryOn}.`
     case 'rate-limited':

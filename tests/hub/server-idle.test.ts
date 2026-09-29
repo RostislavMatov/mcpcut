@@ -154,7 +154,7 @@ describe('the sweep through the running hub', () => {
 
     expect(page.status).toBe(200)
     expect(page.body).toContain('Your install is missing')
-    expect(page.body).toContain('contact the operator')
+    expect(page.body).toContain('tell the operator in <a href="https://github.com/RostislavMatov/mcpcut/issues">')
     expect(page.body).not.toContain('if unused')
     expect(findAccountByGithubId(h.db, ALICE_ID)?.status).toBe('active')
     expect(h.logs.join('\n')).toContain('install missing, account kept for the operator')

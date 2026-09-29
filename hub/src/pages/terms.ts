@@ -1,5 +1,6 @@
 import { html, safeUrl } from '../../../src/ui/html.js'
 import { renderHubLayout } from './layout.js'
+import { REPOSITORY_ISSUES_URL } from './links.js'
 
 /**
  * The `/terms` page (HA10, draft — the plan flags it for the owner to
@@ -11,8 +12,6 @@ export interface TermsView {
   readonly signedIn?: boolean
   readonly csrfToken?: string
 }
-
-const REPOSITORY_ISSUES_URL = 'https://github.com/RostislavMatov/mcpcut/issues'
 
 /** Renders the complete `/terms` HTML document. */
 export function renderTermsPage(view: TermsView = {}): string {

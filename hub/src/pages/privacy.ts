@@ -1,6 +1,7 @@
 import { html, safeUrl } from '../../../src/ui/html.js'
 import { DELETE_COOLDOWN_DAYS } from '../signup-policy.js'
 import { renderHubLayout } from './layout.js'
+import { REPOSITORY_ISSUES_URL } from './links.js'
 
 /**
  * The `/privacy` page (HA10/HA11, draft — the plan flags it for the owner to
@@ -16,8 +17,6 @@ export interface PrivacyView {
   readonly signedIn?: boolean
   readonly csrfToken?: string
 }
-
-const REPOSITORY_ISSUES_URL = 'https://github.com/RostislavMatov/mcpcut/issues'
 
 /** Renders the complete `/privacy` HTML document. */
 export function renderPrivacyPage(view: PrivacyView): string {

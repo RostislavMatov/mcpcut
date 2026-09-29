@@ -182,7 +182,7 @@ function account(deps: HubDeps, ctx: HubContext): HubResult {
     ? deps.pendingTokens.takeToken({ githubId: record.githubId, accountCreatedAt: record.createdAt })
     : undefined
   if (waiting !== undefined) {
-    return page(200, renderTokenOncePage({ login: record.login, token: waiting, csrfToken: session.csrfToken }))
+    return tokenOncePage(deps, record, waiting, session.csrfToken)
   }
   return page(
     200,
@@ -190,7 +190,7 @@ function account(deps: HubDeps, ctx: HubContext): HubResult {
       login: record.login,
       subdomain: record.subdomain,
       status: record.status,
-      serveUrl: `https://${record.subdomain}.${deps.tenantDomain}`,
+      serveUrl: serveUrlOf(deps, record),
       csrfToken: session.csrfToken,
       install: installStateOf(deps, record, starting),
       ...idleDeadlines(record),
@@ -211,6 +211,16 @@ function isPageLoad(headers: IncomingHttpHeaders): boolean {
   const mode = headerValue(headers, 'sec-fetch-mode')
   const speculative = headerValue(headers, 'sec-purpose') !== undefined || headerValue(headers, 'purpose') !== undefined
   return (dest === undefined || dest === 'document') && (mode === undefined || mode === 'navigate') && !speculative
+}
+
+/** The tenant's console, `https://<subdomain>.<tenant domain>` (no trailing slash). */
+function serveUrlOf(deps: HubDeps, record: AccountRecord): string {
+  return `https://${record.subdomain}.${deps.tenantDomain}`
+}
+
+/** The owner token, once, with the console it signs in to as the next step. */
+function tokenOncePage(deps: HubDeps, record: AccountRecord, token: string, csrfToken: string): HubResult {
+  return page(200, renderTokenOncePage({ login: record.login, token, csrfToken, serveUrl: serveUrlOf(deps, record) }))
 }
 
 function installStateOf(deps: HubDeps, record: AccountRecord, starting: boolean): InstallState {
@@ -238,7 +248,7 @@ async function rotateToken(deps: HubDeps, ctx: HubContext): Promise<HubResult> {
   }
   // A first token still waiting stopped working the moment this one was minted.
   deps.pendingTokens.forget(record.githubId)
-  return page(200, renderTokenOncePage({ login: record.login, token: ownerToken, csrfToken: session.csrfToken }))
+  return tokenOncePage(deps, record, ownerToken, session.csrfToken)
 }
 
 function deleteConfirm(_deps: HubDeps, ctx: HubContext): HubResult {

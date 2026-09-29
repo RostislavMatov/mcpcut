@@ -2,6 +2,7 @@ import { html, safeUrl, type Html } from '../../../src/ui/html.js'
 import type { AccountStatus } from '../account-row.js'
 import { csrfField } from './csrf-field.js'
 import { renderHubLayout } from './layout.js'
+import { consoleLink, FEEDBACK_URL, REPOSITORY_ISSUES_URL } from './links.js'
 
 /**
  * The `/account` page (UX Design, Task 4). It shows the tenant's identity and
@@ -20,9 +21,12 @@ import { renderHubLayout } from './layout.js'
  * simpler and cannot go stale.
  *
  * The AGENT token itself is never shown here — only the install's owner can
- * mint one, from their own console (`mcpcut agent create <name>`), which is
- * why the JSON block carries a placeholder and the page says so in plain
- * words (plan Task 4).
+ * mint one, on their own console's Agents page (a hosted install runs no CLI
+ * the visitor can reach, so the page links there, 2026-09-29), which is why
+ * the JSON block carries a placeholder and the page says so in plain words
+ * (plan Task 4). The console link and "Did it work for you?" are the page's
+ * next steps: the hub keeps no email, so the feedback discussion is the only
+ * way a person's answer reaches the project.
  */
 
 /**
@@ -95,14 +99,17 @@ function statusPillOf(status: AccountStatus): Html {
 function renderInstallBody(view: AccountView): Html {
   switch (view.install) {
     case 'missing':
-      return html`<p><strong>Your install is missing.</strong> Nothing was removed on purpose — please contact the operator.</p>`
+      return html`<p><strong>Your install is missing.</strong> Nothing was removed on purpose — tell the operator in <a href="${safeUrl(REPOSITORY_ISSUES_URL)}">the project's GitHub issues</a>.</p>`
     case 'starting':
       return html`
         <p><strong>stopped — starting…</strong></p>
         <p class="hint">Your install was stopped after 60 days without use and is starting again. This page checks again in a few seconds.</p>
       `
     case 'stopped':
-      return html`<p class="hint">Your install was stopped after 60 days without use and cannot be started right now. Try again later; it is removed on ${view.removedOn} if unused.</p>`
+      return html`
+        <p class="hint">Your install was stopped after 60 days without use and cannot be started right now. Try again later; it is removed on ${view.removedOn} if unused.</p>
+        <p><a href="${safeUrl(ACCOUNT_PATH)}">Check again</a></p>
+      `
     case 'running':
       return html`
         <p>Your install stops on ${view.stopsOn} if unused, and is removed on ${view.removedOn} if unused.</p>
@@ -146,7 +153,7 @@ function renderClientConfigPanel(view: AccountView): Html {
         <pre><code>${connectCommandOf(view)}</code></pre>
         <p class="hint">Or drop this into your agent's MCP client config:</p>
         <pre><code>${clientConfigJsonOf(view)}</code></pre>
-        <p class="field-hint">The agent token above is a placeholder — mcpcut hub never sees or shows it. Create a real one from your own install's console: <code>mcpcut agent create &lt;name&gt;</code>, then paste it in.</p>
+        <p class="field-hint">The agent token above is a placeholder — mcpcut hub never sees or shows it. Create a real one in your console, <a href="${safeUrl(`${view.serveUrl}/agents`)}">Agents → Create an agent</a>, then paste it in.</p>
       </div>
     </section>
   `
@@ -161,12 +168,17 @@ export function renderAccountPage(view: AccountView): string {
         ${statusPillOf(view.status)}
       </div>
       <div class="panel-bd">
-        <p class="hint">${view.subdomain}.mcpcut.com</p>
+        <p class="hint">${consoleLink(view.serveUrl)} — your console; sign in there with your owner token.</p>
       </div>
     </section>
     ${renderInstallPanel(view)}
     ${renderTokenPanel(view)}
     ${renderClientConfigPanel(view)}
+    <section class="panel">
+      <div class="panel-bd">
+        <p>Did it work for you? <a href="${safeUrl(FEEDBACK_URL)}">Tell us in one click</a> — we have no email for you, so this is how we hear back.</p>
+      </div>
+    </section>
     <section class="panel hub-danger">
       <div class="panel-hd"><h2>Delete account</h2></div>
       <div class="panel-bd">

@@ -25,6 +25,7 @@ import { expectNoBannedWords } from '../support/banned-words.js'
  */
 
 const XSS_LOGIN = '<script>alert(1)</script>'
+const TENANT_CONSOLE_ORIGIN = 'https://alice.mcpcut.com'
 const CSRF_TOKEN = 'csrf-token-value-123456'
 
 const ALL_REFUSAL_REASONS: readonly SigninRefusalReason[] = [
@@ -73,7 +74,12 @@ function allPages(): ReadonlyArray<{ readonly name: string; readonly html: strin
     { name: 'deleted-xss-login', html: renderDeletedPage({ login: XSS_LOGIN }) },
     {
       name: 'token-once',
-      html: renderTokenOncePage({ login: 'alice', token: 'mcpo_secrettoken', csrfToken: CSRF_TOKEN }),
+      html: renderTokenOncePage({
+        login: 'alice',
+        token: 'mcpo_secrettoken',
+        csrfToken: CSRF_TOKEN,
+        serveUrl: TENANT_CONSOLE_ORIGIN,
+      }),
     },
     { name: 'preparing', html: renderPreparingPage({ login: 'alice', csrfToken: CSRF_TOKEN }) },
     { name: 'preparing-xss-login', html: renderPreparingPage({ login: XSS_LOGIN, csrfToken: CSRF_TOKEN }) },
@@ -90,11 +96,15 @@ function allPages(): ReadonlyArray<{ readonly name: string; readonly html: strin
 }
 
 const ALLOWED_LINK_PREFIXES = ['/', '#'] as const
-const ALLOWED_EXTERNAL_ORIGIN = 'https://github.com/RostislavMatov/mcpcut'
+const ALLOWED_EXTERNAL_ORIGINS = [
+  'https://github.com/RostislavMatov/mcpcut',
+  // The visitor's own console — where the owner token signs in, where agent tokens are made.
+  TENANT_CONSOLE_ORIGIN,
+] as const
 
 function isAllowedLink(href: string): boolean {
   if (ALLOWED_LINK_PREFIXES.some((prefix) => href.startsWith(prefix))) return true
-  return href === ALLOWED_EXTERNAL_ORIGIN || href.startsWith(`${ALLOWED_EXTERNAL_ORIGIN}/`)
+  return ALLOWED_EXTERNAL_ORIGINS.some((origin) => href === origin || href.startsWith(`${origin}/`))
 }
 
 describe('hub pages — escaping (XSS)', () => {
@@ -154,8 +164,8 @@ describe('hub pages — every POST form carries the CSRF field', () => {
   })
 })
 
-describe('hub pages — links stay relative or on the project repository', () => {
-  test('every href is relative, an in-page anchor, or the mcpcut repository', () => {
+describe('hub pages — links stay relative, on the project repository or on the tenant console', () => {
+  test('every href is relative, an in-page anchor, the mcpcut repository or the tenant console', () => {
     for (const page of allPages()) {
       const hrefs = [...page.html.matchAll(/\shref="([^"]*)"/g)].map((match) => match[1] ?? '')
       for (const href of hrefs) {
@@ -244,9 +254,10 @@ describe('account — the client config block', () => {
     expect(document).not.toMatch(/MCP_AGENT_TOKEN&quot;:\s*&quot;(?!&lt;)/)
   })
 
-  test('never claims to show the agent token itself', () => {
+  test('never claims to show the agent token itself: it links where one is made', () => {
     const document = renderAccountPage(accountView())
-    expect(document).toMatch(/agent create/)
+    expect(document).toContain('placeholder')
+    expect(document).toContain('href="https://alice.mcpcut.com/agents"')
   })
 })
 
