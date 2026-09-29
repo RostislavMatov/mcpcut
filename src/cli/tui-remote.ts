@@ -12,7 +12,9 @@ import { isPlainHttpToNonLoopback, type RemoteUrlResult } from '../tui/remote/ur
 import type { EffectDeps } from '../tui/runtime-effects.js'
 import { runConsole, type ConsoleDeps, type TuiTerminal } from '../tui/runtime.js'
 import { firstOwnerModel } from '../tui/update-first-owner.js'
+import { CLI_NAME } from '../setup/constants.js'
 import type { DispatchOptions } from './dispatch-types.js'
+import { cliCommand } from './next-step.js'
 import { defaultTerminal } from './tty.js'
 import { defaultReopen, type ReopenFn } from './tui-wizard.js'
 import type { UiCliIo } from './ui-constants.js'
@@ -67,6 +69,18 @@ function plainHttpWarning(origin: string): string {
     `warning: --remote ${origin} is plain http to a non-loopback host: the admin token ` +
     'crosses the network in clear. Use https://, or "ssh -L <port>:127.0.0.1:<port> <user>@<host>".\n'
   )
+}
+
+/**
+ * What to do when `--remote`/`MCPCUT_REMOTE` answered nothing usable
+ * (2026-09-29, console pass): the likeliest causes are a service that is down
+ * and an address that is not the `ui` one (the `serve` port, a proxy), so it
+ * says both, and hands over `--connect`, which opens the address form
+ * prefilled with this origin — and ignores `MCPCUT_REMOTE`, so an exported
+ * variable cannot send the operator straight back here.
+ */
+function unreachableNextStep(origin: string, env: NodeJS.ProcessEnv): string {
+  return `Check that ${CLI_NAME} ui runs at ${origin}, or connect to another: ${cliCommand(env)} --connect ${origin}\n`
 }
 
 /**
@@ -142,7 +156,7 @@ export async function runRemoteTui(
   })
   const state = await client.state()
   if (!state.ok) {
-    io.stderr.write(`could not open the console: ${state.message}\n`)
+    io.stderr.write(`could not open the console: ${state.message}\n${unreachableNextStep(url.origin, env)}`)
     return EXIT_REMOTE_REFUSED
   }
 

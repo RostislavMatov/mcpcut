@@ -1,5 +1,6 @@
 import { parseArgs } from 'node:util'
 import { formatReadableField } from '../journal/format.js'
+import { noServersHint } from './next-step.js'
 import { ADD_USAGE, buildCandidate, parseAddArgs } from './server-add-args.js'
 import { reportServerAdd, requireServerOwner, type ServerChangeActor } from './server-attribution.js'
 import { warnAboutExistingGrants } from './server-grant-refs.js'
@@ -186,6 +187,7 @@ export async function runServerList(
 
   if (records.length === 0) {
     io.stdout.write('(no servers registered)\n')
+    io.stderr.write(noServersHint())
     return 0
   }
   const statusCells = await probeListStatusCells(records.map((record) => record.name), io, opts)

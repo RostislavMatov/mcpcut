@@ -222,6 +222,11 @@ function failedRun(io: RemoteIo, message: string): number {
   return FAILED_RUN_EXIT_CODE
 }
 
+/** No answer the contract knows (no connection, a proxy's 502 page): what happened, and what to do. */
+function unreachedRun(io: RemoteIo, message: string, runUrl: string): number {
+  return failedRun(io, `${message} — check that it runs at ${runUrl.slice(0, -CONSOLE_API_RUN_PATH.length)}, then run the action again`)
+}
+
 async function runRemote(
   fetchImpl: FetchLike,
   url: string,
@@ -241,14 +246,13 @@ async function runRemote(
     },
     timeoutMs,
   )
-  if (!attempt.ok) return failedRun(io, attempt.failure.message)
+  if (!attempt.ok) return unreachedRun(io, attempt.failure.message, url)
   const { response } = attempt
   if (response.status !== 200) {
     const refusal = await refusalOf(response)
-    // Only a refusal this call could actually PLACE gets reported: `network`
-    // here means the body did not match the contract's error shape at all, so
-    // there is no real `ConsoleError['error']` kind to hand back.
-    if (refusal.kind !== 'network') onRefusal?.(refusal.kind)
+    // `network`: the body is not the contract's error shape, so there is no kind to report.
+    if (refusal.kind === 'network') return unreachedRun(io, refusal.message, url)
+    onRefusal?.(refusal.kind)
     return failedRun(io, refusal.message)
   }
 

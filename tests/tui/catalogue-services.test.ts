@@ -228,6 +228,8 @@ describe('an install somebody else supervises is offered less', () => {
     expect(external).toHaveLength(owned.length)
     for (const [index, section] of owned.entries()) {
       if (section.id === 'services' || section.id === 'home') expect(external[index]).not.toBe(section)
+      // A section with a role-chosen last intro line is rebuilt per call, alike.
+      else if (section.nextStep !== undefined) expect(external[index], section.id).toEqual(section)
       else expect(external[index], section.id).toBe(section)
     }
   })
@@ -242,6 +244,10 @@ describe('an install somebody else supervises is offered less', () => {
       if (section.id === 'home') {
         expect(section.actions.map((action) => action.id)).toEqual(['status', 'connect'])
         expect(section).not.toBe(SECTIONS[index])
+      } else if (section.nextStep !== undefined) {
+        // The role's next-step line joins the intro (2026-09-29); nothing else differs.
+        const own = SECTIONS[index]
+        expect(section, section.id).toEqual({ ...own, intro: [...(own?.intro ?? []), section.intro.at(-1)] })
       } else {
         expect(section, section.id).toBe(SECTIONS[index])
       }

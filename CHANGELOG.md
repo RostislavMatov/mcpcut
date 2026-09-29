@@ -13,6 +13,16 @@ All notable changes to this project are documented here. The format follows
   waits there when a rule says `require-approval` and links to the server
   rules, the journal names the first call that fills it. An admin whose role
   cannot take the action is told an owner does.
+- **The terminal console names the next step.** Home tells a new owner to
+  start with *Servers ▸ add*, then *Agents ▸ create*; Servers, Agents and
+  Groups say which action fills them (or that an owner does). The sign-in
+  screen says how to get a lost token back (`admin rotate <name> --recover`).
+  `server list`, `agent list` and `group list` with nothing in them, `vault`
+  before `vault init` and `policy show` with no policy file end with the
+  command or file that fills them. A console that cannot reach its service
+  says what to check and offers `mcpcut --connect <address>`; a run that gets
+  no answer says to check the service and run the action again; a role
+  refused over the network is told an owner can run it.
 
 ## [0.2.1] — 2026-09-29
 

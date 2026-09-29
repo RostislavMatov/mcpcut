@@ -1,4 +1,6 @@
+import { cliCommand } from '../cli/next-step.js'
 import { EXTERNAL_SUPERVISOR } from '../services/constants.js'
+import { CLI_NAME } from '../setup/constants.js'
 import { padRight, sanitizeLine, type Style } from './ansi.js'
 import {
   CARET,
@@ -17,7 +19,7 @@ import {
   SIGNIN_SERVICES_PREFIX,
 } from './constants-live.js'
 import type { Form } from './form.js'
-import { blankRows, fillTo } from './layout.js'
+import { blankRows, fillTo, wrapWords } from './layout.js'
 import type { InstallFacts, SigninScreen, TerminalSize } from './model.js'
 import { hasDownService, servicesHeaderPart, type ServiceSummary } from './services-summary.js'
 
@@ -62,7 +64,7 @@ export function renderSignIn(
   const { columns, rows } = size
   if (rows <= 0) return []
 
-  const block = centredBlock(signInBlockOf(screen, install), columns)
+  const block = centredBlock(signInBlockOf(screen, install, columns), columns)
   const top = Math.max(SIGNIN_BLOCK_MIN_ROW, Math.floor(rows / SIGNIN_BLOCK_DIVISOR))
   const above = [
     style.bold(padRight(CONSOLE_TITLE, columns)),
@@ -86,16 +88,36 @@ const SIGNIN_BLOCK_MIN_ROW = 2
  * be drawn would still be counted, sliding the whole block left. The services
  * line answers for itself the same way (`servicesHeaderPart`).
  */
-function signInBlockOf(screen: SigninScreen, install: InstallFacts | undefined): readonly string[] {
+function signInBlockOf(
+  screen: SigninScreen,
+  install: InstallFacts | undefined,
+  columns: number,
+): readonly string[] {
   const notice = screen.notice
   return [
     SIGNIN_TITLE,
     `${SIGNIN_TOKEN_LABEL}: ${screen.busy ? SIGNIN_BUSY_TEXT : maskedTokenOf(screen.form)}`,
     '',
     ...(notice === undefined ? [] : [sanitizeLine(notice)]),
+    ...lostTokenHint(install).flatMap((line) => wrapWords(line, columns)),
     ...remoteAddressLines(install),
     ...servicesBannerLines(screen.services, install),
   ]
+}
+
+/**
+ * The way back to a token (owner's rule 2026-09-29: a screen says what to do
+ * next), right after the notice a refused token leaves, so it answers
+ * "which token?" and "that one was refused" alike. On this host `admin
+ * rotate --recover` needs no token at all; over `--remote` an owner reissues
+ * it from the console, and a sole owner recovers it on the service's host.
+ * The command gets a line of its own, so it is never split and the block —
+ * centred on its widest line — stays centred under the long npx form.
+ */
+export function lostTokenHint(install: InstallFacts | undefined): readonly string[] {
+  return install?.remote === true
+    ? ['Lost it? An owner reissues it: Admins ▸ rotate,', `or on its host: ${CLI_NAME} admin rotate <name> --recover`]
+    : ['Lost it? Esc, then run:', `${cliCommand()} admin rotate <name> --recover`]
 }
 
 /**

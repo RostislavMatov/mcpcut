@@ -33,6 +33,7 @@ import {
   formatMembers,
 } from './group-cmd-format.js'
 import { recordChange, requireOwner } from './group-cmd-write.js'
+import { noGroupsHint } from './next-step.js'
 
 /**
  * `group create|remove|list|show|grant|ungrant|join|leave` — the CLI surface
@@ -212,7 +213,9 @@ async function runList(args: string[], io: GroupCliIo, store: GroupsStore): Prom
     io.stderr.write(USAGE)
     return 1
   }
-  io.stdout.write(formatGroupTable(await store.listGroups()))
+  const groups = await store.listGroups()
+  io.stdout.write(formatGroupTable(groups))
+  if (groups.length === 0) io.stderr.write(noGroupsHint())
   return 0
 }
 

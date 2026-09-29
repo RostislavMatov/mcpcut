@@ -143,4 +143,9 @@ export const AGENTS_SECTION: SectionSpec = {
   ],
   actions: [listAction, createAction, configAction, grantAction, ungrantAction, revokeAction],
   refreshActionId: 'list',
+  nextStep: {
+    minRole: createAction.minRole,
+    line: 'None yet? create one, then grant it a server.',
+    otherwise: 'None yet? An owner creates them.',
+  },
 }

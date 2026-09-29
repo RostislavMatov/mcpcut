@@ -64,10 +64,23 @@ export function visibleSections(
   facts: InstallFacts = DEFAULT_INSTALL_FACTS,
 ): readonly SectionSpec[] {
   return sections
-    .map((section) => narrowedByFacts(section, facts))
+    .map((section) => withNextStep(narrowedByFacts(section, facts), role))
     .filter(
       (section) => roleSatisfies(role, section.minRole) && visibleActions(section, role).length > 0,
     )
+}
+
+/**
+ * The section with its `nextStep` resolved for `role` and appended to the
+ * intro it already shows (plain or external): the action for a role that may
+ * take it, who does for one that may not. The same object when there is none.
+ */
+function withNextStep(section: SectionSpec, role: Role): SectionSpec {
+  const { nextStep } = section
+  if (nextStep === undefined) return section
+
+  const line = roleSatisfies(role, nextStep.minRole) ? nextStep.line : nextStep.otherwise
+  return { ...section, intro: [...section.intro, line] }
 }
 
 /**

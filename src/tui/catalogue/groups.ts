@@ -154,4 +154,9 @@ export const GROUPS_SECTION: SectionSpec = {
     leaveAction,
   ],
   refreshActionId: 'list',
+  nextStep: {
+    minRole: createAction.minRole,
+    line: 'None yet? create one, then join agents to it.',
+    otherwise: 'None yet? An owner creates them.',
+  },
 }

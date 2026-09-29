@@ -22,6 +22,7 @@ import { formatAgentLine, formatGrantLines, summaryOf } from './agent-cmd-format
 import { recordChange, requireOwner, warnIfGroupsUncovered } from './agent-cmd-write.js'
 import { runConfig, writeClientConfig } from './agent-config-cmd.js'
 import { resolveGrantFlags } from './grant-flags.js'
+import { noAgentsHint } from './next-step.js'
 import { TOKEN_ONCE_NOTICE } from './ui-constants.js'
 import { StoreCorruptError, StoreLockError, StoreWriteRejectedError } from '../policy/store.js'
 
@@ -190,6 +191,7 @@ async function runList(
   const agents = await store.listAgents()
   if (agents.length === 0) {
     io.stdout.write('(no agents)\n')
+    io.stderr.write(noAgentsHint())
     return 0
   }
 

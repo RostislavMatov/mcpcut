@@ -85,3 +85,28 @@ export function noJournalMessage(journalDir: string): string {
     `Journal a server first: ${cliCommand()} wrap -- <server command>\n`
   )
 }
+
+/*
+ * Empty lists and a vault not set up yet (2026-09-29, console pass): the
+ * console's Servers, Agents, Groups and Vault panels show exactly this
+ * output, so the command that fills each one is named here, for the shell and
+ * the console alike. Role-neutral on purpose: a role that may not run it is
+ * refused with its own message, and the console's section intro already says
+ * who can (`catalogue/next-steps.ts`).
+ */
+
+export function noServersHint(): string {
+  return `Register one: ${cliCommand()} server add <name> --transport stdio --command <server command>\n`
+}
+
+export function noAgentsHint(): string {
+  return `Create one: ${cliCommand()} agent create <name>\n`
+}
+
+export function noGroupsHint(): string {
+  return `Create one: ${cliCommand()} group create <name>\n`
+}
+
+export function vaultNotInitializedMessage(): string {
+  return `vault is not initialized. Run "${cliCommand()} vault init" first.\n`
+}

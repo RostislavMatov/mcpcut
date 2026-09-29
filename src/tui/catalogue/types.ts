@@ -185,4 +185,19 @@ export interface SectionSpec {
    * open on its action list (C3: Approvals only).
    */
   readonly autoRefreshMs?: number
+  /** How an empty section is filled; one more intro line, chosen by role (`visibleSections`). */
+  readonly nextStep?: IntroNextStep
+}
+
+/**
+ * The last intro line of a section that starts empty (owner's rule
+ * 2026-09-29: an empty screen says how to fill it). `line` names the action
+ * for a role that may take it; `otherwise` says who does, so a viewer is
+ * never pointed at an action its list does not hold.
+ */
+export interface IntroNextStep {
+  /** The least role the named action admits — the action's own `minRole`, never a copy. */
+  readonly minRole: Role
+  readonly line: string
+  readonly otherwise: string
 }

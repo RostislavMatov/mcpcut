@@ -1,3 +1,4 @@
+import type { Role } from '../../admin/authz.js'
 import { SERVER_REFRESH_MIN_ROLE } from '../../cli/server-status-cmd.js'
 import {
   HTTP_PROTOCOL_VALUES,
@@ -96,10 +97,13 @@ const showAction: ActionSpec = {
   argv: (values) => ['server', 'show', valueOf(values, 'name')],
 }
 
+/** Who may register a server; Home's first-step line names this action too. */
+export const SERVER_ADD_MIN_ROLE: Role = 'owner'
+
 const addAction: ActionSpec = {
   id: 'add',
   title: 'add',
-  minRole: 'owner',
+  minRole: SERVER_ADD_MIN_ROLE,
   command: 'server',
   subcommand: 'add',
   fields: [
@@ -163,4 +167,9 @@ export const SERVERS_SECTION: SectionSpec = {
   intro: ['MCP servers the plane can reach; list and show', 'probe the stale ones.'],
   actions: [listAction, showAction, addAction, refreshAction, removeAction],
   refreshActionId: 'list',
+  nextStep: {
+    minRole: addAction.minRole,
+    line: 'None yet? add registers one.',
+    otherwise: 'None yet? An owner registers them.',
+  },
 }

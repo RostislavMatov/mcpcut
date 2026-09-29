@@ -1,5 +1,6 @@
 import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
+import { GUIDE_URL } from '../brand.js'
 import { JOURNAL_DIR } from '../config.js'
 import { formatReadableField } from '../journal/format.js'
 import { POLICY_ENV_VAR, POLICY_FILE_NAME } from '../policy/constants.js'
@@ -146,7 +147,22 @@ function formatSearchedLocations(
     '  1. --policy <path> (explicit path flag) -- not given',
     `  2. $${POLICY_ENV_VAR} (environment variable) -- not set`,
     ...locations,
+    noPolicyNextStep(homePath),
   ].join('\n')
+}
+
+/**
+ * The last line of "no policy file found" (2026-09-29, console pass): what
+ * that means today, and where a file goes. There is no command that writes a
+ * first policy (`policy set` edits an existing one), so the example is the
+ * guide's; a starter written blindly would hold every call, since the
+ * schema's `defaultDecision` is `require-approval`.
+ */
+function noPolicyNextStep(homePath: string): string {
+  return (
+    'No policy file means every call runs and is journaled.\n' +
+    `To hold risky calls, create ${homePath} (example: ${GUIDE_URL}/policies.md)`
+  )
 }
 
 /**

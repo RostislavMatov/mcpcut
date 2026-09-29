@@ -140,6 +140,8 @@ describe('the network role floor', () => {
     const viewerToken = await ui.tokenFor('viewer')
     const viewerRes = await postRun(ui.base, viewerToken, { argv: ['export'] })
     expect(viewerRes.status).toBe(403)
+    // The refusal says who can, rather than leaving the viewer at a dead end (2026-09-29).
+    expect(consoleErrorSchema.parse(await viewerRes.json()).message).toContain('an owner can')
 
     const operatorToken = await ui.tokenFor('operator')
     const operatorRes = await postRun(ui.base, operatorToken, { argv: ['export'] })

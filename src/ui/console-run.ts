@@ -193,7 +193,8 @@ function isVaultWriteAllowed(req: IncomingMessage, deps: ConsoleRunDeps): boolea
 const CONSOLE_RUN_BAD_REQUEST_MESSAGE = 'Malformed run request.'
 const CONSOLE_RUN_COMMAND_REFUSED_MESSAGE =
   'This command has no remote-console form: it is a daemon, an interactive screen, or not on the allowlist.'
-const CONSOLE_RUN_ROLE_REFUSED_MESSAGE = 'Your role does not meet the network floor for this command.'
+const CONSOLE_RUN_ROLE_REFUSED_MESSAGE =
+  'Your role cannot run this command over the network; an owner can, or can raise your role.'
 const CONSOLE_RUN_VAULT_HTTP_REFUSED_MESSAGE =
   'Writing to the vault over plain HTTP from a non-loopback peer is refused; use HTTPS or run the console on this host.'
 const CONSOLE_RUN_INTERNAL_FRAME_MESSAGE = 'The command failed unexpectedly.'

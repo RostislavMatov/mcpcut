@@ -1,5 +1,6 @@
 import { CLI_NAME } from '../../setup/constants.js'
 import { CONNECT_FORM_FLAG } from '../constants-live.js'
+import { SERVER_ADD_MIN_ROLE } from './servers.js'
 import type { ActionSpec, SectionSpec } from './types.js'
 
 /**
@@ -100,4 +101,10 @@ export const HOME_SECTION: SectionSpec = {
   ],
   actions: [statusAction, connectAction, disconnectAction],
   refreshActionId: 'status',
+  // A new install has nothing an agent could reach yet: the first two steps.
+  nextStep: {
+    minRole: SERVER_ADD_MIN_ROLE,
+    line: 'New here? Servers ▸ add, then Agents ▸ create.',
+    otherwise: 'An owner adds the servers and agents.',
+  },
 }

@@ -223,6 +223,7 @@ describe('the Home section', () => {
       'MCP_AGENT_TOKEN goes in the agent’s own environment.',
       'Services are run by compose or systemd',
       '(supervisor: external): mcpcut only reports.',
+      'New here? Servers ▸ add, then Agents ▸ create.',
     ])
     // `disconnect` (`requires: 'remote'`) is filtered out on a non-remote
     // install, whatever supervisor it names — so this is no longer the same
@@ -235,8 +236,9 @@ describe('the Home section', () => {
   test('on an install mcpcut supervises, the intro is unchanged and disconnect stays hidden', () => {
     const owned = visibleSections('owner').find((section) => section.id === 'home')
 
-    expect(owned?.intro).toEqual(HOME_SECTION.intro)
-    expect(owned?.intro.at(-1)).toBe('A service marked ○ in the header: Services ▸ start.')
+    // Plus the owner's first steps, which `visibleSections` adds for the role (2026-09-29).
+    expect(owned?.intro).toEqual([...HOME_SECTION.intro, 'New here? Servers ▸ add, then Agents ▸ create.'])
+    expect(owned?.intro.at(-2)).toBe('A service marked ○ in the header: Services ▸ start.')
     expect(owned?.actions.map((action) => action.id)).toEqual(['status', 'connect'])
   })
 

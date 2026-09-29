@@ -6,6 +6,7 @@ import {
   type VaultStore,
   type VaultStoreOptions,
 } from '../vault/store.js'
+import { vaultNotInitializedMessage } from './next-step.js'
 import { recordChange, requireOwner } from './vault-cmd-write.js'
 
 /**
@@ -217,7 +218,7 @@ function reportFailure(
 ): number {
   switch (failure.status) {
     case 'not-initialized':
-      io.stderr.write('vault is not initialized. Run "mcpcut vault init" first.\n')
+      io.stderr.write(vaultNotInitializedMessage())
       return 1
     case 'corrupt':
       io.stderr.write(`vault is corrupt: ${failure.message}\n`)
