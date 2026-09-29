@@ -623,6 +623,9 @@ describe('serversRemove', () => {
       await h.handlers.serversRemove(formPost({ csrf_token: OWNER.csrfToken, name: 'ghost' }, '/servers/remove')),
     )
     expect(res.status).toBe(404)
+    // Says what happened and leads back to the list (owner's rule 2026-09-29).
+    expect(String(res.body)).toContain('That server is not registered')
+    expect(String(res.body)).toContain('<a href="/servers">Back to servers</a>')
   })
 
   test('an empty body is an unknown server (404), never a 500', async () => {

@@ -8,6 +8,7 @@ import { HTTP_STATUS_NOT_FOUND, HTTP_STATUS_OK } from '../constants.js'
 import { renderPruneDangling, renderRemoveWarning } from '../pages/servers-holders.js'
 import type { UiHandler, UiRequestContext, UiResult } from '../routes.js'
 import type { AccessEditJournalPort } from './agents.js'
+import { refusalNotice, SERVERS_LIST, UNKNOWN_SERVER_MESSAGE } from './refusal-notice.js'
 import { csrfTokenOf, currentAdminOf, fieldsOf } from './request-helpers.js'
 import { journalServerChange, serverChangeApplied } from './servers-journal.js'
 
@@ -120,12 +121,12 @@ export function createServersRemoveHandler(deps: ServersRemoveDeps): UiHandler {
    * `groups.json` on the strength of a single POST.
    */
   async function pruneDangling(ctx: UiRequestContext, name: string, prune: boolean): Promise<UiResult> {
-    if (!canDangle(name)) return NOT_FOUND
+    if (!canDangle(name)) return notFound(ctx)
     const [holders, holdingGroups] = await Promise.all([
       agentsNamingServer(deps.agents, name),
       groupsGranting(deps.groups, name),
     ])
-    if (holders.length === 0 && holdingGroups.length === 0) return NOT_FOUND
+    if (holders.length === 0 && holdingGroups.length === 0) return notFound(ctx)
     if (!prune) {
       const body = renderPruneDangling({
         serverName: name,
@@ -161,7 +162,7 @@ export function createServersRemoveHandler(deps: ServersRemoveDeps): UiHandler {
     const result = await deps.registry.removeServer(name)
     // Lost the race with a concurrent removal: nothing was removed here, so
     // nothing is audited, journalled or pruned on this request's account.
-    if (result.status === 'not-found') return NOT_FOUND
+    if (result.status === 'not-found') return notFound(ctx)
     return cascade(ctx, result.record.name)
   }
 }
@@ -176,10 +177,8 @@ async function isRegistered(
 }
 
 /** The 404 for a name that is neither registered nor granted anywhere. */
-const NOT_FOUND: UiResult = {
-  kind: 'response',
-  status: HTTP_STATUS_NOT_FOUND,
-  body: 'unknown server',
+function notFound(ctx: UiRequestContext): UiResult {
+  return refusalNotice(ctx, HTTP_STATUS_NOT_FOUND, UNKNOWN_SERVER_MESSAGE, SERVERS_LIST)
 }
 
 /**

@@ -163,6 +163,8 @@ describe('remove / role go through the store (kills sessions) with last-owner gu
     const result = await handlers.adminsRemove(postCtx({ name: 'owner-admin' }, session()))
     if (result.kind === 'response') expect(result.status).toBe(400)
     expect(bodyOf(result)).toMatch(/owner/i)
+    // …and says what to do instead (owner's rule 2026-09-29).
+    expect(bodyOf(result)).toContain('Add another owner, or make an admin an owner, first.')
     // The owner is still active — the system was not locked out.
     expect(await store.getActiveAdmin('owner-admin')).toBeDefined()
   })

@@ -38,6 +38,7 @@ import { renderNotice } from '../pages/notice.js'
 import type { UiHandler, UiRequestContext, UiResult } from '../routes.js'
 import type { AccessEditJournalOutcome, AccessEditJournalPort, UiAuditSink } from './agents.js'
 import { methodGrantsFrom, parseGrantValue } from './grant-fields.js'
+import { GROUPS_LIST, refusalNotice, UNKNOWN_GROUP_MESSAGE } from './refusal-notice.js'
 import { fieldsOf, redirect } from './request-helpers.js'
 import { internalErrorResult, isKnownStoreError, type ErrorClass } from './store-errors.js'
 
@@ -249,7 +250,7 @@ export function createGroupsHandlers(deps: GroupsHandlersDeps): GroupsHandlers {
     if (name === '') return refusal('group name is required', session)
     const record = await groups.getGroup(name)
     if (record === undefined) {
-      return { kind: 'response', status: HTTP_STATUS_NOT_FOUND, body: 'unknown group' }
+      return refusalNotice(ctx, HTTP_STATUS_NOT_FOUND, UNKNOWN_GROUP_MESSAGE, GROUPS_LIST)
     }
     if (record.members.length > 0) {
       return htmlResult(HTTP_STATUS_OK, renderGroupRemoveRefusal({ group: record, session }))
@@ -259,7 +260,7 @@ export function createGroupsHandlers(deps: GroupsHandlersDeps): GroupsHandlers {
     }
     const result = await groups.removeGroup(name)
     if (result.status === 'not-found') {
-      return { kind: 'response', status: HTTP_STATUS_NOT_FOUND, body: 'unknown group' }
+      return refusalNotice(ctx, HTTP_STATUS_NOT_FOUND, UNKNOWN_GROUP_MESSAGE, GROUPS_LIST)
     }
     if (result.status === 'has-members') {
       // Lost the race with a concurrent `group join`: the same refusal, built

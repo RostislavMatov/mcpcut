@@ -249,10 +249,12 @@ describe('POST /servers/refresh handler', () => {
 
     const missing = asResponse(await handlers.serversRefresh(refreshCtx(undefined)))
     expect(missing.status).toBe(400)
+    expect(String(missing.body)).toContain('did not name a server')
 
     const unknown = asResponse(await handlers.serversRefresh(refreshCtx('nope')))
     expect(unknown.status).toBe(404)
-    expect(unknown.body).toContain('unknown server')
+    expect(String(unknown.body)).toContain('That server is not registered')
+    expect(String(unknown.body)).toContain('<a href="/servers">Back to servers</a>')
     expect(calls.filter((call) => call.kind === 'probeNow')).toHaveLength(0)
   })
 

@@ -284,7 +284,18 @@ describe('serversEdit — a changed definition is journalled as an access edit',
     )
 
     expect(res.status).toBe(404)
+    expect(String(res.body)).toContain('<a href="/servers">Back to servers</a>')
     expect(h.accessEdits).toHaveLength(0)
+  })
+
+  test('an edit that names no server is a 400 that leads back to the list', async () => {
+    h = makeHarness()
+
+    const res = asResponse(await h.handlers().serversEdit(formPost({ confirm: 'true' }, '/servers/edit')))
+
+    expect(res.status).toBe(400)
+    expect(String(res.body)).toContain('did not name a server')
+    expect(String(res.body)).toContain('<a href="/servers">Back to servers</a>')
   })
 
   test('a dropped record → the edit stands, and a 200 notice carries the warning instead of the 303', async () => {

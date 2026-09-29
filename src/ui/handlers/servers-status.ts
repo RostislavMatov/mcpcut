@@ -13,6 +13,12 @@ import {
 } from '../constants.js'
 import type { ServerStatusesByName, ServerStatusView } from '../pages/servers-status.js'
 import {
+  MISSING_SERVER_NAME_MESSAGE,
+  refusalNotice,
+  SERVERS_LIST,
+  UNKNOWN_SERVER_MESSAGE,
+} from './refusal-notice.js'
+import {
   parseBodyFields,
   headerValue,
   type UiHandler,
@@ -159,10 +165,10 @@ export function createServersStatusHandlers(deps: ServersStatusDeps): ServersSta
     const fields = parseBodyFields(ctx.body, headerValue(ctx.headers, 'content-type'))
     const name = fields.name ?? ''
     if (name === '') {
-      return { kind: 'response', status: HTTP_STATUS_BAD_REQUEST, body: 'missing server name' }
+      return refusalNotice(ctx, HTTP_STATUS_BAD_REQUEST, MISSING_SERVER_NAME_MESSAGE, SERVERS_LIST)
     }
     if (!(await deps.hasServer(name))) {
-      return { kind: 'response', status: HTTP_STATUS_NOT_FOUND, body: 'unknown server' }
+      return refusalNotice(ctx, HTTP_STATUS_NOT_FOUND, UNKNOWN_SERVER_MESSAGE, SERVERS_LIST)
     }
     startProbe(deps.probes, name, probeInitiatorOf(ctx, 'refresh'))
     return { kind: 'response', status: HTTP_STATUS_SEE_OTHER, headers: { location: '/servers' } }

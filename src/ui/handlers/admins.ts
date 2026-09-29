@@ -95,8 +95,16 @@ const ADMIN_INPUT_ERRORS: readonly ErrorClass[] = [
 function storeFailure(error: unknown, session: UiSession): UiResult {
   if (!isKnownStoreError(error, ADMIN_INPUT_ERRORS)) return internalErrorResult()
   const message = error instanceof Error ? error.message : 'unexpected error'
-  return htmlResult(HTTP_STATUS_BAD_REQUEST, renderAdminNotice({ message, ok: false, session }))
+  const shown = error instanceof LastOwnerError ? `${message}. ${LAST_OWNER_NEXT_STEP}` : message
+  return htmlResult(HTTP_STATUS_BAD_REQUEST, renderAdminNotice({ message: shown, ok: false, session }))
 }
+
+/**
+ * The one store refusal whose message says what is wrong but not what to do
+ * (owner's rule 2026-09-29). The store's text is shared with the CLI, so the
+ * way out is added here, on the page, rather than in the error itself.
+ */
+const LAST_OWNER_NEXT_STEP = 'Add another owner, or make an admin an owner, first.'
 
 export function createAdminsHandlers(deps: AdminsHandlersDeps): AdminsHandlers {
   const { adminStore, audit } = deps

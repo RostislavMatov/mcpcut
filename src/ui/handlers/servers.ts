@@ -8,6 +8,12 @@ import type { PolicyView } from '../../policy/edit/policy-view.js'
 import { HTTP_STATUS_BAD_REQUEST, HTTP_STATUS_NOT_FOUND, HTTP_STATUS_OK } from '../constants.js'
 import { roleSatisfies } from '../authz.js'
 import type { UiHandler, UiRequestContext, UiResult } from '../routes.js'
+import {
+  MISSING_SERVER_NAME_MESSAGE,
+  refusalNotice,
+  SERVERS_LIST,
+  UNKNOWN_SERVER_MESSAGE,
+} from './refusal-notice.js'
 import { csrfTokenOf, currentAdminOf, fieldsOf } from './request-helpers.js'
 import { journalServerChange, serverChangeApplied } from './servers-journal.js'
 import {
@@ -295,7 +301,7 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
     const fields = fieldsOf(ctx)
     const original = fields.original ?? ''
     if (original === '') {
-      return { kind: 'response', status: HTTP_STATUS_BAD_REQUEST, body: 'missing original server name' }
+      return refusalNotice(ctx, HTTP_STATUS_BAD_REQUEST, MISSING_SERVER_NAME_MESSAGE, SERVERS_LIST)
     }
     const locked: Record<string, string> = { ...fields, name: original }
     const parsed = parseServerRecord(buildCandidate(locked))
@@ -324,7 +330,7 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
       return rejectedEdit(ctx, fields, original, error instanceof Error ? error.message : String(error))
     }
     if (result.status === 'not-found') {
-      return { kind: 'response', status: HTTP_STATUS_NOT_FOUND, body: 'unknown server' }
+      return refusalNotice(ctx, HTTP_STATUS_NOT_FOUND, UNKNOWN_SERVER_MESSAGE, SERVERS_LIST)
     }
     const name = result.record.name
     audit(ctx, 'server.update', name)

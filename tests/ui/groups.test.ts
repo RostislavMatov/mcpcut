@@ -522,6 +522,8 @@ describe('POST /groups/remove', () => {
       await handlers.groupsRemove(postCtx({ name: 'ghosts', confirm: 'true' }, session('owner'))),
     )
     expect(result.status).toBe(404)
+    expect(bodyOf(result)).toContain('That group does not exist')
+    expect(bodyOf(result)).toContain('<a href="/groups">Back to groups</a>')
   })
 
   test('an empty body is a 400, never a 500', async () => {
