@@ -78,7 +78,8 @@ force), `grantsHash` (the agent's effective grants) and the `actor` who decided.
   can rewrite the journal, recompute every hash and re-sign it. Tampering becomes
   detectable only against an anchor recorded somewhere this host cannot rewrite —
   hence "tamper-evident with an external anchor", never more. Redaction is not
-  anonymization. See README, "The out-of-band anchor" and "Honest limits".
+  anonymization. See [The out-of-band anchor](guide/audit-reports.md#the-out-of-band-anchor)
+  and the README, "Status".
 
 ## Trust boundaries
 
