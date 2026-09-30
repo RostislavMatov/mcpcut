@@ -363,6 +363,12 @@ describe('runWrap relays an untouched session identically in both modes', () => 
   // async verdict deliberately does not hold up the frames behind it — so a
   // response queued after it may legitimately overtake it. Nothing follows
   // it here, so the relayed order is the server's own.
+  // The client does not pipeline (`sequential`): in mode B an allowed
+  // tools/call waits for its journal record while a request behind it goes
+  // straight through, so a pipelined tools/list may reach the server first
+  // and its response arrive before the call's. That reorder is legitimate
+  // (JSON-RPC matches responses by id) but made this byte comparison flaky on
+  // a slow CI runner (release run of v0.2.2, 2026-09-30).
   const lines = [
     requestLine(1, 'initialize'),
     requestLine(2, 'tools/call', { name: 'echo', arguments: { text: 'hi' } }),
@@ -372,12 +378,13 @@ describe('runWrap relays an untouched session identically in both modes', () => 
   let modeB: SessionResult
 
   beforeAll(async () => {
-    modeA = await runFakeServerSession({ journalDir: journalDir(), lines, expectedResponses: 3 })
+    modeA = await runFakeServerSession({ journalDir: journalDir(), lines, expectedResponses: 3, sequential: true })
     modeB = await runFakeServerSession({
       journalDir: journalDir(),
       lines,
       expectedResponses: 3,
       policy,
+      sequential: true,
     })
   })
 
