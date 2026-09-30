@@ -220,10 +220,16 @@ publisher настроен (G5: `release.yml`, только stage, «2FA + disal
   и успешный `verify --report` называют `verify --sign`; отказ `export` в непустой каталог предлагает `--out
   <dir>-2`; Quick start — `--server fs`, `verify --sign`, без обещания «decision» без политики. По ревью
   (`ecc:typescript-reviewer`, 0 CRITICAL/HIGH): санитайзер `journal/format.ts` заменяет и невидимые символы (bidi,
-  нулевой ширины, U+2028/2029), `keygen` оставляет только сверенную пару. Осталось (не в L13):
+  нулевой ширины, U+2028/2029), `keygen` оставляет только сверенную пару. **Выпущено как 0.2.3** 30.09 (npm с
+  provenance, сайт передеплоен). Осталось (не в L13):
   редкие медленные старты `npx` (13–43 с; `npm i -g`/`--prefer-offline` в README?), следующий шаг в конце `wrap` и
   `show`, ошибки политики без `policy validate <path>`, в `approvals list` — заглушки `<policy.json>`, литерал
-  `agent_waits=elapsed(retry-only)`, полный JSON аргументов, голый `mcpcut` в `--help`/usage под npx.
+  `agent_waits=elapsed(retry-only)`, полный JSON аргументов, голый `mcpcut` в `--help`/usage под npx. Прогон незнакомца по опубликованному 0.2.3
+  (30.09, `.claude/PRPs/reports/stranger-run-2026-09-30-v0.2.3/`): все исправления L13 подтверждены, блокеров нет; то же
+  трение плюс — заметка «no admins yet» после каждого `approve`/`deny` (показывать раз на установку), `agent_waits=49s`
+  читается как прошедшее, а это остаток, строки `decision` в `show` начинаются с JSON, `outcome` — в конце, у `policy: none
+  found` нет пути к политике, usage `wrap` без примера, `--help` 150+ строк без «start here». `approvalId` в `data` ошибки
+  -32002 — намеренно (комментарий в `src/proxy/synthesize.ts`, 04.08); оговорка «агент с shell» — в README (Status).
 
 ### Хвосты фазы 5 пула (2026-09-23)
 

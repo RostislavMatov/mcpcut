@@ -93,6 +93,7 @@ mcpcut is 0.x. The core — proxy, policy, approvals, quarantine, journal, audit
 
 - **Preview:** the remote console (`mcpcut --remote`) and the `connect --url` bridge. They work and are tested against a VPS over TLS, but they put a token on the network, have had only an internal security review, and may change within 0.x.
 - **Tamper-evident means with an external anchor.** A process running as the same OS user can rewrite the journal and re-sign it; only a chain head recorded somewhere this host cannot write exposes that. mcpcut is not tamper-proof, and whether a report satisfies an audit is the auditor's call.
+- **A brake for mistakes, not a sandbox.** An agent that also has a shell as your user can reach the same `approvals approve` you run: an admin token records who approved, it does not stop the same OS user ([Approvals](docs/guide/policies.md#approval-scenario)). The error a held call returns tells the agent a human must approve and never names the command.
 
 ## Security
 
