@@ -34,6 +34,17 @@ describe('formatReadableField', () => {
     expect(formatReadableField('\x9b2Jhidden')).toBe('?2Jhidden')
   })
 
+  test('replaces invisible bidi, zero-width and line-separator characters: a name must read as what it is', () => {
+    // 0.2.3 review: a tool name is chosen by the agent's side and printed on
+    // the line an operator approves from; U+202E could reorder it on screen,
+    // U+200B hide a lookalike (Trojan Source class).
+    const invisible = ['\u061c', '\u200b', '\u200d', '\u200e', '\u200f', '\u2028', '\u2029', '\u202a', '\u202e', '\u2066', '\u2069', '\ufeff']
+    for (const char of invisible) {
+      expect(formatReadableField(`read${char}file`)).toBe('read?file')
+    }
+    expect(formatReadableField('héllo — ok ✓')).toBe('héllo — ok ✓')
+  })
+
   test('replaces DEL (0x7f)', () => {
     expect(formatReadableField('a\x7fb')).toBe('a?b')
   })

@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import { PRODUCT_VERSION } from '../../src/brand.js'
+import { noAdminsYetNotice } from '../../src/cli/admin-token.js'
 import {
+  anchorHeadHint,
   cliCommand,
   exportReportHint,
+  heldCallNotice,
   keygenHint,
   listApprovalsHint,
   noJournalMessage,
@@ -143,5 +146,37 @@ describe('hints name the next command with real values', () => {
 
   test('a journal path with control characters cannot drive the terminal', () => {
     expect(noJournalMessage('/d\u001b[2J')).not.toContain('\u001b')
+  })
+})
+
+describe('the Prove and Stop steps name what comes next (0.2.3)', () => {
+  test('a signed report leads to anchoring its head outside the host', () => {
+    asNpx()
+    const hint = anchorHeadHint()
+    expect(hint).toContain(`${NPX} verify --sign`)
+    expect(hint).toContain('cannot rewrite')
+  })
+
+  test('a held call names the tool, the server, the wait and ready commands', () => {
+    asNpx()
+    const notice = heldCallNotice({ approvalId: '01HELD', toolName: 'write_file', serverName: 'fs', waitMs: 60_000 })
+    expect(notice).toContain('write_file')
+    expect(notice).toContain('fs')
+    expect(notice).toContain('60 s')
+    expect(notice).toContain(`${NPX} approvals approve 01HELD`)
+    expect(notice).toContain(`${NPX} approvals deny 01HELD`)
+    expect(notice.endsWith('\n')).toBe(true)
+  })
+
+  test('a tool name the agent chose cannot drive the terminal', () => {
+    const notice = heldCallNotice({ approvalId: '01HELD', toolName: 'evil\u001b[2J', serverName: 'fs', waitMs: 1_000 })
+    expect(notice).not.toContain('\u001b')
+  })
+
+  test('the no-admins note names the admin command the way mcpcut was started', () => {
+    asNpx()
+    expect(noAdminsYetNotice()).toContain(`${NPX} admin add`)
+    asInstalled()
+    expect(noAdminsYetNotice()).toContain('"mcpcut admin add"')
   })
 })

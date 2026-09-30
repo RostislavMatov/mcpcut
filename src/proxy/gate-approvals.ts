@@ -7,6 +7,7 @@ import type { JsonRpcId } from '../protocol/classify.js'
 import type { ParsedToolCall } from '../protocol/mcp.js'
 import type { Verdict } from './pipeline.js'
 import { approvalDeniedError, approvalTimeoutError, type SynthesizableId } from './synthesize.js'
+import type { PendingApprovalNotice } from './gate-types.js'
 import {
   ALREADY_ANSWERED_RULE,
   DROP,
@@ -90,6 +91,10 @@ export interface ApprovalFlowDeps {
     decision: PolicyDecision,
     extras?: DecisionExtras,
   ) => Verdict | Promise<Verdict>
+  /** Reports a failing `onApprovalPending`; the call's own flow goes on. */
+  readonly onError: (error: unknown) => void
+  /** Hears of each call queued for a human, once, before its wait starts. */
+  readonly onApprovalPending?: (notice: PendingApprovalNotice) => void
 }
 
 export interface ApprovalFlow {
@@ -116,6 +121,15 @@ export interface ApprovalFlow {
 export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
   const { policy, serverName, approvalQueue, approvalWaiter, grantRegistry, clock } = deps
   const { writeDecision, settleJournal, answerLocally, answerGuard, enqueuedUnresolved } = deps
+
+  /** An announcement is a courtesy to the operator: its failure never decides the call. */
+  function announcePending(notice: PendingApprovalNotice): void {
+    try {
+      deps.onApprovalPending?.(notice)
+    } catch (error: unknown) {
+      deps.onError(error)
+    }
+  }
 
   /**
    * Enqueues a human approval and returns a verdict promise the pipeline
@@ -175,6 +189,7 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
       captured,
     )
     await settleJournal()
+    announcePending({ approvalId, toolName: facts.toolName, serverName, waitMs: policy.approval.timeoutMs })
 
     // Mark this id as having an in-flight approval wait, so if it is answered
     // locally in the meantime (its own timeout, or a concurrent reuse) the

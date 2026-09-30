@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
@@ -85,20 +85,40 @@ describe('keygen: first run', () => {
   })
 })
 
-describe('keygen: refuses to overwrite', () => {
-  test('a second run exits non-zero, leaves the existing key untouched, and never prints the private key', async () => {
+describe('keygen: an existing key is kept, and the run still succeeds', () => {
+  // 0.2.3 (stranger run of 0.2.2): the Quick start's `keygen && export
+  // --report` could not be run twice -- the second keygen refused with exit 1
+  // and the export never ran. The key is still never overwritten (that would
+  // invalidate every anchor it signed); a second run now says the key is
+  // there, names it, and leads on to the report.
+  test('a second run exits 0, leaves the key untouched, names its fingerprint and never prints the private key', async () => {
     await run([])
     const originalPrivatePem = await readFile(signingKeyPathFor(journalDir), 'utf8')
+    const publicPem = await readFile(signingPubPathFor(journalDir), 'utf8')
     const io = fakeIo()
 
     const exitCode = await run([], io)
 
-    expect(exitCode).not.toBe(0)
-    expect(io.err()).toMatch(/refus/i)
-    const afterPrivatePem = await readFile(signingKeyPathFor(journalDir), 'utf8')
-    expect(afterPrivatePem).toBe(originalPrivatePem)
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain('already exists')
+    expect(io.out()).toContain(signingKeyPathFor(journalDir))
+    expect(io.out()).toContain(publicKeyFingerprint(publicPem))
+    expect(io.err()).toBe(exportReportHint())
+    expect(await readFile(signingKeyPathFor(journalDir), 'utf8')).toBe(originalPrivatePem)
     expect(io.out()).not.toContain(originalPrivatePem)
     expect(io.err()).not.toContain(originalPrivatePem)
+    expect(io.out()).not.toMatch(/-----BEGIN PRIVATE KEY-----/)
+  })
+
+  test('a private key left without its public half is still refused: that is a failed run, not a key to keep', async () => {
+    await run([])
+    await rm(signingPubPathFor(journalDir))
+    const io = fakeIo()
+
+    const exitCode = await run([], io)
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('public key does not')
   })
 })
 
@@ -110,5 +130,50 @@ describe('keygen: stray arguments', () => {
 
     expect(exitCode).not.toBe(0)
     expect(io.err().length).toBeGreaterThan(0)
+  })
+})
+
+describe('keygen: an unreadable public half is not a key to keep', () => {
+  test('a garbled signing.pub is refused with the overwrite message, not a crash', async () => {
+    await run([])
+    await writeFile(signingPubPathFor(journalDir), 'not a key', 'utf8')
+    const io = fakeIo()
+
+    const exitCode = await run([], io)
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toMatch(/refus/i)
+  })
+})
+
+describe('keygen: a private key that is not the public key\'s pair is not kept (0.2.3 review)', () => {
+  test('a signing.pub from another installation is refused, and the private key is left untouched', async () => {
+    const otherDir = await mkdtemp(join(tmpdir(), 'mcpcut-keygen-other-'))
+    try {
+      await run([])
+      await runKeygenCommand([], fakeIo(), { journalDir: otherDir })
+      await writeFile(signingPubPathFor(journalDir), await readFile(signingPubPathFor(otherDir), 'utf8'), 'utf8')
+      const originalPrivatePem = await readFile(signingKeyPathFor(journalDir), 'utf8')
+      const io = fakeIo()
+
+      const exitCode = await run([], io)
+
+      expect(exitCode).toBe(1)
+      expect(io.out()).not.toContain('kept')
+      expect(await readFile(signingKeyPathFor(journalDir), 'utf8')).toBe(originalPrivatePem)
+    } finally {
+      await rm(otherDir, { recursive: true, force: true })
+    }
+  })
+
+  test('a garbled signing.key is refused, never reported as kept', async () => {
+    await run([])
+    await writeFile(signingKeyPathFor(journalDir), 'not a key', 'utf8')
+    const io = fakeIo()
+
+    const exitCode = await run([], io)
+
+    expect(exitCode).toBe(1)
+    expect(io.out()).not.toContain('kept')
   })
 })

@@ -6,6 +6,46 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **A held call is announced to the operator.** When a policy holds a call
+  for approval, `wrap` writes one line to its stderr (the MCP client's log):
+  the tool, the server, how long the agent waits, and ready
+  `approvals approve <id>` / `approvals deny <id>` commands. The agent's own
+  error still carries no approval command, so an agent with a shell cannot
+  approve itself.
+- **`approvals approve` says what happens to the call.** While the agent
+  still waits, the call goes through at once, and the message now says so;
+  after the wait it names the retry window, as before. The "no admins yet"
+  note comes only after an approval that landed, never before an unknown-id
+  error, and names `admin add` the way mcpcut was started (npx or installed).
+- **`keygen` can be run again.** An existing key is kept, never overwritten,
+  and named with its fingerprint; the run exits 0, so
+  `keygen && export --report` survives a second run. A private key left
+  without its public half is still refused.
+- **The Prove step ends in the anchor.** `export --report` and a passing
+  `verify --report` name `verify --sign`, which signs the chain head to keep
+  outside the host. An export into a directory that is not empty names a
+  free one (`--out ./report-2`).
+- **`keygen` keeps only a working pair.** A second run reports "kept" only
+  when the private key parses and matches `signing.pub`; a garbled or
+  foreign half is refused.
+
+### Security
+
+- **Invisible characters are shown, not rendered.** Every readable view that
+  prints a journal or agent-supplied value (tool names, arguments, ids) now
+  replaces bidi marks and overrides, zero-width characters and line
+  separators, as it already did control characters, so a name reads as what
+  it is on the line an operator approves from.
+
+### Changed (Quick start)
+
+- **Quick start** (README and site): the `claude mcp add` line passes
+  `--server fs`, so the journal and the approval queue show `fs` instead of
+  `auto:<hash>`; the See step no longer promises decisions without a policy;
+  Prove adds `verify --sign`.
+
 ## [0.2.2] — 2026-09-30
 
 ### Changed

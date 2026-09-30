@@ -58,6 +58,9 @@ const SEMANTIC_ALLOWLIST: ReadonlySet<string> = new Set([
   'src/proxy/tools-filter.ts',
   'src/proxy/relay.ts',
   'src/proxy/wrap.ts',
+  // `runWrap`'s options, split out of `wrap.ts` for the line budget (0.2.3):
+  // they name the policy the entry point is handed, as `wrap.ts` did.
+  'src/proxy/wrap-options.ts',
   'src/proxy/wire-policy.ts',
   'src/proxy/journal-failure.ts',
   'src/protocol/classify.ts',

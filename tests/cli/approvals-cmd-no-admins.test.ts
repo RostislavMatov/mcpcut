@@ -1,7 +1,7 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { ADMIN_TOKEN_ENV_VAR, ADMINS_FILE_NAME } from '../../src/admin/constants.js'
 import { createAdminStore } from '../../src/admin/store.js'
 import { NO_ADMINS_YET_ACTOR } from '../../src/cli/admin-token.js'
@@ -26,9 +26,11 @@ let baseDir: string
 beforeEach(async () => {
   tempDir = await mkdtemp(join(tmpdir(), 'mcpcut-approvals-no-admins-'))
   baseDir = join(tempDir, 'approvals')
+  vi.stubEnv('npm_command', '')
 })
 
 afterEach(async () => {
+  vi.unstubAllEnvs()
   await rm(tempDir, { recursive: true, force: true })
 })
 
@@ -43,7 +45,7 @@ function fakeIo(): { stdout: { write: (chunk: string) => void }; stderr: { write
   }
 }
 
-function request(): EnqueueRequest {
+function request(overrides: Partial<EnqueueRequest> = {}): EnqueueRequest {
   return {
     serverName: 'github',
     toolName: 'create_issue',
@@ -51,6 +53,7 @@ function request(): EnqueueRequest {
     args: { title: 'hello' },
     sessionId: 'session-1',
     timeoutMs: 60_000,
+    ...overrides,
   }
 }
 
@@ -137,5 +140,40 @@ describe('approvals approve|deny on an install with no admins yet', () => {
     } finally {
       await rm(elsewhere, { recursive: true, force: true })
     }
+  })
+})
+
+describe('approve says what happens to the call (0.2.3, stranger run of 0.2.2)', () => {
+  test('while the agent still waits, the call goes through now -- no retry is involved', async () => {
+    const { approvalId } = await createApprovalQueue({ baseDir }).enqueue(request({ waitTimeoutMs: 60_000 }))
+    const io = fakeIo()
+
+    const exitCode = await runApprovals(['approve', approvalId], io, opts())
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain('goes through now')
+    expect(io.out()).not.toContain('retry')
+  })
+
+  test("once the agent's wait has ended, only its retry passes, within the grant window", async () => {
+    const { approvalId } = await createApprovalQueue({ baseDir }).enqueue(request({ waitTimeoutMs: 1 }))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const io = fakeIo()
+
+    const exitCode = await runApprovals(['approve', approvalId], io, opts())
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain('retry')
+    expect(io.out()).not.toContain('goes through now')
+  })
+
+  test('the no-admins note comes only with an action that happened, never before an unknown-id error', async () => {
+    await pendingId() // an install with a queue and no admin: the note's own precondition
+    const io = fakeIo()
+
+    const exitCode = await runApprovals(['approve', '01UNKNOWN'], io, opts())
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).not.toContain('no admins yet')
   })
 })

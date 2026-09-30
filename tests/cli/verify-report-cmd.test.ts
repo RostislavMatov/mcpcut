@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { runExportCommand } from '../../src/cli/export-cmd.js'
 import { runKeygenCommand } from '../../src/cli/keygen-cmd.js'
+import { anchorHeadHint } from '../../src/cli/next-step.js'
 import { runVerifyCommand } from '../../src/cli/verify-cmd.js'
 import {
   insertRecordRows,
@@ -178,6 +179,16 @@ describe('verify --report: an intact export', () => {
     expect(io.out()).toContain('OUT OF BAND')
   })
 
+  test('a pass ends with the command that anchors the head, ready to paste (0.2.3)', async () => {
+    await writeExport({ sign: true })
+    const io = fakeIo()
+
+    await run(['--report', reportDir], io)
+
+    expect(io.err()).toBe(anchorHeadHint())
+    expect(io.err()).toContain('verify --sign')
+  })
+
   test('never opens or creates a journal database', async () => {
     const emptyHome = await mkdtemp(join(tmpdir(), 'mcpcut-no-db-'))
     try {
@@ -221,6 +232,7 @@ describe('verify --report: a check fails (exit 2)', () => {
 
     expect(exitCode).toBe(2)
     expect(io.out()).toContain('[FAIL]')
+    expect(io.err()).not.toContain('verify --sign')
   })
 
   test('an altered manifest field breaks the signature and exits 2', async () => {

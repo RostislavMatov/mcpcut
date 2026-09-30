@@ -9,6 +9,7 @@ import type { PolicyProvider } from '../policy/reload.js'
 import type { Policy } from '../policy/schema.js'
 import { classify } from '../protocol/classify.js'
 import type { GateAgentScope } from './gate.js'
+import type { PendingApprovalNotice } from './gate-types.js'
 import type { ServerHandle } from './spawn.js'
 import { splice, type SpliceErrorOrigin, type SpliceHandle } from './splice.js'
 import { wirePolicyRelay, type RelayWiring } from './wire-policy.js'
@@ -55,6 +56,8 @@ export interface RelayArgs {
   readonly inventoryStorePath?: string
   /** The authenticated agent's scope (M3, `connect`); absent for ad-hoc `wrap`. */
   readonly agentScope?: GateAgentScope
+  /** Hears of each call queued for a human; mode B only (mode A holds nothing). */
+  readonly onApprovalPending?: (notice: PendingApprovalNotice) => void
 }
 
 /** Wires client stdio through the child, in whichever mode this run calls for. */
@@ -84,6 +87,7 @@ function wirePipelines(args: RelayArgs, policy: Policy | PolicyProvider): RelayW
       ? { inventoryStorePath: args.inventoryStorePath }
       : {}),
     ...(args.agentScope !== undefined ? { agentScope: args.agentScope } : {}),
+    ...(args.onApprovalPending !== undefined ? { onApprovalPending: args.onApprovalPending } : {}),
   })
 }
 

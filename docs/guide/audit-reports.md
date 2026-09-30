@@ -13,10 +13,12 @@ mcpcut keygen
 mcpcut export --report [--session <id>] [--out <dir>]
 ```
 
-1. **`keygen`** generates this installation's Ed25519 signing key, once. It
-   refuses to run if a key already exists (no `--force`; key rotation is not
-   built yet) and prints the public key and its fingerprint — the private
-   key is written straight to `signing.key` and never echoed. Skipping this
+1. **`keygen`** generates this installation's Ed25519 signing key, once, and
+   prints the public key and its fingerprint — the private key is written
+   straight to `signing.key` and never echoed. Run again, it keeps the
+   existing key, names it and its fingerprint, and exits 0 (no `--force`; key
+   rotation is not built yet); a private key left without its public half
+   is refused, since that is a failed earlier run. Skipping this
    step is fine: a report can still be produced without a key, but it comes
    out **UNSIGNED**.
 2. **`export --report`** streams the in-scope records into a fresh directory

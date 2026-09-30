@@ -1,4 +1,4 @@
-import type { Readable, Writable } from 'node:stream'
+import type { Writable } from 'node:stream'
 import { ulid } from 'ulid'
 import { RELAY_DRAIN_TIMEOUT_MS, SIGKILL_ESCALATION_MS } from '../config.js'
 import { createRecordBuilder, type JournalDirection } from '../journal/record.js'
@@ -6,7 +6,6 @@ import { createJournalSink, type JournalSinkOptions } from '../journal/sink.js'
 import { mapPolicyProvider, toPolicyProvider, type PolicyProvider } from '../policy/reload.js'
 import type { Policy } from '../policy/schema.js'
 import { guardDiagnostics } from './diagnostics.js'
-import type { GateAgentScope } from './gate.js'
 import {
   createJournalFailureController,
   type JournalFailureController,
@@ -22,6 +21,9 @@ import {
 } from './spawn.js'
 import type { SpliceErrorOrigin } from './splice.js'
 import { autoServerName } from './wire-policy.js'
+import type { RunWrapOptions } from './wrap-options.js'
+
+export type { RunWrapOptions } from './wrap-options.js'
 
 /**
  * Orchestrates one `mcpcut wrap` run: spawns the wrapped MCP server,
@@ -63,65 +65,6 @@ const PIPE_GONE_ERROR_CODES: readonly string[] = [
   'ERR_STREAM_DESTROYED',
   'ERR_STREAM_WRITE_AFTER_END',
 ]
-
-export interface RunWrapOptions {
-  /** Journal directory. Defaults to JOURNAL_DIR via createJournalSink. */
-  readonly dir?: string
-  /** Injectable session id, for deterministic tests. Defaults to a fresh ulid(). */
-  readonly sessionId?: string
-  /** Injectable clock for the record builder, for deterministic tests. */
-  readonly now?: () => number
-  /** Client-facing input stream. Defaults to process.stdin. */
-  readonly stdin?: Readable
-  /** Client-facing output stream. Defaults to process.stdout. */
-  readonly stdout?: Writable
-  /** Client-facing stderr passthrough stream. Defaults to process.stderr. */
-  readonly stderr?: Writable
-  /** Working directory for the spawned server. */
-  readonly cwd?: string
-  /**
-   * Grace period after forwarding a shutdown signal to the child before
-   * escalating to SIGKILL. Defaults to SIGKILL_ESCALATION_MS. Injectable so
-   * tests do not have to wait out the real grace period.
-   */
-  readonly killEscalationMs?: number
-  /**
-   * Max time to wait for the server→client relay to drain after the child
-   * has exited, before proceeding with shutdown anyway. Defaults to
-   * RELAY_DRAIN_TIMEOUT_MS. Injectable so tests do not have to wait out the
-   * real timeout.
-   */
-  readonly relayDrainTimeoutMs?: number
-  /**
-   * Pre-loaded, already-validated policy. Its presence is what selects mode
-   * B; omitting it keeps the exact M1 splice relay. Loading is the caller's
-   * job (see the module doc comment). A `PolicyProvider` hot-reloads the
-   * rules under the session; a plain `Policy` behaves exactly as before.
-   */
-  readonly policy?: Policy | PolicyProvider
-  /**
-   * Identity this server is known by in policy rules and quarantine.
-   * Defaults to `auto:<sha256(command+args) prefix>`.
-   */
-  readonly serverName?: string
-  /** Approvals queue root. Defaults to `<journal dir>/approvals`. */
-  readonly approvalsBaseDir?: string
-  /** Tool inventory store file. Defaults to `<journal dir>/tool-inventory.json`. */
-  readonly inventoryStorePath?: string
-  /** Agent scope (M3, set by `connect`; never by ad-hoc `wrap` — exactly M2). Mode B only. */
-  readonly agentScope?: GateAgentScope
-  /**
-   * Forces fail-closed journaling on regardless of `policy.journal.failClosed`
-   * (the `--fail-closed` flag). Never forces it *off*: a policy that asks for
-   * fail-closed always gets it.
-   */
-  readonly failClosed?: boolean
-  /**
-   * @internal test-only seam for injecting a failing journal batch commit, so
-   * fail-closed behavior can be exercised without an unwritable disk.
-   */
-  readonly journalCommitBatchImpl?: JournalSinkOptions['commitBatchImpl']
-}
 
 /**
  * Runs the wrapped server to completion and resolves with its mapped exit
@@ -167,6 +110,7 @@ export async function runWrap(
     policy: effectivePolicyOf(opts, isFailClosed),
     serverName: opts.serverName ?? autoServerName(command, args),
     ...(opts.agentScope !== undefined ? { agentScope: opts.agentScope } : {}),
+    ...approvalNoticeOf(opts, diagnostics),
     ...policyLocationsOf(opts),
   })
   journalFailure.arm(handle, wiring)
@@ -224,6 +168,17 @@ function exitCodeOf(args: ExitCodeArgs): number {
 /** Upgrades a successful child exit to non-zero when the proxy itself hit a stream failure. */
 function failureExitCode(childExitCode: number): number {
   return childExitCode === 0 ? STREAM_FAILURE_EXIT_CODE : childExitCode
+}
+
+/** The operator's line for a held call, on the stderr the client logs; nothing when unasked for. */
+function approvalNoticeOf(opts: RunWrapOptions, diagnostics: Writable): Pick<RelayArgs, 'onApprovalPending'> {
+  const format = opts.approvalNotice
+  if (format === undefined) return {}
+  return {
+    onApprovalPending: (notice) => {
+      diagnostics.write(format(notice))
+    },
+  }
 }
 
 /** Forwards only the on-disk locations that were actually specified, so each keeps its own default. */

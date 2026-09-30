@@ -3,7 +3,13 @@ import { JOURNAL_DIR } from '../config.js'
 import {
   SigningKeyExistsError,
   generateAndWriteSigningKeyPair,
+  loadSigningPrivateKey,
+  loadSigningPublicKey,
+  privateKeyFingerprint,
+  publicKeyFingerprint,
+  signingKeyPathFor,
 } from '../journal/signing.js'
+import { replaceControlChars } from '../journal/format.js'
 import type { AdminRefusalWording } from './admin-token.js'
 import { adminOf, recordHostOp, resolveHostOpActor } from './host-op-write.js'
 import { exportReportHint } from './next-step.js'
@@ -50,9 +56,10 @@ export interface KeygenCommandOptions {
 const USAGE =
   'Usage: mcpcut keygen\n' +
   'Generates this installation\'s Ed25519 signing key (used by "verify --sign").\n' +
-  'Refuses to run if a key already exists -- overwriting it would invalidate every\n' +
-  'anchor this installation has ever signed. There is no --force: deliberate key\n' +
-  'rotation is not built in M5.\n' +
+  'A key that already exists is kept and named, never overwritten -- that would\n' +
+  'invalidate every anchor this installation has ever signed -- and the run still\n' +
+  'succeeds, so "keygen && export --report" can be run again. There is no --force:\n' +
+  'deliberate key rotation is not built in M5.\n' +
   'If signing.key exists but signing.pub does not, a previous run likely failed\n' +
   'partway (e.g. disk full) rather than this being a deliberate rotation --\n' +
   'the refusal message explains what to check before deleting anything.\n'
@@ -76,6 +83,13 @@ export async function runKeygenCommand(
   if (resolved.kind === 'refused') return 1
 
   const journalDir = opts.journalDir ?? JOURNAL_DIR
+  const kept = await existingKeyPair(journalDir)
+  if (kept !== null) {
+    io.stdout.write(`A signing key already exists, kept as is: ${replaceControlChars(kept.privateKeyPath)}\n`)
+    io.stdout.write(`Fingerprint (sha256 of SPKI DER, hex): ${kept.fingerprint}\n`)
+    io.stderr.write(exportReportHint())
+    return 0
+  }
   try {
     const generated = await generateAndWriteSigningKeyPair(journalDir)
     io.stdout.write(`Signing key written to: ${generated.privateKeyPath}\n`)
@@ -101,5 +115,34 @@ export async function runKeygenCommand(
       return 1
     }
     throw error
+  }
+}
+
+interface ExistingKeyPair {
+  readonly privateKeyPath: string
+  readonly fingerprint: string
+}
+
+/**
+ * A working pair already on disk: the key to keep (0.2.3 — the Quick start's
+ * `keygen && export --report` must survive a second run). Working means the
+ * private key parses and derives exactly the public key in `signing.pub`
+ * (0.2.3 review: a garbled or foreign half must not be reported as kept and
+ * fail later in `verify --sign`). The private key is read into memory for
+ * that comparison only — nothing of it is printed. Anything else goes on to
+ * `generateAndWriteSigningKeyPair`, whose refusals name the file to check.
+ */
+async function existingKeyPair(journalDir: string): Promise<ExistingKeyPair | null> {
+  const publicKeyPem = await loadSigningPublicKey(journalDir)
+  if (publicKeyPem === null) return null
+  const privateKey = await loadSigningPrivateKey(journalDir)
+  if (!privateKey.present) return null
+  try {
+    const fingerprint = publicKeyFingerprint(publicKeyPem)
+    if (privateKeyFingerprint(privateKey.privateKeyPem) !== fingerprint) return null
+    return { privateKeyPath: signingKeyPathFor(journalDir), fingerprint }
+  } catch {
+    // Unparseable PEM: not a pair to keep; the refusal path explains.
+    return null
   }
 }

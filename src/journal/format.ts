@@ -16,8 +16,15 @@
  * the 8-bit CSI (0x9b) and OSC (0x9d) exactly like their ESC-prefixed forms,
  * and they arrive as ordinary UTF-8 text (`src/tui/ansi.ts` strips the same
  * range for the console; `mcpcut logs` prints a daemon's log through here).
+ *
+ * Plus the invisible characters that change how text READS without moving
+ * the cursor (0.2.3 review, Trojan Source class): bidi marks and overrides
+ * (U+061C, U+200E-200F, U+202A-202E, U+2066-2069), zero-width characters
+ * (U+200B-200D, U+2060, U+FEFF) and the line/paragraph separators (U+2028-2029).
+ * A tool name the agent's side chose is printed on the line an operator
+ * approves from; it must read as exactly what it is.
  */
-const CONTROL_CHAR_PATTERN = /[\x00-\x1f\x7f-\x9f]/g
+const CONTROL_CHAR_PATTERN = /[\x00-\x1f\x7f-\x9f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g
 
 /** What an unsafe control character is replaced with. */
 const CONTROL_CHAR_REPLACEMENT = '?'

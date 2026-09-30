@@ -7,6 +7,7 @@ import { JOURNAL_DIR } from '../config.js'
 import { STATE_DB_FILE_NAME } from '../policy/store-backend.js'
 import { formatReadableField } from '../journal/format.js'
 import { isExpectedAdminError } from './admin-cmd.js'
+import { cliCommand } from './next-step.js'
 
 /**
  * `MCP_ADMIN_TOKEN` → named admin, shared by every CLI command that must
@@ -212,10 +213,16 @@ function admitResolved(
  */
 export const NO_ADMINS_YET_ACTOR = 'cli:_unattributed'
 
-/** Said once per action taken without a name because no name can exist yet. */
-export const NO_ADMINS_YET_NOTICE =
-  'note: no admins yet, so this is recorded without a name; ' +
-  'after the first "mcpcut admin add" a token is required\n'
+/**
+ * Said once per action taken without a name because no name can exist yet;
+ * the admin command is named the way mcpcut was started (npx or installed).
+ */
+export function noAdminsYetNotice(): string {
+  return (
+    'note: no admins yet, so this is recorded without a name; ' +
+    `after the first "${cliCommand()} admin add" a token is required\n`
+  )
+}
 
 /**
  * Whether the admin store holds no admin at all — `unreadable` when that
@@ -256,7 +263,7 @@ export type AdminUnlessNone = { readonly kind: 'admin'; readonly admin: Required
 
 /**
  * `requireAdminFromEnv`, except that with NO token on an install with NO
- * admin the action goes ahead unattributed, with `NO_ADMINS_YET_NOTICE` on
+ * admin the action goes ahead unattributed, with `noAdminsYetNotice()` on
  * stderr (owner decision 2026-09-25, first-minute friction). That grants
  * nothing new: the first `admin add` there is token-free already (ADR-0004).
  * A token that IS set is checked as always — a stale one on an empty store is
@@ -272,7 +279,7 @@ export async function requireAdminUnlessNone(
   if (resolved.kind === 'missing') {
     const emptiness = await adminStoreEmptiness(opts)
     if (emptiness.kind === 'empty') {
-      io.stderr.write(NO_ADMINS_YET_NOTICE)
+      io.stderr.write(noAdminsYetNotice())
       return { kind: 'no-admins-yet' }
     }
     if (emptiness.kind === 'unreadable') {

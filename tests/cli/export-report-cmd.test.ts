@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { runExportCommand } from '../../src/cli/export-cmd.js'
 import { writeAllBytes } from '../../src/cli/report-cmd.js'
 import { runKeygenCommand } from '../../src/cli/keygen-cmd.js'
-import { verifyReportHint } from '../../src/cli/next-step.js'
+import { anchorHeadHint, verifyReportHint } from '../../src/cli/next-step.js'
 import { journalDbPathFor, openJournalDbShared } from '../../src/journal/db.js'
 import { AS_OF_CONTRACT, REPORT_FILES, type ReportManifest } from '../../src/journal/report.js'
 import { verifyReportManifestSignature, type ReportSignatureFile } from '../../src/journal/report-signing.js'
@@ -164,7 +164,7 @@ describe('export --report: signed after keygen', () => {
 
     expect(exitCode).toBe(0)
     // No warning -- only the next step, with the real directory (owner's rule 2026-09-29).
-    expect(io.err()).toBe(verifyReportHint(outDir))
+    expect(io.err()).toBe(verifyReportHint(outDir) + anchorHeadHint())
     expect(io.out()).not.toMatch(/UNSIGNED/)
 
     const files = (await readdir(outDir)).sort()
@@ -681,5 +681,39 @@ describe('export --report: the next step', () => {
     expect(exitCode).not.toBe(0)
     expect(io.err()).toContain('No journal database found')
     expect(io.err()).toContain('wrap -- <server command>')
+  })
+})
+
+describe('export --report into a directory that is not empty names a free one (0.2.3)', () => {
+  // The Quick start's Prove step exports to ./report; run a second time, the
+  // refusal said what was wrong but not what to type. It now names the first
+  // free sibling, ready to paste.
+  test('the refusal names <dir>-2 when the directory is taken', async () => {
+    await writeRecordsViaSink('session-a', [recordOf('session-a', '01AAAAAAAAAAAAAAAAAAAAAAA0', 'ping')])
+    await mkdir(outDir, { recursive: true })
+    await writeFile(join(outDir, 'report.json'), '{}', 'utf8')
+    const io = fakeIo()
+
+    const exitCode = await run(['--report', '--out', outDir], io)
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('not empty')
+    expect(io.err()).toContain(`--out ${outDir}-2`)
+  })
+
+  test('skips siblings that exist too', async () => {
+    await writeRecordsViaSink('session-a', [recordOf('session-a', '01AAAAAAAAAAAAAAAAAAAAAAA0', 'ping')])
+    await mkdir(outDir, { recursive: true })
+    await writeFile(join(outDir, 'report.json'), '{}', 'utf8')
+    await mkdir(`${outDir}-2`)
+    const io = fakeIo()
+
+    try {
+      await run(['--report', '--out', `${outDir}/`], io)
+
+      expect(io.err()).toContain(`--out ${outDir}-3`)
+    } finally {
+      await rm(`${outDir}-2`, { recursive: true, force: true })
+    }
   })
 })

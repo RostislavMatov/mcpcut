@@ -1,5 +1,10 @@
 import { chmod, lstat, mkdir, readdir, realpath } from 'node:fs/promises'
 import { JOURNAL_DIR_MODE } from '../config.js'
+import { replaceControlChars } from '../journal/format.js'
+import { shellArg } from './next-step.js'
+
+/** How many `<dir>-N` siblings a refusal looks through for a free one. */
+const MAX_SIBLING_TRIES = 99
 
 /**
  * Where `mcpcut export --report` is allowed to write (M5 wave 5, review
@@ -76,25 +81,45 @@ async function refusalFor(outDir: string): Promise<string | null> {
     // the evidence would go, and a link silently redirects it -- possibly onto
     // a path another user controls.
     return (
-      `Refusing to write into "${outDir}": it is a symbolic link. An export directory is ` +
+      `Refusing to write into "${replaceControlChars(outDir)}": it is a symbolic link. An export directory is ` +
       'handed to an auditor, so it must be the place the operator named, not wherever a link ' +
       'points. Pass the real path with --out.\n'
     )
   }
   if (!existing.isDirectory()) {
     return (
-      `Refusing to write into "${outDir}": it exists and is not a directory. ` +
+      `Refusing to write into "${replaceControlChars(outDir)}": it exists and is not a directory. ` +
       'Pass an empty or new directory with --out.\n'
     )
   }
 
   const entries = await readdir(outDir)
   if (entries.length === 0) return null
+  const free = await freeSiblingOf(outDir)
   return (
-    `Refusing to write into "${outDir}": the directory already exists and is not empty. ` +
+    `Refusing to write into "${replaceControlChars(outDir)}": the directory already exists and is not empty. ` +
     'A half-overwritten evidence export is worse than no export -- pass an empty or new ' +
-    'directory with --out.\n'
+    `directory with --out${free === null ? '' : `, e.g. --out ${shellArg(free)}`}.\n`
   )
+}
+
+/**
+ * The first `<dir>-2`, `<dir>-3`, … that does not exist yet, so a second run
+ * of the Quick start's Prove step gets a value to paste (0.2.3). `null` when
+ * none of the first few is free — the refusal then says what to do without one.
+ */
+async function freeSiblingOf(outDir: string): Promise<string | null> {
+  const base = outDir.replace(/\/+$/, '')
+  if (base === '') return null
+  try {
+    for (let n = 2; n <= MAX_SIBLING_TRIES; n += 1) {
+      const candidate = `${base}-${n}`
+      if ((await lstatOrNull(candidate)) === null) return candidate
+    }
+  } catch {
+    // An unreadable parent (EACCES) only costs the suggestion; the refusal stands.
+  }
+  return null
 }
 
 /** `null` for "nothing is there"; every other failure (EACCES, ELOOP, ...) is a real error and propagates. */

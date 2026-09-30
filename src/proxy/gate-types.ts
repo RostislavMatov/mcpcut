@@ -20,6 +20,16 @@ import type {
 /** The subset of `MessageSink` the gate needs to answer a client locally. */
 export type GateAnswerSink = Pick<MessageSink, 'write'>
 
+/** A call the gate has queued for a human, announced while its agent waits. */
+export interface PendingApprovalNotice {
+  readonly approvalId: string
+  /** Chosen by the agent's client: sanitize before it reaches a terminal. */
+  readonly toolName: string
+  readonly serverName: string
+  /** How long the agent's call waits before it is answered with a timeout. */
+  readonly waitMs: number
+}
+
 export interface MessagePolicyGateDeps {
   /**
    * The rules to decide under. A `PolicyProvider` is read per decision, so an
@@ -61,6 +71,13 @@ export interface MessagePolicyGateDeps {
   readonly clock?: () => number
   /** Reports gate-internal failures. Defaults to one line on stderr. */
   readonly onError?: (error: unknown) => void
+  /**
+   * Hears of each call queued for a human, once, before its wait starts
+   * (0.2.3): `wrap` tells the operator on its stderr which id to approve.
+   * Never the agent's channel — an agent with a shell would approve itself.
+   * A throw is reported through `onError` and changes nothing about the call.
+   */
+  readonly onApprovalPending?: (notice: PendingApprovalNotice) => void
 }
 
 export interface MessagePolicyGate {

@@ -6,6 +6,7 @@ import { resolvePolicySource } from '../policy/source.js'
 import { autoServerName } from '../proxy/wire-policy.js'
 import { runWrap, type RunWrapOptions } from '../proxy/wrap.js'
 import { preflightDatabases } from '../store/preflight.js'
+import { heldCallNotice } from './next-step.js'
 import { createReloadingPolicy } from './policy-reload.js'
 
 /**
@@ -95,6 +96,9 @@ export async function runWrapCommand(
   }
 
   return runWrap(childCommand, childArgs, {
+    // A held call is named on stderr with the command that releases it: the
+    // Stop step used to wait out its whole window in silence (0.2.3).
+    approvalNotice: heldCallNotice,
     ...opts.runWrap,
     ...(flags.server !== undefined ? { serverName: flags.server } : {}),
     ...(flags.failClosed ? { failClosed: true } : {}),

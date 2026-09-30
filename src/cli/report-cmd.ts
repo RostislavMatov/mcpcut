@@ -17,7 +17,7 @@ import { isValidSessionId } from '../journal/session-id.js'
 import { loadSigningPrivateKey } from '../journal/signing.js'
 import type { SqliteHandle } from '../store/sqlite.js'
 import type { ExportCliIo } from './export-cmd.js'
-import { keygenHint, noJournalMessage, verifyReportHint } from './next-step.js'
+import { anchorHeadHint, keygenHint, noJournalMessage, verifyReportHint } from './next-step.js'
 import { prepareReportOutDir, type PreparedOutDir } from './report-out-dir.js'
 
 /**
@@ -91,7 +91,7 @@ export async function runExportReportCommand(
     }
     const exitCode = await writeReport(handle, opts.journalDir, session, prepared, io)
     // The path as the operator typed it: the check runs from the same place.
-    if (exitCode === EXIT_OK) io.stderr.write(verifyReportHint(outDir))
+    if (exitCode === EXIT_OK) io.stderr.write(verifyReportHint(outDir) + anchorHeadHint())
     return exitCode
   } catch (error: unknown) {
     // An I/O failure mid-export must not print the success summary below.

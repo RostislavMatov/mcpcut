@@ -11,6 +11,7 @@ import { createInventory, INVENTORY_FILE_NAME } from '../policy/inventory.js'
 import type { PolicyProvider } from '../policy/reload.js'
 import type { Policy } from '../policy/schema.js'
 import { createPolicyGate, type GateAgentScope } from './gate.js'
+import type { PendingApprovalNotice } from './gate-types.js'
 import { startPipeline, type GateFn } from './pipeline.js'
 import type { ServerHandle } from './spawn.js'
 import { splice, type SpliceErrorOrigin } from './splice.js'
@@ -108,6 +109,8 @@ export interface PolicyRelayArgs {
    * Absent on ad-hoc `wrap` runs — the M2 gate behavior, unchanged.
    */
   readonly agentScope?: GateAgentScope
+  /** Hears of each call queued for a human (see `MessagePolicyGateDeps`). */
+  readonly onApprovalPending?: (notice: PendingApprovalNotice) => void
 }
 
 /** Where the policy layer's on-disk state lives for one run. */
@@ -173,6 +176,7 @@ export function wirePolicyRelay(args: PolicyRelayArgs): RelayWiring {
     clientWriter,
     approvalsBaseDir,
     ...(args.agentScope !== undefined ? { agentScope: args.agentScope } : {}),
+    ...(args.onApprovalPending !== undefined ? { onApprovalPending: args.onApprovalPending } : {}),
     // A gate-internal failure is a proxy defect, not a broken stream: log it
     // (the gate has already failed the call closed) and keep the session up.
     onError: onInternalError,

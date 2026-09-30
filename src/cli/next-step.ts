@@ -1,5 +1,8 @@
 import { PRODUCT_VERSION } from '../brand.js'
 import { formatReadableField, replaceControlChars } from '../journal/format.js'
+import type { PendingApprovalNotice } from '../proxy/gate-types.js'
+
+const MS_PER_SECOND = 1000
 
 /**
  * The next step, spelled out: every CLI answer on the first-minute path ends
@@ -61,6 +64,19 @@ export function resolveApprovalHint(approvalId: string): string {
   return `Approve: ${cmd} approvals approve ${id}   Deny: ${cmd} approvals deny ${id}\n`
 }
 
+/**
+ * `wrap`'s stderr line for a held call — the operator's side only. The agent
+ * reads its -32002 error instead, which on purpose carries no command: an
+ * agent with a shell would run it and approve itself (`synthesize.ts`).
+ */
+export function heldCallNotice(notice: PendingApprovalNotice): string {
+  const waitSeconds = Math.round(notice.waitMs / MS_PER_SECOND)
+  return (
+    `held for approval: ${formatReadableField(notice.toolName)} on ${formatReadableField(notice.serverName)} ` +
+    `(the agent waits ${waitSeconds} s). ${resolveApprovalHint(notice.approvalId)}`
+  )
+}
+
 export function listApprovalsHint(): string {
   return `See what is pending: ${cliCommand()} approvals list\n`
 }
@@ -73,6 +89,15 @@ export function verifyReportHint(outDir: string): string {
   // A relative path that starts with "-" would read as an option.
   const path = outDir.startsWith('-') ? `./${outDir}` : outDir
   return `Check it offline: ${cliCommand()} verify --report ${shellArg(path)}\n`
+}
+
+/**
+ * The step that makes the journal tamper-evident: an export alone is only
+ * hashes a same-uid process can recompute; a signed head kept elsewhere is
+ * what a rewrite cannot match.
+ */
+export function anchorHeadHint(): string {
+  return `Next, anchor the chain head: ${cliCommand()} verify --sign on the journal's host, and keep what it prints somewhere that host cannot rewrite\n`
 }
 
 export function keygenHint(): string {

@@ -10,9 +10,10 @@ import {
   type PendingApproval,
   type ResolveOutcome,
 } from '../policy/approvals/queue.js'
+import type { ResolvedApprovalFile } from '../policy/approvals/queue-file.js'
 import { DEFAULT_GRANT_TTL_MS } from '../policy/constants.js'
 import { isExpectedAdminError } from './admin-cmd.js'
-import { adminStoreEmptiness, NO_ADMINS_YET_ACTOR, NO_ADMINS_YET_NOTICE } from './admin-token.js'
+import { adminStoreEmptiness, NO_ADMINS_YET_ACTOR, noAdminsYetNotice } from './admin-token.js'
 import { formatListReadable, formatTruncationNote } from './approvals-list-format.js'
 import { listApprovalsHint, noPendingApprovalsHint, resolveApprovalHint } from './next-step.js'
 
@@ -266,10 +267,9 @@ async function resolveCliActor(
  */
 async function actorWithoutToken(io: ApprovalsCliIo, opts: ApprovalsCliOptions): Promise<string | undefined> {
   const emptiness = await adminStoreEmptiness(opts.journalDir !== undefined ? { journalDir: opts.journalDir } : {})
-  if (emptiness.kind === 'empty') {
-    io.stderr.write(NO_ADMINS_YET_NOTICE)
-    return NO_ADMINS_YET_ACTOR
-  }
+  // The note itself waits for the resolution to land (`runResolve`): said
+  // before an unknown-id error, it described an action that never happened.
+  if (emptiness.kind === 'empty') return NO_ADMINS_YET_ACTOR
   io.stderr.write(emptiness.kind === 'unreadable' ? storeUnreadableMessage(emptiness.detail) : MISSING_TOKEN_MESSAGE)
   return undefined
 }
@@ -314,14 +314,28 @@ async function runResolve(
   }
 
   const safeId = formatReadableField(approvalId)
-  io.stdout.write(outcome === 'approved' ? approvedMessage(safeId) : `Denied ${safeId}.\n`)
+  io.stdout.write(outcome === 'approved' ? approvedMessage(safeId, result.record) : `Denied ${safeId}.\n`)
+  if (actor === NO_ADMINS_YET_ACTOR) io.stderr.write(noAdminsYetNotice())
   return 0
 }
 
-function approvedMessage(safeId: string): string {
+/**
+ * What the approval does for the call (0.2.3, stranger run of 0.2.2): while
+ * the agent still waits, its call goes through at once — the old wording
+ * promised only a "retry", and the call went on by itself 0.3 s later.
+ * After the wait, only a retry within the grant window passes. A request
+ * with no recorded wait (queued before M4) gets both halves.
+ */
+function approvedMessage(safeId: string, record: ResolvedApprovalFile): string {
   const grantMinutes = Math.round(DEFAULT_GRANT_TTL_MS / MS_PER_MINUTE)
-  return (
-    `Approved ${safeId}. The agent's retry within ${grantMinutes} minute(s) of this approval ` +
-    `(default grant TTL; the active policy may override it) will pass without a second approval.\n`
-  )
+  const retry =
+    `the agent's retry within ${grantMinutes} minute(s) of this approval ` +
+    `(default grant TTL; the active policy may override it) passes without a second approval`
+  const waitEndsAt = record.waitExpiresAt === undefined ? undefined : Date.parse(record.waitExpiresAt)
+  if (waitEndsAt === undefined || Number.isNaN(waitEndsAt)) {
+    return `Approved ${safeId}. A call still waiting goes through now; once its wait has ended, ${retry}.\n`
+  }
+  return Date.parse(record.resolvedAt) < waitEndsAt
+    ? `Approved ${safeId}. The waiting call goes through now.\n`
+    : `Approved ${safeId}. The agent's wait had already ended: ${retry}.\n`
 }

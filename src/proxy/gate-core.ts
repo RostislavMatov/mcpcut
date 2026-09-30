@@ -86,6 +86,7 @@ export type {
   GateAnswerSink,
   MessagePolicyGate,
   MessagePolicyGateDeps,
+  PendingApprovalNotice,
 } from './gate-types.js'
 import type { MessagePolicyGate, MessagePolicyGateDeps } from './gate-types.js'
 
@@ -243,6 +244,8 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     enqueuedUnresolved,
     decideWithGrant: (facts, hasActiveGrant) => decide(decideInputOf(facts, hasActiveGrant)),
     applyAllow,
+    onError,
+    ...(deps.onApprovalPending !== undefined ? { onApprovalPending: deps.onApprovalPending } : {}),
   })
 
   /** Fail-closed handling of a gate-internal error on a `tools/call`. */

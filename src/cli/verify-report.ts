@@ -11,6 +11,7 @@ import {
   type ReportVerifyResult,
   type VerifyingKey,
 } from '../journal/report-verify.js'
+import { anchorHeadHint } from './next-step.js'
 import { renderResult } from './verify-report-render.js'
 
 /**
@@ -156,7 +157,11 @@ export async function runReportVerification(
 
   io.stdout.write(renderResult({ reportDir: request.reportDir, requireSignature: request.requireSignature }, manifest, result))
   if (result.failedCount > 0) return EXIT_CHECK_FAILED
-  return result.couldNotRunCount > 0 ? EXIT_COULD_NOT_RUN : EXIT_OK
+  if (result.couldNotRunCount > 0) return EXIT_COULD_NOT_RUN
+  // A pass proves the bytes, not the host (the paragraph above says so); the
+  // one step that makes a rewrite detectable is named, ready to paste.
+  io.stderr.write(anchorHeadHint())
+  return EXIT_OK
 }
 
 type ManifestLookup =

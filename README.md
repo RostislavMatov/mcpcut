@@ -14,9 +14,9 @@ Requires **Node.js 24+** (`node -v`); on older Node, mcpcut prints one line and 
 
 **See.** Put mcpcut in front of a server — here for Claude Code; in any other client, the server's command becomes `npx -y mcpcut@0.2.2 wrap -- <your server>`:
 
-    claude mcp add fs -- npx -y mcpcut@0.2.2 wrap -- npx -y @modelcontextprotocol/server-filesystem ~/project
+    claude mcp add fs -- npx -y mcpcut@0.2.2 wrap --server fs -- npx -y @modelcontextprotocol/server-filesystem ~/project
 
-The first start downloads mcpcut and the server; if your client gives up on it, start it once more. Let the agent work, then `npx -y mcpcut@0.2.2 sessions` and `npx -y mcpcut@0.2.2 show <id>`: every request, response and decision, secrets redacted.
+The first start downloads mcpcut and the server; if your client gives up on it, start it once more. Let the agent work, then `npx -y mcpcut@0.2.2 sessions` and `npx -y mcpcut@0.2.2 show <id>`: every request and response, secrets redacted (with a policy, every decision too). `--server fs` names the server in the journal and the approval queue.
 
 **Stop.** Save this as `policy.json` — reads pass, everything else waits for you (quarantine of new tools is off, so the first minute shows one gate: see [Quarantine](docs/guide/policies.md#quarantine)) — and re-add the server with `--policy "$PWD/policy.json"` right after `wrap` (`claude mcp remove fs` first):
 
@@ -32,8 +32,9 @@ A write now waits. Approve it from another terminal within the agent's wait (60 
 
     npx -y mcpcut@0.2.2 keygen && npx -y mcpcut@0.2.2 export --report --out ./report
     npx -y mcpcut@0.2.2 verify --report ./report
+    npx -y mcpcut@0.2.2 verify --sign
 
-Record the chain head somewhere this host cannot rewrite — [the out-of-band anchor](docs/guide/audit-reports.md#the-out-of-band-anchor) is what makes the journal tamper-evident, not the hashes alone.
+The last line signs the chain head: keep what it prints somewhere this host cannot rewrite — [the out-of-band anchor](docs/guide/audit-reports.md#the-out-of-band-anchor) is what makes the journal tamper-evident, not the hashes alone.
 
 **Grow.** `npm install -g mcpcut`, then `mcpcut`: a setup wizard, then a server registry, per-agent keys and grants, a credential vault, a web UI, a terminal console and one address per agent ([Install and first run](docs/guide/install.md)).
 
