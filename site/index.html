@@ -74,11 +74,11 @@
     <div class="panel-body steps">
       <div class="step">
         <h3>See</h3>
-        <p>Put mcpcut in front of a server — here for Claude Code. In any other client, the server's command becomes <code>npx -y mcpcut@0.2.1 wrap -- &lt;your server&gt;</code>.</p>
-<pre data-from-readme>claude mcp add fs -- npx -y mcpcut@0.2.1 wrap -- npx -y @modelcontextprotocol/server-filesystem ~/project</pre>
+        <p>Put mcpcut in front of a server — here for Claude Code. In any other client, the server's command becomes <code>npx -y mcpcut@0.2.2 wrap -- &lt;your server&gt;</code>.</p>
+<pre data-from-readme>claude mcp add fs -- npx -y mcpcut@0.2.2 wrap -- npx -y @modelcontextprotocol/server-filesystem ~/project</pre>
         <p>Let the agent work, then read what happened — every request, response and decision, secrets redacted:</p>
-<pre data-from-readme>npx -y mcpcut@0.2.1 sessions
-npx -y mcpcut@0.2.1 show &lt;id&gt;</pre>
+<pre data-from-readme>npx -y mcpcut@0.2.2 sessions
+npx -y mcpcut@0.2.2 show &lt;id&gt;</pre>
       </div>
       <div class="step">
         <h3>Stop</h3>
@@ -86,14 +86,14 @@ npx -y mcpcut@0.2.1 show &lt;id&gt;</pre>
 <pre data-from-readme>{ "version": 1, "defaultDecision": "require-approval", "classDefaults": { "read": "allow" },
   "quarantine": { "enabled": false } }</pre>
         <p>A write now waits. Approve it from another terminal within the agent's wait:</p>
-<pre data-from-readme>npx -y mcpcut@0.2.1 approvals list
-npx -y mcpcut@0.2.1 approvals approve &lt;id&gt;</pre>
+<pre data-from-readme>npx -y mcpcut@0.2.2 approvals list
+npx -y mcpcut@0.2.2 approvals approve &lt;id&gt;</pre>
       </div>
       <div class="step">
         <h3>Prove</h3>
         <p>Sign the history, export it, and check it offline — with nothing but the directory:</p>
-<pre data-from-readme>npx -y mcpcut@0.2.1 keygen &amp;&amp; npx -y mcpcut@0.2.1 export --report --out ./report
-npx -y mcpcut@0.2.1 verify --report ./report</pre>
+<pre data-from-readme>npx -y mcpcut@0.2.2 keygen &amp;&amp; npx -y mcpcut@0.2.2 export --report --out ./report
+npx -y mcpcut@0.2.2 verify --report ./report</pre>
       </div>
       <p class="more">The full walkthrough, with what each step prints: <a href="https://github.com/RostislavMatov/mcpcut#quick-start">README · Quick start</a>.</p>
     </div>

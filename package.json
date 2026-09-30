@@ -1,7 +1,7 @@
 {
   "name": "mcpcut",
   "mcpName": "io.github.RostislavMatov/mcpcut",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "See every tool call your AI agent makes over MCP, hold the risky ones for your approval, and keep a secret-redacted journal that is tamper-evident with an external anchor. Self-hosted; grows into a control plane for many agents.",
   "keywords": [
     "mcp",
