@@ -108,6 +108,13 @@ describe('hints name the next command with real values', () => {
     expect(hint).toContain('--policy')
   })
 
+  test('an empty approvals queue with a known policy names that file, with no placeholder', () => {
+    asInstalled()
+    const hint = noPendingApprovalsHint('/work/proj/.mcpcut-project/policy.json')
+    expect(hint).toContain('wrap --policy /work/proj/.mcpcut-project/policy.json --')
+    expect(hint).not.toContain('<')
+  })
+
   test('a pending approval gets ready approve and deny commands', () => {
     asNpx()
     const hint = resolveApprovalHint('01XYZ')

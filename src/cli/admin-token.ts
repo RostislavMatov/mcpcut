@@ -225,6 +225,17 @@ export function noAdminsYetNotice(): string {
 }
 
 /**
+ * The same fact as `noAdminsYetNotice()`, worded for `approvals list`: said
+ * there, before the operator decides, instead of after every approve/deny.
+ */
+export function noAdminsYetListNotice(): string {
+  return (
+    'note: no admins yet, so approve and deny need no token and are recorded without a name; ' +
+    `after the first "${cliCommand()} admin add" a token is required\n`
+  )
+}
+
+/**
  * Whether the admin store holds no admin at all — `unreadable` when that
  * cannot be told, `no-install` when the data directory has never held one.
  */

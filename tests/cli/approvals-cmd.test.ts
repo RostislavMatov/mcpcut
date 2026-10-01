@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
@@ -747,7 +747,7 @@ describe('runApprovals: list shows the agent wait beside the grant window', () =
     const exitCode = await runApprovals(['list'], io, { baseDir, clock: () => nowMs })
 
     expect(exitCode).toBe(0)
-    expect(io.out()).toContain('agent_waits=1m0s')
+    expect(io.out()).toContain('agent_wait_left=1m0s')
     expect(io.out()).toContain('expires_in=5m0s')
   })
 
@@ -761,7 +761,7 @@ describe('runApprovals: list shows the agent wait beside the grant window', () =
     const exitCode = await runApprovals(['list'], io, { baseDir, clock: () => nowMs })
 
     expect(exitCode).toBe(0)
-    expect(io.out()).toContain('agent_waits=elapsed(retry-only)')
+    expect(io.out()).toContain('agent_wait=over(retry_passes_after_approve)')
     // The grant window is still open: the entry is not expired.
     expect(io.out()).toContain('expires_in=3m30s')
   })
@@ -775,7 +775,18 @@ describe('runApprovals: list shows the agent wait beside the grant window', () =
     const exitCode = await runApprovals(['list'], io, { baseDir, clock: () => nowMs })
 
     expect(exitCode).toBe(0)
-    expect(io.out()).toContain('agent_waits=unknown')
+    expect(io.out()).toContain('agent_wait=unknown')
+  })
+
+  test('the row never calls the remaining wait by the old, elapsed-sounding name', async () => {
+    const nowMs = Date.UTC(2026, 0, 1)
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
+    await queue.enqueue(baseRequest({ timeoutMs: 300_000, waitTimeoutMs: 60_000 }))
+    const io = fakeIo()
+
+    await runApprovals(['list'], io, { baseDir, clock: () => nowMs })
+
+    expect(io.out()).not.toContain('agent_waits')
   })
 
   test('--json keeps its exact shape: the new column is text-view only', async () => {
@@ -790,5 +801,80 @@ describe('runApprovals: list shows the agent wait beside the grant window', () =
     const entry = JSON.parse(io.out()).approvals[0]
     expect(Object.keys(entry)).not.toContain('agentWaits')
     expect(entry.waitExpiresAt).toBe(new Date(nowMs + 60_000).toISOString())
+  })
+})
+
+describe('runApprovals: list row carries the asking agent and a capped args preview', () => {
+  test('a request from a named agent shows agent=<name> after the id and class', async () => {
+    const queue = createApprovalQueue({ baseDir })
+    await queue.enqueue(baseRequest({ agentName: 'claude-code' }))
+    const io = fakeIo()
+
+    await runApprovals(['list'], io, { baseDir })
+
+    expect(io.out()).toMatch(/^\S+ {2}server=github tool=create_issue class=write agent=claude-code /)
+  })
+
+  test('a request with no agent (the wrap path) has no agent= token', async () => {
+    const queue = createApprovalQueue({ baseDir })
+    await queue.enqueue(baseRequest())
+    const io = fakeIo()
+
+    await runApprovals(['list'], io, { baseDir })
+
+    expect(io.out()).not.toContain('agent=')
+  })
+
+  test('long arguments are cut to a short preview ending in an ellipsis', async () => {
+    const queue = createApprovalQueue({ baseDir })
+    await queue.enqueue(baseRequest({ args: { content: 'x'.repeat(500) } }))
+    const io = fakeIo()
+
+    await runApprovals(['list'], io, { baseDir })
+
+    const preview = /args=(\S+)/.exec(io.out())?.[1] ?? ''
+    expect(preview.length).toBeLessThanOrEqual(121)
+    expect(preview.endsWith('…')).toBe(true)
+  })
+
+  test('short arguments are printed whole', async () => {
+    const queue = createApprovalQueue({ baseDir })
+    await queue.enqueue(baseRequest({ args: { a: 1 } }))
+    const io = fakeIo()
+
+    await runApprovals(['list'], io, { baseDir })
+
+    expect(io.out()).toContain('args={"a":1}')
+  })
+})
+
+describe('runApprovals: an empty list names the real policy file or how to make one', () => {
+  test('with a policy in the project folder it names that file by its full path', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'mcpcut-approvals-cwd-'))
+    await mkdir(join(cwd, '.mcpcut-project'))
+    const policyPath = join(cwd, '.mcpcut-project', 'policy.json')
+    await writeFile(policyPath, '{}', 'utf8')
+    const io = fakeIo()
+
+    const exitCode = await runApprovals(['list'], io, { baseDir, cwd, journalDir: cwd, env: {} })
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toBe('no pending approvals\n')
+    expect(io.err()).toContain(policyPath)
+    expect(io.err()).not.toMatch(/[<>]/)
+    await rm(cwd, { recursive: true, force: true })
+  })
+
+  test('without any policy it gives a command that writes one and the wrap line that uses it', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'mcpcut-approvals-cwd-'))
+    const io = fakeIo()
+
+    await runApprovals(['list'], io, { baseDir, cwd, journalDir: cwd, env: {} })
+
+    expect(io.err()).toContain('"defaultDecision": "require-approval"')
+    expect(io.err()).toContain('> policy.json')
+    expect(io.err()).toContain('wrap --policy "$PWD/policy.json" --')
+    expect(io.err()).not.toMatch(/[<>](?!\s*policy\.json)/)
+    await rm(cwd, { recursive: true, force: true })
   })
 })

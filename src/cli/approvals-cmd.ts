@@ -13,7 +13,8 @@ import {
 import type { ResolvedApprovalFile } from '../policy/approvals/queue-file.js'
 import { DEFAULT_GRANT_TTL_MS } from '../policy/constants.js'
 import { isExpectedAdminError } from './admin-cmd.js'
-import { adminStoreEmptiness, NO_ADMINS_YET_ACTOR, noAdminsYetNotice } from './admin-token.js'
+import { adminStoreEmptiness, NO_ADMINS_YET_ACTOR, noAdminsYetListNotice } from './admin-token.js'
+import { findDefaultPolicyPath } from './approvals-policy-lookup.js'
 import { formatListReadable, formatTruncationNote } from './approvals-list-format.js'
 import { listApprovalsHint, noPendingApprovalsHint, resolveApprovalHint } from './next-step.js'
 
@@ -57,6 +58,8 @@ export interface ApprovalsCliOptions {
    * test never depends on the developer's own exported token.
    */
   readonly env?: NodeJS.ProcessEnv
+  /** Working directory for finding the project policy in the empty-list hint. Defaults to `process.cwd()`. */
+  readonly cwd?: string
 }
 
 const USAGE = `Usage:
@@ -139,7 +142,7 @@ export async function runApprovals(
 
   if (subcommand === 'list') {
     // Deliberately token-free: reading the queue is not an authorization event.
-    return runList(queue, args.slice(1), io, clock)
+    return runList(queue, args.slice(1), io, clock, opts)
   }
   if (subcommand === 'approve' || subcommand === 'deny') {
     // Authorize BEFORE anything can be written. A run that cannot name the
@@ -160,6 +163,7 @@ async function runList(
   listArgs: readonly string[],
   io: ApprovalsCliIo,
   clock: () => number,
+  opts: ApprovalsCliOptions,
 ): Promise<number> {
   let json: boolean
   try {
@@ -198,14 +202,26 @@ async function runList(
   const [first] = entries
   if (first === undefined) {
     io.stdout.write('no pending approvals\n')
-    io.stderr.write(noPendingApprovalsHint())
+    io.stderr.write(noPendingApprovalsHint(findDefaultPolicyPath(opts)))
     return 0
   }
 
   const truncationNote = truncated ? formatTruncationNote(entries.length, totalPending) : ''
   io.stdout.write(truncationNote + formatListReadable(entries, clock()))
   io.stderr.write(resolveApprovalHint(first.approvalId))
+  await warnIfNoAdminsYet(io, opts)
   return 0
+}
+
+/**
+ * Said here, where the operator looks before deciding, and not after every
+ * approve/deny: while no admin exists a resolution is recorded without a name
+ * (`actorWithoutToken`). Stateless: it follows the admin store, so it stops
+ * by itself with the first `admin add`.
+ */
+async function warnIfNoAdminsYet(io: ApprovalsCliIo, opts: ApprovalsCliOptions): Promise<void> {
+  const emptiness = await adminStoreEmptiness(opts.journalDir !== undefined ? { journalDir: opts.journalDir } : {})
+  if (emptiness.kind === 'empty') io.stderr.write(noAdminsYetListNotice())
 }
 
 /**
@@ -315,7 +331,6 @@ async function runResolve(
 
   const safeId = formatReadableField(approvalId)
   io.stdout.write(outcome === 'approved' ? approvedMessage(safeId, result.record) : `Denied ${safeId}.\n`)
-  if (actor === NO_ADMINS_YET_ACTOR) io.stderr.write(noAdminsYetNotice())
   return 0
 }
 

@@ -51,10 +51,28 @@ export function unknownSessionMessage(sessionId: string): string {
   return `No session "${formatReadableField(sessionId)}" in the journal. List them: ${cliCommand()} sessions\n`
 }
 
-export function noPendingApprovalsHint(): string {
+/** The README's «Stop» policy, on one line: reads pass, everything else waits, no quarantine noise. */
+const STARTER_POLICY_JSON =
+  '{ "version": 1, "defaultDecision": "require-approval", "classDefaults": { "read": "allow" }, "quarantine": { "enabled": false } }'
+
+/** A server the first minute can wrap as is (the README's Quick start uses it too). */
+const EXAMPLE_SERVER_COMMAND = 'npx -y @modelcontextprotocol/server-filesystem .'
+
+/**
+ * The empty `approvals list`: what puts a call here, with the real policy
+ * file when one sits where mcpcut looks for it, otherwise a command that
+ * writes the README's starter policy. No placeholder either way.
+ */
+export function noPendingApprovalsHint(policyPath?: string): string {
+  const why = 'A call waits here when the policy says "require-approval" for it.'
+  const cmd = cliCommand()
+  if (policyPath !== undefined) {
+    return `${why} Put mcpcut in front of your server with that policy: ${cmd} wrap --policy ${shellArg(policyPath)} -- ${EXAMPLE_SERVER_COMMAND}\n`
+  }
   return (
-    'A call waits here when the policy says "require-approval" for it: ' +
-    `${cliCommand()} wrap --policy <policy.json> -- <server command>\n`
+    `${why} No policy file yet: write a starter one with\n` +
+    `  echo '${STARTER_POLICY_JSON}' > policy.json\n` +
+    `then put mcpcut in front of your server: ${cmd} wrap --policy "$PWD/policy.json" -- ${EXAMPLE_SERVER_COMMAND}\n`
   )
 }
 

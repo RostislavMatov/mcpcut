@@ -77,8 +77,31 @@ describe('approvals approve|deny on an install with no admins yet', () => {
     expect(resolution?.outcome).toBe('approved')
     expect(resolution?.actor).toBe(NO_ADMINS_YET_ACTOR)
     expect(NO_ADMINS_YET_ACTOR).toBe('cli:_unattributed')
+    // The note is said by `approvals list`, not after every decision.
+    expect(io.err()).not.toContain('no admins yet')
+  })
+
+  test('list says once, on stderr, that no admin exists yet and what adding one changes', async () => {
+    await pendingId()
+    await createAdminStore({ journalDir: tempDir }).listAdmins()
+    const io = fakeIo()
+
+    const exitCode = await runApprovals(['list'], io, opts())
+
+    expect(exitCode).toBe(0)
     expect(io.err()).toContain('no admins yet')
     expect(io.err()).toContain('mcpcut admin add')
+    expect(io.out()).not.toContain('no admins yet')
+  })
+
+  test('list stays quiet about admins once one exists', async () => {
+    await createAdminStore({ journalDir: tempDir }).createAdmin('me', 'owner')
+    await pendingId()
+    const io = fakeIo()
+
+    await runApprovals(['list'], io, opts())
+
+    expect(io.err()).not.toContain('no admins yet')
   })
 
   test('deny works the same way', async () => {

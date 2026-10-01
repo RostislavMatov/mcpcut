@@ -26,7 +26,7 @@ export function formatListReadable(entries: readonly PendingApproval[], nowMs: n
  * Named rather than blank: "we do not know" and "the agent left" are different
  * facts, and only one of them means an approval still delivers the call.
  */
-const AGENT_WAIT_UNKNOWN = 'unknown'
+const AGENT_WAIT_UNKNOWN = 'agent_wait=unknown'
 
 /**
  * What the wait column says once the agent's own window has closed. The words
@@ -35,20 +35,35 @@ const AGENT_WAIT_UNKNOWN = 'unknown'
  * come back and use (the M2 dogfood tail, and the reason the web card carries
  * the same sentence).
  */
-const AGENT_WAIT_ELAPSED = 'elapsed(retry-only)'
+const AGENT_WAIT_OVER = 'agent_wait=over(retry_passes_after_approve)'
 
 /** Every field printed here comes from a queue file on disk -- untrusted, like a journal record. */
 function formatListLine(entry: PendingApproval, nowMs: number): string {
   const approvalId = formatReadableField(entry.approvalId)
   const serverName = formatReadableField(entry.serverName)
   const toolName = formatReadableField(entry.toolName)
-  const argsPreview = formatReadableField(JSON.stringify(entry.argsRedacted))
+  const argsPreview = formatArgsPreview(entry.argsRedacted)
   const remaining = formatTimeRemaining(entry, nowMs)
   const waiting = formatAgentWait(entry, nowMs)
   return (
     `${approvalId}  server=${serverName} tool=${toolName} class=${entry.toolClass} ` +
-    `agent_waits=${waiting} expires_in=${remaining} args=${argsPreview}\n`
+    `${formatAgent(entry)}${waiting} expires_in=${remaining} args=${argsPreview}\n`
   )
+}
+
+/** Longest args preview, in characters, before the ellipsis; the full redacted arguments stay in `--json`. */
+const ARGS_PREVIEW_MAX_CHARS = 120
+const ELLIPSIS = '…'
+
+function formatArgsPreview(argsRedacted: unknown): string {
+  const json = formatReadableField(JSON.stringify(argsRedacted))
+  return json.length > ARGS_PREVIEW_MAX_CHARS ? `${json.slice(0, ARGS_PREVIEW_MAX_CHARS)}${ELLIPSIS}` : json
+}
+
+/** `agent=<name> ` when the entry knows who asked (connect/serve), nothing on the wrap path. One token: no whitespace. */
+function formatAgent(entry: PendingApproval): string {
+  if (entry.agentName === undefined) return ''
+  return `agent=${formatReadableField(entry.agentName).replace(/\s+/g, '_')} `
 }
 
 /**
@@ -65,7 +80,7 @@ function formatAgentWait(entry: PendingApproval, nowMs: number): string {
   const deadlineMs = Date.parse(waitExpiresAt)
   if (Number.isNaN(deadlineMs)) return AGENT_WAIT_UNKNOWN
   const remainingMs = deadlineMs - nowMs
-  return remainingMs > 0 ? formatDuration(remainingMs) : AGENT_WAIT_ELAPSED
+  return remainingMs > 0 ? `agent_wait_left=${formatDuration(remainingMs)}` : AGENT_WAIT_OVER
 }
 
 /** `entry.expired` is derived by `queue.list()` from the same clock, so the two never disagree. */

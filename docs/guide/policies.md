@@ -152,15 +152,18 @@ A `require-approval` tool call does not reach the server immediately:
    Each pending line carries **two clocks**, and they mean different things:
 
    ```
-   01K5…  server=github tool=create_issue class=write agent_waits=42s expires_in=4m55s args={…}
+   01K5…  server=github tool=create_issue class=write agent=claude-code agent_wait_left=42s expires_in=4m55s args={…}
    ```
 
-   `agent_waits` is how long the blocked call is still there to be unblocked;
-   `expires_in` is how long a fresh approval stays usable. Once the first runs
-   out the line says `agent_waits=elapsed(retry-only)`: approving then still
+   `agent_wait_left` is how much of the agent's wait remains, so how long the
+   blocked call is still there to be unblocked; `expires_in` is how long a fresh
+   approval stays usable. Once the first runs out the line says
+   `agent_wait=over(retry_passes_after_approve)`: approving then still
    mints the grant, but the agent has already given up and has to call again
-   for it to be used. `agent_waits=unknown` means the request recorded no wait
-   window. With `--json`, both deadlines are in `expiresAt` /
+   for it to be used. `agent_wait=unknown` means the request recorded no wait
+   window. `agent=` names the agent that asked and is absent on the `wrap`
+   path, which has none; `args=` is cut to 120 characters (`--json` has it whole).
+   With `--json`, both deadlines are in `expiresAt` /
    `waitExpiresAt`.
 
    **What this does and does not buy.** It buys **attribution**, not an access
