@@ -1,3 +1,4 @@
+import { START_HERE } from './start-here.js'
 import {
   SERVICE_SYNOPSIS_LINES,
   SETUP_SYNOPSIS_LINES,
@@ -12,7 +13,7 @@ import {
  * print a usage of their own when they refuse, and two hand-written copies of
  * the same table had already drifted apart once (`tests/cli/usage.test.ts`).
  */
-export const USAGE = `Usage:
+export const COMMAND_TABLE = `Usage:
   mcpcut wrap [--server <name>] [--policy <path>] [--no-policy] [--fail-closed] -- <cmd> [args...]
                                          Run a wrapped MCP server ad hoc, journaling all traffic
   mcpcut connect <server> --agent <name> [--policy <path>] [--fail-closed]
@@ -137,3 +138,6 @@ ${TUI_SYNOPSIS_LINES.join('\n')}
   mcpcut --help                         Show this message
   mcpcut --version                      Print the installed version
 `
+
+/** `mcpcut --help`: the five first commands, then the full command table. */
+export const USAGE = `${START_HERE}${COMMAND_TABLE}`

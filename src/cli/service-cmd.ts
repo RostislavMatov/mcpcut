@@ -17,6 +17,7 @@ import {
   type StopResult,
 } from '../services/manager.js'
 import { CLI_NAME } from '../setup/constants.js'
+import { cliCommand } from './next-step.js'
 import { resolveDataDir } from '../setup/data-dir.js'
 import { loadInstallConfigSync, type InstallConfigLoad } from '../setup/load.js'
 import { parseServiceArgs, type OkServiceArgs } from './service-cmd-args.js'
@@ -271,7 +272,9 @@ function missingConfigMessage(
       `Fix or remove it, then: ${CLI_NAME} setup --yes --force\n`
     )
   }
-  if (command === 'status') return `status: no install config at ${install.path}\n`
+  if (command === 'status') {
+    return `status: no install config at ${install.path}\nNext, set it up: ${cliCommand()} setup\n`
+  }
   // Both ways to an install, in the order an operator meets them: the wizard a
   // bare `mcpcut` opens on a terminal, and the flags a script uses. `start`
   // itself stays non-interactive — it runs with nobody watching.

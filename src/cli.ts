@@ -45,6 +45,7 @@ import { runPruneCommand } from './cli/prune-cmd.js'
 import { runVerifyCommand } from './cli/verify-cmd.js'
 import { runWrapCommand } from './cli/wrap-cmd.js'
 import { USAGE } from './cli/usage.js'
+import { commandUsage, wantsCommandHelp } from './cli/command-help.js'
 import { JOURNAL_DIR_RESOLUTION } from './config.js'
 import { PRODUCT_VERSION } from './brand.js'
 import { CLI_NAME } from './setup/constants.js'
@@ -109,6 +110,16 @@ export async function dispatch(
 ): Promise<number> {
   const command = argv[0]
   const rest = [...argv.slice(1)]
+
+  // `mcpcut <command> --help`: answered first of all, so it also works for
+  // `setup` and on a broken install config. Commands that answer
+  // their own `--help` (`tui`) keep doing so.
+  const asksHelp = command !== undefined && command !== 'tui' && wantsCommandHelp(rest)
+  const helpText = asksHelp ? commandUsage(command) : undefined
+  if (helpText !== undefined) {
+    io.stdout.write(helpText)
+    return 0
+  }
 
   // `setup` routes ahead of the broken-config gate below: it is the command
   // that rewrites the broken file, so the gate must never see it.

@@ -15,6 +15,7 @@ import type {
 import { defaultInstallConfig } from '../../src/setup/defaults.js'
 import type { InstallConfigLoad } from '../../src/setup/load.js'
 import type { InstallConfig } from '../../src/setup/schema.js'
+import { cliCommand } from '../../src/cli/next-step.js'
 import { reservedPort } from '../support/ports.js'
 
 /**
@@ -495,7 +496,9 @@ describe('an install with no config', () => {
 
     expect(exitCode).toBe(1)
     expect(manager.calls).toEqual([])
-    expect(io.err()).toBe(`status: no install config at ${CONFIG_PATH}\n`)
+    expect(io.err()).toBe(
+      `status: no install config at ${CONFIG_PATH}\nNext, set it up: ${cliCommand()} setup\n`,
+    )
   })
 })
 
