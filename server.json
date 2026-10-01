@@ -8,13 +8,13 @@
     "source": "github"
   },
   "websiteUrl": "https://mcpcut.com",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "mcpcut",
-      "version": "0.2.3",
+      "version": "0.2.4",
       "runtimeHint": "npx",
       "runtimeArguments": [
         {

@@ -113,7 +113,7 @@ Client config — paste into the agent's client (the token is inside):
       "command": "npx",
       "args": [
         "-y",
-        "mcpcut@0.2.3",
+        "mcpcut@0.2.4",
         "connect",
         "--url",
         "https://plane.example:8090"

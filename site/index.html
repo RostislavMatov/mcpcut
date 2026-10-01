@@ -74,11 +74,11 @@
     <div class="panel-body steps">
       <div class="step">
         <h3>See</h3>
-        <p>Put mcpcut in front of a server — here for Claude Code. In any other client, the server's command becomes <code>npx -y mcpcut@0.2.3 wrap -- &lt;your server&gt;</code>.</p>
-<pre data-from-readme>claude mcp add fs -- npx -y mcpcut@0.2.3 wrap --server fs -- npx -y @modelcontextprotocol/server-filesystem ~/project</pre>
+        <p>Put mcpcut in front of a server — here for Claude Code. In any other client, the server's command becomes <code>npx -y mcpcut@0.2.4 wrap -- &lt;your server&gt;</code>.</p>
+<pre data-from-readme>claude mcp add fs -- npx -y mcpcut@0.2.4 wrap --server fs -- npx -y @modelcontextprotocol/server-filesystem ~/project</pre>
         <p>Let the agent work, then read what happened — every request and response, secrets redacted (with a policy, every decision too):</p>
-<pre data-from-readme>npx -y mcpcut@0.2.3 sessions
-npx -y mcpcut@0.2.3 show &lt;id&gt;</pre>
+<pre data-from-readme>npx -y mcpcut@0.2.4 sessions
+npx -y mcpcut@0.2.4 show &lt;id&gt;</pre>
       </div>
       <div class="step">
         <h3>Stop</h3>
@@ -86,15 +86,15 @@ npx -y mcpcut@0.2.3 show &lt;id&gt;</pre>
 <pre data-from-readme>{ "version": 1, "defaultDecision": "require-approval", "classDefaults": { "read": "allow" },
   "quarantine": { "enabled": false } }</pre>
         <p>A write now waits. Approve it from another terminal within the agent's wait:</p>
-<pre data-from-readme>npx -y mcpcut@0.2.3 approvals list
-npx -y mcpcut@0.2.3 approvals approve &lt;id&gt;</pre>
+<pre data-from-readme>npx -y mcpcut@0.2.4 approvals list
+npx -y mcpcut@0.2.4 approvals approve &lt;id&gt;</pre>
       </div>
       <div class="step">
         <h3>Prove</h3>
         <p>Sign the history, export it, and check it offline — with nothing but the directory:</p>
-<pre data-from-readme>npx -y mcpcut@0.2.3 keygen &amp;&amp; npx -y mcpcut@0.2.3 export --report --out ./report
-npx -y mcpcut@0.2.3 verify --report ./report
-npx -y mcpcut@0.2.3 verify --sign</pre>
+<pre data-from-readme>npx -y mcpcut@0.2.4 keygen &amp;&amp; npx -y mcpcut@0.2.4 export --report --out ./report
+npx -y mcpcut@0.2.4 verify --report ./report
+npx -y mcpcut@0.2.4 verify --sign</pre>
         <p>The last line signs the chain head: keep what it prints somewhere this host cannot rewrite — that copy is what makes the journal tamper-evident with an external anchor.</p>
       </div>
       <p class="more">The full walkthrough, with what each step prints: <a href="https://github.com/RostislavMatov/mcpcut#quick-start">README · Quick start</a>.</p>

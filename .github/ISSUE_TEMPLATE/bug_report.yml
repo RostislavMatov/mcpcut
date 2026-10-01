@@ -11,7 +11,7 @@ body:
     attributes:
       label: mcpcut version
       description: "Output of `npx -y mcpcut --version` or `mcpcut --version`."
-      placeholder: mcpcut 0.2.3
+      placeholder: mcpcut 0.2.4
     validations:
       required: true
   - type: input
