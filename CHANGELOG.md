@@ -6,6 +6,40 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Answer an approval request from the list in the console.** In Approvals ▸
+  `list`, `Enter` opens the rows: `↑`/`↓` choose a request, `Enter` asks about
+  it, and `y` approves, `n` denies, `Esc` closes the question while the
+  request keeps waiting. No 26-character id is typed. The rows stay live and
+  keep the same request selected; a key typed ahead while the list was
+  loading never answers the question.
+
+### Changed
+
+- **`<command> --help` prints that command's usage** instead of
+  `Unknown option --help` (after `--` it still reaches the wrapped command).
+  `mcpcut --help` opens with a five-command "Start here" block, and `status`
+  without an install config names `setup`.
+- **`wrap` names its session when it ends**, with the ready `show` command.
+  A missing or invalid policy file is printed with its path once and what to
+  do next (`policy validate <path>` for broken JSON); the no-policy line names
+  the default path and `--policy`; a `wrap` without `-- <command>` shows a
+  ready example.
+- **`show` leads each decision with the verdict** (`outcome=… tool=… rule=…`)
+  and ends with the `export --report` command for that session. `sessions`
+  adds server and agent columns. `--json` output is unchanged.
+- **`approvals list` reads plainly.** Rows say `agent=` when known and
+  `agent_wait_left=` (or `agent_wait=over(retry_passes_after_approve)`), and
+  cap the arguments at 120 characters — the full redacted arguments stay in
+  `--json`. An empty queue names the real policy file or the command that
+  writes the starter one. The "no admins yet" note is said once by the list,
+  not after every approve and deny.
+- **`connect`'s no-policy hint names the plane's data directory**, not the
+  `--policy` flag that `connect` refuses.
+- **The web UI's `invalid-policy` refusal names the file** in front of each
+  error.
+
 ## [0.2.3] — 2026-09-30
 
 ### Changed

@@ -23,7 +23,13 @@ them from the Services section — nothing starts on its own). Twelve sections
 Journal, Audit, Services — each a list of actions; every action is a form that
 runs the very CLI command it shows you (`$ mcpcut …`), with the same gates and
 the same journal records as the shell. The Approvals queue re-reads itself
-every 3 s while you are on it. An action that prints a one-time token
+every 3 s while you are on it. To answer a request, press `Enter` on
+Approvals ▸ `list`: the rows open with the first request marked `▸`, `↑`/`↓`
+choose one, and `Enter` asks about it — `y` approves, `n` denies, `Esc`
+closes the question and the request keeps waiting. The answer runs
+`mcpcut approvals approve|deny <id>` with the id filled in; no id is typed.
+The rows stay live while open, and a key typed ahead never answers the
+question. An action that prints a one-time token
 (`admin add`, `admin rotate`, `agent create`) holds the output on screen
 under a banner until you press `y` to say you copied it. Services shows
 `status · start · stop · logs · setup`; under `supervisor: external`
@@ -45,7 +51,8 @@ and weight off (the alternate screen and cursor movement stay — a terminal
 without those cannot run the console at all); keys pressed while a command is
 running are **queued** (up to 32) and replayed in order once it answers, except
 when the answer is a one-time token — then the queue is dropped so nothing
-can acknowledge the token unread. `Ctrl-C` is never queued: it quits at once.
+can acknowledge the token unread — and the replay stops at the question about
+an approval request, so a typed-ahead `y` or `n` never decides one. `Ctrl-C` is never queued: it quits at once.
 
 ## A console for a service on another host (`--remote`) (preview)
 
