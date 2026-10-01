@@ -12,6 +12,32 @@ mcpcut wrap -- <cmd> [args...]
 Everything after `--` is the real server's command line. `mcpcut` exits
 with the wrapped server's exit code.
 
+## Put the servers you already have behind mcpcut
+
+```
+mcpcut adopt                 # show what would change
+mcpcut adopt --apply         # write it
+mcpcut adopt --undo          # put back what the last --apply changed
+```
+
+`adopt` looks in Claude Code (`~/.claude.json` for the user and local
+scopes, `.mcp.json` of the current folder), Cursor (`~/.cursor/mcp.json`,
+`.cursor/mcp.json` of the current folder) and Claude Desktop, and wraps every
+server the client starts as a process: the entry's command becomes
+`npx -y mcpcut@<version> wrap --server <name> -- <its command>`. Only
+`command` and `args` change; `env` and every other key stay. Remote servers
+(by URL) and entries that already start mcpcut are skipped and named.
+`--client claude-code|cursor|claude-desktop` limits it to one client.
+
+Before writing, `--apply` keeps a copy of each file under
+`<data-dir>/adopt/<time>/` (readable by you only) and refuses a file that
+changed since it was read. Restart the client afterwards. `--undo` restores
+only the entries that still hold what `adopt` wrote.
+
+One policy for all of them: save it as `<data-dir>/policy.json`
+(`~/.mcpcut/data/policy.json` by default) and restart the client — see
+[Policies](policies.md).
+
 ## List sessions
 
 ```

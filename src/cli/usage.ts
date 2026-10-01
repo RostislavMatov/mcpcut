@@ -14,6 +14,11 @@ import {
  * the same table had already drifted apart once (`tests/cli/usage.test.ts`).
  */
 export const COMMAND_TABLE = `Usage:
+  mcpcut adopt [--apply] [--client claude-code|cursor|claude-desktop]
+                                         Put the MCP servers already in Claude Code, Cursor and
+                                         Claude Desktop behind mcpcut wrap; shows the change and
+                                         writes it only with --apply (a copy of each file is kept)
+  mcpcut adopt --undo                    Put back what the last adopt --apply changed
   mcpcut wrap [--server <name>] [--policy <path>] [--no-policy] [--fail-closed] -- <cmd> [args...]
                                          Run a wrapped MCP server ad hoc, journaling all traffic
   mcpcut connect <server> --agent <name> [--policy <path>] [--fail-closed]

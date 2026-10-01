@@ -12,20 +12,27 @@ Self-hosted · Apache-2.0 · Node.js 24+ · two runtime dependencies. Start with
 
 Requires **Node.js 24+** (`node -v`); on older Node, mcpcut prints one line and exits — install Node 24 with nvm, fnm or volta. Nothing else to install.
 
-**See.** Put mcpcut in front of a server — here for Claude Code; in any other client, the server's command becomes `npx -y mcpcut@0.2.4 wrap -- <your server>`:
+**See.** Put the MCP servers you already have behind mcpcut. `adopt` finds them in Claude Code, Cursor and Claude Desktop and shows the change; `--apply` writes it, keeping a copy of each file (`adopt --undo` puts them back). Then restart the client:
+
+    npx -y mcpcut@0.2.4 adopt
+    npx -y mcpcut@0.2.4 adopt --apply
+
+Or put mcpcut in front of one server by hand — here for Claude Code; in any other client, the server's command becomes `npx -y mcpcut@0.2.4 wrap -- <your server>`:
 
     claude mcp add fs -- npx -y mcpcut@0.2.4 wrap --server fs -- npx -y @modelcontextprotocol/server-filesystem ~/project
 
-On Windows, npm commands start only through `cmd /c` — put it before both `npx`:
+On Windows, npm commands start only through `cmd /c` (`adopt` adds it for you) — by hand, put it before both `npx`:
 
     claude mcp add fs -- cmd /c npx -y mcpcut@0.2.4 wrap --server fs -- cmd /c npx -y @modelcontextprotocol/server-filesystem C:\path\to\project
 
 The first start downloads mcpcut and the server; if your client gives up on it, start it once more. Let the agent work, then `npx -y mcpcut@0.2.4 sessions` and `npx -y mcpcut@0.2.4 show <id>`: every request and response, secrets redacted (with a policy, every decision too). `--server fs` names the server in the decisions a policy writes to the journal and in the approval queue.
 
-**Stop.** Save this as `policy.json` — reads pass, everything else waits for you (quarantine of new tools is off, so the first minute shows one gate: see [Quarantine](docs/guide/policies.md#quarantine)) — and re-add the server with `--policy "$PWD/policy.json"` right after `wrap` (`claude mcp remove fs` first):
+**Stop.** Save this as `~/.mcpcut/data/policy.json` — every server behind mcpcut reads it when it starts — and restart the client. Reads pass, everything else waits for you (quarantine of new tools is off, so the first minute shows one gate: see [Quarantine](docs/guide/policies.md#quarantine)):
 
     { "version": 1, "defaultDecision": "require-approval", "classDefaults": { "read": "allow" },
       "quarantine": { "enabled": false } }
+
+A server added by hand can take its own file instead: `--policy "$PWD/policy.json"` right after `wrap`.
 
 A write now waits. Approve it from another terminal within the agent's wait (60 s; after it, the agent's retry passes) — no token needed until you add your first admin ([Approvals](docs/guide/policies.md#approval-scenario)):
 

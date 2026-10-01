@@ -147,6 +147,6 @@ describe('the Start here block', () => {
   })
 
   test('is followed by the full list, still starting at "Usage:"', () => {
-    expect(USAGE).toContain('\nUsage:\n  mcpcut wrap')
+    expect(USAGE).toContain('\nUsage:\n  mcpcut adopt')
   })
 })

@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`mcpcut adopt` puts the MCP servers you already have behind mcpcut.** It
+  finds them in Claude Code (user, local and project scopes), Cursor and
+  Claude Desktop and shows what would change; `adopt --apply` writes it —
+  only `command` and `args` of each entry change, a copy of every file it
+  touches is kept, and a file the client rewrote in the meantime is left
+  alone. On Windows it adds `cmd /c` where npm commands need it. Remote
+  servers and entries already behind mcpcut are named and skipped.
+  `adopt --undo` puts back the last run's entries, keeping whatever you
+  changed since.
+
 ### Fixed
 
 - **`export --report` works on Windows.** Windows refuses to fsync a

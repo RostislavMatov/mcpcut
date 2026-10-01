@@ -27,6 +27,7 @@ import type { ConnectBridgeDeps } from './connect-bridge-cmd.js'
 import type { ConnectDeps } from './connect-cmd.js'
 import type { ExportCommandOptions } from './export-cmd.js'
 import type { GroupCliOptions } from './group-cmd.js'
+import type { AdoptCommandOptions } from './adopt-cmd.js'
 import type { KeygenCommandOptions } from './keygen-cmd.js'
 import type { MigrateCommandOptions } from './migrate-cmd.js'
 import type { PolicyCliOptions } from './policy-cmd.js'
@@ -77,6 +78,7 @@ export interface DispatchOptions {
   readonly verify?: VerifyCommandOptions
   readonly prune?: PruneCommandOptions
   readonly keygen?: KeygenCommandOptions
+  readonly adopt?: AdoptCommandOptions
   readonly services?: ServiceCliOptions
   readonly setup?: SetupCliOptions
   /** Seams for the console: its terminal, its dispatcher, its install config. */

@@ -13,6 +13,7 @@ import './cli/warning-filter-install.js'
 import { realpathSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { runAdminCommand } from './cli/admin-cmd.js'
+import { runAdoptCommand } from './cli/adopt-cmd.js'
 import { runAgentCommand } from './cli/agent-cmd.js'
 import { runGroupCommand } from './cli/group-cmd.js'
 import { runApprovals } from './cli/approvals-cmd.js'
@@ -224,6 +225,7 @@ export async function dispatch(
   if (command === 'verify') return runVerifyCommand(rest, io, opts.verify)
   if (command === 'prune') return runPruneCommand(rest, io, opts.prune)
   if (command === 'keygen') return runKeygenCommand(rest, io, opts.keygen)
+  if (command === 'adopt') return runAdoptCommand(rest, io, opts.adopt)
   if (command === 'sessions' || command === 'show') {
     return runJournalCommandGroup(command, rest, io, opts.journalDir)
   }
