@@ -13,7 +13,12 @@ import {
 import type { ResolvedApprovalFile } from '../policy/approvals/queue-file.js'
 import { DEFAULT_GRANT_TTL_MS } from '../policy/constants.js'
 import { isExpectedAdminError } from './admin-cmd.js'
-import { adminStoreEmptiness, NO_ADMINS_YET_ACTOR, noAdminsYetListNotice } from './admin-token.js'
+import {
+  adminStoreEmptiness,
+  NO_ADMINS_YET_ACTOR,
+  noAdminsYetListNotice,
+  type AdminStoreEmptiness,
+} from './admin-token.js'
 import { findDefaultPolicyPath } from './approvals-policy-lookup.js'
 import { formatListReadable, formatTruncationNote } from './approvals-list-format.js'
 import { listApprovalsHint, noPendingApprovalsHint, resolveApprovalHint } from './next-step.js'
@@ -218,9 +223,18 @@ async function runList(
  * approve/deny: while no admin exists a resolution is recorded without a name
  * (`actorWithoutToken`). Stateless: it follows the admin store, so it stops
  * by itself with the first `admin add`.
+ *
+ * Advice next to the list, never a reason to lose it: any failure to tell
+ * (`unreadable`, or an error the store did not classify) leaves the note out.
+ * `approve`/`deny` ask the store again and report the failure there.
  */
 async function warnIfNoAdminsYet(io: ApprovalsCliIo, opts: ApprovalsCliOptions): Promise<void> {
-  const emptiness = await adminStoreEmptiness(opts.journalDir !== undefined ? { journalDir: opts.journalDir } : {})
+  let emptiness: AdminStoreEmptiness
+  try {
+    emptiness = await adminStoreEmptiness(opts.journalDir !== undefined ? { journalDir: opts.journalDir } : {})
+  } catch {
+    return
+  }
   if (emptiness.kind === 'empty') io.stderr.write(noAdminsYetListNotice())
 }
 

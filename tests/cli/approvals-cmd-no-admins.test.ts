@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
@@ -58,7 +58,7 @@ function request(overrides: Partial<EnqueueRequest> = {}): EnqueueRequest {
 }
 
 function opts(env: NodeJS.ProcessEnv = {}): ApprovalsCliOptions {
-  return { baseDir, journalDir: tempDir, env }
+  return { baseDir, journalDir: tempDir, cwd: tempDir, env }
 }
 
 async function pendingId(): Promise<string> {
@@ -101,6 +101,19 @@ describe('approvals approve|deny on an install with no admins yet', () => {
 
     await runApprovals(['list'], io, opts())
 
+    expect(io.err()).not.toContain('no admins yet')
+  })
+
+  test('list still prints the queue, without the note, when the admin store cannot be read', async () => {
+    const approvalId = await pendingId()
+    // A directory where the legacy admins file belongs: the store reports it as corrupt (`unreadable`).
+    await mkdir(join(tempDir, ADMINS_FILE_NAME))
+    const io = fakeIo()
+
+    const exitCode = await runApprovals(['list'], io, opts())
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain(approvalId)
     expect(io.err()).not.toContain('no admins yet')
   })
 

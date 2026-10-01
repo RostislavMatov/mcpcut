@@ -57,15 +57,18 @@ function baseRequest(overrides: Partial<EnqueueRequest> = {}): EnqueueRequest {
 /**
  * Options for a run that carries NO admin token. Every test builds its options
  * with an explicit `env`, so the suite can never pass (or fail) because the
- * developer running it happens to have `MCP_ADMIN_TOKEN` exported.
+ * developer running it happens to have `MCP_ADMIN_TOKEN` exported — and with
+ * `journalDir` and `cwd` in the temp directory, so the admin store and the
+ * policy lookup `approvals list` consults are never the developer's own
+ * `~/.mcpcut` or the repository checkout.
  */
 function anonymousOpts(): ApprovalsCliOptions {
-  return { baseDir, journalDir: tempDir, env: {} }
+  return { baseDir, journalDir: tempDir, cwd: tempDir, env: {} }
 }
 
 /** Options for a run carrying `token` as the personal admin token. */
 function optsWithToken(token: string): ApprovalsCliOptions {
-  return { baseDir, journalDir: tempDir, env: { [ADMIN_TOKEN_ENV_VAR]: token } }
+  return { ...anonymousOpts(), env: { [ADMIN_TOKEN_ENV_VAR]: token } }
 }
 
 /**
@@ -133,7 +136,7 @@ describe('runApprovals: list, bounded-read truncation', () => {
     const queue = fakeQueue(fakeBoundedPage(), 900)
     const io = fakeIo()
 
-    const exitCode = await runApprovals(['list'], io, { baseDir, queue })
+    const exitCode = await runApprovals(['list'], io, { ...anonymousOpts(), queue })
 
     expect(exitCode).toBe(0)
     const out = io.out()
@@ -146,7 +149,7 @@ describe('runApprovals: list, bounded-read truncation', () => {
     const queue = fakeQueue(entries, 900)
     const io = fakeIo()
 
-    const exitCode = await runApprovals(['list', '--json'], io, { baseDir, queue })
+    const exitCode = await runApprovals(['list', '--json'], io, { ...anonymousOpts(), queue })
 
     expect(exitCode).toBe(0)
     const parsed = JSON.parse(io.out())
@@ -162,7 +165,7 @@ describe('runApprovals: list, bounded-read truncation', () => {
     const queue = fakeQueue([fakePendingEntry(1)], 2)
     const io = fakeIo()
 
-    const exitCode = await runApprovals(['list', '--json'], io, { baseDir, queue })
+    const exitCode = await runApprovals(['list', '--json'], io, { ...anonymousOpts(), queue })
 
     expect(exitCode).toBe(0)
     const parsed = JSON.parse(io.out())
@@ -175,7 +178,7 @@ describe('runApprovals: list, bounded-read truncation', () => {
     const queue = fakeQueue(entries, 1)
     const io = fakeIo()
 
-    const exitCode = await runApprovals(['list'], io, { baseDir, queue })
+    const exitCode = await runApprovals(['list'], io, { ...anonymousOpts(), queue })
 
     expect(exitCode).toBe(0)
     const out = io.out()
@@ -187,7 +190,7 @@ describe('runApprovals: list, bounded-read truncation', () => {
     const queue = fakeQueue([fakePendingEntry(1)], 1)
     const io = fakeIo()
 
-    const exitCode = await runApprovals(['list', '--json'], io, { baseDir, queue })
+    const exitCode = await runApprovals(['list', '--json'], io, { ...anonymousOpts(), queue })
 
     expect(exitCode).toBe(0)
     const parsed = JSON.parse(io.out())
@@ -203,8 +206,8 @@ describe('runApprovals: list, bounded-read truncation', () => {
     const readableIo = fakeIo()
     const jsonIo = fakeIo()
 
-    const readableExit = await runApprovals(['list'], readableIo, { baseDir, queue })
-    const jsonExit = await runApprovals(['list', '--json'], jsonIo, { baseDir, queue })
+    const readableExit = await runApprovals(['list'], readableIo, { ...anonymousOpts(), queue })
+    const jsonExit = await runApprovals(['list', '--json'], jsonIo, { ...anonymousOpts(), queue })
 
     expect(readableExit).toBe(0)
     expect(readableIo.out()).toBe('no pending approvals\n')
@@ -217,7 +220,7 @@ describe('runApprovals: list', () => {
   test('prints "no pending approvals" and returns 0 when the queue is empty', async () => {
     const io = fakeIo()
 
-    const exitCode = await runApprovals(['list'], io, { baseDir })
+    const exitCode = await runApprovals(['list'], io, anonymousOpts())
 
     expect(exitCode).toBe(0)
     expect(io.out()).toContain('no pending approvals')
@@ -228,7 +231,7 @@ describe('runApprovals: list', () => {
     const { approvalId } = await queue.enqueue(baseRequest())
     const io = fakeIo()
 
-    const exitCode = await runApprovals(['list'], io, { baseDir })
+    const exitCode = await runApprovals(['list'], io, anonymousOpts())
 
     expect(exitCode).toBe(0)
     const out = io.out()
@@ -247,7 +250,7 @@ describe('runApprovals: list', () => {
     nowMs += 5000
     const io = fakeIo()
 
-    const exitCode = await runApprovals(['list'], io, { baseDir, clock: () => nowMs })
+    const exitCode = await runApprovals(['list'], io, { ...anonymousOpts(), clock: () => nowMs })
 
     // `list()` sweeps at the injected clock (`policy/approvals/queue-sweep.ts`),
     // so a request nobody answered settles as `expired` instead of lingering as
@@ -265,7 +268,7 @@ describe('runApprovals: list', () => {
     await queue.enqueue(baseRequest({ timeoutMs: 60_000 }))
     const io = fakeIo()
 
-    const exitCode = await runApprovals(['list'], io, { baseDir, clock: () => nowMs })
+    const exitCode = await runApprovals(['list'], io, { ...anonymousOpts(), clock: () => nowMs })
 
     expect(exitCode).toBe(0)
     const out = io.out()
@@ -277,7 +280,7 @@ describe('runApprovals: list', () => {
     const { approvalId } = await queue.enqueue(baseRequest())
     const io = fakeIo()
 
-    const exitCode = await runApprovals(['list', '--json'], io, { baseDir })
+    const exitCode = await runApprovals(['list', '--json'], io, anonymousOpts())
 
     expect(exitCode).toBe(0)
     const parsed = JSON.parse(io.out())
@@ -289,7 +292,7 @@ describe('runApprovals: list', () => {
   test('--json on an empty queue prints an empty, parseable envelope', async () => {
     const io = fakeIo()
 
-    const exitCode = await runApprovals(['list', '--json'], io, { baseDir })
+    const exitCode = await runApprovals(['list', '--json'], io, anonymousOpts())
 
     expect(exitCode).toBe(0)
     expect(JSON.parse(io.out())).toEqual({ truncated: false, totalPending: 0, approvals: [] })
@@ -301,7 +304,7 @@ describe('runApprovals: list', () => {
     await queue.enqueue(baseRequest({ args: { note: longValue } }))
     const io = fakeIo()
 
-    const exitCode = await runApprovals(['list'], io, { baseDir })
+    const exitCode = await runApprovals(['list'], io, anonymousOpts())
 
     expect(exitCode).toBe(0)
     const out = io.out()
@@ -313,7 +316,7 @@ describe('runApprovals: list', () => {
     await queue.enqueue(baseRequest({ toolName: 'evil\x1b[2Jtool' }))
     const io = fakeIo()
 
-    const exitCode = await runApprovals(['list'], io, { baseDir })
+    const exitCode = await runApprovals(['list'], io, anonymousOpts())
 
     expect(exitCode).toBe(0)
     const out = io.out()
@@ -712,7 +715,7 @@ describe('runApprovals: unknown/missing subcommand', () => {
   test('no subcommand prints usage and returns 1', async () => {
     const io = fakeIo()
 
-    const exitCode = await runApprovals([], io, { baseDir })
+    const exitCode = await runApprovals([], io, anonymousOpts())
 
     expect(exitCode).toBe(1)
     expect(io.err()).toContain('Usage')
@@ -721,7 +724,7 @@ describe('runApprovals: unknown/missing subcommand', () => {
   test('unknown subcommand prints usage and returns 1', async () => {
     const io = fakeIo()
 
-    const exitCode = await runApprovals(['bogus'], io, { baseDir })
+    const exitCode = await runApprovals(['bogus'], io, anonymousOpts())
 
     expect(exitCode).toBe(1)
     expect(io.err()).toContain('Usage')
@@ -744,7 +747,7 @@ describe('runApprovals: list shows the agent wait beside the grant window', () =
     await queue.enqueue(baseRequest({ timeoutMs: 300_000, waitTimeoutMs: 60_000 }))
     const io = fakeIo()
 
-    const exitCode = await runApprovals(['list'], io, { baseDir, clock: () => nowMs })
+    const exitCode = await runApprovals(['list'], io, { ...anonymousOpts(), clock: () => nowMs })
 
     expect(exitCode).toBe(0)
     expect(io.out()).toContain('agent_wait_left=1m0s')
@@ -758,7 +761,7 @@ describe('runApprovals: list shows the agent wait beside the grant window', () =
     nowMs += 90_000
     const io = fakeIo()
 
-    const exitCode = await runApprovals(['list'], io, { baseDir, clock: () => nowMs })
+    const exitCode = await runApprovals(['list'], io, { ...anonymousOpts(), clock: () => nowMs })
 
     expect(exitCode).toBe(0)
     expect(io.out()).toContain('agent_wait=over(retry_passes_after_approve)')
@@ -772,7 +775,7 @@ describe('runApprovals: list shows the agent wait beside the grant window', () =
     await queue.enqueue(baseRequest({ timeoutMs: 60_000 }))
     const io = fakeIo()
 
-    const exitCode = await runApprovals(['list'], io, { baseDir, clock: () => nowMs })
+    const exitCode = await runApprovals(['list'], io, { ...anonymousOpts(), clock: () => nowMs })
 
     expect(exitCode).toBe(0)
     expect(io.out()).toContain('agent_wait=unknown')
@@ -784,7 +787,7 @@ describe('runApprovals: list shows the agent wait beside the grant window', () =
     await queue.enqueue(baseRequest({ timeoutMs: 300_000, waitTimeoutMs: 60_000 }))
     const io = fakeIo()
 
-    await runApprovals(['list'], io, { baseDir, clock: () => nowMs })
+    await runApprovals(['list'], io, { ...anonymousOpts(), clock: () => nowMs })
 
     expect(io.out()).not.toContain('agent_waits')
   })
@@ -795,7 +798,7 @@ describe('runApprovals: list shows the agent wait beside the grant window', () =
     await queue.enqueue(baseRequest({ timeoutMs: 300_000, waitTimeoutMs: 60_000 }))
     const io = fakeIo()
 
-    const exitCode = await runApprovals(['list', '--json'], io, { baseDir, clock: () => nowMs })
+    const exitCode = await runApprovals(['list', '--json'], io, { ...anonymousOpts(), clock: () => nowMs })
 
     expect(exitCode).toBe(0)
     const entry = JSON.parse(io.out()).approvals[0]
@@ -810,7 +813,7 @@ describe('runApprovals: list row carries the asking agent and a capped args prev
     await queue.enqueue(baseRequest({ agentName: 'claude-code' }))
     const io = fakeIo()
 
-    await runApprovals(['list'], io, { baseDir })
+    await runApprovals(['list'], io, anonymousOpts())
 
     expect(io.out()).toMatch(/^\S+ {2}server=github tool=create_issue class=write agent=claude-code /)
   })
@@ -820,7 +823,7 @@ describe('runApprovals: list row carries the asking agent and a capped args prev
     await queue.enqueue(baseRequest())
     const io = fakeIo()
 
-    await runApprovals(['list'], io, { baseDir })
+    await runApprovals(['list'], io, anonymousOpts())
 
     expect(io.out()).not.toContain('agent=')
   })
@@ -830,7 +833,7 @@ describe('runApprovals: list row carries the asking agent and a capped args prev
     await queue.enqueue(baseRequest({ args: { content: 'x'.repeat(500) } }))
     const io = fakeIo()
 
-    await runApprovals(['list'], io, { baseDir })
+    await runApprovals(['list'], io, anonymousOpts())
 
     const preview = /args=(\S+)/.exec(io.out())?.[1] ?? ''
     expect(preview.length).toBeLessThanOrEqual(121)
@@ -842,7 +845,7 @@ describe('runApprovals: list row carries the asking agent and a capped args prev
     await queue.enqueue(baseRequest({ args: { a: 1 } }))
     const io = fakeIo()
 
-    await runApprovals(['list'], io, { baseDir })
+    await runApprovals(['list'], io, anonymousOpts())
 
     expect(io.out()).toContain('args={"a":1}')
   })

@@ -184,10 +184,11 @@ async function loadTarget(
     return refusal(HTTP_STATUS_CONFLICT, { status: 'no-policy', message: 'no policy — enforcement off; nothing to edit' })
   }
   if (read.status === 'error') {
+    // The loader's lines never carry the path (0.2.4): name the file once, in front, as the CLI does.
     return refusal(HTTP_STATUS_CONFLICT, {
       status: 'invalid-policy',
       message: 'the policy file on disk is invalid; fix it by hand before editing here',
-      errors: read.errors,
+      errors: read.errors.map((line) => `${target.path}: ${line}`),
     })
   }
   return { path: target.path, read }

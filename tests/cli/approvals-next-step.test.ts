@@ -19,7 +19,7 @@ let opts: ApprovalsCliOptions
 
 beforeEach(async () => {
   tempDir = await mkdtemp(join(tmpdir(), 'mcpcut-approvals-next-step-'))
-  opts = { baseDir: join(tempDir, 'approvals'), journalDir: tempDir, env: {} }
+  opts = { baseDir: join(tempDir, 'approvals'), journalDir: tempDir, cwd: tempDir, env: {} }
   vi.stubEnv('npm_command', '')
 })
 

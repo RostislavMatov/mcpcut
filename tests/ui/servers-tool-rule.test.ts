@@ -241,8 +241,17 @@ describe('refusals never write, journal or audit', () => {
     const h = makeHarness({ read: { status: 'error', errors: ['version: expected 1'] } })
     const result = await h.handler(post())
     expect(statusOf(result)).toBe(409)
-    expect(jsonOf(result)).toMatchObject({ status: 'invalid-policy', errors: ['version: expected 1'] })
+    expect(jsonOf(result)).toMatchObject({ status: 'invalid-policy', errors: [`${FLAT}: version: expected 1`] })
     expect(h.writes).toEqual([])
+  })
+
+  test('the invalid-policy errors name the file, once, in front (the loader no longer repeats it)', async () => {
+    const h = makeHarness({
+      target: { path: NESTED, readers: { kind: 'every-entry-point' } },
+      read: { status: 'error', errors: ['invalid JSON: Unexpected end of JSON input'] },
+    })
+    const result = await h.handler(post())
+    expect(jsonOf(result).errors).toEqual([`${NESTED}: invalid JSON: Unexpected end of JSON input`])
   })
 
   test('a CAS conflict → 409 "policy changed on disk — reload"', async () => {
