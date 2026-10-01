@@ -8,9 +8,10 @@ The working repository is private; this public repository receives its
 history through a filtered export (ADR-0011). Steps 1–3 happen in the private
 repository, the rest in the public clone.
 
-1. **Bump the version** in `package.json` and `src/brand.ts` (`PRODUCT_VERSION`),
-   and every `mcpcut@x.y.z` in `README.md`, `SECURITY.md` and `docs/guide/`.
-   The tests refuse a mismatch between any two of them.
+1. **Bump the version** in `package.json`, `src/brand.ts` (`PRODUCT_VERSION`) and
+   both `version` fields of `server.json`, and every `mcpcut@x.y.z` in
+   `README.md`, `SECURITY.md` and `docs/guide/`. The tests refuse a mismatch
+   between any two of them.
 2. **Changelog.** `## [Unreleased]` becomes `## [X.Y.Z] — YYYY-MM-DD`; a fresh
    empty `## [Unreleased]` goes on top; the links at the bottom get the new tag.
 3. **Export** to the public clone, then push and wait for a green CI:
@@ -43,6 +44,13 @@ repository, the rest in the public clone.
    ```
    npm view mcpcut@X.Y.Z dist.attestations
    gh release create vX.Y.Z --title "mcpcut X.Y.Z" --notes-file <notes>
+   ```
+7. **List** the version in the official MCP Registry, from the public clone,
+   signed in to GitHub as the repository owner. The registry accepts it only
+   once npm has the version and its `mcpName` matches `server.json`'s `name`:
+   ```
+   mcp-publisher login github --token "$(gh auth token)"
+   mcp-publisher publish
    ```
 
 ## 0.1.0, the first version

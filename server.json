@@ -1,0 +1,52 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.RostislavMatov/mcpcut",
+  "title": "mcpcut",
+  "description": "Proxy for any MCP server: journals tool calls with secrets redacted, holds risky calls for approval",
+  "repository": {
+    "url": "https://github.com/RostislavMatov/mcpcut",
+    "source": "github"
+  },
+  "websiteUrl": "https://mcpcut.com",
+  "version": "0.2.3",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "mcpcut",
+      "version": "0.2.3",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "wrap"
+        },
+        {
+          "type": "named",
+          "name": "--server",
+          "description": "A short name for the wrapped server in the journal and the approval queue, e.g. fs",
+          "valueHint": "server_name"
+        },
+        {
+          "type": "positional",
+          "value": "--"
+        },
+        {
+          "type": "positional",
+          "valueHint": "server_command",
+          "description": "The command that starts the MCP server to put behind mcpcut, e.g. npx",
+          "isRequired": true
+        },
+        {
+          "type": "positional",
+          "valueHint": "server_arg",
+          "description": "Its arguments, one per value, e.g. -y, then @modelcontextprotocol/server-filesystem, then your project path",
+          "isRepeated": true
+        }
+      ]
+    }
+  ]
+}
