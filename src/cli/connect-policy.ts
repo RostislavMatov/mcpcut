@@ -7,7 +7,7 @@ import {
   policyFlagRefusal,
   policySourceIgnoredNote,
 } from './connect-constants.js'
-import { noPolicyNotice } from './next-step.js'
+import { connectNoPolicyNotice } from './next-step.js'
 import { formatPolicyLoadErrors } from './policy-load-errors.js'
 import { createAwaitingPolicy, createReloadingPolicy } from './policy-reload.js'
 
@@ -139,7 +139,7 @@ export async function resolveConnectPolicy(
     return { status: 'failed', exitCode: 1 }
   }
   if (result.status === 'disabled') {
-    args.io.stderr.write(noPolicyNotice(source.candidates[0]?.path, ' (agent grants still apply)'))
+    args.io.stderr.write(connectNoPolicyNotice(args.journalDir))
     return {
       status: 'resolved',
       policy: createAwaitingPolicy({

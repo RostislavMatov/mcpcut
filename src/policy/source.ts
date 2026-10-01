@@ -203,6 +203,15 @@ function candidatesOf(args: {
     return [{ path: resolveCandidate(cwd, envValue), required: true }]
   }
 
+  return defaultPolicyCandidates(cwd, journalDir)
+}
+
+/**
+ * The two places a policy is picked up from with no `--policy` and no
+ * `$MCPCUT_POLICY`, in the loader's order: the project folder, then the data
+ * directory. Exported for the hints that name them (`approvals list`).
+ */
+export function defaultPolicyCandidates(cwd: string, journalDir: string): readonly PolicySourceCandidate[] {
   return [
     { path: resolveCandidate(cwd, join(PROJECT_POLICY_SUBDIR, POLICY_FILE_NAME)), required: false },
     { path: resolveCandidate(cwd, join(journalDir, POLICY_FILE_NAME)), required: false },

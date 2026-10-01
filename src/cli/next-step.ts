@@ -1,4 +1,6 @@
+import { join } from 'node:path'
 import { PRODUCT_VERSION } from '../brand.js'
+import { POLICY_FILE_NAME } from '../policy/constants.js'
 import { formatReadableField, replaceControlChars } from '../journal/format.js'
 import type { PendingApprovalNotice } from '../proxy/gate-types.js'
 
@@ -163,11 +165,21 @@ export function sessionJournaledNotice(sessionId: string): string {
 /**
  * `policy: none found, journaling only` plus the next step: the path a policy
  * is picked up from without a flag (the first default location searched) and
- * the flag that names one. `suffix` keeps the entry point's own remark.
+ * the flag that names one. `wrap` only: the operator launches it.
  */
-export function noPolicyNotice(defaultPath: string | undefined, suffix = ''): string {
+export function noPolicyNotice(defaultPath: string | undefined): string {
   const where = defaultPath === undefined ? '' : `save it as ${shellArg(defaultPath)} (picked up automatically) or `
-  return `policy: none found, journaling only${suffix}\n  To add a policy: ${where}pass --policy <path>\n`
+  return `policy: none found, journaling only\n  To add a policy: ${where}pass --policy <path>\n`
+}
+
+/**
+ * The same notice for `connect`: the agent launches it, so `--policy` is
+ * refused there and the project folder is not read — the one place an
+ * operator's policy is picked up from is the plane's own directory.
+ */
+export function connectNoPolicyNotice(journalDir: string): string {
+  const path = shellArg(join(journalDir, POLICY_FILE_NAME))
+  return `policy: none found, journaling only (agent grants still apply)\n  To add a policy: save it as ${path} (picked up automatically)\n`
 }
 
 /** `wrap`'s usage example: a real server command on the directory the operator is in. */

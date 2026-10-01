@@ -41,6 +41,16 @@ async function startedWithoutPolicy(): Promise<PolicyProvider> {
 const DENY_ALL = JSON.stringify({ version: 1, defaultDecision: 'deny' })
 
 describe('connect started with no policy file', () => {
+  test('says where the operator puts a policy, and never offers the refused --policy flag', async () => {
+    await startedWithoutPolicy()
+
+    const text = stderr.join('')
+    expect(text).toContain('policy: none found, journaling only (agent grants still apply)\n')
+    expect(text).toContain(`To add a policy: save it as ${join(journalDir, 'policy.json')} (picked up automatically)`)
+    expect(text).not.toContain('--policy')
+    expect(text).not.toContain('.mcpcut-project')
+  })
+
   test('adopts a policy.json that appears in the state directory', async () => {
     const policy = await startedWithoutPolicy()
     expect(policy.current().defaultDecision).toBe('allow')
