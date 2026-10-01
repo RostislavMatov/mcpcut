@@ -20,6 +20,22 @@ export function formatListReadable(entries: readonly PendingApproval[], nowMs: n
   return entries.map((entry) => formatListLine(entry, nowMs)).join('')
 }
 
+/** What follows the id on every row: two spaces, then the server column. */
+const ROW_AFTER_ID = '  server='
+const LIST_ROW_PATTERN = new RegExp(`^([A-Za-z0-9_-]{1,64})${ROW_AFTER_ID}`)
+
+/**
+ * The request id a readable row starts with, or `undefined` for any other line
+ * (the truncation note). The console reads its rows back with this (Approvals
+ * ▸ list, owner decision 2026-10-01). Safe to trust for that: every field is
+ * `formatReadableField`'d, so an agent's newline is a `?` and a row is always
+ * exactly one line that begins with its own id. The id shape is the queue's
+ * own (`APPROVAL_ID_PATTERN`).
+ */
+export function approvalIdOfListLine(line: string): string | undefined {
+  return LIST_ROW_PATTERN.exec(line)?.[1]
+}
+
 /**
  * What the wait column says when the queue entry carries no `waitExpiresAt`
  * at all (a request enqueued before M4, or by a caller that declared no wait).
@@ -46,7 +62,7 @@ function formatListLine(entry: PendingApproval, nowMs: number): string {
   const remaining = formatTimeRemaining(entry, nowMs)
   const waiting = formatAgentWait(entry, nowMs)
   return (
-    `${approvalId}  server=${serverName} tool=${toolName} class=${entry.toolClass} ` +
+    `${approvalId}${ROW_AFTER_ID}${serverName} tool=${toolName} class=${entry.toolClass} ` +
     `${formatAgent(entry)}${waiting} expires_in=${remaining} args=${argsPreview}\n`
   )
 }

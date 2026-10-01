@@ -42,6 +42,10 @@ const idField: FieldSpec = textField('id', 'Id', 'the request id from the list (
 /** Optional free text; it travels into the journaled decision beside the id. */
 const reasonField: FieldSpec = textField('reason', 'Reason', 'recorded with the decision')
 
+/** The two actions a request picked from the list is answered with (`src/tui/approval-pick.ts`). */
+export const APPROVE_ACTION_ID = 'approve'
+export const DENY_ACTION_ID = 'deny'
+
 const listAction: ActionSpec = {
   id: 'list',
   title: 'list',
@@ -50,10 +54,11 @@ const listAction: ActionSpec = {
   subcommand: 'list',
   fields: [],
   argv: () => ['approvals', 'list'],
+  picksApprovals: true,
 }
 
 const approveAction: ActionSpec = {
-  id: 'approve',
+  id: APPROVE_ACTION_ID,
   title: 'approve',
   minRole: APPROVAL_RESOLVE_MIN_ROLE,
   command: 'approvals',
@@ -69,7 +74,7 @@ const approveAction: ActionSpec = {
 }
 
 const denyAction: ActionSpec = {
-  id: 'deny',
+  id: DENY_ACTION_ID,
   title: 'deny',
   minRole: APPROVAL_RESOLVE_MIN_ROLE,
   command: 'approvals',
@@ -92,7 +97,8 @@ export const APPROVALS_SECTION: SectionSpec = {
   intro: [
     'Pending approval requests from running proxies.',
     autoRefreshIntroLine(APPROVALS_POLL_INTERVAL_MS),
-    'r reads it now; approve and deny answer one request.',
+    'Enter on list picks a request: y approve, n deny.',
+    'r reads it now; approve and deny also take an id.',
   ],
   actions: [listAction, approveAction, denyAction],
   refreshActionId: 'list',

@@ -3,6 +3,7 @@ import { visibleActions } from './catalogue/index.js'
 import type { ActionSpec } from './catalogue/types.js'
 import {
   ACTIVE_MARKER,
+  ANSWER_HELP_FOOTER,
   CONSOLE_TITLE,
   FOOTER_ROWS,
   FORM_HELP_FOOTER,
@@ -10,6 +11,7 @@ import {
   HEADER_SEPARATOR,
   INACTIVE_MARKER,
   KEY_HELP_FOOTER,
+  PICK_HELP_FOOTER,
   RULE_CHAR,
 } from './constants.js'
 import { TOKEN_HOLD_FOOTER } from './constants-live.js'
@@ -253,6 +255,8 @@ function footerText(screen: MainScreen, columns: number, bodyRows: number): stri
   // it (plan P2), so the footer names only the keys that still do anything.
   if (screen.pane.kind === 'token-hold') return TOKEN_HOLD_FOOTER
   if (screen.pane.kind === 'form') return FORM_HELP_FOOTER
+  if (screen.pane.kind === 'pick') return PICK_HELP_FOOTER
+  if (screen.pane.kind === 'answer') return ANSWER_HELP_FOOTER
 
   return isPaneClipped(screen, columns, bodyRows) ? CLIPPED_HELP_FOOTER : KEY_HELP_FOOTER
 }

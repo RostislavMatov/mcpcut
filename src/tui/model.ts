@@ -65,6 +65,8 @@ export interface RunRequest {
    * contain and only the action knows whether a token was really minted.
    */
   readonly mintsToken?: true
+  /** Enter on a `picksApprovals` action: its answer opens the rows (`approval-pick.ts`); `r` and polls never set it. */
+  readonly picksRows?: true
 }
 
 /** What the console knows about the install it runs over; absent = an install mcpcut supervises. */
@@ -134,6 +136,10 @@ export type Pane =
   | { readonly kind: 'quit-confirm' }
   /** A one-time token is on the output and nobody has said they saved it yet. */
   | { readonly kind: 'token-hold' }
+  /** Approvals ▸ list: ↑↓ choose a request in the output; pinned by id, so a poll never moves it. */
+  | { readonly kind: 'pick'; readonly approvalId: string }
+  /** The question about one picked request: y approve, n deny, Esc close (it keeps waiting). */
+  | { readonly kind: 'answer'; readonly approvalId: string; readonly summary: string }
 
 /** Whether the wizard is writing an install's first config, or editing one that exists. */
 export type WizardMode = 'first-run' | 'edit'

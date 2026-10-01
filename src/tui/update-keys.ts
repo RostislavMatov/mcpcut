@@ -18,7 +18,9 @@ import { withMain } from './update-step.js'
  * a `1 Tab Enter` typed ahead is a plan, and a plan with its head cut off is
  * worse than none. And it is never replayed into a screen holding a one-time
  * token: `y` there means "I saved it", and nothing typed blind may say so
- * (plan P2 is older than Q30).
+ * (plan P2 is older than Q30). For the same reason the replay stops at the
+ * question about a picked approval request: `y` and `n` there approve and
+ * deny, and the operator must have seen which request was asked about.
  *
  * A leaf: the fold takes the key reducer as a parameter so that this module
  * needs nothing from `update-main.ts`, which is what lets that module call it.
@@ -54,7 +56,7 @@ export function replayPending(step: Step, pending: readonly KeyEvent[], apply: A
   let current = step
   for (const [index, key] of pending.entries()) {
     const now = current.model.screen
-    if (now.kind !== 'main' || current.effects.some(leavesConsole)) return current
+    if (now.kind !== 'main' || current.effects.some(leavesConsole) || now.pane.kind === 'answer') return current
     if (now.busy !== undefined) return requeued(current, now, pending.slice(index))
 
     const next = apply(current.model, now, key)
@@ -77,4 +79,12 @@ function requeued(step: Step, screen: MainScreen, rest: readonly KeyEvent[]): St
  */
 function leavesConsole(effect: Effect): boolean {
   return effect.kind === 'quit' || effect.kind === 'reopen' || effect.kind === 'disconnect'
+}
+
+/** Which way a key moves a vertical cursor — the action list, or a picked row — if it moves it at all. */
+export function verticalStepOf(key: KeyEvent): number | undefined {
+  if (key.kind === 'down' || (key.kind === 'char' && key.char === 'j')) return 1
+  if (key.kind === 'up' || (key.kind === 'char' && key.char === 'k')) return -1
+
+  return undefined
 }

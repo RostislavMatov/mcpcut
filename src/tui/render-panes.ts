@@ -23,6 +23,7 @@ export { wrapWords } from './layout.js'
 import type { MainScreen, RunRequest } from './model.js'
 import { helpLines } from './render-help.js'
 import { outputLines } from './render-output.js'
+import { answerPaneLines, pickPaneLines } from './render-pick.js'
 
 /**
  * The right-hand pane of the main screen (mcpcut phase 2, Task 10). The
@@ -103,6 +104,10 @@ function paneBody(
       return quitConfirmPane(screen, width, rows)
     case 'token-hold':
       return tokenHoldPane(screen, width, rows, style)
+    case 'pick':
+      return pickPaneLines(screen, pane, width, rows, style)
+    case 'answer':
+      return answerPaneLines(pane, width, rows)
   }
 }
 

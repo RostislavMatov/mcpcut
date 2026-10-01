@@ -103,6 +103,15 @@ interface ActionSpecCommon extends CommandPair {
    * disconnect").
    */
   readonly disconnectsConsole?: true
+  /**
+   * Its stdout lists approval requests, one row each, id first (`approvals
+   * list`). Enter on the action runs it and then opens the rows: ↑↓ choose a
+   * request and Enter asks about it — y approves, n denies, Esc closes the
+   * question (owner decision 2026-10-01; `src/tui/approval-pick.ts`). Offered
+   * only to a role that may run the section's `approve` and `deny`; `r` and
+   * the quiet poll only read. Implies `fields: []`.
+   */
+  readonly picksApprovals?: true
 }
 
 /**

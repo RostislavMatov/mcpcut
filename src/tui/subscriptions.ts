@@ -48,9 +48,11 @@ export function subscriptionOf(model: Model): number | undefined {
   if (screen.busy !== undefined || screen.polling !== undefined) return undefined
 
   // Any other pane — a form, a confirm, the help, the quit question, a
-  // one-time token nobody has saved yet — is something the operator is
-  // reading, and a poll that redrew underneath it would take it away.
-  if (screen.pane.kind !== 'actions') return undefined
+  // one-time token nobody has saved yet, the question about a picked
+  // approval — is something the operator is reading, and a poll that redrew
+  // underneath it would take it away. The open rows of Approvals ▸ list are
+  // the exception: they are the live list itself, kept on the same request.
+  if (screen.pane.kind !== 'actions' && screen.pane.kind !== 'pick') return undefined
 
   const delay = screen.sections[screen.sectionIndex]?.autoRefreshMs
   if (delay === undefined) return undefined

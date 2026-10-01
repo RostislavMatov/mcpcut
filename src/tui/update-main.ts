@@ -23,8 +23,9 @@ import {
   updateFormPane,
   requestOf,
 } from './update-form.js'
-import { replayPending } from './update-keys.js'
+import { replayPending, verticalStepOf } from './update-keys.js'
 import { updateLive } from './update-live.js'
+import { pickAfterRun, runToPick, updateAnswerPane, updatePickPane } from './update-pick.js'
 import { signedOut } from './update-signin.js'
 import {
   ACTIONS_PANE,
@@ -76,11 +77,13 @@ export function updateMain(model: Model, screen: MainScreen, msg: Msg): Step {
       // A run that minted a one-time token does not return to the action list:
       // the next `r`, Enter or poll would take the only copy of it away, so the
       // pane holds until somebody says they saved it (PRD C6, plan P2).
+      // Enter on Approvals ▸ list opens the rows it answered with (`update-pick.ts`).
       const panel = outputPanelOf(msg.result)
+      const picked = panel.holdsOneTimeToken ? undefined : pickAfterRun(model, screen, panel)
       const answered = withMain(model, screen, {
-        pane: panel.holdsOneTimeToken ? TOKEN_HOLD_PANE : ACTIONS_PANE,
+        pane: panel.holdsOneTimeToken ? TOKEN_HOLD_PANE : (picked?.pane ?? ACTIONS_PANE),
         busy: undefined,
-        output: panel,
+        output: picked?.output ?? panel,
         pendingKeys: undefined,
       })
 
@@ -134,7 +137,22 @@ function applyKey(model: Model, screen: MainScreen, key: KeyEvent): Step {
       return updateConfirmPane(model, screen, screen.pane, key)
     case 'actions':
       return applyActionKey(model, screen, key)
+    case 'pick':
+      return updatePickPane(model, screen, screen.pane, key, applyOutsidePick)
+    case 'answer':
+      return updateAnswerPane(model, screen, screen.pane, key)
   }
+}
+
+/**
+ * A key the pick pane does not take: scrolling keeps the rows open, anything
+ * else (Tab, a digit, `r`, `?`, `q`) does what it does on the action list.
+ */
+function applyOutsidePick(model: Model, screen: MainScreen, key: KeyEvent): Step {
+  const panel = screen.output === undefined ? undefined : scrolledOutput(screen.output, key, model)
+  if (panel === undefined) return applyActionKey(model, { ...screen, pane: ACTIONS_PANE }, key)
+
+  return panel === screen.output ? noEffects(model) : withMain(model, screen, { output: panel })
 }
 
 /**
@@ -161,7 +179,7 @@ function applyActionKey(model: Model, screen: MainScreen, key: KeyEvent): Step {
   const jump = sectionDigitOf(key)
   if (jump !== undefined) return jumpedSection(model, screen, jump)
 
-  const actionStep = actionStepOf(key)
+  const actionStep = verticalStepOf(key)
   if (actionStep !== undefined) return movedAction(model, screen, actionStep)
 
   return applyCommandKey(model, screen, key)
@@ -180,14 +198,6 @@ function applyCommandKey(model: Model, screen: MainScreen, key: KeyEvent): Step 
 function sectionStepOf(key: KeyEvent): number | undefined {
   if (key.kind === 'tab' || key.kind === 'right' || isChar(key, 'l')) return 1
   if (key.kind === 'backtab' || key.kind === 'left' || isChar(key, 'h')) return -1
-
-  return undefined
-}
-
-/** Which way a key moves the action cursor, if it moves it at all. */
-function actionStepOf(key: KeyEvent): number | undefined {
-  if (key.kind === 'down' || isChar(key, 'j')) return 1
-  if (key.kind === 'up' || isChar(key, 'k')) return -1
 
   return undefined
 }
@@ -269,6 +279,7 @@ function openAction(model: Model, screen: MainScreen): Step {
     screen.actionIndex,
   )
   if (action === undefined) return noEffects(model)
+  if (action.picksApprovals === true) return runToPick(model, screen, action)
   if (action.fields.length === 0) return submit(model, screen, action, {})
 
   const pane: Pane = { kind: 'form', actionId: action.id, form: formOf(action.fields) }

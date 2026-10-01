@@ -1,5 +1,5 @@
-import { padRight, sanitizeLine } from './ansi.js'
-import { exitLine } from './constants.js'
+import { padRight, sanitizeLine, type Style } from './ansi.js'
+import { ACTIVE_MARKER, exitLine, INACTIVE_MARKER } from './constants.js'
 import { fillTo } from './layout.js'
 import { OUTPUT_CLIP_LEFT_MARKER, OUTPUT_CLIP_MARKER, type OutputPanel } from './output.js'
 
@@ -37,10 +37,14 @@ export function outputLines(
   output: OutputPanel,
   width: number,
   rows: number,
+  mark?: OutputMark,
 ): readonly string[] {
   if (rows <= 0) return []
 
-  const head = visibleTextOf(output, rows).map((line) => clippedLine(line, width, output.hScroll))
+  const head =
+    mark === undefined
+      ? visibleTextOf(output, rows).map((line) => clippedLine(line, width, output.hScroll))
+      : markedLines(output, width, rows, mark)
 
   return [...fillTo(head, rows - OUTPUT_EXIT_ROWS, width), padRight(exitLine(output.exitCode), width)]
 }
@@ -85,4 +89,25 @@ function clippedLine(text: string, width: number, hScroll: number): string {
   const right = safe.length > hScroll + width ? OUTPUT_CLIP_MARKER : cells.slice(width - 1)
 
   return `${left}${cells.slice(1, width - 1)}${right}`
+}
+
+/**
+ * One line of the output picked out (Approvals ▸ list, `approval-pick.ts`):
+ * every line gets a two-column gutter, the picked one `▸ ` and inverse video.
+ * The marker, not the inversion alone, is what shows under `NO_COLOR` and
+ * `TERM=dumb` (Q33). `line` indexes `OutputPanel.lines`.
+ */
+export interface OutputMark {
+  readonly line: number
+  readonly style: Style
+}
+
+function markedLines(output: OutputPanel, width: number, rows: number, mark: OutputMark): readonly string[] {
+  const textWidth = Math.max(0, width - ACTIVE_MARKER.length)
+  // Row 0 is the command line; row k shows `lines[scroll + k - 1]`.
+  return visibleTextOf(output, rows).map((text, row) => {
+    const clipped = clippedLine(text, textWidth, output.hScroll)
+    const picked = row >= OUTPUT_COMMAND_ROWS && output.scroll + row - OUTPUT_COMMAND_ROWS === mark.line
+    return picked ? mark.style.inverse(`${ACTIVE_MARKER}${clipped}`) : `${INACTIVE_MARKER}${clipped}`
+  })
 }

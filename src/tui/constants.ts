@@ -139,6 +139,10 @@ export const KEY_HELP_FOOTER =
 export const FORM_HELP_FOOTER =
   'Enter run · Tab/↓ next · Shift-Tab/↑ previous · ←/→ change · Esc cancel'
 
+/** The footer while Approvals ▸ list has its rows open, and while one of them is asked about. */
+export const PICK_HELP_FOOTER = '↑↓ choose a request · Enter answer it · Esc back · [ ] scroll · q quit'
+export const ANSWER_HELP_FOOTER = 'y approve · n deny · Esc close (the request keeps waiting)'
+
 /**
  * The `?` panel: one line per group of keys, covering both footers plus the
  * three bindings a footer has no room for (`Ctrl-C`, `Esc`, and the answer to
@@ -154,6 +158,7 @@ export const HELP_LINES: readonly string[] = [
   '[ / ]                   scroll the output pane sideways when a line is cut',
   "r                       rerun the section's refresh action",
   'y / n                   answer a confirmation; y also says a token is saved',
+  'Enter on Approvals list ↑↓ pick a request, Enter: y approve · n deny · Esc close',
   'Esc                     cancel a form or a confirmation; quit the sign-in screen',
   '?                       show this help',
   'q / Ctrl-C              quit (the services keep running)',

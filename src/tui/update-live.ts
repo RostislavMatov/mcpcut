@@ -4,6 +4,7 @@ import type { Model, Msg, Step } from './model.js'
 import { outputPanelOf, replacedOutput, type RunResult } from './output.js'
 import { subscriptionOf } from './subscriptions.js'
 import { requestOf } from './update-form.js'
+import { pickAfterPoll } from './update-pick.js'
 import { type MainScreen, noEffects, pageRowsOf, withMain } from './update-step.js'
 
 /**
@@ -68,7 +69,7 @@ function sectionIdOf(screen: MainScreen): string | undefined {
  */
 function onPollResult(model: Model, screen: MainScreen, result: RunResult): Step {
   const stale = screen.polling !== sectionIdOf(screen)
-  if (stale || screen.pane.kind !== 'actions' || screen.busy !== undefined) {
+  if (stale || (screen.pane.kind !== 'actions' && screen.pane.kind !== 'pick') || screen.busy !== undefined) {
     return withMain(model, screen, { polling: undefined })
   }
 
@@ -79,5 +80,6 @@ function onPollResult(model: Model, screen: MainScreen, result: RunResult): Step
     paneWidthOf(model.size.columns),
   )
 
-  return withMain(model, screen, { polling: undefined, output })
+  // On the open rows the same request stays selected (`update-pick.ts`).
+  return withMain(model, screen, { polling: undefined, ...pickAfterPoll(model, screen, output) })
 }
