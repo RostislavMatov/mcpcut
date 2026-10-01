@@ -1,0 +1,49 @@
+name: Smoke (published package)
+
+# The README Quick start against the package on npm, on each OS a user may
+# have. Runs on pushes to smoke/** branches (workflow_dispatch needs the file
+# on the default branch first).
+on:
+  push:
+    branches: ['smoke/**']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: mcpcut version on npm
+        required: true
+        default: '0.2.4'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, ubuntu-24.04, macos-15]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+
+      - name: Smoke the published package
+        env:
+          MCPCUT_VERSION: ${{ inputs.version || '0.2.4' }}
+        run: node tools/smoke/published-smoke.mjs
+
+      - name: Keep the results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: smoke-${{ matrix.os }}
+          path: smoke-results.json
+          if-no-files-found: warn
