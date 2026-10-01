@@ -11,7 +11,7 @@ import {
   readSessionWithStats,
   type SessionSummary,
 } from '../journal/reader.js'
-import { recordFirstSessionHint, showSessionHint, unknownSessionMessage } from './next-step.js'
+import { cliCommand, recordFirstSessionHint, shellArg, showSessionHint, unknownSessionMessage } from './next-step.js'
 import { formatRecordsJson, formatRecordsReadable, formatSessionsTable } from './session-view.js'
 
 /**
@@ -160,6 +160,7 @@ export async function runShowCommand(
   }
 
   io.stdout.write(json === true ? formatRecordsJson(records) : formatRecordsReadable(records))
+  if (json !== true && records.length > 0) io.stderr.write(proveItHint(sessionId))
   if (skippedLineCount > 0) {
     io.stderr.write(`Skipped ${skippedLineCount} unreadable journal line(s).\n`)
   }
@@ -169,6 +170,11 @@ export async function runShowCommand(
     )
   }
   return 0
+}
+
+/** Where reading ends and checking begins: the evidentiary report of this very session. */
+function proveItHint(sessionId: string): string {
+  return `Prove it: ${cliCommand()} export --report --session ${shellArg(sessionId)} --out ./mcpcut-report\n`
 }
 
 /** Names the first bad filter value and what it may be instead, or `undefined` when both are fine. */

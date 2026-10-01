@@ -1,6 +1,7 @@
 import { JOURNAL_DIR } from '../config.js'
 import { openJournalDbIfPresent } from './db.js'
 import { dbHasSession, dbSessionSummaries, type DbSessionSummary } from './db-read.js'
+import { dbSessionOrigins, type SessionOrigin } from './db-read-origin.js'
 import { dbReadSessionRecords } from './db-read-session.js'
 import type { JournalDirection, JournalRecord } from './record.js'
 import { assertValidSessionId } from './session-id.js'
@@ -33,6 +34,10 @@ export interface SessionSummary {
   readonly messageCount: number
   /** Lines that were not readable as journal records and were skipped. */
   readonly skippedLineCount: number
+  /** The `--server` / registry name the session ran against, when its records say so. */
+  readonly serverName?: string
+  /** The agent identity the session was opened for, when its records say so. */
+  readonly agentName?: string
 }
 
 export interface ReadSessionOptions {
@@ -63,8 +68,9 @@ export async function listSessions(dir: string = JOURNAL_DIR): Promise<SessionSu
   if (handle === null) {
     return []
   }
+  const origins = dbSessionOrigins(handle)
   return dbSessionSummaries(handle)
-    .map(toSessionSummary)
+    .map((summary) => ({ ...toSessionSummary(summary), ...origins.get(summary.sessionId) }))
     .sort((a, b) => b.lastTs.localeCompare(a.lastTs))
 }
 

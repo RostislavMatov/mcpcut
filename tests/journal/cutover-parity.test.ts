@@ -327,7 +327,8 @@ describe('cutover parity: mcpcut sessions', () => {
     for (const fixture of FIXTURES) {
       expect(fresh.out).toContain(fixture.sessionId)
     }
-    expect(fresh.out).toContain(`${ALPHA.records.length}\n`)
+    // The message count is the 4th column; server and agent follow it.
+    expect(fresh.out).toMatch(new RegExp(`${ALPHA.sessionId}\\s+\\S+\\s+\\S+\\s+${ALPHA.records.length}\\s`))
   })
 })
 
