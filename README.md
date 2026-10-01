@@ -16,7 +16,7 @@ Requires **Node.js 24+** (`node -v`); on older Node, mcpcut prints one line and 
 
     claude mcp add fs -- npx -y mcpcut@0.2.4 wrap --server fs -- npx -y @modelcontextprotocol/server-filesystem ~/project
 
-The first start downloads mcpcut and the server; if your client gives up on it, start it once more. Let the agent work, then `npx -y mcpcut@0.2.4 sessions` and `npx -y mcpcut@0.2.4 show <id>`: every request and response, secrets redacted (with a policy, every decision too). `--server fs` names the server in the journal and the approval queue.
+The first start downloads mcpcut and the server; if your client gives up on it, start it once more. Let the agent work, then `npx -y mcpcut@0.2.4 sessions` and `npx -y mcpcut@0.2.4 show <id>`: every request and response, secrets redacted (with a policy, every decision too). `--server fs` names the server in the decisions a policy writes to the journal and in the approval queue.
 
 **Stop.** Save this as `policy.json` — reads pass, everything else waits for you (quarantine of new tools is off, so the first minute shows one gate: see [Quarantine](docs/guide/policies.md#quarantine)) — and re-add the server with `--policy "$PWD/policy.json"` right after `wrap` (`claude mcp remove fs` first):
 

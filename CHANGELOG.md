@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **An empty `approvals list` no longer says there is no policy.** It cannot
+  see a `wrap` started with `--policy <file>` elsewhere, so the starter
+  policy is offered "if you have no policy yet".
+- **README: `--server` is described as it works.** The name appears in the
+  decisions a policy writes and in the approval queue; a run without a policy
+  journals requests and responses without it, so `sessions` shows `-` there.
+
 ## [0.2.4] — 2026-10-01
 
 ### Added

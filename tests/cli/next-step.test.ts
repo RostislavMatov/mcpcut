@@ -108,6 +108,13 @@ describe('hints name the next command with real values', () => {
     expect(hint).toContain('--policy')
   })
 
+  test('with no policy in the default places it does not claim there is none: wrap may run with --policy elsewhere', () => {
+    asInstalled()
+    const hint = noPendingApprovalsHint()
+    expect(hint).not.toContain('No policy file yet')
+    expect(hint).toContain('If you have no policy yet')
+  })
+
   test('an empty approvals queue with a known policy names that file, with no placeholder', () => {
     asInstalled()
     const hint = noPendingApprovalsHint('/work/proj/.mcpcut-project/policy.json')

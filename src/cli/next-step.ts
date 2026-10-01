@@ -72,7 +72,8 @@ export function noPendingApprovalsHint(policyPath?: string): string {
     return `${why} Put mcpcut in front of your server with that policy: ${cmd} wrap --policy ${shellArg(policyPath)} -- ${EXAMPLE_SERVER_COMMAND}\n`
   }
   return (
-    `${why} No policy file yet: write a starter one with\n` +
+    // Not "no policy yet": `approvals list` cannot see a wrap started with `--policy <file>` elsewhere.
+    `${why} If you have no policy yet, write a starter one with\n` +
     `  echo '${STARTER_POLICY_JSON}' > policy.json\n` +
     `then put mcpcut in front of your server: ${cmd} wrap --policy "$PWD/policy.json" -- ${EXAMPLE_SERVER_COMMAND}\n`
   )
