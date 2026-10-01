@@ -48,6 +48,11 @@ const INITIALIZE_WITH_FORMS = JSON.stringify({
 
 const QUESTION = { approvalId: 'A1', toolName: 'write_file', serverName: 'fs', args: { path: '/w/a.txt', content: 'hi' } }
 
+/** The id of the n-th question sent (ids carry a per-session nonce). */
+function idOf(h: Harness, index = 0): string {
+  return String(h.sent.filter((m) => m['method'] === 'elicitation/create')[index]?.['id'])
+}
+
 function responseTo(id: unknown, result: unknown): { id: string; raw: string } {
   return { id: id as string, raw: JSON.stringify({ jsonrpc: '2.0', id, result }) }
 }
@@ -100,7 +105,7 @@ describe('the question', () => {
     expect(h.sent).toEqual([
       {
         jsonrpc: '2.0',
-        id: `${CLIENT_APPROVAL_ID_PREFIX}A1`,
+        id: expect.stringMatching(new RegExp(`^${CLIENT_APPROVAL_ID_PREFIX}[0-9a-f]{12}-A1$`)),
         method: 'elicitation/create',
         params: {
           mode: 'form',
@@ -110,7 +115,7 @@ describe('the question', () => {
       },
     ])
     const message = (h.sent[0]?.['params'] as { message: string }).message
-    expect(message).toContain('"path":"/w/a.txt"')
+    expect(message).toContain('  path: "/w/a.txt"')
     expect(message).toMatch(/Accept runs it now/)
     expect(message).toMatch(/approvals list/)
   })
@@ -126,7 +131,8 @@ describe('the question', () => {
     const message = (h.sent[0]?.['params'] as { message: string }).message
     expect(message).not.toContain('hunter2xyz')
     expect(message).not.toContain('\u001b')
-    expect(message.length).toBeLessThan(700)
+    expect(message).toMatch(/content: "x{159}… \(1842 more characters\)\n/)
+    expect(message).toMatch(/Not everything is shown\. Read it whole: mcpcut approvals list --json/)
   })
 })
 
@@ -144,7 +150,7 @@ describe('the answer', () => {
     const approver = await asked(h)
     h.now += 3_000
 
-    expect(approver.takeResponse(responseTo(`${CLIENT_APPROVAL_ID_PREFIX}A1`, { action: 'accept', content: {} }))).toBe(true)
+    expect(approver.takeResponse(responseTo(idOf(h), { action: 'accept', content: {} }))).toBe(true)
     await flush()
 
     expect(h.resolved).toEqual([{ approvalId: 'A1', outcome: 'approved', actor: 'client:claude-code' }])
@@ -155,7 +161,7 @@ describe('the answer', () => {
     const approver = await asked(h)
     h.now += 3_000
 
-    approver.takeResponse(responseTo(`${CLIENT_APPROVAL_ID_PREFIX}A1`, { action: 'decline' }))
+    approver.takeResponse(responseTo(idOf(h), { action: 'decline' }))
     await flush()
 
     expect(h.resolved).toEqual([{ approvalId: 'A1', outcome: 'denied', actor: 'client:claude-code' }])
@@ -170,7 +176,7 @@ describe('the answer', () => {
     const approver = await asked(h)
     h.now += 3_000
 
-    expect(approver.takeResponse(responseTo(`${CLIENT_APPROVAL_ID_PREFIX}A1`, result))).toBe(true)
+    expect(approver.takeResponse(responseTo(idOf(h), result))).toBe(true)
     await flush()
 
     expect(h.resolved).toEqual([])
@@ -179,9 +185,9 @@ describe('the answer', () => {
   test('an error response leaves it waiting too, and is not forwarded', async () => {
     const h = harness()
     const approver = await asked(h)
-    const raw = JSON.stringify({ jsonrpc: '2.0', id: `${CLIENT_APPROVAL_ID_PREFIX}A1`, error: { code: -32601, message: 'no' } })
+    const raw = JSON.stringify({ jsonrpc: '2.0', id: idOf(h), error: { code: -32601, message: 'no' } })
 
-    expect(approver.takeResponse({ id: `${CLIENT_APPROVAL_ID_PREFIX}A1`, raw })).toBe(true)
+    expect(approver.takeResponse({ id: idOf(h), raw })).toBe(true)
     await flush()
 
     expect(h.resolved).toEqual([])
@@ -192,13 +198,13 @@ describe('the answer', () => {
     const approver = await asked(h)
     h.now += 200
 
-    approver.takeResponse(responseTo(`${CLIENT_APPROVAL_ID_PREFIX}A1`, { action: 'accept' }))
+    approver.takeResponse(responseTo(idOf(h), { action: 'accept' }))
     await flush()
 
     expect(h.resolved).toEqual([])
     expect(h.sent).toHaveLength(2)
     const again = h.sent[1] as { id: string; params: { message: string } }
-    expect(again.id).toBe(`${CLIENT_APPROVAL_ID_PREFIX}A1-2`)
+    expect(again.id).toBe(`${idOf(h)}-2`)
     expect(again.params.message).toMatch(/too fast/)
 
     h.now += 100
@@ -214,11 +220,11 @@ describe('the answer', () => {
     const h = harness()
     const approver = await asked(h)
     h.now += 200
-    approver.takeResponse(responseTo(`${CLIENT_APPROVAL_ID_PREFIX}A1`, { action: 'accept' }))
+    approver.takeResponse(responseTo(idOf(h), { action: 'accept' }))
     await flush()
     h.now += 2_500
 
-    approver.takeResponse(responseTo(`${CLIENT_APPROVAL_ID_PREFIX}A1-2`, { action: 'accept' }))
+    approver.takeResponse(responseTo(idOf(h, 1), { action: 'accept' }))
     await flush()
 
     expect(h.resolved).toEqual([{ approvalId: 'A1', outcome: 'approved', actor: 'client:claude-code' }])
@@ -229,7 +235,7 @@ describe('the answer', () => {
     const approver = await asked(h)
     h.now += 50
 
-    approver.takeResponse(responseTo(`${CLIENT_APPROVAL_ID_PREFIX}A1`, { action: 'decline' }))
+    approver.takeResponse(responseTo(idOf(h), { action: 'decline' }))
     await flush()
 
     expect(h.resolved).toEqual([{ approvalId: 'A1', outcome: 'denied', actor: 'client:claude-code' }])
@@ -249,11 +255,12 @@ describe('the answer', () => {
     approver.observeInitialize(INITIALIZE_WITH_FORMS)
     const question = approver.ask(QUESTION)
     await flush()
+    const id = idOf(h)
     question?.withdraw()
     await flush()
     h.now += 5_000
 
-    expect(approver.takeResponse(responseTo(`${CLIENT_APPROVAL_ID_PREFIX}A1`, { action: 'accept' }))).toBe(true)
+    expect(approver.takeResponse(responseTo(id, { action: 'accept' }))).toBe(true)
     await flush()
 
     expect(h.resolved).toEqual([])
@@ -274,7 +281,7 @@ describe('withdrawing the question', () => {
     expect(h.sent[1]).toEqual({
       jsonrpc: '2.0',
       method: 'notifications/cancelled',
-      params: { requestId: `${CLIENT_APPROVAL_ID_PREFIX}A1`, reason: expect.any(String) },
+      params: { requestId: idOf(h), reason: expect.any(String) },
     })
   })
 
@@ -285,7 +292,7 @@ describe('withdrawing the question', () => {
     const question = approver.ask(QUESTION)
     await flush()
     h.now += 3_000
-    approver.takeResponse(responseTo(`${CLIENT_APPROVAL_ID_PREFIX}A1`, { action: 'accept' }))
+    approver.takeResponse(responseTo(idOf(h), { action: 'accept' }))
     await flush()
 
     question?.withdraw()
@@ -310,9 +317,153 @@ describe('the actor', () => {
     await flush()
     h.now += 3_000
 
-    approver.takeResponse(responseTo(`${CLIENT_APPROVAL_ID_PREFIX}A1`, { action: 'accept' }))
+    approver.takeResponse(responseTo(idOf(h), { action: 'accept' }))
     await flush()
 
     expect(h.resolved[0]?.actor).toBe(actor)
+  })
+})
+
+describe('one question at a time', () => {
+  test('a second held call is asked only after the first dialog is answered', async () => {
+    const h = harness()
+    const approver = createClientApprover(h.deps)
+    approver.observeInitialize(INITIALIZE_WITH_FORMS)
+    approver.ask(QUESTION)
+    approver.ask({ ...QUESTION, approvalId: 'B2' })
+    await flush()
+
+    expect(h.sent.filter((m) => m['method'] === 'elicitation/create')).toHaveLength(1)
+
+    h.now += 3_000
+    approver.takeResponse(responseTo(idOf(h), { action: 'accept' }))
+    await flush()
+
+    expect(idOf(h, 1)).toMatch(/-B2$/)
+    expect(h.resolved).toEqual([{ approvalId: 'A1', outcome: 'approved', actor: 'client:claude-code' }])
+  })
+
+  test('the next dialog\'s clock starts when it is sent: an Enter meant for the first does not approve it', async () => {
+    const h = harness()
+    const approver = createClientApprover(h.deps)
+    approver.observeInitialize(INITIALIZE_WITH_FORMS)
+    approver.ask(QUESTION)
+    approver.ask({ ...QUESTION, approvalId: 'B2' })
+    await flush()
+    h.now += 3_000
+    approver.takeResponse(responseTo(idOf(h), { action: 'accept' }))
+    await flush()
+    h.now += 150
+
+    approver.takeResponse(responseTo(idOf(h, 1), { action: 'accept' }))
+    await flush()
+
+    expect(h.resolved.map((r) => r.approvalId)).toEqual(['A1'])
+    expect(idOf(h, 2)).toMatch(/-B2-2$/)
+  })
+
+  test('a waiting question withdrawn before its turn is never shown', async () => {
+    const h = harness()
+    const approver = createClientApprover(h.deps)
+    approver.observeInitialize(INITIALIZE_WITH_FORMS)
+    approver.ask(QUESTION)
+    approver.ask({ ...QUESTION, approvalId: 'B2' })?.withdraw()
+    await flush()
+    h.now += 3_000
+
+    approver.takeResponse(responseTo(idOf(h), { action: 'decline' }))
+    await flush()
+
+    expect(h.sent.filter((m) => m['method'] === 'elicitation/create')).toHaveLength(1)
+  })
+
+  test('withdrawing the dialog on screen shows the next one', async () => {
+    const h = harness()
+    const approver = createClientApprover(h.deps)
+    approver.observeInitialize(INITIALIZE_WITH_FORMS)
+    const first = approver.ask(QUESTION)
+    approver.ask({ ...QUESTION, approvalId: 'B2' })
+    await flush()
+
+    first?.withdraw()
+    await flush()
+
+    expect(idOf(h, 1)).toMatch(/-B2$/)
+  })
+})
+
+describe('the session', () => {
+  test('ids carry a nonce: a server cannot squat or guess one, and its own prefixed ids pass through', async () => {
+    const h = harness()
+    const approver = createClientApprover(h.deps)
+    approver.observeInitialize(INITIALIZE_WITH_FORMS)
+    approver.ask(QUESTION)
+    await flush()
+
+    expect(approver.takeResponse(responseTo(`${CLIENT_APPROVAL_ID_PREFIX}A1`, { action: 'accept' }))).toBe(false)
+    expect(createClientApprover(harness().deps)).not.toBe(approver)
+  })
+
+  test('the first initialize wins', async () => {
+    const h = harness()
+    const approver = createClientApprover(h.deps)
+    approver.observeInitialize(INITIALIZE_WITH_FORMS)
+    approver.observeInitialize(JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'initialize', params: { capabilities: {}, clientInfo: { name: 'cli:owner' } } }))
+
+    approver.ask(QUESTION)
+    await flush()
+    h.now += 3_000
+    approver.takeResponse(responseTo(idOf(h), { action: 'accept' }))
+    await flush()
+
+    expect(h.resolved[0]?.actor).toBe('client:claude-code')
+  })
+
+  test('the first question tells the operator how to turn asking off', async () => {
+    const h = harness()
+    const approver = createClientApprover(h.deps)
+    approver.observeInitialize(INITIALIZE_WITH_FORMS)
+    approver.ask(QUESTION)
+    approver.ask({ ...QUESTION, approvalId: 'B2' })
+    await flush()
+
+    expect(h.notices).toEqual([expect.stringContaining('"askClient": false')])
+  })
+
+  test('mayAsk false: nothing is shown and nothing is announced', async () => {
+    const h = harness()
+    const approver = createClientApprover({ ...h.deps, mayAsk: () => Promise.resolve(false) })
+    approver.observeInitialize(INITIALIZE_WITH_FORMS)
+    approver.ask(QUESTION)
+    await flush()
+
+    expect(h.sent).toEqual([])
+    expect(h.notices).toEqual([])
+  })
+
+  test('a very long tool name is cut so Decline and Esc stay in view', async () => {
+    const h = harness()
+    const approver = createClientApprover(h.deps)
+    approver.observeInitialize(INITIALIZE_WITH_FORMS)
+    approver.ask({ ...QUESTION, toolName: 't'.repeat(5_000) })
+    await flush()
+
+    const message = (h.sent[0]?.['params'] as { message: string }).message
+    expect(message).toContain(`allow ${'t'.repeat(80)}… on fs?`)
+    expect(message).toContain('Esc leaves it waiting')
+  })
+
+  test('many fields: each name is shown up to twelve, then how many more', async () => {
+    const h = harness()
+    const approver = createClientApprover(h.deps)
+    approver.observeInitialize(INITIALIZE_WITH_FORMS)
+    const args = Object.fromEntries(Array.from({ length: 15 }, (_, i) => [`f${i}`, i]))
+    approver.ask({ ...QUESTION, args })
+    await flush()
+
+    const message = (h.sent[0]?.['params'] as { message: string }).message
+    expect(message).toContain('  f11: 11')
+    expect(message).toContain('  … and 3 more fields')
+    expect(message).toContain('Not everything is shown')
   })
 })

@@ -139,8 +139,10 @@ export function askClientOf(args: Pick<PolicyRelayArgs, 'askClient' | 'agentScop
       command: wiring.command,
       ...(wiring.onNotice !== undefined ? { onNotice: wiring.onNotice } : {}),
       resolve: async (approvalId, resolution) => {
-        if (!(await wiring.mayAsk())) {
-          notice(`An answer in the client cannot settle ${approvalId}: this installation has admins now.\n  Approve with your token: ${wiring.command} approvals approve ${approvalId}\n`)
+        // A check that fails counts as "admins": the answer is dropped, never applied unchecked.
+        const mayStill = await wiring.mayAsk().catch(() => false)
+        if (!mayStill) {
+          notice(`An answer in the client cannot settle ${approvalId}: this installation has admins, or they could not be read.\n  Approve with your token: ${wiring.command} approvals approve ${approvalId}\n`)
           return undefined
         }
         return queue.resolve(approvalId, resolution)

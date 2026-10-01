@@ -134,7 +134,7 @@ describe('a held call in a client that can show a form', () => {
     now += HUMAN_PACE_MS
     const answerVerdict = await gate.gateClientMessage(frameOf({ jsonrpc: '2.0', id: asked['id'], result: { action: 'accept', content: {} } }))
 
-    expect(asked['id']).toBe(`${CLIENT_APPROVAL_ID_PREFIX}${pending.approvalId}`)
+    expect(String(asked['id'])).toMatch(new RegExp(`^${CLIENT_APPROVAL_ID_PREFIX}[0-9a-f]{12}-${pending.approvalId}$`))
     expect(answerVerdict).toEqual({ action: 'drop' })
     expect(await verdict).toEqual({ action: 'forward' })
     const [resolved] = await queue.listResolved({ limit: 1 })

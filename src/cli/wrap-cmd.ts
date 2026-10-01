@@ -48,10 +48,16 @@ export interface WrapCommandOptions {
 
 const DEFAULT_IO: WrapCliIo = { stderr: process.stderr }
 
-/** True while the installation has no admin (or no state database yet): the person at the client may approve. */
+/**
+ * True while the installation has no admin: the person at the client may
+ * approve. Exactly `approvals approve`'s rule without a token — `no-install`
+ * does not count, as there (a client config missing MCPCUT_DATA_DIR must not
+ * open what "nobody exists" opens; the queue's own write creates the
+ * database before anything is asked).
+ */
 async function hasNoAdmins(journalDir: string | undefined): Promise<boolean> {
   const emptiness = await adminStoreEmptiness(journalDir !== undefined ? { journalDir } : {})
-  return emptiness.kind === 'empty' || emptiness.kind === 'no-install'
+  return emptiness.kind === 'empty'
 }
 
 /** The usage block; its example names the directory the operator is in, so it can be pasted as is. */

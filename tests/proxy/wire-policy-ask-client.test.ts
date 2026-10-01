@@ -63,4 +63,15 @@ describe('askClientOf', () => {
 
     expect(resolved).toContain('A10')
   })
+
+  test('a failing admin check counts as admins: nothing is settled, and the command is named', async () => {
+    const notices: string[] = []
+    const failing = { mayAsk: () => Promise.reject(new Error('locked')), command: 'mcpcut', onNotice: (text: string) => notices.push(text) }
+    const deps = askClientOf({ policy: policyOf(), askClient: failing }, QUEUE).askClient
+
+    await deps?.resolve('A11', { outcome: 'approved', actor: 'client:claude-code', reason: 'accepted in the client' })
+
+    expect(resolved).not.toContain('A11')
+    expect(notices.join('')).toContain('mcpcut approvals approve A11')
+  })
 })

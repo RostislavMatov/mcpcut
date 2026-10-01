@@ -200,7 +200,11 @@ journal says the call was approved in the client.
 - **An Accept faster than a second does not count.** The dialog opens with
   Accept focused, so an Enter typed into the prompt as it appears would
   approve. Such an Accept is asked once more; a second fast one leaves the
-  call to the queue.
+  call to the queue. With several calls held at once, the dialogs come one
+  at a time.
+- **What the dialog shows.** Every argument by name, each value cut at 160
+  characters with a count of what is hidden; when anything is hidden, the
+  dialog says so and names `mcpcut approvals list --json` to read it whole.
 - **Turning it off.** A client that answers such questions without a person
   would approve on its own; set `"approval": { "askClient": false }` to keep
   approvals to the queue alone.
