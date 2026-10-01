@@ -1,12 +1,13 @@
 import { parseArgs } from 'node:util'
 import { JOURNAL_DIR } from '../config.js'
-import { loadPolicy, type LoadPolicyOptions, type PolicyLoadResult } from '../policy/load.js'
+import { loadPolicy, type LoadPolicyOptions } from '../policy/load.js'
 import type { PolicyProvider } from '../policy/reload.js'
 import { resolvePolicySource } from '../policy/source.js'
 import { autoServerName } from '../proxy/wire-policy.js'
 import { runWrap, type RunWrapOptions } from '../proxy/wrap.js'
 import { preflightDatabases } from '../store/preflight.js'
-import { heldCallNotice } from './next-step.js'
+import { heldCallNotice, noPolicyNotice, sessionJournaledNotice, wrapExampleLine } from './next-step.js'
+import { formatPolicyLoadErrors } from './policy-load-errors.js'
 import { createReloadingPolicy } from './policy-reload.js'
 
 /**
@@ -42,10 +43,13 @@ export interface WrapCommandOptions {
 
 const DEFAULT_IO: WrapCliIo = { stderr: process.stderr }
 
-const WRAP_USAGE = `Usage:
+/** The usage block; its example names the directory the operator is in, so it can be pasted as is. */
+function wrapUsage(cwd: string): string {
+  return `Usage:
   mcpcut wrap [--server <name>] [--policy <path>] [--no-policy] [--fail-closed] -- <cmd> [args...]
                                          Run a wrapped MCP server, journaling all traffic
-`
+${wrapExampleLine(cwd)}`
+}
 
 /**
  * Splits `wrap [options] -- <cmd> [args...]`, resolves the policy the
@@ -58,22 +62,23 @@ export async function runWrapCommand(
   io: WrapCliIo = DEFAULT_IO,
   opts: WrapCommandOptions = {},
 ): Promise<number> {
+  const usage = wrapUsage(opts.loadPolicy?.cwd ?? process.cwd())
   const dashIndex = wrapArgs.indexOf('--')
   if (dashIndex === -1) {
-    io.stderr.write(`Missing "-- <cmd>" in wrap command.\n\n${WRAP_USAGE}`)
+    io.stderr.write(`Missing "-- <cmd>" in wrap command.\n\n${usage}`)
     return 1
   }
 
   const childCommand = wrapArgs[dashIndex + 1]
   if (childCommand === undefined) {
-    io.stderr.write(`Missing "-- <cmd>" in wrap command.\n\n${WRAP_USAGE}`)
+    io.stderr.write(`Missing "-- <cmd>" in wrap command.\n\n${usage}`)
     return 1
   }
   const childArgs = wrapArgs.slice(dashIndex + 2)
 
   const flags = parseWrapFlags(wrapArgs.slice(0, dashIndex))
   if (flags === undefined) {
-    io.stderr.write(`Unknown option(s) in wrap command.\n\n${WRAP_USAGE}`)
+    io.stderr.write(`Unknown option(s) in wrap command.\n\n${usage}`)
     return 1
   }
 
@@ -99,6 +104,7 @@ export async function runWrapCommand(
     // A held call is named on stderr with the command that releases it: the
     // Stop step used to wait out its whole window in silence (0.2.3).
     approvalNotice: heldCallNotice,
+    sessionEndNotice: sessionJournaledNotice,
     ...opts.runWrap,
     ...(flags.server !== undefined ? { serverName: flags.server } : {}),
     ...(flags.failClosed ? { failClosed: true } : {}),
@@ -188,7 +194,7 @@ async function resolvePolicy(
     return { exitCode: 1 }
   }
   if (result.status === 'disabled') {
-    io.stderr.write('policy: none found, journaling only\n')
+    io.stderr.write(noPolicyNotice(source.candidates[0]?.path))
     return {}
   }
   io.stderr.write(`policy: loaded from ${result.sourcePath}\n`)
@@ -201,9 +207,4 @@ async function resolvePolicy(
       stderr: io.stderr,
     }),
   }
-}
-
-/** `result.errors` are already human-readable lines (see `formatPolicyErrors`); each is prefixed with its source path here. */
-function formatPolicyLoadErrors(result: Extract<PolicyLoadResult, { status: 'error' }>): string {
-  return result.errors.map((line) => `${result.sourcePath}: ${line}\n`).join('')
 }

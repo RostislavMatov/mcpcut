@@ -1,5 +1,5 @@
 import { POLICY_RECHECK_MIN_MS } from './constants.js'
-import { loadPolicy, parsePolicyText, type LoadPolicyOptions, type PolicyLoadResult } from './load.js'
+import { loadPolicy, parsePolicyText, POLICY_NOT_FOUND_MESSAGE, type LoadPolicyOptions, type PolicyLoadResult } from './load.js'
 import { policyHashOf } from './provenance.js'
 import type { PolicyProvider } from './provider.js'
 import {
@@ -162,7 +162,7 @@ export function createPolicyProvider(args: CreatePolicyProviderArgs): PolicyProv
       return
     }
     if (result.status === 'disabled') {
-      failWith(versionKey, [`policy file not found: ${sourcePath}`])
+      failWith(versionKey, [POLICY_NOT_FOUND_MESSAGE])
       return
     }
     if (result.sourcePath !== sourcePath) {

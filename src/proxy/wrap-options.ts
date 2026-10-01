@@ -63,6 +63,12 @@ export interface RunWrapOptions {
    */
   readonly approvalNotice?: (notice: PendingApprovalNotice) => string
   /**
+   * The one line written when the session ends (the wrapped server exited or
+   * the client left), after the journal is flushed: it names the session and
+   * how to read it. Formatted by the CLI; absent means silence, as before.
+   */
+  readonly sessionEndNotice?: (sessionId: string) => string
+  /**
    * Forces fail-closed journaling on regardless of `policy.journal.failClosed`
    * (the `--fail-closed` flag). Never forces it *off*: a policy that asks for
    * fail-closed always gets it.

@@ -12,6 +12,7 @@ import { mapPolicyProvider, type PolicyProvider } from '../policy/reload.js'
 import { resolvePolicySource } from '../policy/source.js'
 import type { Policy } from '../policy/schema.js'
 import { journalingOnlyPolicy } from './connect-policy.js'
+import { formatPolicyLoadErrors } from './policy-load-errors.js'
 import { createAwaitingPolicy, createReloadingPolicy } from './policy-reload.js'
 import { guardDiagnostics } from '../proxy/diagnostics.js'
 import { createGroupsStore } from '../groups/store.js'
@@ -141,9 +142,7 @@ async function resolvePolicy(
   const result: PolicyLoadResult = await loadPolicy(source.loadOptions)
 
   if (result.status === 'error') {
-    for (const line of result.errors) {
-      io.stderr.write(`${result.sourcePath}: ${line}\n`)
-    }
+    io.stderr.write(formatPolicyLoadErrors(result))
     return { exitCode: EXIT_STARTUP_FAILURE }
   }
   if (result.status === 'disabled') {

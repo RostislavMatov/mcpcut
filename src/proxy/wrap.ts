@@ -127,6 +127,8 @@ export async function runWrap(
     await sink.close()
     journalFailure.reportDropped(sink.droppedRecordCount())
     signalHandle.uninstall()
+    // Last, once the journal is flushed: the line names a session that can be read.
+    if (opts.sessionEndNotice !== undefined) diagnostics.write(opts.sessionEndNotice(sessionId))
   }
 }
 

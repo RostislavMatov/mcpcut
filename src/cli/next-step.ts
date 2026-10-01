@@ -135,3 +135,24 @@ export function noGroupsHint(): string {
 export function vaultNotInitializedMessage(): string {
   return `vault is not initialized. Run "${cliCommand()} vault init" first.\n`
 }
+
+/** The line `wrap` writes when the session ends: the id and the command that reads it back. */
+export function sessionJournaledNotice(sessionId: string): string {
+  const id = shellArg(sessionId)
+  return `session ${id} journaled: ${cliCommand()} show ${id}\n`
+}
+
+/**
+ * `policy: none found, journaling only` plus the next step: the path a policy
+ * is picked up from without a flag (the first default location searched) and
+ * the flag that names one. `suffix` keeps the entry point's own remark.
+ */
+export function noPolicyNotice(defaultPath: string | undefined, suffix = ''): string {
+  const where = defaultPath === undefined ? '' : `save it as ${shellArg(defaultPath)} (picked up automatically) or `
+  return `policy: none found, journaling only${suffix}\n  To add a policy: ${where}pass --policy <path>\n`
+}
+
+/** `wrap`'s usage example: a real server command on the directory the operator is in. */
+export function wrapExampleLine(cwd: string): string {
+  return `Example: ${cliCommand()} wrap --server fs -- npx -y @modelcontextprotocol/server-filesystem ${shellArg(cwd)}\n`
+}

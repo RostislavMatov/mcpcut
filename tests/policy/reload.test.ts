@@ -390,7 +390,8 @@ describe('createPolicyProvider — failure keeps the last valid policy (O3)', ()
 
     expect(stand.provider.current().defaultDecision).toBe('allow')
     expect(stand.failures).toHaveLength(1)
-    expect(stand.failures[0]!.errors.join('\n')).toContain(SOURCE_PATH)
+    expect(stand.failures[0]!.sourcePath).toBe(SOURCE_PATH)
+    expect(stand.failures[0]!.errors).toEqual(['policy file not found'])
 
     editFile(stand, DENY_ALL)
     await stand.provider.refresh()

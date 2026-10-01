@@ -1,4 +1,4 @@
-import { loadPolicy, type LoadPolicyOptions, type PolicyLoadResult } from '../policy/load.js'
+import { loadPolicy, type LoadPolicyOptions } from '../policy/load.js'
 import type { PolicyProvider } from '../policy/reload.js'
 import { resolvePolicySource } from '../policy/source.js'
 import { parsePolicy, type Policy } from '../policy/schema.js'
@@ -7,6 +7,8 @@ import {
   policyFlagRefusal,
   policySourceIgnoredNote,
 } from './connect-constants.js'
+import { noPolicyNotice } from './next-step.js'
+import { formatPolicyLoadErrors } from './policy-load-errors.js'
 import { createAwaitingPolicy, createReloadingPolicy } from './policy-reload.js'
 
 /**
@@ -137,7 +139,7 @@ export async function resolveConnectPolicy(
     return { status: 'failed', exitCode: 1 }
   }
   if (result.status === 'disabled') {
-    args.io.stderr.write('policy: none found, journaling only (agent grants still apply)\n')
+    args.io.stderr.write(noPolicyNotice(source.candidates[0]?.path, ' (agent grants still apply)'))
     return {
       status: 'resolved',
       policy: createAwaitingPolicy({
@@ -159,9 +161,4 @@ export async function resolveConnectPolicy(
       stderr: args.io.stderr,
     }),
   }
-}
-
-/** `result.errors` are already human-readable lines; each is prefixed with its source path. */
-function formatPolicyLoadErrors(result: Extract<PolicyLoadResult, { status: 'error' }>): string {
-  return result.errors.map((line) => `${result.sourcePath}: ${line}\n`).join('')
 }

@@ -54,6 +54,14 @@ export type PolicyLoadResult =
  */
 export const PROJECT_POLICY_SUBDIR = '.mcpcut-project'
 
+/*
+ * Messages of a load that failed on a file. They never carry the file's path:
+ * every caller already prefixes `sourcePath`, and the path twice in one line
+ * hid what was wrong (0.2.4).
+ */
+export const POLICY_NOT_FOUND_MESSAGE = 'policy file not found'
+export const INVALID_JSON_PREFIX = 'invalid JSON'
+
 /** One resolved candidate path to try reading, in resolution order. */
 interface PolicyCandidate {
   readonly path: string
@@ -80,7 +88,7 @@ export async function loadPolicy(opts: LoadPolicyOptions = {}): Promise<PolicyLo
         return {
           status: 'error',
           sourcePath: candidate.path,
-          errors: [`policy file not found: ${candidate.path}`],
+          errors: [POLICY_NOT_FOUND_MESSAGE],
         }
       }
       continue
@@ -227,7 +235,7 @@ export function parsePolicyText(path: string, text: string): PolicyLoadResult {
     return {
       status: 'error',
       sourcePath: path,
-      errors: [`invalid JSON in "${path}": ${describeCause(error)}`],
+      errors: [`${INVALID_JSON_PREFIX}: ${describeCause(error)}`],
     }
   }
 

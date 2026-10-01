@@ -1,6 +1,6 @@
 import { readFileSync as fsReadFileSync, statSync as fsStatSync } from 'node:fs'
 import { stat as fsStat } from 'node:fs/promises'
-import type { LoadPolicyOptions } from './load.js'
+import { POLICY_NOT_FOUND_MESSAGE, type LoadPolicyOptions } from './load.js'
 
 /**
  * File-system helpers for the hot-reload provider (`policy/reload.ts`): how a
@@ -64,7 +64,7 @@ function versionKeyOf(version: PolicyFileVersion): string {
 
 function describeStatFailure(error: unknown, sourcePath: string): ObservedVersion {
   if (isEnoent(error)) {
-    return { key: VERSION_ABSENT, error: `policy file not found: ${sourcePath}` }
+    return { key: VERSION_ABSENT, error: POLICY_NOT_FOUND_MESSAGE }
   }
   const cause = describeCause(error)
   return {

@@ -116,7 +116,8 @@ describe('loadPolicy: missing files', () => {
     expect(result.status).toBe('error')
     if (result.status === 'error') {
       expect(result.sourcePath).toBe(explicitPath)
-      expect(result.errors.some((line) => line.includes(explicitPath))).toBe(true)
+      // The path is the result's `sourcePath`; the line says only what is wrong.
+      expect(result.errors).toEqual(['policy file not found'])
     }
   })
 
@@ -139,7 +140,7 @@ describe('loadPolicy: missing files', () => {
 })
 
 describe('loadPolicy: broken and invalid files', () => {
-  test('broken JSON produces an error naming the source path', async () => {
+  test('broken JSON produces an error on the source path', async () => {
     const path = await writeProjectPolicy('{not valid json')
 
     const result = await loadPolicy({ env: {}, cwd, journalDir })
@@ -148,7 +149,8 @@ describe('loadPolicy: broken and invalid files', () => {
     if (result.status === 'error') {
       expect(result.sourcePath).toBe(path)
       expect(result.errors).toHaveLength(1)
-      expect(result.errors[0]).toContain(path)
+      expect(result.errors[0]).toMatch(/^invalid JSON: /)
+      expect(result.errors[0]).not.toContain(path)
     }
   })
 
