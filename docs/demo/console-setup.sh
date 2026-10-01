@@ -11,8 +11,8 @@
 # approval. Not `connect --url`: it is a preview and stays out of demos (D3).
 #
 # Tokens stay in $DEMO/tokens. $DEMO/paste holds what an operator would paste into
-# the console, one item per line: the admin token, then the held call's id
-# (console.exp hands them over on Ctrl+V).
+# the console: the admin token (console.exp hands it over on Ctrl+V). The held
+# call is answered from the Approvals list, so its id is only checked for here.
 set -eu
 : "${DEMO:?set DEMO, HOME and PATH first (see console.tape)}"
 REPO=$(pwd)
@@ -78,4 +78,4 @@ while [ -z "$held" ] && [ "$tries" -lt "$HOLD_WAIT_TRIES" ]; do
   held=$(mcpcut approvals list 2>/dev/null | awk '/server=/{print $1; exit}')
 done
 [ -n "$held" ] || { echo 'console-setup: the write was never held for approval' >&2; exit 1; }
-printf '%s\n%s\n' "$(cat tokens/me)" "$held" > paste
+printf '%s\n' "$(cat tokens/me)" > paste

@@ -7,8 +7,8 @@
 # The hidden part runs docs/demo/console-setup.sh: an install in /tmp with an empty
 # HOME, two servers, two agents, a few calls and one write left waiting. `mcpcut`
 # below is a shell function that opens the real console through console.exp,
-# which plays the operator's clipboard on Ctrl+V (the admin token, then the held
-# call's id), so no token is typed into the recording.
+# which plays the operator's clipboard on Ctrl+V (the admin token), so no token is
+# typed into the recording. The held call is answered from the list (0.2.4).
 
 Output "/tmp/mcpcut-demo-frames/"
 
@@ -51,21 +51,15 @@ Sleep 1s
 Enter
 Sleep 4s
 
-# Approvals: cursor's write_file waits for a human
+# Approvals: cursor's write_file waits for a human. Enter on list opens the rows,
+# Enter on the request asks about it, y approves — no id is typed.
 Type "9"
 Sleep 1s
 Enter
-Sleep 4s
-Down
-Sleep 500ms
+Sleep 3s
 Enter
-Sleep 1s
-Ctrl+V
-Sleep 1s
-Tab
-Type "plan looks right"
-Sleep 500ms
-Enter
+Sleep 3s
+Type "y"
 Sleep 4s
 
 # Journal ▸ sessions
