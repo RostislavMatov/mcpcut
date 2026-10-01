@@ -79,4 +79,13 @@ describe('the MCP Registry entry', () => {
     expect(args[separator + 1]).toMatchObject({ type: 'positional', isRequired: true })
     expect(args[separator + 1]?.value).toBeUndefined()
   })
+
+  test('leaves no flag a client could emit without its value', () => {
+    // `wrap` parses its flags strictly: `wrap --server -- npx …`, from a client
+    // that writes an optional flag left blank, is a usage error, not a server.
+    const args = entry.packages[0]?.packageArguments ?? []
+    const blankable = args.filter((arg) => arg.type === 'named' && arg.isRequired !== true && arg.value === undefined)
+
+    expect(blankable).toEqual([])
+  })
 })

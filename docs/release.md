@@ -49,7 +49,7 @@ repository, the rest in the public clone.
    signed in to GitHub as the repository owner. The registry accepts it only
    once npm has the version and its `mcpName` matches `server.json`'s `name`:
    ```
-   mcp-publisher login github --token "$(gh auth token)"
+   mcp-publisher login github
    mcp-publisher publish
    ```
 

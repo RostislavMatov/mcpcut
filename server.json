@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.RostislavMatov/mcpcut",
   "title": "mcpcut",
-  "description": "Proxy for any MCP server: journals tool calls with secrets redacted, holds risky calls for approval",
+  "description": "Journals every MCP tool call with secrets redacted; with a policy, holds risky calls for approval",
   "repository": {
     "url": "https://github.com/RostislavMatov/mcpcut",
     "source": "github"
@@ -16,6 +16,12 @@
       "identifier": "mcpcut",
       "version": "0.2.3",
       "runtimeHint": "npx",
+      "runtimeArguments": [
+        {
+          "type": "positional",
+          "value": "-y"
+        }
+      ],
       "transport": {
         "type": "stdio"
       },
@@ -28,7 +34,8 @@
           "type": "named",
           "name": "--server",
           "description": "A short name for the wrapped server in the journal and the approval queue, e.g. fs",
-          "valueHint": "server_name"
+          "valueHint": "server_name",
+          "isRequired": true
         },
         {
           "type": "positional",
