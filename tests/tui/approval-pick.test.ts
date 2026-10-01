@@ -272,3 +272,61 @@ describe('the question: y approves, n denies, Esc closes', () => {
     expect(mainOf(answered.model).pane).toMatchObject({ kind: 'answer', approvalId: ID_A })
   })
 })
+
+describe('the pick pane on screen (review 2026-10-01)', () => {
+  const LONG_ROW_TAIL = 'TAILMARK'
+
+  function longListResult(count: number): RunResult {
+    const longArgs = `{"path":"${'x'.repeat(150)}${LONG_ROW_TAIL}"}`
+    const stdout = Array.from({ length: count }, (_, index) =>
+      `${index === 0 ? ID_A : `${ID_A.slice(0, 24)}${String(index).padStart(2, '0')}`}  server=fs tool=t${index} class=write args=${longArgs}\n`,
+    ).join('')
+    return { argv: [...LIST_ARGV], display: [...LIST_ARGV], exitCode: 0, stdout, stderr: '' }
+  }
+
+  function pickedLong(count: number, columns = 80): Model {
+    const start = { ...onApprovals(), size: { columns, rows: 24 } }
+    const ran = update(start, key('enter')).model
+    return update(ran, { kind: 'run-result', result: longListResult(count) }).model
+  }
+
+  test('every frame line stays exactly as wide as the terminal, two-column and stacked', () => {
+    for (const columns of [80, 50]) {
+      const frame = render(pickedLong(3, columns), plainStyle)
+      expect(frame.every((line) => line.length === columns)).toBe(true)
+      expect(frame.some((line) => line.includes(ACTIVE_MARKER))).toBe(true)
+    }
+  })
+
+  test('moving past the bottom of the pane scrolls the selected row into view', () => {
+    const moved = Array.from({ length: 25 }).reduce<Model>((model) => update(model, key('down')).model, pickedLong(30))
+
+    const pane = mainOf(moved).pane
+    expect(pane.kind === 'pick' && pane.approvalId.endsWith('25')).toBe(true)
+    expect(render(moved, plainStyle).some((line) => line.includes(`${ACTIVE_MARKER}${ID_A.slice(0, 24)}25`))).toBe(true)
+  })
+
+  test('] reaches the end of the longest row, gutter and all', () => {
+    const slid = Array.from({ length: 40 }).reduce<Model>((model) => update(model, char(']')).model, pickedLong(1))
+
+    expect(mainOf(slid).pane.kind).toBe('pick')
+    expect(render(slid, plainStyle).join('\n')).toContain(LONG_ROW_TAIL)
+  })
+
+  test('the question repeats the whole row, tail included', () => {
+    const asked = update(pickedLong(1), key('enter')).model
+
+    expect(render(asked, plainStyle).join('\n')).toContain(LONG_ROW_TAIL)
+  })
+
+  test('a poll that was already out when the question opened changes nothing under it', () => {
+    const picked = pickedFrom([ID_A, ID_B])
+    const polling = update(picked, { kind: 'tick' }).model
+    const asked = update(polling, key('enter')).model
+
+    const answered = update(asked, { kind: 'poll-result', result: listResult([ID_B]) }).model
+
+    expect(mainOf(answered).pane).toMatchObject({ kind: 'answer', approvalId: ID_A })
+    expect(mainOf(answered).output).toBe(mainOf(asked).output)
+  })
+})

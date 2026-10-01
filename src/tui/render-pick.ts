@@ -18,8 +18,11 @@ export const ANSWER_LINES: readonly string[] = [
   'Esc  close — the request keeps waiting',
 ]
 
-/** Most lines of the request's row the question repeats; the rest stays in the list. */
-const SUMMARY_MAX_LINES = 4
+/**
+ * Most lines of the request's row the question repeats: enough for a whole
+ * row (its args are capped at 120 characters) on a 54-column pane.
+ */
+const SUMMARY_MAX_LINES = 6
 
 /** Rows the question takes besides the summary: its line, the id, a blank, the answers. */
 const ANSWER_FIXED_ROWS = 3 + ANSWER_LINES.length
@@ -47,7 +50,7 @@ export function answerPaneLines(pane: AnswerPane, width: number, rows: number): 
   const lines = [
     ANSWER_QUESTION,
     pane.approvalId,
-    ...wrapWords(pane.summary, width).slice(0, summaryRows),
+    ...wrapHard(pane.summary, width).slice(0, summaryRows),
     '',
     ...ANSWER_LINES.flatMap((line) => wrapWords(line, width)),
   ]
@@ -56,5 +59,16 @@ export function answerPaneLines(pane: AnswerPane, width: number, rows: number): 
     lines.map((line) => padRight(line, width)),
     rows,
     width,
+  )
+}
+
+/** `wrapWords`, and a word wider than the pane (the args JSON) cut into pane-wide pieces rather than lost to the ellipsis. */
+function wrapHard(text: string, width: number): readonly string[] {
+  if (width <= 0) return [text]
+
+  return wrapWords(text, width).flatMap((line) =>
+    Array.from({ length: Math.max(1, Math.ceil(line.length / width)) }, (_, index) =>
+      line.slice(index * width, (index + 1) * width),
+    ),
   )
 }

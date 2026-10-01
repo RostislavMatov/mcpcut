@@ -3,7 +3,6 @@ import type { ActionSpec } from './catalogue/types.js'
 import { EXIT_OK, SESSION_LOST_NOTICE } from './constants.js'
 import { formOf } from './form.js'
 import type { KeyEvent } from './keys.js'
-import { paneWidthOf } from './layout.js'
 import type { Effect, Model, Msg, Pane, Step } from './model.js'
 import {
   acknowledgeToken,
@@ -33,6 +32,7 @@ import {
   noEffects,
   pageRowsOf,
   quit,
+  outputWidthOf,
   withMain,
 } from './update-step.js'
 
@@ -149,7 +149,7 @@ function applyKey(model: Model, screen: MainScreen, key: KeyEvent): Step {
  * else (Tab, a digit, `r`, `?`, `q`) does what it does on the action list.
  */
 function applyOutsidePick(model: Model, screen: MainScreen, key: KeyEvent): Step {
-  const panel = screen.output === undefined ? undefined : scrolledOutput(screen.output, key, model)
+  const panel = screen.output === undefined ? undefined : scrolledOutput(screen.output, key, model, screen.pane)
   if (panel === undefined) return applyActionKey(model, { ...screen, pane: ACTIONS_PANE }, key)
 
   return panel === screen.output ? noEffects(model) : withMain(model, screen, { output: panel })
@@ -324,13 +324,13 @@ function scrolled(model: Model, screen: MainScreen, key: KeyEvent): Step {
   const { output } = screen
   if (output === undefined) return noEffects(model)
 
-  const scrolledPanel = scrolledOutput(output, key, model)
+  const scrolledPanel = scrolledOutput(output, key, model, screen.pane)
   if (scrolledPanel === undefined || scrolledPanel === output) return noEffects(model)
 
   return withMain(model, screen, { output: scrolledPanel })
 }
 
-function scrolledOutput(panel: OutputPanel, key: KeyEvent, model: Model): OutputPanel | undefined {
+function scrolledOutput(panel: OutputPanel, key: KeyEvent, model: Model, pane: Pane): OutputPanel | undefined {
   const pageRows = pageRowsOf(model.size)
   switch (key.kind) {
     case 'pagedown':
@@ -342,7 +342,7 @@ function scrolledOutput(panel: OutputPanel, key: KeyEvent, model: Model): Output
     case 'end':
       return scrollToEnd(panel, pageRows)
     default:
-      return sideScrolledOutput(panel, key, paneWidthOf(model.size.columns))
+      return sideScrolledOutput(panel, key, outputWidthOf(model, pane))
   }
 }
 

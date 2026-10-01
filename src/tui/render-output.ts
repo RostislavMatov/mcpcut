@@ -1,5 +1,5 @@
 import { padRight, sanitizeLine, type Style } from './ansi.js'
-import { ACTIVE_MARKER, exitLine, INACTIVE_MARKER } from './constants.js'
+import { ACTIVE_MARKER, exitLine, INACTIVE_MARKER, MARK_GUTTER } from './constants.js'
 import { fillTo } from './layout.js'
 import { OUTPUT_CLIP_LEFT_MARKER, OUTPUT_CLIP_MARKER, type OutputPanel } from './output.js'
 
@@ -103,10 +103,12 @@ export interface OutputMark {
 }
 
 function markedLines(output: OutputPanel, width: number, rows: number, mark: OutputMark): readonly string[] {
-  const textWidth = Math.max(0, width - ACTIVE_MARKER.length)
+  const visible = visibleTextOf(output, rows)
+  if (width < MARK_GUTTER) return visible.map((text) => clippedLine(text, width, output.hScroll))
+
   // Row 0 is the command line; row k shows `lines[scroll + k - 1]`.
-  return visibleTextOf(output, rows).map((text, row) => {
-    const clipped = clippedLine(text, textWidth, output.hScroll)
+  return visible.map((text, row) => {
+    const clipped = clippedLine(text, width - MARK_GUTTER, output.hScroll)
     const picked = row >= OUTPUT_COMMAND_ROWS && output.scroll + row - OUTPUT_COMMAND_ROWS === mark.line
     return picked ? mark.style.inverse(`${ACTIVE_MARKER}${clipped}`) : `${INACTIVE_MARKER}${clipped}`
   })

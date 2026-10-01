@@ -1,11 +1,10 @@
 import { refreshActionOf } from './catalogue/index.js'
-import { paneWidthOf } from './layout.js'
 import type { Model, Msg, Step } from './model.js'
 import { outputPanelOf, replacedOutput, type RunResult } from './output.js'
 import { subscriptionOf } from './subscriptions.js'
 import { requestOf } from './update-form.js'
 import { pickAfterPoll } from './update-pick.js'
-import { type MainScreen, noEffects, pageRowsOf, withMain } from './update-step.js'
+import { type MainScreen, noEffects, outputWidthOf, pageRowsOf, withMain } from './update-step.js'
 
 /**
  * The messages that arrive without a key (mcpcut phase 5, Task 5): the console
@@ -77,7 +76,7 @@ function onPollResult(model: Model, screen: MainScreen, result: RunResult): Step
     screen.output,
     outputPanelOf(result),
     pageRowsOf(model.size),
-    paneWidthOf(model.size.columns),
+    outputWidthOf(model, screen.pane),
   )
 
   // On the open rows the same request stays selected (`update-pick.ts`).

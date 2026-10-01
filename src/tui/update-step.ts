@@ -1,7 +1,8 @@
 import type { SectionSpec } from './catalogue/types.js'
+import { MARK_GUTTER } from './constants.js'
 import { CONNECT_FORM_FLAG } from './constants-live.js'
 import type { KeyEvent } from './keys.js'
-import { bodyLayoutOf } from './layout.js'
+import { bodyLayoutOf, paneWidthOf } from './layout.js'
 import type {
   Effect,
   Model,
@@ -119,6 +120,12 @@ export function connectElsewhereStep(model: Model): Step {
  */
 export function pageRowsOf(size: TerminalSize): number {
   return Math.max(MIN_PAGE_ROWS, bodyLayoutOf(size).paneRows - PANE_CHROME_ROWS)
+}
+
+/** Columns of output text the pane shows: its width, less the gutter while the Approvals rows are open (`MARK_GUTTER`). */
+export function outputWidthOf(model: Model, pane: Pane): number {
+  const width = paneWidthOf(model.size.columns)
+  return pane.kind === 'pick' ? Math.max(0, width - MARK_GUTTER) : width
 }
 
 /** Every field of a main screen, with `undefined` meaning "this one is absent". */

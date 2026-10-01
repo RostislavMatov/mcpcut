@@ -105,6 +105,9 @@ export const CARET = '▏'
 export const ACTIVE_MARKER = '▸ '
 export const INACTIVE_MARKER = '  '
 
+/** Columns a marked output pane (Approvals ▸ list, rows open) gives its gutter: the sideways window is that much narrower. */
+export const MARK_GUTTER = ACTIVE_MARKER.length
+
 /**
  * The sentence the CLI prints after a one-time token, without its trailing
  * newline. The console does not know which commands mint tokens — it searches
