@@ -143,3 +143,29 @@ describe('wrap: missing "-- <cmd>"', () => {
     )
   })
 })
+
+describe('wrap: a server that cannot be started', () => {
+  test('names the failure and the next step, exit 1', async () => {
+    const io = fakeIo()
+
+    const exitCode = await runWrapCommand(['--no-policy', '--', 'mcpcut-no-such-command-xyz', '--port', '1'], io, {
+      runWrap: { dir, stderr: streamIo().stream },
+    })
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('Failed to spawn "mcpcut-no-such-command-xyz --port 1"')
+    expect(io.err()).toMatch(/not found.*full path/)
+  })
+
+  test('on Windows, says to start an npm command through cmd /c', async () => {
+    const io = fakeIo()
+
+    const exitCode = await runWrapCommand(['--no-policy', '--', 'mcpcut-no-such-command-xyz', '-y', 'pkg'], io, {
+      runWrap: { dir, stderr: streamIo().stream },
+      platform: 'win32',
+    })
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('-- cmd /c mcpcut-no-such-command-xyz -y pkg')
+  })
+})

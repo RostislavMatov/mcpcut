@@ -40,10 +40,26 @@ jobs:
           MCPCUT_VERSION: ${{ inputs.version || '0.2.4' }}
         run: node tools/smoke/published-smoke.mjs
 
+      # The same walk over a build of this checkout, packed the way npm
+      # publishes it: a fix is proven on every OS before it is released.
+      - name: Pack this checkout
+        if: always()
+        shell: bash
+        run: |
+          npm ci --no-audit --no-fund
+          npm pack --pack-destination "$RUNNER_TEMP"
+          node -e "const fs = require('node:fs'), path = require('node:path'); const dir = process.env.RUNNER_TEMP; const file = fs.readdirSync(dir).find((name) => /^mcpcut-.*\.tgz$/.test(name)); fs.appendFileSync(process.env.GITHUB_ENV, 'MCPCUT_TARBALL=' + path.join(dir, file) + '\n')"
+
+      - name: Smoke this checkout
+        if: always()
+        env:
+          MCPCUT_VERSION: ${{ inputs.version || '0.2.4' }}
+        run: node tools/smoke/published-smoke.mjs
+
       - name: Keep the results
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: smoke-${{ matrix.os }}
-          path: smoke-results.json
+          path: smoke-results-*.json
           if-no-files-found: warn

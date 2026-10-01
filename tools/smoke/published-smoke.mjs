@@ -6,7 +6,8 @@
  * first failure, so one run tells the whole story of a platform.
  *
  * Usage: MCPCUT_VERSION=0.2.4 node tools/smoke/published-smoke.mjs
- * Writes smoke-results.json next to the working directory and a Markdown
+ *        MCPCUT_TARBALL=/abs/mcpcut-x.y.z.tgz node tools/smoke/published-smoke.mjs  (a build not yet on npm)
+ * Writes smoke-results-<source>.json to the working directory and a Markdown
  * table to $GITHUB_STEP_SUMMARY when it is set. Exit code 1 if any step failed.
  */
 import { spawn, spawnSync } from 'node:child_process'
@@ -15,6 +16,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const VERSION = process.env.MCPCUT_VERSION ?? '0.2.4'
+const TARBALL = process.env.MCPCUT_TARBALL
+/** What npm installs and what `npx` runs: the registry version, or a packed build of this checkout. */
+const INSTALL_SPEC = TARBALL ?? `mcpcut@${VERSION}`
+const NPX_ARGS = TARBALL ? ['-y', `--package=${TARBALL}`, 'mcpcut'] : ['-y', `mcpcut@${VERSION}`]
+const SOURCE = TARBALL ? 'local build' : `npm ${VERSION}`
 const SERVER_PKG = '@modelcontextprotocol/server-filesystem'
 const IS_WINDOWS = process.platform === 'win32'
 /** The first start downloads the server through npx; give it room. */
@@ -44,7 +50,7 @@ function shell(command, timeout = CLI_TIMEOUT_MS) {
 }
 
 // Install once into a private prefix; `node <cli.js>` is what the npx shim runs.
-const install = shell(`npm i --no-audit --no-fund --prefix "${join(work, 'pkg')}" mcpcut@${VERSION} ${SERVER_PKG}`, 300_000)
+const install = shell(`npm i --no-audit --no-fund --prefix "${join(work, 'pkg')}" "${INSTALL_SPEC}" ${SERVER_PKG}`, 300_000)
 record('npm install mcpcut + server-filesystem', install.code === 0, install.out.trim().split('\n').slice(-3).join('\n'))
 const CLI = join(work, 'pkg', 'node_modules', 'mcpcut', 'dist', 'cli.js')
 const SERVER_JS = join(work, 'pkg', 'node_modules', '@modelcontextprotocol', 'server-filesystem', 'dist', 'index.js')
@@ -54,9 +60,14 @@ function mcpcut(args, timeout = CLI_TIMEOUT_MS) {
   return { code: r.status, stdout: r.stdout ?? '', out: `${r.stdout ?? ''}${r.stderr ?? ''}` }
 }
 
-/** A minimal MCP client over newline-delimited JSON-RPC on the wrapped server's stdio. */
-function openClient(innerCommand, innerArgs, extraWrapArgs = []) {
-  const child = spawn(process.execPath, [CLI, 'wrap', '--server', 'fs', ...extraWrapArgs, '--', innerCommand, ...innerArgs], {
+/** `node <cli.js> wrap --server fs [extra] -- <inner>`: what the npx shim ends up running. */
+function wrapLauncher(innerCommand, innerArgs, extraWrapArgs = []) {
+  return [process.execPath, [CLI, 'wrap', '--server', 'fs', ...extraWrapArgs, '--', innerCommand, ...innerArgs]]
+}
+
+/** A minimal MCP client over newline-delimited JSON-RPC on the launched process's stdio. */
+function openClient([command, args]) {
+  const child = spawn(command, args, {
     cwd: work,
     stdio: ['pipe', 'pipe', 'pipe'],
   })
@@ -119,9 +130,9 @@ async function handshake(client) {
   return names
 }
 
-/** See: one wrapped session that lists and reads, with the given inner command. */
-async function seeStep(label, innerCommand, innerArgs) {
-  const client = openClient(innerCommand, innerArgs)
+/** See: one wrapped session that lists and reads, started by the given launcher. */
+async function seeStep(label, launcher) {
+  const client = openClient(launcher)
   try {
     const names = await handshake(client)
     const readTool = names.includes('read_text_file') ? 'read_text_file' : 'read_file'
@@ -129,10 +140,10 @@ async function seeStep(label, innerCommand, innerArgs) {
     const read = await client.request('tools/call', { name: readTool, arguments: { path: join(project, 'hello.txt') } })
     const ok = JSON.stringify(listed).includes('hello.txt') && JSON.stringify(read).includes('hello from the smoke run')
     const closed = await client.close()
-    record(`See: wrap -- ${label}`, ok, `${names.length} tools; list+read ${ok ? 'answered' : 'WRONG'}; wrap exited ${closed.code} in ${closed.ms} ms`)
+    record(`See: ${label}`, ok, `${names.length} tools; list+read ${ok ? 'answered' : 'WRONG'}; wrap exited ${closed.code} in ${closed.ms} ms`)
   } catch (error) {
     await client.close()
-    record(`See: wrap -- ${label}`, false, `${error.message}\nstderr: ${client.stderr().trim().slice(-800)}`)
+    record(`See: ${label}`, false, `${error.message}\nstderr: ${client.stderr().trim().slice(-800)}`)
   }
 }
 
@@ -140,7 +151,7 @@ async function seeStep(label, innerCommand, innerArgs) {
 async function stopStep() {
   const policyPath = join(work, 'policy.json')
   writeFileSync(policyPath, JSON.stringify({ version: 1, defaultDecision: 'require-approval', classDefaults: { read: 'allow' }, quarantine: { enabled: false } }))
-  const client = openClient('node', [SERVER_JS, project], ['--policy', policyPath])
+  const client = openClient(wrapLauncher('node', [SERVER_JS, project], ['--policy', policyPath]))
   try {
     await handshake(client)
     const target = join(project, 'approved.txt')
@@ -187,21 +198,36 @@ function proveSteps() {
   }
 }
 
-const npxVersion = shell(`npx -y mcpcut@${VERSION} --version`)
-record('npx -y mcpcut --version', npxVersion.code === 0 && npxVersion.out.includes(VERSION), npxVersion.out.trim())
+/** On Windows the README's bare `npx` cannot be spawned; the failure must name the `cmd /c` fix. */
+async function windowsHintStep() {
+  const client = openClient(wrapLauncher('npx', ['-y', SERVER_PKG, project]))
+  const code = await Promise.race([client.exited, new Promise((r) => setTimeout(() => r('still running'), 30_000))])
+  if (code === 'still running') await client.close()
+  const hint = client.stderr().split('\n').find((line) => line.includes('cmd /c')) ?? ''
+  record('Windows: bare npx after -- names the cmd /c form', hint.includes(`-- cmd /c npx -y ${SERVER_PKG}`), `wrap exited ${code}; ${hint.trim() || client.stderr().trim().slice(-400)}`)
+}
 
-await seeStep('npx -y server-filesystem (the README form)', 'npx', ['-y', SERVER_PKG, project])
-if (IS_WINDOWS) await seeStep('cmd /c npx -y server-filesystem', 'cmd', ['/c', 'npx', '-y', SERVER_PKG, project])
-await seeStep('node <server>/dist/index.js', 'node', [SERVER_JS, project])
+const npxVersion = shell(`npx ${NPX_ARGS.join(' ')} --version`)
+record(`npx ${NPX_ARGS.join(' ')} --version`, npxVersion.code === 0 && npxVersion.out.includes(VERSION), npxVersion.out.trim())
+
+if (IS_WINDOWS) {
+  await windowsHintStep()
+  // The README's Windows line, as Claude Code spawns it: cmd /c in front of both npx.
+  await seeStep('cmd /c npx mcpcut wrap -- cmd /c npx server (the README Windows line)',
+    ['cmd', ['/c', 'npx', ...NPX_ARGS, 'wrap', '--server', 'fs', '--', 'cmd', '/c', 'npx', '-y', SERVER_PKG, project]])
+} else {
+  await seeStep('npx mcpcut wrap -- npx server (the README line)', ['npx', [...NPX_ARGS, 'wrap', '--server', 'fs', '--', 'npx', '-y', SERVER_PKG, project]])
+}
+await seeStep('wrap -- node <server>/dist/index.js', wrapLauncher('node', [SERVER_JS, project]))
 journalSteps()
 await stopStep()
 proveSteps()
 
 const failed = results.filter((r) => !r.ok)
-writeFileSync(join(process.cwd(), 'smoke-results.json'), JSON.stringify({ platform: process.platform, node: process.version, version: VERSION, results }, null, 2))
+writeFileSync(join(process.cwd(), `smoke-results-${TARBALL ? 'local' : 'npm'}.json`), JSON.stringify({ platform: process.platform, node: process.version, source: SOURCE, results }, null, 2))
 if (process.env.GITHUB_STEP_SUMMARY) {
   const rows = results.map((r) => `| ${r.ok ? '✅' : '❌'} | ${r.step} | ${r.detail.split('\n')[0].replaceAll('|', '\\|')} |`)
-  appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### mcpcut@${VERSION} on ${process.platform} (${process.version})\n\n| | Step | Detail |\n|---|---|---|\n${rows.join('\n')}\n\n`)
+  appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### mcpcut (${SOURCE}) on ${process.platform} (${process.version})\n\n| | Step | Detail |\n|---|---|---|\n${rows.join('\n')}\n\n`)
 }
-console.log(`\n${results.length - failed.length}/${results.length} steps passed on ${process.platform}`)
+console.log(`\n${results.length - failed.length}/${results.length} steps passed on ${process.platform} (${SOURCE})`)
 process.exit(failed.length === 0 ? 0 : 1)

@@ -3,6 +3,7 @@ import { mkdir, open, readFile, rename, rm, stat } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { JOURNAL_DIR_MODE, JOURNAL_FILE_MODE } from '../config.js'
+import { syncDir } from '../sync-dir.js'
 import {
   acquireFileLock,
   ownsFileLock,
@@ -139,32 +140,6 @@ async function writeAndSync(path: string, content: string): Promise<void> {
   try {
     await handle.writeFile(content, { encoding: 'utf8' })
     await handle.sync()
-  } finally {
-    await handle.close()
-  }
-}
-
-/**
- * Flushes a directory entry so a completed rename survives a power loss.
- * Some platforms and filesystems refuse to fsync a directory at all; that is
- * a platform limitation, not a vault failure, so those specific codes are
- * tolerated while anything else (a genuinely missing or unreadable directory)
- * propagates.
- */
-const DIR_SYNC_UNSUPPORTED_CODES = ['EPERM', 'EINVAL', 'EISDIR', 'ENOTSUP', 'EACCES', 'EBADF']
-
-async function syncDir(dir: string): Promise<void> {
-  let handle
-  try {
-    handle = await open(dir, 'r')
-  } catch (error: unknown) {
-    if (DIR_SYNC_UNSUPPORTED_CODES.some((code) => hasErrorCode(error, code))) return
-    throw error
-  }
-  try {
-    await handle.sync()
-  } catch (error: unknown) {
-    if (!DIR_SYNC_UNSUPPORTED_CODES.some((code) => hasErrorCode(error, code))) throw error
   } finally {
     await handle.close()
   }

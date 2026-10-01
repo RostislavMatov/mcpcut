@@ -6,6 +6,7 @@ import {
   DEFAULT_FORWARDED_SIGNALS,
   installSignalForwarding,
   mapExitCode,
+  SpawnServerError,
   spawnServer,
   type ServerHandle,
 } from '../../src/proxy/spawn.js'
@@ -328,5 +329,23 @@ describe('spawnServer env option', () => {
     const errorText = caught instanceof Error ? `${String(caught)}\n${caught.stack ?? ''}` : ''
     expect(errorText).not.toContain(secretMarker)
     expect(Buffer.concat(stderrChunks).toString('utf8')).not.toContain(secretMarker)
+  })
+})
+
+describe('spawnServer failures', () => {
+  test('a missing command rejects exitCode() with a SpawnServerError naming the command, its args and the errno code', async () => {
+    const handle = spawnServer('mcpcut-no-such-command-xyz', ['--flag', 'value'])
+
+    const error: unknown = await handle.exitCode().catch((caught: unknown) => caught)
+
+    expect(error).toBeInstanceOf(SpawnServerError)
+    expect(error).toMatchObject({ command: 'mcpcut-no-such-command-xyz', args: ['--flag', 'value'], code: 'ENOENT' })
+  })
+
+  test('a command Node refuses synchronously surfaces as a SpawnServerError too', () => {
+    // On Windows, a `.cmd` script without a shell is refused synchronously
+    // (EINVAL, since Node 20.12); an argument Node rejects outright is the
+    // portable way to reach the same path.
+    expect(() => spawnServer('bad\u0000command')).toThrow(SpawnServerError)
   })
 })

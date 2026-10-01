@@ -16,6 +16,7 @@ import { signReportManifest, type ReportSignatureFile } from '../journal/report-
 import { isValidSessionId } from '../journal/session-id.js'
 import { loadSigningPrivateKey } from '../journal/signing.js'
 import type { SqliteHandle } from '../store/sqlite.js'
+import { syncDir } from '../sync-dir.js'
 import type { ExportCliIo } from './export-cmd.js'
 import { anchorHeadHint, keygenHint, noJournalMessage, verifyReportHint } from './next-step.js'
 import { prepareReportOutDir, type PreparedOutDir } from './report-out-dir.js'
@@ -131,7 +132,7 @@ async function writeReport(
     // The FILES are each fsynced as they close, but a crash could still lose
     // the directory entries naming them -- leaving a manifest that claims
     // files the directory does not list (wave-5 review, MEDIUM).
-    await syncDirectory(outDir.path)
+    await syncDir(outDir.path)
 
     io.stdout.write(successSummary(outDir.realPath, manifest, signature, report.pools, report.outsidePools))
     return EXIT_OK
@@ -275,16 +276,6 @@ async function writeReportFile(path: string, content: string, written: string[])
     await fileHandle.sync()
   } finally {
     await fileHandle.close()
-  }
-}
-
-/** fsyncs the directory itself, so the entries naming the files survive a crash as the files' contents already do. */
-async function syncDirectory(path: string): Promise<void> {
-  const dirHandle = await open(path, 'r')
-  try {
-    await dirHandle.sync()
-  } finally {
-    await dirHandle.close()
   }
 }
 

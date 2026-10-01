@@ -1,4 +1,4 @@
-import { join } from 'node:path'
+import { join, win32 } from 'node:path'
 import { PRODUCT_VERSION } from '../brand.js'
 import { POLICY_FILE_NAME } from '../policy/constants.js'
 import { formatReadableField, replaceControlChars } from '../journal/format.js'
@@ -186,4 +186,45 @@ export function connectNoPolicyNotice(journalDir: string): string {
 /** `wrap`'s usage example: a real server command on the directory the operator is in. */
 export function wrapExampleLine(cwd: string): string {
   return `Example: ${cliCommand()} wrap --server fs -- npx -y @modelcontextprotocol/server-filesystem ${shellArg(cwd)}\n`
+}
+
+/** What `wrap` tried to start and how the platform refused it (a `SpawnServerError`'s fields). */
+export interface SpawnFailure {
+  readonly command: string
+  readonly args: readonly string[]
+  readonly code: string | undefined
+}
+
+/** npm installs its commands on Windows as `.cmd` scripts, which only a shell can start. */
+const WINDOWS_SCRIPT_EXTENSIONS: readonly string[] = ['', '.cmd', '.bat']
+
+/** One word for cmd or PowerShell: double-quoted when it has a space or a quote, control characters replaced. */
+function windowsArg(value: string): string {
+  const safe = replaceControlChars(value)
+  return /[\s"]/.test(safe) ? `"${safe.replaceAll('"', '\\"')}"` : safe
+}
+
+/**
+ * The next step after `wrap` failed to start the server. On Windows `npx`
+ * and every other npm command is a `.cmd` script that cannot be started
+ * without a shell, so the line spells out the same server behind `cmd /c` —
+ * the form Claude Code's own docs give for Windows (smoke of 0.2.4 on
+ * Windows: the README command died on `spawn npx ENOENT`). Elsewhere a
+ * missing command is named with where to fix it. Empty when there is nothing
+ * to add.
+ */
+export function spawnFailureHint(failure: SpawnFailure, platform: NodeJS.Platform = process.platform): string {
+  const isNotFound = failure.code === 'ENOENT'
+  const isWindowsScript =
+    platform === 'win32' &&
+    (isNotFound || failure.code === 'EINVAL') &&
+    WINDOWS_SCRIPT_EXTENSIONS.includes(win32.extname(failure.command).toLowerCase())
+  if (isWindowsScript) {
+    const server = [failure.command, ...failure.args].map(windowsArg).join(' ')
+    return `  On Windows, start npm commands such as npx through cmd: put "cmd /c" right after "--", as in: -- cmd /c ${server}\n`
+  }
+  if (isNotFound) {
+    return `  ${shellArg(failure.command)} was not found: install it, or give its full path after "--"\n`
+  }
+  return ''
 }

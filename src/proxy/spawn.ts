@@ -1,7 +1,13 @@
-import { spawn as nodeSpawn } from 'node:child_process'
+import {
+  spawn as nodeSpawn,
+  type ChildProcessByStdio,
+  type SpawnOptionsWithStdioTuple,
+  type StdioPipe,
+} from 'node:child_process'
 import { constants as osConstants } from 'node:os'
 import type { Readable, Writable } from 'node:stream'
 import { SIGKILL_ESCALATION_MS } from '../config.js'
+import { errnoCodeOf } from '../errno.js'
 
 /**
  * Child process lifecycle for the wrapped MCP server.
@@ -50,11 +56,22 @@ export interface SpawnServerOptions {
   env?: 'inherit' | Readonly<Record<string, string>>
 }
 
-/** Raised when the underlying spawn fails (e.g. ENOENT for a missing binary). */
+/**
+ * Raised when the underlying spawn fails (e.g. ENOENT for a missing binary,
+ * EINVAL for a Windows `.cmd` script started without a shell). Carries what
+ * was spawned and the errno code, so the CLI can say what to do next.
+ */
 export class SpawnServerError extends Error {
+  readonly command: string
+  readonly args: readonly string[]
+  readonly code: string | undefined
+
   constructor(command: string, args: readonly string[], cause: unknown) {
     super(`Failed to spawn "${[command, ...args].join(' ')}": ${describeCause(cause)}`, { cause })
     this.name = 'SpawnServerError'
+    this.command = command
+    this.args = [...args]
+    this.code = errnoCodeOf(cause)
   }
 }
 
@@ -73,6 +90,19 @@ export function mapExitCode(code: number | null, signal: NodeJS.Signals | null):
 }
 
 /**
+ * Node reports most spawn failures through the child's 'error' event, but
+ * refuses some synchronously (a Windows `.cmd` without a shell, an argument it
+ * cannot pass): both reach the caller as a SpawnServerError.
+ */
+function spawnOrThrow(command: string, args: readonly string[], options: SpawnOptionsWithStdioTuple<StdioPipe, StdioPipe, StdioPipe>): ChildProcessByStdio<Writable, Readable, Readable> {
+  try {
+    return nodeSpawn(command, args, options)
+  } catch (error: unknown) {
+    throw new SpawnServerError(command, args, error)
+  }
+}
+
+/**
  * Spawns the wrapped MCP server as a child process with piped stdio.
  *
  * Env injection point: `'inherit'` (default) passes the full `process.env`.
@@ -88,7 +118,7 @@ export function spawnServer(
   opts: SpawnServerOptions = {},
 ): ServerHandle {
   const env = opts.env === undefined || opts.env === 'inherit' ? process.env : opts.env
-  const child = nodeSpawn(command, args, {
+  const child = spawnOrThrow(command, args, {
     stdio: ['pipe', 'pipe', 'pipe'],
     env,
     ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),

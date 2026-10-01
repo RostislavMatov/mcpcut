@@ -9,3 +9,7 @@ dashboard.html
 .playwright-mcp/
 .claude/skills/
 *.tgz
+
+# Results of tools/smoke/published-smoke.mjs
+smoke-results-*.json
+smoke-results.json

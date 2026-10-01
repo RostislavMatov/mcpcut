@@ -4,9 +4,10 @@ import { loadPolicy, type LoadPolicyOptions } from '../policy/load.js'
 import type { PolicyProvider } from '../policy/reload.js'
 import { resolvePolicySource } from '../policy/source.js'
 import { autoServerName } from '../proxy/wire-policy.js'
+import { SpawnServerError } from '../proxy/spawn.js'
 import { runWrap, type RunWrapOptions } from '../proxy/wrap.js'
 import { preflightDatabases } from '../store/preflight.js'
-import { heldCallNotice, noPolicyNotice, sessionJournaledNotice, wrapExampleLine } from './next-step.js'
+import { heldCallNotice, noPolicyNotice, sessionJournaledNotice, spawnFailureHint, wrapExampleLine } from './next-step.js'
 import { formatPolicyLoadErrors } from './policy-load-errors.js'
 import { createReloadingPolicy } from './policy-reload.js'
 
@@ -39,6 +40,8 @@ export interface WrapCommandOptions {
   readonly runWrap?: Omit<RunWrapOptions, 'policy' | 'serverName' | 'failClosed'>
   /** Forwarded to `loadPolicy` unchanged (minus `explicitPath`, which comes from `--policy`). */
   readonly loadPolicy?: Omit<LoadPolicyOptions, 'explicitPath'>
+  /** The platform a spawn failure's hint is written for. Defaults to `process.platform`; a seam for tests. */
+  readonly platform?: NodeJS.Platform
 }
 
 const DEFAULT_IO: WrapCliIo = { stderr: process.stderr }
@@ -100,16 +103,24 @@ export async function runWrapCommand(
     io.stderr.write(`wrap: server name is ${autoServerName(childCommand, childArgs)}; pass --server <name> for a readable one\n`)
   }
 
-  return runWrap(childCommand, childArgs, {
-    // A held call is named on stderr with the command that releases it: the
-    // Stop step used to wait out its whole window in silence (0.2.3).
-    approvalNotice: heldCallNotice,
-    sessionEndNotice: sessionJournaledNotice,
-    ...opts.runWrap,
-    ...(flags.server !== undefined ? { serverName: flags.server } : {}),
-    ...(flags.failClosed ? { failClosed: true } : {}),
-    ...(policyOutcome.policy !== undefined ? { policy: policyOutcome.policy } : {}),
-  })
+  try {
+    return await runWrap(childCommand, childArgs, {
+      // A held call is named on stderr with the command that releases it: the
+      // Stop step used to wait out its whole window in silence (0.2.3).
+      approvalNotice: heldCallNotice,
+      sessionEndNotice: sessionJournaledNotice,
+      ...opts.runWrap,
+      ...(flags.server !== undefined ? { serverName: flags.server } : {}),
+      ...(flags.failClosed ? { failClosed: true } : {}),
+      ...(policyOutcome.policy !== undefined ? { policy: policyOutcome.policy } : {}),
+    })
+  } catch (error: unknown) {
+    if (!(error instanceof SpawnServerError)) throw error
+    // The server never started: say why and what to type instead (0.2.4 on
+    // Windows answered the README command with a bare `spawn npx ENOENT`).
+    io.stderr.write(`${error.message}\n${spawnFailureHint(error, opts.platform)}`)
+    return 1
+  }
 }
 
 interface WrapFlags {

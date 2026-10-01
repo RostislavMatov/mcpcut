@@ -14,6 +14,7 @@ import {
   resolveApprovalHint,
   shellArg,
   showSessionHint,
+  spawnFailureHint,
   unknownSessionMessage,
   verifyReportHint,
 } from '../../src/cli/next-step.js'
@@ -192,5 +193,43 @@ describe('the Prove and Stop steps name what comes next (0.2.3)', () => {
     expect(noAdminsYetNotice()).toContain(`${NPX} admin add`)
     asInstalled()
     expect(noAdminsYetNotice()).toContain('"mcpcut admin add"')
+  })
+})
+
+describe('spawnFailureHint: the wrapped server could not be started', () => {
+  const SERVER = ['-y', '@modelcontextprotocol/server-filesystem', 'C:\\Users\\me\\project']
+
+  test('on Windows, an npm command (npx) gets the cmd /c form with its own arguments', () => {
+    const hint = spawnFailureHint({ command: 'npx', args: SERVER, code: 'ENOENT' }, 'win32')
+
+    expect(hint).toContain('-- cmd /c npx -y @modelcontextprotocol/server-filesystem C:\\Users\\me\\project')
+    expect(hint.endsWith('\n')).toBe(true)
+  })
+
+  test('on Windows, a .cmd refused without a shell (EINVAL) gets the same form', () => {
+    expect(spawnFailureHint({ command: 'npx.cmd', args: [], code: 'EINVAL' }, 'win32')).toContain('-- cmd /c npx.cmd')
+  })
+
+  test('on Windows, an argument with a space is double-quoted, the way cmd and PowerShell read it', () => {
+    const hint = spawnFailureHint({ command: 'npx', args: ['-y', 'pkg', 'C:\\My Project'], code: 'ENOENT' }, 'win32')
+
+    expect(hint).toContain('-- cmd /c npx -y pkg "C:\\My Project"')
+  })
+
+  test('elsewhere, a missing command says to install it or give its full path', () => {
+    const hint = spawnFailureHint({ command: 'uvx', args: ['some-server'], code: 'ENOENT' }, 'linux')
+
+    expect(hint).toContain('uvx')
+    expect(hint).toMatch(/not found/)
+    expect(hint).toMatch(/full path/)
+    expect(hint).not.toContain('cmd /c')
+  })
+
+  test('a Windows .exe that is missing is not sent to cmd', () => {
+    expect(spawnFailureHint({ command: 'python.exe', args: [], code: 'ENOENT' }, 'win32')).not.toContain('cmd /c')
+  })
+
+  test('a failure that is not about finding the command adds nothing', () => {
+    expect(spawnFailureHint({ command: 'npx', args: [], code: 'EACCES' }, 'linux')).toBe('')
   })
 })
