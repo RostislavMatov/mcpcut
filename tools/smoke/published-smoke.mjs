@@ -35,6 +35,10 @@ const FAKE_SECRET = ['ghp', '_', 'Smoke'.repeat(7), 'X'].join('')
 
 const results = []
 const work = realpathSync.native(mkdtempSync(join(tmpdir(), 'mcpcut-smoke-')))
+// Every mcpcut this script starts journals, queues approvals and reads keys
+// here — never in the data dir of whoever runs it (a developer's own install
+// took four smoke sessions and a pending approval before this line, 2026-10-01).
+process.env.MCPCUT_DATA_DIR = join(work, 'mcpcut-data')
 const project = join(work, 'project')
 mkdirSync(project)
 writeFileSync(join(project, 'hello.txt'), `hello from the smoke run\ntoken=${FAKE_SECRET}\n`)
@@ -207,6 +211,35 @@ async function windowsHintStep() {
   record('Windows: bare npx after -- names the cmd /c form', hint.includes(`-- cmd /c npx -y ${SERVER_PKG}`), `wrap exited ${code}; ${hint.trim() || client.stderr().trim().slice(-400)}`)
 }
 
+/**
+ * adopt (a build of this checkout only — the registry versions predate it):
+ * a Claude Code config in a throwaway home is shown, rewritten, the written
+ * line is started the way the client starts it and must answer, and undo puts
+ * the file back as it was.
+ */
+async function adoptStep() {
+  const home = join(work, 'adopt-home')
+  mkdirSync(home)
+  const config = join(home, '.claude.json')
+  const original = { numStartups: 1, mcpServers: { fs: { command: 'npx', args: ['-y', SERVER_PKG, project] } } }
+  writeFileSync(config, `${JSON.stringify(original, null, 2)}\n`)
+  const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: join(home, 'AppData', 'Roaming') }
+  const adopt = (args) => {
+    const r = spawnSync(process.execPath, [CLI, 'adopt', ...args], { encoding: 'utf8', cwd: project, env, timeout: CLI_TIMEOUT_MS })
+    return { code: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` }
+  }
+  const shown = adopt([])
+  record('adopt: shows the change, writes nothing', shown.code === 0 && /fs\s+wrap/.test(shown.out) && readFileSync(config, 'utf8').includes('"npx"'), shown.out.trim().split('\n').slice(0, 6).join('\n'))
+  const applied = adopt(['--apply'])
+  const entry = JSON.parse(readFileSync(config, 'utf8')).mcpServers.fs
+  const line = `${entry.command} ${entry.args.join(' ')}`
+  record('adopt --apply: the entry starts mcpcut wrap', applied.code === 0 && entry.args.includes('wrap'), `${line}\n${applied.out.trim().split('\n').slice(-2).join('\n')}`)
+  await seeStep('the line adopt wrote, started as the client starts it', [entry.command, entry.args])
+  const undone = adopt(['--undo'])
+  const back = JSON.stringify(JSON.parse(readFileSync(config, 'utf8'))) === JSON.stringify(original)
+  record('adopt --undo: the file is as it was', undone.code === 0 && back, undone.out.trim())
+}
+
 /** The version npm actually installed: the registry pin, or whatever the packed checkout says. */
 function installedVersion() {
   try {
@@ -231,6 +264,7 @@ await seeStep('wrap -- node <server>/dist/index.js', wrapLauncher('node', [SERVE
 journalSteps()
 await stopStep()
 proveSteps()
+if (TARBALL) await adoptStep()
 
 const failed = results.filter((r) => !r.ok)
 writeFileSync(join(process.cwd(), `smoke-results-${TARBALL ? 'local' : 'npm'}.json`), JSON.stringify({ platform: process.platform, node: process.version, source: SOURCE, results }, null, 2))
