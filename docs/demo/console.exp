@@ -1,0 +1,16 @@
+# Opens the console (a bare `mcpcut` on a terminal) for docs/demo/console.tape and
+# plays the operator's clipboard: each Ctrl+V pastes the next line of $DEMO/paste
+# (the admin token at the masked sign-in, then the held call's id), so no token is
+# typed into the recording or put on the recording machine's clipboard.
+# Every other key goes to the console as typed.
+set timeout -1
+set pastes [split [string trim [exec cat $env(DEMO)/paste]] "\n"]
+spawn -noecho mcpcut
+interact {
+  \x16 {
+    if {[llength $pastes] > 0} {
+      send -- [lindex $pastes 0]
+      set pastes [lrange $pastes 1 end]
+    }
+  }
+}
