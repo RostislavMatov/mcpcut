@@ -113,6 +113,23 @@ describe('undoAdopt', () => {
     expect(await undoAdopt({ dataDir })).toEqual({ kind: 'nothing' })
   })
 
+  test('a stray file among the run folders is not a run', async () => {
+    await writeJson(CLAUDE_JSON(), { mcpServers: { fs: FS } })
+    await adopt()
+    await writeFile(join(dataDir, 'adopt', 'zz-notes.txt'), 'mine')
+
+    expect(await undoAdopt({ dataDir })).toMatchObject({ kind: 'done', restored: [{ servers: ['fs'] }] })
+  })
+
+  test('a manifest naming a relative file is refused', async () => {
+    const runDir = join(dataDir, 'adopt', '2026-10-02T00-00-00.000Z')
+    await mkdir(runDir, { recursive: true })
+    const change = { file: 'relative/.mcp.json', path: ['mcpServers'], name: 'x', client: 'cursor', scope: 's', before: { command: 'a' }, after: { command: 'b' } }
+    await writeFile(join(runDir, 'manifest.json'), JSON.stringify({ version: 1, createdAt: 'x', changes: [change] }))
+
+    expect(await undoAdopt({ dataDir })).toMatchObject({ kind: 'problem', reason: expect.stringMatching(/not one adopt wrote/) })
+  })
+
   test('nothing adopted yet: nothing to undo', async () => {
     expect(await undoAdopt({ dataDir })).toEqual({ kind: 'nothing' })
   })

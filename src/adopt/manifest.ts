@@ -1,5 +1,5 @@
 import { readFile, readdir } from 'node:fs/promises'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import { z } from 'zod'
 import { errnoCodeOf } from '../errno.js'
 import { writeOwnerOnlyFile } from './files.js'
@@ -7,8 +7,10 @@ import { writeOwnerOnlyFile } from './files.js'
 /**
  * The record `adopt --apply` leaves for `adopt --undo`: which entry of which
  * file it changed, from what command line to what. Command lines only —
- * `env` is where configs keep API keys, and adopt never changes it. Read back
- * through a schema: it is a file on disk, not trusted input.
+ * `env`, where configs keep most keys, is never copied here (an argument may
+ * still hold one, so the file is owner-only, next to the copies). Read back
+ * through a schema: it is a file on disk, not trusted input; a `file` that is
+ * not an absolute path is refused, so undo never resolves one against its cwd.
  */
 
 export const ADOPT_DIR_NAME = 'adopt'
@@ -19,7 +21,7 @@ const JSON_INDENT = 2
 const commandLineSchema = z.object({ command: z.string(), args: z.array(z.string()).optional() })
 
 const changeSchema = z.object({
-  file: z.string(),
+  file: z.string().refine((file) => isAbsolute(file)),
   path: z.array(z.string()),
   name: z.string(),
   client: z.enum(['claude-code', 'cursor', 'claude-desktop']),
@@ -57,7 +59,9 @@ async function readManifest(dir: string): Promise<LatestManifest | undefined> {
     text = await readFile(join(dir, MANIFEST_FILE_NAME), 'utf8')
   } catch (error) {
     // A run whose every write failed leaves copies but no manifest: nothing of it to undo.
-    if (errnoCodeOf(error) === 'ENOENT') return undefined
+    // ENOTDIR: a stray file among the run folders, not a run.
+    const code = errnoCodeOf(error)
+    if (code === 'ENOENT' || code === 'ENOTDIR') return undefined
     return { kind: 'problem', dir, reason: `could not read ${MANIFEST_FILE_NAME} (${errnoCodeOf(error) ?? String(error)})` }
   }
   let raw: unknown

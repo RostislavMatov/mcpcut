@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
@@ -70,6 +70,46 @@ describe('adopt (dry run)', () => {
     expect(io.out()).not.toContain('ghp_abcdefghijklmnopqrstuvwxyz0123456789')
   })
 
+  test('a value after a flag that names a secret is redacted too', async () => {
+    await writeJson(CLAUDE_JSON(), { mcpServers: { s: { command: 'node', args: ['s.js', '--password', 'hunter2xyz', '--token', 'Zk3jQ9vLw2Xa8Rt5Yp1N', '--api-key', 'abc123def', '--port', '8080'] } } })
+    const io = fakeIo()
+
+    await run([], io)
+
+    expect(io.out()).not.toMatch(/hunter2xyz|Zk3jQ9vLw2Xa8Rt5Yp1N|abc123def/)
+    expect(io.out()).toContain('--password [REDACTED] --token [REDACTED] --api-key [REDACTED] --port 8080')
+  })
+
+  test('escape sequences in a server name cannot redraw the table', async () => {
+    await writeJson(join(cwd, '.mcp.json'), { mcpServers: { 'fs\u001b[2K\u001b[1A  already  starts through mcpcut': { command: 'node' } } })
+    const io = fakeIo()
+
+    await run([], io)
+
+    expect(io.out()).not.toContain('\u001b')
+    expect(io.out()).toMatch(/fs\?\[2K\?\[1A {2}already {2}starts through mcpcut\s+wrap/)
+  })
+
+  test('a symlinked config shows the file the write lands on', async () => {
+    const real = join(root, 'elsewhere', 'mcp.json')
+    await writeJson(real, { mcpServers: { fs: FS } })
+    await symlink(real, join(cwd, '.mcp.json'))
+    const io = fakeIo()
+
+    await run([], io)
+
+    expect(io.out()).toMatch(/\.mcp\.json -> .*elsewhere\/mcp\.json \(a symlink: that file is the one written\)/)
+  })
+
+  test('on Windows a server whose arguments cmd would parse is named and skipped', async () => {
+    await writeJson(CLAUDE_JSON(), { mcpServers: { pg: { command: 'uvx', args: ['postgres-mcp', 'postgresql://h/db?a=1&b=2'] } } })
+    const io = fakeIo()
+
+    await run([], io, 'win32')
+
+    expect(io.out()).toMatch(/pg\s+skip\s+has characters cmd reads as syntax on Windows/)
+  })
+
   test('on Windows the launcher shown is cmd /c npx', async () => {
     await writeJson(CLAUDE_JSON(), { mcpServers: { fs: FS } })
     const io = fakeIo()
@@ -124,6 +164,39 @@ describe('adopt --apply', () => {
 
     expect(await readFile(CLAUDE_JSON(), 'utf8')).not.toContain('mcpcut@')
     expect(await readFile(join(home, '.cursor', 'mcp.json'), 'utf8')).toContain('mcpcut@9.9.9')
+  })
+})
+
+describe('adopt: when the disk says no', () => {
+  test('copies cannot be kept: nothing changed, the data dir named, exit 1', async () => {
+    await writeJson(CLAUDE_JSON(), { mcpServers: { fs: FS } })
+    await mkdir(dataDir, { recursive: true })
+    await chmod(dataDir, 0o500)
+    const io = fakeIo()
+
+    try {
+      expect(await run(['--apply'], io)).toBe(1)
+    } finally {
+      await chmod(dataDir, 0o700)
+    }
+
+    expect(io.err()).toMatch(/^Nothing changed: could not keep copies there \(EACCES\) — .*\(mcpcut's data dir\) must be writable\.\nThen: /)
+    expect(await readFile(CLAUDE_JSON(), 'utf8')).not.toContain('mcpcut@')
+  })
+
+  test('an unreadable run folder ends undo with one line, not a stack trace', async () => {
+    const adoptDir = join(dataDir, 'adopt')
+    await mkdir(adoptDir, { recursive: true })
+    await chmod(adoptDir, 0o000)
+    const io = fakeIo()
+
+    try {
+      expect(await run(['--undo'], io)).toBe(1)
+    } finally {
+      await chmod(adoptDir, 0o700)
+    }
+
+    expect(io.err()).toBe(`adopt could not finish (EACCES).\nTry again: ${cliCommand()} adopt --undo\n`)
   })
 })
 

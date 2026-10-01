@@ -1,3 +1,4 @@
+import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { errnoCodeOf } from '../errno.js'
 import { locationsOf, type AdoptPlace, type ClientId, type ServersLocation } from './clients.js'
@@ -5,12 +6,13 @@ import { launcherOf } from './entry.js'
 import {
   ensureOwnerOnlyDir,
   readConfigFile,
+  linkTargetOf,
   renderLike,
   replaceFileAtomically,
   writeOwnerOnlyCopy,
   type ConfigFile,
 } from './files.js'
-import { ADOPT_DIR_NAME, manifestOf, writeManifest, type ManifestChange } from './manifest.js'
+import { ADOPT_DIR_NAME, MANIFEST_FILE_NAME, manifestOf, writeManifest, type ManifestChange } from './manifest.js'
 import { commandLineOf, planServers, serversAt, withEntries, type CommandLine, type PlanRow } from './plan.js'
 
 /**
@@ -49,6 +51,8 @@ export interface ScanResult {
   readonly looked: readonly string[]
   /** What each file held at scan time; `--apply` writes only over exactly this. */
   readonly files: ReadonlyMap<string, ConfigFile>
+  /** Files that are symlinks, to the file the write would really land on — shown in the dry run. */
+  readonly linkTargets: ReadonlyMap<string, string>
 }
 
 export interface WrittenFile {
@@ -61,9 +65,11 @@ export interface ApplyResult {
   readonly failures: readonly FileProblem[]
   /** Present when something was written: where the copies and the manifest are. */
   readonly backupDir?: string
+  /** The copies could not be kept, so nothing was changed. */
+  readonly copyProblem?: FileProblem
 }
 
-const CHANGED_SINCE_SCAN = 'changed while adopt ran (the client may have rewritten it); run adopt again'
+const CHANGED_SINCE_SCAN = 'it changed while adopt ran (the client may have rewritten it); run adopt again'
 
 export async function scanConfigs(opts: AdoptOptions): Promise<ScanResult> {
   const launcher = launcherOf(opts.version, opts.place.platform)
@@ -80,7 +86,10 @@ export async function scanConfigs(opts: AdoptOptions): Promise<ScanResult> {
     const rows = servers === undefined ? [] : planServers(servers, launcher, opts.place.platform)
     return rows.length > 0 ? [{ location, rows }] : []
   })
-  return { locations, problems, looked, files }
+  const found = looked.filter((file) => files.get(file)?.kind === 'ok')
+  const targets = await Promise.all(found.map(async (file) => [file, await linkTargetOf(file)] as const))
+  const linkTargets = new Map(targets.flatMap(([file, target]) => (target === undefined ? [] : [[file, target] as const])))
+  return { locations, problems, looked, files, linkTargets }
 }
 
 function wrapRowsOf(scanned: ScannedLocation): readonly PlanRow[] {
@@ -115,46 +124,82 @@ function changesOf(scanned: ScannedLocation): readonly ManifestChange[] {
 }
 
 function writeFailureOf(error: unknown): string {
-  return `could not write it (${errnoCodeOf(error) ?? String(error)})`
+  return `could not write it (${errnoCodeOf(error) ?? String(error)}); close the client that holds it and run adopt again`
 }
 
-interface FileOutcome {
-  readonly written?: WrittenFile
-  readonly failure?: FileProblem
+/** A file to write: unchanged since the scan, with its new text ready. */
+interface ReadyFile {
+  readonly file: string
+  readonly original: string
+  readonly next: string
+  readonly servers: readonly string[]
   readonly changes: readonly ManifestChange[]
 }
 
-async function adoptFile(file: string, group: readonly ScannedLocation[], scan: ScanResult, backupDir: string, index: number): Promise<FileOutcome> {
+async function readyFileOf(file: string, group: readonly ScannedLocation[], scan: ScanResult): Promise<ReadyFile | FileProblem> {
   const scanned = scan.files.get(file)
   const current = await readConfigFile(file)
-  if (scanned?.kind !== 'ok' || current.kind !== 'ok' || current.text !== scanned.text) {
-    return { failure: { file, reason: CHANGED_SINCE_SCAN }, changes: [] }
+  if (scanned?.kind !== 'ok' || current.kind !== 'ok' || current.text !== scanned.text) return { file, reason: CHANGED_SINCE_SCAN }
+  const doc = group.reduce((acc, s) => withEntries(acc, s.location.path, replacementsOf(s)), scanned.doc)
+  return {
+    file,
+    original: scanned.text,
+    next: renderLike(scanned.text, doc),
+    servers: group.flatMap((s) => wrapRowsOf(s).map((row) => row.name)),
+    changes: group.flatMap(changesOf),
   }
-  const next = group.reduce((doc, s) => withEntries(doc, s.location.path, replacementsOf(s)), scanned.doc)
+}
+
+function isReady(value: ReadyFile | FileProblem): value is ReadyFile {
+  return 'next' in value
+}
+
+/** Copies of every file and the undo record, before any file is touched. */
+async function keepCopies(backupDir: string, ready: readonly ReadyFile[], createdAt: Date): Promise<void> {
+  await ensureOwnerOnlyDir(backupDir)
+  for (const [index, file] of ready.entries()) await writeOwnerOnlyCopy(backupDir, index + 1, file.file, file.original)
+  await writeManifest(backupDir, manifestOf(createdAt, ready.flatMap((file) => file.changes)))
+}
+
+/**
+ * The record was written for every ready file; when some could not be
+ * written it is narrowed to the ones that were, so `--undo` does not report
+ * the others as "changed since". If narrowing fails the full record stays —
+ * still correct, as undo restores only entries that hold what adopt wrote.
+ */
+async function narrowRecord(backupDir: string, createdAt: Date, written: readonly ReadyFile[]): Promise<void> {
   try {
-    await ensureOwnerOnlyDir(backupDir)
-    await writeOwnerOnlyCopy(backupDir, index, file, scanned.text)
-    await replaceFileAtomically(file, renderLike(scanned.text, next))
-  } catch (error) {
-    return { failure: { file, reason: writeFailureOf(error) }, changes: [] }
+    if (written.length === 0) await rm(join(backupDir, MANIFEST_FILE_NAME), { force: true })
+    else await writeManifest(backupDir, manifestOf(createdAt, written.flatMap((file) => file.changes)))
+  } catch {
+    // Safe to leave as is: see above.
   }
-  const servers = group.flatMap((s) => wrapRowsOf(s).map((row) => row.name))
-  return { written: { file, servers }, changes: group.flatMap(changesOf) }
 }
 
 export async function applyAdopt(scan: ScanResult, opts: AdoptOptions): Promise<ApplyResult> {
-  const groups = [...byFile(scan)]
+  const checked = await Promise.all([...byFile(scan)].map(([file, group]) => readyFileOf(file, group, scan)))
+  const stale = checked.filter((c): c is FileProblem => !isReady(c))
+  const ready = checked.filter(isReady)
+  if (ready.length === 0) return { written: [], failures: stale }
   const createdAt = (opts.now ?? (() => new Date()))()
   // `:` is not allowed in a Windows file name; the stamp still sorts as time.
   const backupDir = join(opts.dataDir, ADOPT_DIR_NAME, createdAt.toISOString().replaceAll(':', '-'))
-  const outcomes: FileOutcome[] = []
-  for (const [index, [file, group]] of groups.entries()) {
-    outcomes.push(await adoptFile(file, group, scan, backupDir, index + 1))
+  try {
+    await keepCopies(backupDir, ready, createdAt)
+  } catch (error) {
+    return { written: [], failures: stale, copyProblem: { file: backupDir, reason: `could not keep copies there (${errnoCodeOf(error) ?? String(error)})` } }
   }
-  const written = outcomes.flatMap((o) => (o.written === undefined ? [] : [o.written]))
-  const failures = outcomes.flatMap((o) => (o.failure === undefined ? [] : [o.failure]))
-  const changes = outcomes.flatMap((o) => o.changes)
-  if (changes.length === 0) return { written, failures }
-  await writeManifest(backupDir, manifestOf(createdAt, changes))
-  return { written, failures, backupDir }
+  const written: ReadyFile[] = []
+  const failures: FileProblem[] = [...stale]
+  for (const file of ready) {
+    try {
+      await replaceFileAtomically(file.file, file.next)
+      written.push(file)
+    } catch (error) {
+      failures.push({ file: file.file, reason: writeFailureOf(error) })
+    }
+  }
+  if (written.length < ready.length) await narrowRecord(backupDir, createdAt, written)
+  const result = { written: written.map((file) => ({ file: file.file, servers: file.servers })), failures }
+  return written.length === 0 ? result : { ...result, backupDir }
 }

@@ -1,4 +1,4 @@
-import { chmod, mkdir, open, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, lstat, mkdir, open, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { errnoCodeOf } from '../errno.js'
 import { syncDir } from '../sync-dir.js'
@@ -60,8 +60,10 @@ export async function replaceFileAtomically(file: string, content: string): Prom
   const target = await realpath(file)
   const mode = (await stat(target)).mode & PERMISSION_BITS
   const temp = `${target}.mcpcut-${process.pid}.tmp`
+  // `wx`: never through a link or over a file someone else left at this path —
+  // and only a temp this call created is removed on failure.
+  const handle = await open(temp, 'wx', mode)
   try {
-    const handle = await open(temp, 'wx', mode)
     try {
       await handle.writeFile(content, 'utf8')
       await handle.sync()
@@ -76,6 +78,20 @@ export async function replaceFileAtomically(file: string, content: string): Prom
     throw error
   }
   await syncDir(dirname(target))
+}
+
+/**
+ * Where a config really lives when the file itself is a symlink (a dotfile
+ * manager's, or one planted in a cloned project): the write lands there, so
+ * the dry run shows it. `undefined` for a plain file — a symlinked folder
+ * higher up (macOS `/var` → `/private/var`) is not the file being redirected.
+ */
+export async function linkTargetOf(file: string): Promise<string | undefined> {
+  try {
+    return (await lstat(file)).isSymbolicLink() ? await realpath(file) : undefined
+  } catch {
+    return undefined
+  }
 }
 
 export async function ensureOwnerOnlyDir(dir: string): Promise<void> {

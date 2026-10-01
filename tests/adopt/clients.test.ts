@@ -38,6 +38,14 @@ describe('locationsOf', () => {
     expect(placesOf(platform, extra)).toContain(`claude-desktop ${file} mcpServers`)
   })
 
+  test('on Windows the local scope is looked up under both spellings of the folder', () => {
+    const keys = locationsOf({ home: 'C:\\Users\\me', cwd: 'C:\\Users\\me\\app', platform: 'win32' })
+      .filter((location) => location.scope.startsWith('local'))
+      .map((location) => location.path[1])
+
+    expect(keys).toEqual(['C:\\Users\\me\\app', 'C:/Users/me/app'])
+  })
+
   test('run from the home folder, the project files are the global ones: each place is listed once', () => {
     const places = placesOf('darwin', { cwd: HOME })
 

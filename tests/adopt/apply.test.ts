@@ -1,4 +1,5 @@
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
@@ -172,6 +173,67 @@ describe('applyAdopt', () => {
     expect(result.written).toEqual([])
     expect(result.failures).toEqual([{ file, reason: expect.stringMatching(/changed/) }])
     expect(await readJson(file)).toEqual({ mcpServers: { fs: FS_SERVER }, changedBy: 'the client' })
+  })
+
+  test('the scan names the file a symlinked config really is', async () => {
+    const real = join(root, 'dotfiles', 'mcp.json')
+    await writeJson(real, { mcpServers: { fs: FS_SERVER } })
+    await mkdir(join(home, '.cursor'), { recursive: true })
+    await symlink(real, join(home, '.cursor', 'mcp.json'))
+
+    const scan = await scanConfigs(options())
+
+    expect(scan.linkTargets.get(join(home, '.cursor', 'mcp.json'))).toBe(await realpath(real))
+    expect(scan.linkTargets.has(join(home, '.claude.json'))).toBe(false)
+  })
+
+  test('copies cannot be kept: nothing is changed, and the reason names the data dir', async () => {
+    const file = join(home, '.claude.json')
+    await writeJson(file, { mcpServers: { fs: FS_SERVER } })
+    const before = await readFile(file, 'utf8')
+    await mkdir(dataDir, { recursive: true })
+    await chmod(dataDir, 0o500)
+
+    try {
+      const result = await applyAdopt(await scanConfigs(options()), options())
+
+      expect(result.written).toEqual([])
+      expect(result.copyProblem).toEqual({ file: join(dataDir, 'adopt', '2026-10-02T10-11-12.345Z'), reason: expect.stringMatching(/could not keep copies there \(EACCES\)/) })
+      expect(await readFile(file, 'utf8')).toBe(before)
+    } finally {
+      await chmod(dataDir, 0o700)
+    }
+  })
+
+  test('one file cannot be written: the other is, and the undo record holds only the written one', async () => {
+    await writeJson(join(home, '.claude.json'), { mcpServers: { fs: FS_SERVER } })
+    const locked = join(home, '.cursor')
+    await writeJson(join(locked, 'mcp.json'), { mcpServers: { other: { command: 'node' } } })
+    await chmod(locked, 0o500)
+
+    try {
+      const result = await applyAdopt(await scanConfigs(options()), options())
+
+      expect(result.written.map((w) => w.file)).toEqual([join(home, '.claude.json')])
+      expect(result.failures).toEqual([{ file: join(locked, 'mcp.json'), reason: expect.stringMatching(/could not write it \(EACCES\); close the client/) }])
+      const manifest = JSON.parse(await readFile(join(result.backupDir ?? '', 'manifest.json'), 'utf8')) as { changes: { name: string }[] }
+      expect(manifest.changes.map((c) => c.name)).toEqual(['fs'])
+    } finally {
+      await chmod(locked, 0o700)
+    }
+  })
+
+  test('a server named __proto__ is wrapped as data and pollutes nothing', async () => {
+    const file = join(home, '.claude.json')
+    await mkdir(home, { recursive: true })
+    await writeFile(file, '{"mcpServers":{"__proto__":{"command":"node","args":["s.js"]}}}\n')
+
+    await applyAdopt(await scanConfigs(options()), options())
+
+    const text = await readFile(file, 'utf8')
+    expect(text).toContain('"__proto__": {')
+    expect(text).toContain('"--server",\n        "__proto__"')
+    expect(({} as Record<string, unknown>)['command']).toBeUndefined()
   })
 
   test('nothing to wrap writes nothing — no copies, no manifest', async () => {

@@ -43,11 +43,21 @@ function claudeDesktopFile(place: AdoptPlace): string {
   return join(place.home, '.config', name)
 }
 
+/**
+ * How `~/.claude.json` may key this folder under `projects`: the path as the
+ * OS gives it, and on Windows also with forward slashes (the form Claude Code
+ * is believed to write there; whichever holds servers is found, and the
+ * dedupe below keeps one when both spell the same).
+ */
+function projectKeysOf(place: AdoptPlace): readonly string[] {
+  return place.platform === 'win32' ? [place.cwd, place.cwd.replaceAll('\\', '/')] : [place.cwd]
+}
+
 function allLocations(place: AdoptPlace): readonly ServersLocation[] {
   const claudeJson = join(place.home, '.claude.json')
   return [
     { client: 'claude-code', scope: 'user', file: claudeJson, path: [SERVERS_KEY] },
-    { client: 'claude-code', scope: 'local, this folder', file: claudeJson, path: ['projects', place.cwd, SERVERS_KEY] },
+    ...projectKeysOf(place).map((key) => ({ client: 'claude-code' as const, scope: 'local, this folder', file: claudeJson, path: ['projects', key, SERVERS_KEY] })),
     { client: 'claude-code', scope: 'project, shared through .mcp.json', file: join(place.cwd, '.mcp.json'), path: [SERVERS_KEY] },
     { client: 'cursor', scope: 'global', file: join(place.home, '.cursor', 'mcp.json'), path: [SERVERS_KEY] },
     { client: 'cursor', scope: 'this project', file: join(place.cwd, '.cursor', 'mcp.json'), path: [SERVERS_KEY] },

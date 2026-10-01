@@ -77,6 +77,21 @@ describe('adoptEntry: Windows', () => {
     expect(verdict.kind === 'wrap' && verdict.next['args']).toEqual(['/c', 'npx', '-y', 'mcpcut@9.9.9', 'wrap', '--server', 'fs', '--', 'cmd', '/c', 'npx', '-y', 'pkg'])
   })
 
+  test.each([
+    ['an & in an argument', 'pg', { command: 'uvx', args: ['postgres-mcp', 'postgresql://h/db?a=1&b=2'] }],
+    ['a % in an argument', 'x', { command: 'node', args: ['s.js', '%PATH%'] }],
+    ['a quote in an argument', 'x', { command: 'node', args: ['s.js', 'say "hi"'] }],
+    ['a | in the name', 'a|b', { command: 'node', args: ['s.js'] }],
+  ])('%s is left for the user: cmd /c would read it as syntax', (_label, name, entry) => {
+    expect(adoptEntry(name, entry, WINDOWS, 'win32')).toEqual({ kind: 'cmd-unsafe' })
+  })
+
+  test('the same characters are plain text elsewhere: no shell is involved', () => {
+    const verdict = adoptEntry('pg', { command: 'uvx', args: ['postgresql://h/db?a=1&b=2'] }, POSIX, 'linux')
+
+    expect(verdict.kind).toBe('wrap')
+  })
+
   test('a .cmd script gets cmd /c; an .exe does not', () => {
     const script = adoptEntry('a', { command: 'C:\\tools\\server.CMD' }, WINDOWS, 'win32')
     const binary = adoptEntry('b', { command: 'C:\\tools\\server.exe' }, WINDOWS, 'win32')

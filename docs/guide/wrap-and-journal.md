@@ -32,7 +32,12 @@ server the client starts as a process: the entry's command becomes
 Before writing, `--apply` keeps a copy of each file under
 `<data-dir>/adopt/<time>/` (readable by you only) and refuses a file that
 changed since it was read. Restart the client afterwards. `--undo` restores
-only the entries that still hold what `adopt` wrote.
+only the entries that still hold what `adopt` wrote. The copies hold your
+configs whole, keys in `env` included, and nothing deletes them: remove
+`<data-dir>/adopt` once you no longer need to undo.
+
+On Windows the wrapped line runs through `cmd /c`, so an entry whose name or
+arguments hold `& | ^ < > % ! "` is skipped and named — wrap it by hand.
 
 One policy for all of them: save it as `<data-dir>/policy.json`
 (`~/.mcpcut/data/policy.json` by default) and restart the client — see

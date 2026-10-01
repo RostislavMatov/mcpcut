@@ -76,7 +76,7 @@ async function undoFile(file: string, changes: readonly ManifestChange[]): Promi
   try {
     await replaceFileAtomically(file, renderLike(state.text, next))
   } catch (error) {
-    return { kept: keptAll, failure: { file, reason: `could not write it (${errnoCodeOf(error) ?? String(error)})` } }
+    return { kept: keptAll, failure: { file, reason: `could not write it (${errnoCodeOf(error) ?? String(error)}); close the client that holds it` } }
   }
   return { restored: { file, servers: matching.map((m) => m.change.name) }, kept }
 }

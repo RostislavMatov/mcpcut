@@ -22,6 +22,12 @@ export type EntryVerdict =
   | { readonly kind: 'remote' }
   /** Not a shape we understand; left exactly as it is. */
   | { readonly kind: 'unreadable' }
+  /**
+   * Windows only: the wrapped line runs through `cmd /c`, which would read
+   * `& | ^ < > % ! "` in the name or an argument as its own syntax (a
+   * connection string's `&b=2` would run `b=2`). Left for the user to wrap by hand.
+   */
+  | { readonly kind: 'cmd-unsafe' }
 
 const NPX_COMMAND = 'npx'
 const NPX_YES_FLAG = '-y'
@@ -42,6 +48,9 @@ const REMOTE_TYPES: readonly string[] = ['http', 'sse', 'streamable-http', 'stre
 const WINDOWS_SHIM_NAMES: readonly string[] = ['npx', 'npm', 'pnpm', 'pnpx', 'yarn', 'bunx']
 const WINDOWS_SCRIPT_EXTENSION = /\.(cmd|bat)$/i
 const WINDOWS_EXTENSION = /\.(cmd|bat|exe|com)$/i
+
+/** What `cmd /c` treats as syntax rather than text. */
+const CMD_SYNTAX = /[&|^<>%!"\r\n]/
 
 /** `mcpcut` or `mcpcut@<version>` — not `mcpcut-themes`. */
 const MCPCUT_PACKAGE_ARG = new RegExp(`^${CLI_NAME}(@\\S+)?$`)
@@ -94,6 +103,7 @@ export function adoptEntry(name: string, entry: unknown, launcher: Launcher, pla
   const args = entry['args'] ?? []
   if (typeof command !== 'string' || command.trim() === '' || !isStringList(args)) return { kind: 'unreadable' }
   if (startsMcpcut(command, args)) return { kind: 'already' }
+  if (platform === 'win32' && [name, command, ...args].some((part) => CMD_SYNTAX.test(part))) return { kind: 'cmd-unsafe' }
   return {
     kind: 'wrap',
     next: {

@@ -5,6 +5,7 @@ import { CLIENT_IDS, type AdoptPlace, type ClientId } from '../adopt/clients.js'
 import { launcherOf } from '../adopt/entry.js'
 import { undoAdopt } from '../adopt/undo.js'
 import { PRODUCT_VERSION } from '../brand.js'
+import { errnoCodeOf } from '../errno.js'
 import { JOURNAL_DIR } from '../config.js'
 import { renderApplied, renderPlan, renderUndo, type Rendered } from './adopt-render.js'
 import { cliCommand } from './next-step.js'
@@ -81,12 +82,27 @@ function placeOf(opts: AdoptCommandOptions): AdoptPlace {
   return opts.place ?? { home: homedir(), cwd: process.cwd(), platform: process.platform, ...(appData === undefined ? {} : { appData }) }
 }
 
+function describeError(error: unknown): string {
+  return errnoCodeOf(error) ?? (error instanceof Error ? error.message : String(error))
+}
+
+/** One line instead of a stack trace: each file is replaced in one rename, so none is left half-written. */
 export async function runAdoptCommand(args: readonly string[], io: AdoptCliIo, opts: AdoptCommandOptions = {}): Promise<number> {
   const flags = parseAdoptFlags(args)
   if (typeof flags === 'string') {
     io.stderr.write(`${flags}\n\n${usage()}`)
     return EXIT_FAILED
   }
+  try {
+    return await runAdopt(flags, io, opts)
+  } catch (error) {
+    const retry = flags.undo ? 'adopt --undo' : flags.apply ? 'adopt --apply' : 'adopt'
+    io.stderr.write(`adopt could not finish (${describeError(error)}).\nTry again: ${cliCommand()} ${retry}\n`)
+    return EXIT_FAILED
+  }
+}
+
+async function runAdopt(flags: AdoptFlags, io: AdoptCliIo, opts: AdoptCommandOptions): Promise<number> {
   const place = placeOf(opts)
   const dataDir = opts.journalDir ?? JOURNAL_DIR
   if (flags.undo) {
@@ -110,5 +126,5 @@ export async function runAdoptCommand(args: readonly string[], io: AdoptCliIo, o
   }
   const result = await applyAdopt(scan, adoptOptions)
   write(io, renderApplied(scan, result, place))
-  return result.failures.length > 0 ? EXIT_FAILED : EXIT_OK
+  return result.failures.length > 0 || result.copyProblem !== undefined ? EXIT_FAILED : EXIT_OK
 }
