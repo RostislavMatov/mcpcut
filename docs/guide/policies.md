@@ -179,6 +179,32 @@ A `require-approval` tool call does not reach the server immediately:
    `(server, tool, args)` triple, so an agent's retry a few minutes later
    passes without a second manual approval.
 
+### Approving in the client
+
+Under `mcpcut wrap`, a held call is also asked in the client when the client
+can show a form (MCP form elicitation — Claude Code does): a dialog names the
+tool, the server and the arguments (secrets redacted), with **Accept** and
+**Decline**. Accept approves the call in the queue and it goes through at
+once; Decline denies it; Esc — or no answer — leaves it waiting in
+`mcpcut approvals list` as before. The resolution is stored as
+`client:<the client's name>` (for example `client:claude-code`), so the
+journal says the call was approved in the client.
+
+- **Only while the installation has no admin.** Once `mcpcut admin add` has
+  run, an approval must name an admin, so nobody is asked in the client and
+  approvals go through `approvals approve` with a token, as above. An admin
+  added mid-session makes a later Accept count for nothing, with a line on
+  the `wrap` stderr naming the command to use instead.
+- **Only on `wrap`.** On `connect` the person at the client is an agent's
+  user, not an approver; nothing is asked there.
+- **An Accept faster than a second does not count.** The dialog opens with
+  Accept focused, so an Enter typed into the prompt as it appears would
+  approve. Such an Accept is asked once more; a second fast one leaves the
+  call to the queue.
+- **Turning it off.** A client that answers such questions without a person
+  would approve on its own; set `"approval": { "askClient": false }` to keep
+  approvals to the queue alone.
+
 ## Quarantine
 
 The first time a server advertises a tool (or advertises one whose schema —

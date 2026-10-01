@@ -8,6 +8,7 @@ import type { ParsedToolCall } from '../protocol/mcp.js'
 import type { Verdict } from './pipeline.js'
 import { approvalDeniedError, approvalTimeoutError, type SynthesizableId } from './synthesize.js'
 import type { PendingApprovalNotice } from './gate-types.js'
+import type { ApprovalQuestion, AskedQuestion } from './client-approval.js'
 import {
   ALREADY_ANSWERED_RULE,
   DROP,
@@ -95,6 +96,8 @@ export interface ApprovalFlowDeps {
   readonly onError: (error: unknown) => void
   /** Hears of each call queued for a human, once, before its wait starts. */
   readonly onApprovalPending?: (notice: PendingApprovalNotice) => void
+  /** Also asks the person at the client (P2); `undefined` when the client cannot be asked. */
+  readonly askClient?: (question: ApprovalQuestion) => AskedQuestion | undefined
 }
 
 export interface ApprovalFlow {
@@ -121,6 +124,16 @@ export interface ApprovalFlow {
 export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
   const { policy, serverName, approvalQueue, approvalWaiter, grantRegistry, clock } = deps
   const { writeDecision, settleJournal, answerLocally, answerGuard, enqueuedUnresolved } = deps
+
+  /** Asking in the client is a courtesy too: the queue decides, so a failure here changes nothing. */
+  function askInClient(question: ApprovalQuestion): AskedQuestion | undefined {
+    try {
+      return deps.askClient?.(question)
+    } catch (error: unknown) {
+      deps.onError(error)
+      return undefined
+    }
+  }
 
   /** An announcement is a courtesy to the operator: its failure never decides the call. */
   function announcePending(notice: PendingApprovalNotice): void {
@@ -196,6 +209,7 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
     // exactly-one-outcome burn survives even a 10k-id LRU flood (M8).
     const waitKey = call.id !== null ? idKeyOf(call.id) : null
     if (waitKey !== null) answerGuard.beginWait(waitKey)
+    const asked = askInClient({ approvalId, toolName: facts.toolName, serverName, args: call.args })
     try {
       const result = await approvalWaiter.wait(approvalQueue, approvalId, policy.approval.timeoutMs)
       const ctx: ApprovalContext = {
@@ -210,6 +224,8 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
       }
       return await finishApproval(ctx)
     } finally {
+      // Settled here or elsewhere: an open dialog would ask about a call that is over.
+      asked?.withdraw()
       if (waitKey !== null) answerGuard.endWait(waitKey)
     }
   }

@@ -27,7 +27,7 @@ The first start downloads mcpcut and the server; if your client gives up on it, 
     { "version": 1, "defaultDecision": "require-approval", "classDefaults": { "read": "allow" },
       "quarantine": { "enabled": false } }
 
-A write now waits. Approve it from another terminal within the agent's wait (60 s; after it, the agent's retry passes) — no token needed until you add your first admin ([Approvals](docs/guide/policies.md#approval-scenario)):
+A write now waits, and Claude Code asks you right in the session — **Accept** lets it through, **Decline** refuses it ([in the client](docs/guide/policies.md#approving-in-the-client)). Or approve it from another terminal within the agent's wait (60 s; after it, the agent's retry passes) — no token needed until you add your first admin ([Approvals](docs/guide/policies.md#approval-scenario)):
 
     npx -y mcpcut@0.2.4 approvals list
     npx -y mcpcut@0.2.4 approvals approve <id>

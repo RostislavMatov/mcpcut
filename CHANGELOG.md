@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Approve a held call right in Claude Code.** Under `wrap`, a call a policy
+  holds for approval is also asked in the client when it can show a form (MCP
+  form elicitation): Accept lets it through, Decline refuses it, Esc leaves it
+  in `approvals list`. Recorded as `client:<name>`. Only while the install has
+  no admin and only on `wrap`; an Accept faster than a second is asked again.
+  `"approval": { "askClient": false }` turns it off.
+
 ### Fixed
 
 - **`export --report` works on Windows.** Windows refuses to fsync a

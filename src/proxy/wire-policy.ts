@@ -4,14 +4,15 @@ import { JOURNAL_DIR } from '../config.js'
 import type { ClientServerDirection, JournalDirection } from '../journal/record.js'
 import type { JournalSink } from '../journal/sink.js'
 import { createGrantRegistry } from '../policy/approvals/grants.js'
-import { createApprovalQueue } from '../policy/approvals/queue.js'
+import { createApprovalQueue, type ApprovalQueue } from '../policy/approvals/queue.js'
 import { createApprovalWaiter } from '../policy/approvals/waiter.js'
 import { canonicalJson, sha256Hex } from '../policy/hash.js'
 import { createInventory, INVENTORY_FILE_NAME } from '../policy/inventory.js'
-import type { PolicyProvider } from '../policy/reload.js'
+import { toPolicyProvider, type PolicyProvider } from '../policy/reload.js'
 import type { Policy } from '../policy/schema.js'
 import { createPolicyGate, type GateAgentScope } from './gate.js'
-import type { PendingApprovalNotice } from './gate-types.js'
+import type { AskClientOptions } from './client-approval.js'
+import type { MessagePolicyGateDeps, PendingApprovalNotice } from './gate-types.js'
 import { startPipeline, type GateFn } from './pipeline.js'
 import type { ServerHandle } from './spawn.js'
 import { splice, type SpliceErrorOrigin } from './splice.js'
@@ -111,6 +112,41 @@ export interface PolicyRelayArgs {
   readonly agentScope?: GateAgentScope
   /** Hears of each call queued for a human (see `MessagePolicyGateDeps`). */
   readonly onApprovalPending?: (notice: PendingApprovalNotice) => void
+  /** Ask the person at the client too (P2); see `askClientOf`. */
+  readonly askClient?: AskClientWiring
+}
+
+/** The entry point's half of asking in the client, plus where its notices go. */
+export interface AskClientWiring extends AskClientOptions {
+  readonly onNotice?: (text: string) => void
+}
+
+/**
+ * The gate's in-client asker, or nothing. Only on the ad-hoc `wrap` path: on
+ * `connect` the person at the client is an agent's user, not someone who
+ * may approve. Only when the policy allows it (`approval.askClient`). And the
+ * answer is re-checked against the installation when it lands — an admin
+ * added mid-session means approvals need a token from then on.
+ */
+export function askClientOf(args: Pick<PolicyRelayArgs, 'askClient' | 'agentScope' | 'policy'>, queue: Pick<ApprovalQueue, 'resolve'>): Pick<MessagePolicyGateDeps, 'askClient'> {
+  const wiring = args.askClient
+  if (wiring === undefined || args.agentScope !== undefined) return {}
+  if (toPolicyProvider(args.policy).current().approval.askClient === false) return {}
+  const notice = wiring.onNotice ?? ((): void => undefined)
+  return {
+    askClient: {
+      mayAsk: wiring.mayAsk,
+      command: wiring.command,
+      ...(wiring.onNotice !== undefined ? { onNotice: wiring.onNotice } : {}),
+      resolve: async (approvalId, resolution) => {
+        if (!(await wiring.mayAsk())) {
+          notice(`An answer in the client cannot settle ${approvalId}: this installation has admins now.\n  Approve with your token: ${wiring.command} approvals approve ${approvalId}\n`)
+          return undefined
+        }
+        return queue.resolve(approvalId, resolution)
+      },
+    },
+  }
 }
 
 /** Where the policy layer's on-disk state lives for one run. */
@@ -164,12 +200,13 @@ export function wirePolicyRelay(args: PolicyRelayArgs): RelayWiring {
   // both route through the same reportError channel/origin (TS-MEDIUM-3).
   const onInternalError = (error: unknown): void => args.reportError('client→server', error, 'tap')
 
+  const approvalQueue = createApprovalQueue({ baseDir: approvalsBaseDir })
   const gate = createPolicyGate({
     policy: args.policy,
     serverName: args.serverName,
     sessionId: args.sessionId,
     inventory: createInventory(args.serverName, { storePath: inventoryStorePath, onError: onInternalError }),
-    approvalQueue: createApprovalQueue({ baseDir: approvalsBaseDir }),
+    approvalQueue,
     approvalWaiter: createApprovalWaiter(),
     grantRegistry: createGrantRegistry(),
     sink: args.sink,
@@ -177,6 +214,7 @@ export function wirePolicyRelay(args: PolicyRelayArgs): RelayWiring {
     approvalsBaseDir,
     ...(args.agentScope !== undefined ? { agentScope: args.agentScope } : {}),
     ...(args.onApprovalPending !== undefined ? { onApprovalPending: args.onApprovalPending } : {}),
+    ...askClientOf(args, approvalQueue),
     // A gate-internal failure is a proxy defect, not a broken stream: log it
     // (the gate has already failed the call closed) and keep the session up.
     onError: onInternalError,

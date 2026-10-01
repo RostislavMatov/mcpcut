@@ -9,6 +9,7 @@ import { serverMessage } from '../transport/message.js'
 import type { Verdict } from './pipeline.js'
 import type { SynthesizableId } from './synthesize.js'
 import { createApprovalFlow } from './gate-approvals.js'
+import { createClientApprover } from './client-approval.js'
 import { createDecideInputAssembler } from './gate-decide-input.js'
 import { createGateRouter } from './gate-router.js'
 import { createToolCatalog } from './tool-catalog.js'
@@ -223,6 +224,21 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     return DROP
   }
 
+  // P2: present only when the caller (the stdio `wrap` path) asked for it.
+  const askClient = deps.askClient
+  const clientApprover =
+    askClient === undefined
+      ? undefined
+      : createClientApprover({
+          send: (message) => deps.clientSink.write(serverMessage(Buffer.from(JSON.stringify(message)))),
+          resolve: askClient.resolve,
+          clock,
+          ...(askClient.mayAsk !== undefined ? { mayAsk: askClient.mayAsk } : {}),
+          ...(askClient.command !== undefined ? { command: askClient.command } : {}),
+          onError,
+          ...(askClient.onNotice !== undefined ? { onNotice: askClient.onNotice } : {}),
+        })
+
   const approvalFlow = createApprovalFlow({
     // Wiring-time snapshot on purpose: the flow reads only `approval.timeoutMs`
     // and `approval.grantTtlMs`, which do not hot-reload (see above).
@@ -246,6 +262,7 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     applyAllow,
     onError,
     ...(deps.onApprovalPending !== undefined ? { onApprovalPending: deps.onApprovalPending } : {}),
+    ...(clientApprover !== undefined ? { askClient: (question) => clientApprover.ask(question) } : {}),
   })
 
   /** Fail-closed handling of a gate-internal error on a `tools/call`. */
@@ -341,6 +358,7 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
   }
 
   const router = createGateRouter({
+    ...(clientApprover !== undefined ? { clientApprover } : {}),
     serverName,
     writeDecision,
     settleJournal,

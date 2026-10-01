@@ -110,6 +110,14 @@ const approvalSchema = z
     timeoutMs: z.number().int().positive().default(DEFAULT_APPROVAL_TIMEOUT_MS),
     onTimeout: z.literal('deny').default('deny'),
     grantTtlMs: z.number().int().positive().default(DEFAULT_GRANT_TTL_MS),
+    /**
+     * Also ask the person at the client (MCP form elicitation, P2): Accept /
+     * Decline in the session. `false` keeps approvals to the queue alone —
+     * for a client that answers such questions without a person. Optional
+     * with no default on purpose: absent means on, and an existing policy
+     * keeps the fingerprint it had (`policyHash` covers the parsed policy).
+     */
+    askClient: z.boolean().optional(),
   })
   .prefault({})
 
