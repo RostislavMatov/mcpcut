@@ -198,10 +198,20 @@ export interface SpawnFailure {
 /** npm installs its commands on Windows as `.cmd` scripts, which only a shell can start. */
 const WINDOWS_SCRIPT_EXTENSIONS: readonly string[] = ['', '.cmd', '.bat']
 
-/** One word for cmd or PowerShell: double-quoted when it has a space or a quote, control characters replaced. */
+/** Characters cmd or PowerShell would split or act on outside double quotes. */
+const WINDOWS_SPECIAL = /[\s&|<>^$;`(),']/
+/** `%VAR%` expands even inside cmd's quotes, and an inner quote has no escape cmd and CRT agree on. */
+const WINDOWS_UNPASTEABLE = /[%"]/
+
+/**
+ * One word for cmd or PowerShell, control characters replaced: double-quoted
+ * when it holds a special character, with a trailing backslash doubled so it
+ * cannot escape the closing quote. Words `WINDOWS_UNPASTEABLE` matches are
+ * never quoted here — the caller prints the rule instead of a line.
+ */
 function windowsArg(value: string): string {
   const safe = replaceControlChars(value)
-  return /[\s"]/.test(safe) ? `"${safe.replaceAll('"', '\\"')}"` : safe
+  return WINDOWS_SPECIAL.test(safe) ? `"${safe.replace(/\\+$/, (tail) => tail + tail)}"` : safe
 }
 
 /**
@@ -220,8 +230,10 @@ export function spawnFailureHint(failure: SpawnFailure, platform: NodeJS.Platfor
     (isNotFound || failure.code === 'EINVAL') &&
     WINDOWS_SCRIPT_EXTENSIONS.includes(win32.extname(failure.command).toLowerCase())
   if (isWindowsScript) {
-    const server = [failure.command, ...failure.args].map(windowsArg).join(' ')
-    return `  On Windows, start npm commands such as npx through cmd: put "cmd /c" right after "--", as in: -- cmd /c ${server}\n`
+    const words = [failure.command, ...failure.args]
+    const rule = '  On Windows, start npm commands such as npx through cmd: put "cmd /c" right after "--"'
+    if (words.some((word) => WINDOWS_UNPASTEABLE.test(word))) return `${rule}\n`
+    return `${rule}, as in: -- cmd /c ${words.map(windowsArg).join(' ')}\n`
   }
   if (isNotFound) {
     return `  ${shellArg(failure.command)} was not found: install it, or give its full path after "--"\n`

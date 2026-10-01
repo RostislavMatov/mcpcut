@@ -145,16 +145,43 @@ describe('wrap: missing "-- <cmd>"', () => {
 })
 
 describe('wrap: a server that cannot be started', () => {
-  test('names the failure and the next step, exit 1', async () => {
+  test('names the failure and the next step, exit 1, and points at no session', async () => {
     const io = fakeIo()
+    const clientStderr = streamIo()
 
     const exitCode = await runWrapCommand(['--no-policy', '--', 'mcpcut-no-such-command-xyz', '--port', '1'], io, {
-      runWrap: { dir, stderr: streamIo().stream },
+      runWrap: { dir, stderr: clientStderr.stream },
     })
 
     expect(exitCode).toBe(1)
     expect(io.err()).toContain('Failed to spawn "mcpcut-no-such-command-xyz --port 1"')
     expect(io.err()).toMatch(/not found.*full path/)
+    // The server never started: the error line is the next step, not `show`.
+    expect(clientStderr.err()).not.toContain('journaled')
+  })
+
+  test('a refusal Node raises synchronously is reported the same way', async () => {
+    const io = fakeIo()
+    const clientStderr = streamIo()
+
+    const exitCode = await runWrapCommand(['--no-policy', '--', 'bad\u0000command'], io, {
+      runWrap: { dir, stderr: clientStderr.stream },
+    })
+
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('Failed to spawn')
+    expect(clientStderr.err()).not.toContain('journaled')
+  })
+
+  test('control characters from argv do not reach the terminal', async () => {
+    const io = fakeIo()
+
+    await runWrapCommand(['--no-policy', '--', 'mcpcut-no-such-\u001b[31mred'], io, {
+      runWrap: { dir, stderr: streamIo().stream },
+    })
+
+    expect(io.err()).toContain('Failed to spawn')
+    expect(io.err()).not.toContain('\u001b')
   })
 
   test('on Windows, says to start an npm command through cmd /c', async () => {

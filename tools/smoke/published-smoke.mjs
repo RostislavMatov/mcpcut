@@ -11,7 +11,7 @@
  * table to $GITHUB_STEP_SUMMARY when it is set. Exit code 1 if any step failed.
  */
 import { spawn, spawnSync } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -207,8 +207,17 @@ async function windowsHintStep() {
   record('Windows: bare npx after -- names the cmd /c form', hint.includes(`-- cmd /c npx -y ${SERVER_PKG}`), `wrap exited ${code}; ${hint.trim() || client.stderr().trim().slice(-400)}`)
 }
 
+/** The version npm actually installed: the registry pin, or whatever the packed checkout says. */
+function installedVersion() {
+  try {
+    return JSON.parse(readFileSync(join(work, 'pkg', 'node_modules', 'mcpcut', 'package.json'), 'utf8')).version
+  } catch {
+    return VERSION
+  }
+}
+
 const npxVersion = shell(`npx ${NPX_ARGS.join(' ')} --version`)
-record(`npx ${NPX_ARGS.join(' ')} --version`, npxVersion.code === 0 && npxVersion.out.includes(VERSION), npxVersion.out.trim())
+record(`npx ${NPX_ARGS.join(' ')} --version`, npxVersion.code === 0 && npxVersion.out.includes(installedVersion()), npxVersion.out.trim())
 
 if (IS_WINDOWS) {
   await windowsHintStep()

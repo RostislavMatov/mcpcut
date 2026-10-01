@@ -106,7 +106,13 @@ publisher настроен (G5: `release.yml`, только stage, «2FA + disal
   `npm stage publish` через OIDC (provenance SLSA v1 в Sigstore) → одобрение владельцем 2FA на npmjs.com →
   `npm audit signatures` подтверждает аттестацию `mcpcut`. Одобрять удобнее на сайте (Staged Packages): `npm stage`
   есть только с npm 11.15.
-- **Windows** (`npx.cmd`, shim'ы): `engines` ОС не ограничивает, смок и CI — только Linux и macOS.
+- **Windows** (`npx.cmd`, shim'ы): `engines` ОС не ограничивает, смок и CI — только Linux и macOS. **2026-10-01:**
+  смок опубликованного 0.2.4 на Windows-раннере (`.github/workflows/smoke-published.yml`,
+  `tools/smoke/published-smoke.mjs`): README-команда с голым `npx` падала (`spawn npx ENOENT`), `export --report` —
+  `EPERM fsync` каталога. Исправлено (ветка `fix/windows-first-minute`): подсказка `cmd /c` в ошибке `wrap`,
+  терпимый fsync каталога (`src/sync-dir.ts`), строка Windows в README; сборка — 12/12 на Windows, Linux и macOS.
+  Остаток: полный набор тестов на Windows не гонялся; `connect`/`serve` с `npx` в реестре — та же нужда в `cmd /c`,
+  подсказки там нет; `shellArg` в подсказках CLI кавычит по-POSIX (одинарные кавычки не работают в cmd).
 - **Синхронизация PR из публичного репозитория** в приватный рабочий: выгрузка односторонняя
   (`tools/release/export-public.mjs`, публичный `main` растёт только fast-forward). Первый внешний PR
   переносится руками (cherry-pick в приватный → выгрузка); процесс описать, когда придёт первый.

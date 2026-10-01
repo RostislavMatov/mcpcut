@@ -6,7 +6,20 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **`export --report` works on Windows.** Windows refuses to fsync a
+  directory; the report treated that refusal as a failure and removed what
+  it had written. It is now tolerated there, as the vault already did.
+- **`wrap` says what to do when the server cannot start.** On Windows the
+  line names the same server behind `cmd /c` (npm commands such as `npx` are
+  `.cmd` scripts there); elsewhere it names the missing command. The session
+  line pointing at `show` is no longer printed for a server that never ran.
+
 ### Changed
+
+- **README: the Windows form of the Quick start** — `cmd /c` before both
+  `npx`, checked on a Windows runner together with the rest of the Quick start.
 
 - **An empty `approvals list` no longer says there is no policy.** It cannot
   see a `wrap` started with `--policy <file>` elsewhere, so the starter

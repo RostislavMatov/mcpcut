@@ -43,15 +43,18 @@ jobs:
       # The same walk over a build of this checkout, packed the way npm
       # publishes it: a fix is proven on every OS before it is released.
       - name: Pack this checkout
+        id: pack
         if: always()
         shell: bash
         run: |
           npm ci --no-audit --no-fund
           npm pack --pack-destination "$RUNNER_TEMP"
-          node -e "const fs = require('node:fs'), path = require('node:path'); const dir = process.env.RUNNER_TEMP; const file = fs.readdirSync(dir).find((name) => /^mcpcut-.*\.tgz$/.test(name)); fs.appendFileSync(process.env.GITHUB_ENV, 'MCPCUT_TARBALL=' + path.join(dir, file) + '\n')"
+          node -e "const fs = require('node:fs'), path = require('node:path'); const dir = process.env.RUNNER_TEMP; const file = fs.readdirSync(dir).find((name) => /^mcpcut-.*\.tgz$/.test(name)); if (!file) { console.error('npm pack left no mcpcut-*.tgz in ' + dir); process.exit(1) } fs.appendFileSync(process.env.GITHUB_ENV, 'MCPCUT_TARBALL=' + path.join(dir, file) + '\n')"
 
+      # Only on a packed build: without the tarball the script would quietly
+      # re-test the npm package under this step's name.
       - name: Smoke this checkout
-        if: always()
+        if: always() && steps.pack.outcome == 'success'
         env:
           MCPCUT_VERSION: ${{ inputs.version || '0.2.4' }}
         run: node tools/smoke/published-smoke.mjs

@@ -1,5 +1,6 @@
 import { parseArgs } from 'node:util'
 import { JOURNAL_DIR } from '../config.js'
+import { replaceControlChars } from '../journal/format.js'
 import { loadPolicy, type LoadPolicyOptions } from '../policy/load.js'
 import type { PolicyProvider } from '../policy/reload.js'
 import { resolvePolicySource } from '../policy/source.js'
@@ -118,7 +119,7 @@ export async function runWrapCommand(
     if (!(error instanceof SpawnServerError)) throw error
     // The server never started: say why and what to type instead (0.2.4 on
     // Windows answered the README command with a bare `spawn npx ENOENT`).
-    io.stderr.write(`${error.message}\n${spawnFailureHint(error, opts.platform)}`)
+    io.stderr.write(`${replaceControlChars(error.message)}\n${spawnFailureHint(error, opts.platform)}`)
     return 1
   }
 }

@@ -216,6 +216,27 @@ describe('spawnFailureHint: the wrapped server could not be started', () => {
     expect(hint).toContain('-- cmd /c npx -y pkg "C:\\My Project"')
   })
 
+  test('on Windows, an argument with a shell metacharacter is quoted, so the paste runs the same server', () => {
+    const hint = spawnFailureHint({ command: 'npx', args: ['-y', 'pkg', 'a&b', 'x|y', '(z)'], code: 'ENOENT' }, 'win32')
+
+    expect(hint).toContain('-- cmd /c npx -y pkg "a&b" "x|y" "(z)"')
+  })
+
+  test('on Windows, a quoted argument ending in a backslash keeps its closing quote', () => {
+    const hint = spawnFailureHint({ command: 'npx', args: ['C:\\a b\\'], code: 'ENOENT' }, 'win32')
+
+    expect(hint).toContain('-- cmd /c npx "C:\\a b\\\\"')
+  })
+
+  test('on Windows, an argument cmd would expand or unquote gets the rule without a line to paste', () => {
+    for (const awkward of ['%PATH%', 'say "hi"']) {
+      const hint = spawnFailureHint({ command: 'npx', args: ['-y', 'pkg', awkward], code: 'ENOENT' }, 'win32')
+
+      expect(hint).toContain('put "cmd /c" right after "--"')
+      expect(hint).not.toContain(awkward)
+    }
+  })
+
   test('elsewhere, a missing command says to install it or give its full path', () => {
     const hint = spawnFailureHint({ command: 'uvx', args: ['some-server'], code: 'ENOENT' }, 'linux')
 

@@ -16,6 +16,7 @@ import {
   DEFAULT_FORWARDED_SIGNALS,
   installSignalForwarding,
   killWithEscalation,
+  SpawnServerError,
   spawnServer,
   type ServerHandle,
 } from './spawn.js'
@@ -94,7 +95,15 @@ export async function runWrap(
   const sink = createJournalSink(sessionId, sinkOptionsOf(opts, isFailClosed, journalFailure))
 
   const env = buildWrapServerEnv(process.env)
-  const handle = spawnServer(command, args, opts.cwd !== undefined ? { cwd: opts.cwd, env } : { env })
+  let handle: ServerHandle
+  try {
+    handle = spawnServer(command, args, opts.cwd !== undefined ? { cwd: opts.cwd, env } : { env })
+  } catch (error: unknown) {
+    // Refused synchronously (a Windows `.cmd` without a shell): nothing ran,
+    // but the sink is open — close it before the caller reports the failure.
+    await sink.close()
+    throw error
+  }
   const signalHandle = installSignalForwarding(handle, DEFAULT_FORWARDED_SIGNALS, { killEscalationMs })
   const shutdown = createShutdownController(handle, { diagnostics, killEscalationMs })
   const wiring = wireRelay({
@@ -115,6 +124,7 @@ export async function runWrap(
   })
   journalFailure.arm(handle, wiring)
 
+  let isServerStarted = true
   try {
     const childExitCode = await handle.exitCode()
     await drainRelay(wiring.relayed, relayDrainTimeoutMs, diagnostics)
@@ -122,13 +132,17 @@ export async function runWrap(
     // answers the client with a timeout error, which still has to reach it.
     await wiring.cancelPending()
     return exitCodeOf({ childExitCode, shutdown, journalFailure })
+  } catch (error: unknown) {
+    if (error instanceof SpawnServerError) isServerStarted = false
+    throw error
   } finally {
     wiring.dispose()
     await sink.close()
     journalFailure.reportDropped(sink.droppedRecordCount())
     signalHandle.uninstall()
-    // Last, once the journal is flushed: the line names a session that can be read.
-    if (opts.sessionEndNotice !== undefined) diagnostics.write(opts.sessionEndNotice(sessionId))
+    // Last, once the journal is flushed: the line names a session that can be
+    // read. Not when the server never started — the spawn error is the next step.
+    if (opts.sessionEndNotice !== undefined && isServerStarted) diagnostics.write(opts.sessionEndNotice(sessionId))
   }
 }
 
