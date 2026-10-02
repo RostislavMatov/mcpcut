@@ -1,10 +1,12 @@
-import { CONFIRM_AGENT_NAME_PATTERN, CONFIRM_ANY_AGENT, MAX_CONFIRM_AGENTS, RESERVED_OBJECT_KEYS, TOOL_RULE_NAME_PATTERN } from '../../policy/constants.js'
+import { CONFIRM_AGENT_NAME_PATTERN, CONFIRM_ANY_AGENT, MAX_CONFIRM_AGENTS } from '../../policy/constants.js'
 import type { PolicyFileWriteResult } from '../../policy/edit/policy-file.js'
 import { applyConfirmInClientToDocument } from '../../policy/edit/set-confirm-in-client.js'
+import type { Policy } from '../../policy/schema.js'
+import { isExactToolRuleName } from '../../policy/tool-name.js'
 import type { UiSession } from '../auth.js'
 import { roleSatisfies } from '../authz.js'
-import { HTTP_STATUS_BAD_REQUEST, HTTP_STATUS_FORBIDDEN, HTTP_STATUS_OK } from '../constants.js'
-import { CONFIRM_FIELD_VALUES, type ConfirmField } from '../pages/servers-confirm-rule.js'
+import { HTTP_STATUS_BAD_REQUEST, HTTP_STATUS_CONFLICT, HTTP_STATUS_FORBIDDEN, HTTP_STATUS_OK } from '../constants.js'
+import { CONFIRM_FIELD_VALUES, confirmRuleViewOf, type ConfirmField } from '../pages/servers-confirm-rule.js'
 import { headerValue, type UiHandler, type UiRequestContext, type UiResult } from '../routes.js'
 import {
   decodeOnce,
@@ -48,7 +50,7 @@ export interface ServersConfirmRuleHandlers {
 const CONFIRM = 'confirm'
 const AGENT = 'agent'
 const AUDIT_ACTION = 'policy.confirm'
-const WILDCARD_SUFFIX = '*'
+const EMPTY_AGENTS_MESSAGE = 'pick at least one agent, or use "off" or "all"'
 
 interface ParsedRequest {
   readonly serverName: string
@@ -57,10 +59,6 @@ interface ParsedRequest {
   /** `null` = remove the exact key. */
   readonly agents: readonly string[] | null
   readonly expectedHash: string
-}
-
-function isExactToolName(name: string): boolean {
-  return TOOL_RULE_NAME_PATTERN.test(name) && !name.endsWith(WILDCARD_SUFFIX) && !RESERVED_OBJECT_KEYS.includes(name)
 }
 
 function isConfirmField(value: string): value is ConfirmField {
@@ -94,11 +92,11 @@ function agentsOf(confirm: ConfirmField, raw: readonly unknown[]): readonly stri
   if (confirm === 'off') return null
   if (confirm === 'all') return [CONFIRM_ANY_AGENT]
   const names = raw.filter((item): item is string => typeof item === 'string' && CONFIRM_AGENT_NAME_PATTERN.test(item))
-  if (raw.length === 0 || names.length !== raw.length) {
-    return refusal(HTTP_STATUS_BAD_REQUEST, {
-      status: 'invalid',
-      message: `"${CONFIRM}=agents" needs at least one "${AGENT}", each a plain agent name`,
-    })
+  if (raw.length === 0) {
+    return refusal(HTTP_STATUS_BAD_REQUEST, { status: 'invalid', message: EMPTY_AGENTS_MESSAGE })
+  }
+  if (names.length !== raw.length) {
+    return refusal(HTTP_STATUS_BAD_REQUEST, { status: 'invalid', message: `each "${AGENT}" must be a plain agent name` })
   }
   if (new Set(names).size > MAX_CONFIRM_AGENTS) {
     return refusal(HTTP_STATUS_BAD_REQUEST, { status: 'invalid', message: `at most ${MAX_CONFIRM_AGENTS} agents; use "all"` })
@@ -113,7 +111,7 @@ function parseRequest(ctx: UiRequestContext): ParsedRequest | Refusal {
   if (serverName === undefined || !isValidServerName(serverName)) {
     return refusal(HTTP_STATUS_BAD_REQUEST, { status: 'invalid', message: 'invalid server name' })
   }
-  if (toolName === undefined || !isExactToolName(toolName)) {
+  if (toolName === undefined || !isExactToolRuleName(toolName)) {
     return refusal(HTTP_STATUS_BAD_REQUEST, { status: 'invalid', message: 'invalid tool name: a per-tool rule must be an exact name' })
   }
   const raw = rawFieldsOf(ctx)
@@ -136,6 +134,26 @@ function parseRequest(ctx: UiRequestContext): ParsedRequest | Refusal {
 function editMessage(parsed: ParsedRequest): string {
   const target = `${parsed.serverName}/${parsed.toolName}`
   return parsed.agents === null ? `cleared the client confirmation for ${target}` : `set client confirmation (${parsed.confirm}) for ${target}`
+}
+
+/**
+ * "off" removes only the EXACT key. With none, there is nothing to write: a
+ * pattern still covering the tool is named (409, so the script says it); with
+ * no pattern either the tool is already off — unchanged, nothing journaled.
+ */
+function noopAnswer(ctx: UiRequestContext, session: UiSession, parsed: ParsedRequest, policy: Policy): UiResult | undefined {
+  if (parsed.agents !== null) return undefined
+  const view = confirmRuleViewOf(policy, parsed.serverName, parsed.toolName)
+  if (view.exact !== undefined) return undefined
+  const covering = view.patterns[0]
+  if (covering !== undefined) {
+    return jsonResult(HTTP_STATUS_CONFLICT, {
+      status: 'nothing-to-clear',
+      message: `nothing to clear: still covered by rule ${covering.pattern}; edit that rule in policy.json`,
+    })
+  }
+  if (!wantsJson(ctx)) return formAnswer(session, `client confirmation for ${parsed.serverName}/${parsed.toolName} is already off`, { written: true })
+  return jsonResult(HTTP_STATUS_OK, { status: 'unchanged', server: parsed.serverName, tool: parsed.toolName, confirm: parsed.confirm })
 }
 
 export function createServersConfirmRuleHandlers(deps: ServersConfirmRuleDeps): ServersConfirmRuleHandlers {
@@ -171,6 +189,9 @@ export function createServersConfirmRuleHandlers(deps: ServersConfirmRuleDeps): 
 
     const target = await loadTarget(deps)
     if (isRefusal(target)) return jsonResult(target.status, target.payload)
+
+    const noop = noopAnswer(ctx, session, parsed, target.read.policy)
+    if (noop !== undefined) return noop
 
     const applied = applyConfirmInClientToDocument(target.read.document, parsed.serverName, parsed.toolName, parsed.agents)
     if (!applied.ok) return jsonResult(HTTP_STATUS_BAD_REQUEST, { status: 'invalid', message: applied.message })

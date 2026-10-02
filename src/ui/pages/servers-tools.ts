@@ -1,5 +1,6 @@
 import type { InventoryStoreData } from '../../policy/inventory-store.js'
 import type { Policy } from '../../policy/schema.js'
+import { TOOL_RULE_WILDCARD_SUFFIX } from '../../policy/tool-name.js'
 import { POOL_NAME_HIDE_ABOVE_CHARS, POOL_NAME_WARN_ABOVE_CHARS } from '../../pool/constants.js'
 import { encodePoolName, poolNameFit } from '../../pool/name-codec.js'
 import { renderToolName } from '../display-name.js'
@@ -251,7 +252,7 @@ function renderTool(tool: ServerToolView, ctx: ToolsPanelContext): Html {
   const rulePill = tool.rule !== undefined ? renderToolRulePill(tool.rule) : html``
   const confirmPill = tool.confirm !== undefined ? renderConfirmPill(tool.confirm) : html``
   const confirmControls =
-    tool.confirm !== undefined && ctx.ruleControls !== undefined
+    tool.confirm !== undefined && ctx.ruleControls !== undefined && !tool.name.endsWith(TOOL_RULE_WILDCARD_SUFFIX)
       ? renderConfirmControls({
           serverName: ctx.serverName,
           toolName: tool.name,

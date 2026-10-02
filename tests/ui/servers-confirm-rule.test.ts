@@ -153,16 +153,43 @@ describe('success', () => {
   })
 
   test('confirm=off removes only the exact key and journals null', async () => {
-    const read: PolicyFileReadResult = {
-      ...LOADED,
-      document: { version: 1, servers: { github: { confirmInClient: { 'write_*': ['*'], create_issue: ['a'] } } } },
-    }
+    const document = { version: 1, servers: { github: { confirmInClient: { 'write_*': ['*'], create_issue: ['a'] } } } }
+    const read: PolicyFileReadResult = { ...LOADED, document, policy: policyOf(document) }
     const h = makeHarness({ read })
     const result = await h.handler(post({ fields: { confirm: 'off', expected_hash: BASE_HASH } }))
     expect(jsonOf(result)).toMatchObject({ status: 'ok', confirm: 'off', agents: null })
     expect(h.writes[0]?.document).toEqual(BASE_DOCUMENT)
     expect(h.journal[0]?.confirmInClient).toBeNull()
     expect(h.audit[0]?.target).toBe('github/create_issue off')
+  })
+
+  test('off with no exact key and nothing covering the tool writes nothing: 200 "unchanged"', async () => {
+    const h = makeHarness()
+    const result = await h.handler(post({ fields: { confirm: 'off', expected_hash: BASE_HASH } }))
+    expect(statusOf(result)).toBe(200)
+    expect(jsonOf(result)).toMatchObject({ status: 'unchanged', confirm: 'off' })
+    expect(h.writes).toHaveLength(0)
+    expect(h.journal).toHaveLength(0)
+    expect(h.audit).toHaveLength(0)
+  })
+
+  test('off with no exact key while a pattern covers the tool is a 409 that names the rule and says what to do', async () => {
+    const h = makeHarness()
+    const result = await h.handler(post({ tool: 'write_file', fields: { confirm: 'off', expected_hash: BASE_HASH } }))
+    expect(statusOf(result)).toBe(409)
+    const body = jsonOf(result)
+    expect(body['status']).toBe('nothing-to-clear')
+    expect(String(body['message'])).toBe('nothing to clear: still covered by rule write_*; edit that rule in policy.json')
+    expect(h.writes).toHaveLength(0)
+    expect(h.journal).toHaveLength(0)
+    expect(h.audit).toHaveLength(0)
+  })
+
+  test('an off no-op from a native form goes back to /servers without a write', async () => {
+    const h = makeHarness()
+    const result = await h.handler(post({ form: true, fields: { confirm: 'off', expected_hash: BASE_HASH } }))
+    expect(statusOf(result)).toBe(303)
+    expect(h.writes).toHaveLength(0)
   })
 
   test('a native form post answers 303 back to /servers', async () => {
@@ -217,6 +244,11 @@ describe('refusals never write, journal or audit', () => {
     const { status, body } = await refused(options as PostOptions)
     expect(status).toBe(400)
     expect(String(body['message'])).not.toBe('')
+  })
+
+  test('the empty-agents refusal says what to do', async () => {
+    const { body } = await refused({ fields: { confirm: 'agents', expected_hash: BASE_HASH } })
+    expect(body['message']).toBe('pick at least one agent, or use "off" or "all"')
   })
 
   test('a non-string agent in a JSON body is refused (no coercion)', async () => {

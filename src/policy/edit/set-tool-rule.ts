@@ -1,6 +1,7 @@
-import { MAX_SERVERS_IN_POLICY, MAX_TOOL_RULES_PER_SERVER, RESERVED_OBJECT_KEYS, TOOL_RULE_NAME_PATTERN } from '../constants.js'
+import { MAX_SERVERS_IN_POLICY, MAX_TOOL_RULES_PER_SERVER, RESERVED_OBJECT_KEYS } from '../constants.js'
 import { formatPolicyErrors } from '../load.js'
 import { isOptionalObject, isPlainObject, keyCount, omitKey, ownValue, type PlainObject } from './plain-object.js'
+import { isExactToolRuleName } from '../tool-name.js'
 import { parsePolicy, SERVER_NAME_PATTERN, type Policy, type PolicyOutcome } from '../schema.js'
 
 /**
@@ -50,8 +51,6 @@ interface DocumentShape {
 
 const SERVERS_KEY = 'servers'
 const TOOLS_KEY = 'tools'
-/** The wildcard suffix a tool-rule key may carry; a per-tool rule never does. */
-const WILDCARD_SUFFIX = '*'
 
 /**
  * Sets `rule` as the exact rule for `toolName` on `serverName` in the raw
@@ -87,8 +86,7 @@ function validateNames(serverName: string, toolName: string): Failure | undefine
   if (!SERVER_NAME_PATTERN.test(serverName) || RESERVED_OBJECT_KEYS.includes(serverName)) {
     return failure('invalid-server-name', `invalid server name "${serverName}"`)
   }
-  const isExactToolName = TOOL_RULE_NAME_PATTERN.test(toolName) && !toolName.endsWith(WILDCARD_SUFFIX)
-  if (!isExactToolName || RESERVED_OBJECT_KEYS.includes(toolName)) {
+  if (!isExactToolRuleName(toolName)) {
     return failure('invalid-tool-name', `invalid tool name "${toolName}": a per-tool rule must be an exact name`)
   }
   return undefined

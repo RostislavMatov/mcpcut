@@ -155,6 +155,14 @@ describe('controls', () => {
     expect(forms[1]).toContain('aria-pressed="false"')
   })
 
+  test('off is not pressed while a pattern still covers the tool', () => {
+    const policy = policyOf({ servers: { github: { confirmInClient: { 'create_*': ['*'] } } } })
+    const forms = clientForms(page({ policy, agentDirectory: DIRECTORY }))
+    expect(forms[0]).toContain('name="confirm" value="off"')
+    expect(forms[0]).toContain('aria-pressed="false"')
+    expect(forms[1]).toContain('aria-pressed="false"')
+  })
+
   test('the agents form lists agents with a grant on this server, unchecked by default', () => {
     const forms = clientForms(page({ agentDirectory: DIRECTORY }))
     const agents = forms[2] ?? ''
@@ -170,8 +178,8 @@ describe('controls', () => {
     const agents = clientForms(page({ policy, agentDirectory: DIRECTORY }))[2] ?? ''
     expect(agents).toContain('value="laptop" checked />')
     expect(agents).toContain('value="ghost" checked />')
-    expect(agents).toMatch(/ghost[\s\S]*\(no such agent\)/)
-    expect(agents).not.toMatch(/laptop[^<]*<[^>]*>\s*\(no such agent\)/)
+    expect(agents).toMatch(/ghost[\s\S]*\(revoked or no such agent\)/)
+    expect(agents).not.toMatch(/laptop[^<]*<[^>]*>\s*\(revoked or no such agent\)/)
   })
 
   test('agents covered by a pattern are checked and disabled with the rule named; the next step names policy.json', () => {
@@ -191,6 +199,24 @@ describe('controls', () => {
     expect(agents).toContain('value="alice-cursor" checked disabled />')
     expect(agents).toContain('<input type="hidden" name="agent" value="laptop" />')
     expect(agents).not.toContain('<input type="hidden" name="agent" value="alice-cursor" />')
+  })
+
+  test('a tool whose name ends in * gets no client control (the pill stays)', () => {
+    const document = page({ inventory: inventoryOf({ github: ['create_*'] }), agentDirectory: DIRECTORY })
+    expect(document).not.toContain('/tools/create_%2A/confirm')
+    expect(document).toContain('srv-client')
+  })
+
+  test('the pattern hint shows whenever a pattern covers the tool, with or without agents and under wrap', () => {
+    const policy = policyOf({ servers: { github: { confirmInClient: { 'create_*': ['*'] } }, 'my-local': { confirmInClient: { 'ru*': ['*'] } } } })
+    const inventory = inventoryOf({ github: ['create_issue'], 'my-local': ['run'] })
+    const withAgents = page({ policy, agentDirectory: DIRECTORY })
+    expect(withAgents).toContain('edit it in policy.json')
+    const noAgents = page({ policy, agentDirectory: { known: [], grantedBy: new Map() } })
+    expect(noAgents).toContain('edit it in policy.json')
+    const wrap = page({ policy, inventory, wrapServers: ['my-local'], agentDirectory: DIRECTORY })
+    const start = wrap.indexOf('id="tools-my-local"')
+    expect(wrap.slice(start, wrap.indexOf('</details>', start))).toContain('edit it in policy.json')
   })
 
   test('no agent has a grant: only off / all, with the grant command using real names', () => {

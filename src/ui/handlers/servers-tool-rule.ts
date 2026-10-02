@@ -1,8 +1,8 @@
-import { RESERVED_OBJECT_KEYS, TOOL_RULE_NAME_PATTERN } from '../../policy/constants.js'
 import type { PolicyFileWriteResult } from '../../policy/edit/policy-file.js'
 import { applyToolRuleToDocument } from '../../policy/edit/set-tool-rule.js'
 import { effectiveToolRule } from '../../policy/effective.js'
 import { DEFAULT_INVENTORY_STORE, type InventoryStoreData } from '../../policy/inventory-store.js'
+import { isExactToolRuleName } from '../../policy/tool-name.js'
 import type { PolicyOutcome } from '../../policy/schema.js'
 import type { UiSession } from '../auth.js'
 import { roleSatisfies } from '../authz.js'
@@ -72,7 +72,6 @@ export interface ServersToolRuleHandlers {
 /** Body field names of the rule form (`pages/servers-tool-rule.ts` renders them). */
 const RULE_FIELD = 'rule'
 const AUDIT_ACTION = 'policy.set'
-const WILDCARD_SUFFIX = '*'
 
 interface ParsedRequest {
   readonly serverName: string
@@ -80,10 +79,6 @@ interface ParsedRequest {
   readonly rule: PolicyOutcome | null
   readonly ruleField: ToolRuleField
   readonly expectedHash: string
-}
-
-function isExactToolName(name: string): boolean {
-  return TOOL_RULE_NAME_PATTERN.test(name) && !name.endsWith(WILDCARD_SUFFIX) && !RESERVED_OBJECT_KEYS.includes(name)
 }
 
 function isRuleField(value: string): value is ToolRuleField {
@@ -97,7 +92,7 @@ function parseRequest(ctx: UiRequestContext): ParsedRequest | Refusal {
   if (serverName === undefined || !isValidServerName(serverName)) {
     return refusal(HTTP_STATUS_BAD_REQUEST, { status: 'invalid', message: 'invalid server name' })
   }
-  if (toolName === undefined || !isExactToolName(toolName)) {
+  if (toolName === undefined || !isExactToolRuleName(toolName)) {
     return refusal(HTTP_STATUS_BAD_REQUEST, { status: 'invalid', message: 'invalid tool name: a per-tool rule must be an exact name' })
   }
   const fields = parseBodyFields(ctx.body, headerValue(ctx.headers, 'content-type'))

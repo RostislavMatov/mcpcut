@@ -1,5 +1,6 @@
 import { CONFIRM_ANY_AGENT } from '../../policy/constants.js'
 import type { Policy } from '../../policy/schema.js'
+import { TOOL_RULE_WILDCARD_SUFFIX } from '../../policy/tool-name.js'
 import { html, join, type Html } from '../html.js'
 import { csrfField } from './csrf-field.js'
 import type { ToolRuleControls } from './servers-tool-rule.js'
@@ -57,7 +58,6 @@ export function confirmAgentsOf(directory: AgentDirectory, serverName: string): 
   return { kind: 'agents', granted: directory.grantedBy.get(serverName) ?? [], known: directory.known }
 }
 
-const WILDCARD_SUFFIX = '*'
 const ALL_LABEL = 'all'
 
 /**
@@ -72,7 +72,7 @@ export function confirmRuleViewOf(policy: Policy, serverName: string, toolName: 
     servers !== undefined && Object.hasOwn(servers, serverName) ? servers[serverName]?.confirmInClient : undefined
   if (entries === undefined) return { patterns: [] }
   const patterns = Object.entries(entries)
-    .filter(([key]) => key !== toolName && key.endsWith(WILDCARD_SUFFIX) && toolName.startsWith(key.slice(0, -1)))
+    .filter(([key]) => key !== toolName && key.endsWith(TOOL_RULE_WILDCARD_SUFFIX) && toolName.startsWith(key.slice(0, -1)))
     .map(([pattern, agents]) => ({ pattern, agents }))
     .sort((a, b) => b.pattern.length - a.pattern.length || (a.pattern < b.pattern ? -1 : 1))
   return Object.hasOwn(entries, toolName) ? { exact: entries[toolName] ?? [], patterns } : { patterns }
@@ -153,7 +153,8 @@ function renderButton(controls: EditableControls, cls: string, label: string, pr
 
 function renderChoice(options: ConfirmControlsOptions, controls: EditableControls, confirm: 'off' | 'all'): Html {
   const exact = options.view.exact
-  const pressed = confirm === 'all' ? exact?.includes(CONFIRM_ANY_AGENT) === true : exact === undefined
+  const pressed =
+    confirm === 'all' ? exact?.includes(CONFIRM_ANY_AGENT) === true : exact === undefined && options.view.patterns.length === 0
   const cls = `secondary srv-client-btn${pressed ? ' is-on' : ''}`
   return html`${formHead(options, controls, confirm)}${renderButton(controls, cls, confirm, pressed)}</form>`
 }
@@ -196,7 +197,7 @@ function renderAgentChoice(choice: AgentChoice, controls: EditableControls): Htm
   const checked = choice.isChecked ? html` checked` : html``
   const disabled = isFixed || controls.mode !== 'enabled' ? html` disabled` : html``
   const note = choice.viaPattern !== undefined ? html` <span class="faint">(rule ${choice.viaPattern})</span>` : html``
-  const unknown = choice.isUnknown ? html` <span class="faint">(no such agent)</span>` : html``
+  const unknown = choice.isUnknown ? html` <span class="faint">(revoked or no such agent)</span>` : html``
   const kept = choice.isKeptExact ? html`<input type="hidden" name="agent" value="${choice.name}" />` : html``
   return html`<label class="srv-client-agent"><input type="checkbox" name="agent" value="${choice.name}"${checked}${disabled} /> ${choice.name}${note}${unknown}</label>${kept}`
 }
@@ -212,11 +213,11 @@ function renderAgentsForm(options: ConfirmControlsOptions, controls: EditableCon
 /** The one-line next step under the controls. */
 function nextStepOf(options: ConfirmControlsOptions): Html {
   const { serverName, agents, view } = options
-  if (agents.kind === 'wrap') {
-    return html`<p class="srv-client-next faint small">Under wrap there is no agent name: only off / all apply. Run it with <code>--server &lt;name&gt;</code> for a readable name.</p>`
-  }
   const pattern = view.patterns[0]?.pattern
   const patternLine = pattern !== undefined ? html` To change what rule ${pattern} covers, edit it in policy.json.` : html``
+  if (agents.kind === 'wrap') {
+    return html`<p class="srv-client-next faint small">Under wrap there is no agent name: only off / all apply. Run it with <code>--server &lt;name&gt;</code> for a readable name.${patternLine}</p>`
+  }
   if (agents.granted.length === 0) {
     const agent = options.grantExample ?? '<agent>'
     return html`<p class="srv-client-next faint small">No agent has a grant on ${serverName} yet — agents appear here once they do: <code>mcpcut agent grant ${agent} ${serverName}</code>.${patternLine}</p>`
