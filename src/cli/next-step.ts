@@ -21,7 +21,12 @@ const MS_PER_SECOND = 1000
  * the running build's version, which npm has for every released build.
  */
 export function cliCommand(env: NodeJS.ProcessEnv = process.env): string {
-  return env['npm_command'] === 'exec' ? `npx -y mcpcut@${PRODUCT_VERSION}` : 'mcpcut'
+  return env['npm_command'] === 'exec' ? npxCommand() : 'mcpcut'
+}
+
+/** The npx form pinned to this build, for a surface that is not itself started by npx (the web UI). */
+export function npxCommand(): string {
+  return `npx -y mcpcut@${PRODUCT_VERSION}`
 }
 
 /** Characters a POSIX shell passes through unquoted and unexpanded. */

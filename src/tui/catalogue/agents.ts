@@ -8,8 +8,9 @@ import type { ActionSpec, SectionSpec } from './types.js'
 
 /**
  * The Agents section (mcpcut phase 4, Task 5): `agent list|create|config|
- * grant|ungrant|revoke` as six declarative actions plus the three `adopt` forms (`config` — ADR-0015, PRD
- * phase 4: the client config block with `<token>`, readable by anyone).
+ * grant|ungrant|revoke` as six declarative actions (`config` — ADR-0015, PRD
+ * phase 4: the client config block with `<token>`, readable by anyone), plus
+ * the three `adopt` forms.
  *
  * Reading is free (`viewer`), and every MUTATION is `ACCESS_MIN_ROLE` —
  * imported from `src/cli/access-cmd-write.ts`, which is where owner decision
@@ -134,6 +135,31 @@ const revokeAction: ActionSpec = {
     `Revoke agent "${valueOf(values, 'name')}"? Its token stops working at once.`,
 }
 
+const CLIENT_LABELS: Readonly<Record<(typeof CLIENT_IDS)[number], string>> = {
+  'claude-code': 'Claude Code',
+  cursor: 'Cursor',
+  'claude-desktop': 'Desktop',
+}
+
+const clientFields = CLIENT_IDS.map((id) => flagField(id, CLIENT_LABELS[id], 'only this client; none ticked = all'))
+
+function clientFlags(values: FormValues): readonly string[] {
+  return CLIENT_IDS.flatMap((id) => (isOn(values, id) ? ['--client', id] : []))
+}
+
+const CLIENT_NAMES: Readonly<Record<(typeof CLIENT_IDS)[number], string>> = {
+  'claude-code': 'Claude Code',
+  cursor: 'Cursor',
+  'claude-desktop': 'Claude Desktop',
+}
+
+/** The clients the form ticked, as names; every client when none is ticked (the CLI's default). */
+function clientNamesOf(values: FormValues): string {
+  const ticked = CLIENT_IDS.filter((id) => isOn(values, id))
+  const ids = ticked.length === 0 ? CLIENT_IDS : ticked
+  return ids.map((id) => CLIENT_NAMES[id]).join(', ')
+}
+
 /**
  * `adopt`, `adopt --apply`, `adopt --undo` (ADR-0018): put the MCP servers
  * already in Claude Code, Cursor and Claude Desktop behind `mcpcut wrap`.
@@ -151,18 +177,6 @@ const revokeAction: ActionSpec = {
  * One flag per client (none ticked = every client) becomes a repeated
  * `--client`, the shape the CLI takes.
  */
-const CLIENT_LABELS: Readonly<Record<(typeof CLIENT_IDS)[number], string>> = {
-  'claude-code': 'Claude Code',
-  cursor: 'Cursor',
-  'claude-desktop': 'Desktop',
-}
-
-const clientFields = CLIENT_IDS.map((id) => flagField(id, CLIENT_LABELS[id], 'only this client; none ticked = all'))
-
-function clientFlags(values: FormValues): readonly string[] {
-  return CLIENT_IDS.flatMap((id) => (isOn(values, id) ? ['--client', id] : []))
-}
-
 const adoptAction: ActionSpec = {
   id: 'adopt',
   title: 'adopt',
@@ -182,8 +196,8 @@ const adoptApplyAction: ActionSpec = {
   requires: 'local',
   fields: clientFields,
   argv: (values) => ['adopt', '--apply', ...clientFlags(values)],
-  confirm: () =>
-    'Rewrite the MCP server entries in the config files of Claude Code, Cursor and Claude Desktop on this machine? A copy of each file is kept; adopt --undo puts them back.',
+  confirm: (values) =>
+    `Rewrite the MCP server entries in the config files of ${clientNamesOf(values)} on this machine? A copy of each file is kept; adopt --undo puts them back.`,
   hint: 'writes the change; a copy of each file is kept',
 }
 

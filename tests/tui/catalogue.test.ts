@@ -8,6 +8,7 @@ import {
   visibleActions,
   visibleSections,
 } from '../../src/tui/catalogue/index.js'
+import { DEFAULT_INSTALL_FACTS, type InstallFacts } from '../../src/tui/model.js'
 import { HOME_SECTION } from '../../src/tui/catalogue/home.js'
 import type { ActionSpec, SectionSpec } from '../../src/tui/catalogue/types.js'
 
@@ -417,8 +418,21 @@ describe('the adopt actions of the Agents section', () => {
     expect(undo?.confirm?.({})).toBeDefined()
   })
 
-  test('a remote console does not offer them', () => {
-    expect(adopts.length).toBe(3)
-    expect(adopts.every((action) => action.requires === 'local')).toBe(true)
+  test('a remote console is not offered them, a local one is', () => {
+    const adoptIdsFor = (facts: InstallFacts): readonly string[] =>
+      visibleSections('owner', SECTIONS, facts)
+        .filter((section) => section.id === 'agents')
+        .flatMap((section) => section.actions.filter((action) => action.command === 'adopt').map((action) => action.id))
+
+    expect(adoptIdsFor({ supervisor: 'mcpcut', remote: true })).toEqual([])
+    expect(adoptIdsFor(DEFAULT_INSTALL_FACTS)).toEqual(['adopt', 'adopt-apply', 'adopt-undo'])
+  })
+
+  test('the apply question names only the ticked clients, and all three when none is ticked', () => {
+    const apply = adopts[1]
+
+    expect(apply?.confirm?.({ cursor: 'true' })).toContain('config files of Cursor on this machine')
+    expect(apply?.confirm?.({ cursor: 'true' })).not.toContain('Claude')
+    expect(apply?.confirm?.({})).toContain('Claude Code, Cursor, Claude Desktop')
   })
 })

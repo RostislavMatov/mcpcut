@@ -1085,7 +1085,7 @@ describe('the adopt block (a local install shows the commands, never runs them)'
     await store.createAgent('bot')
     const page = bodyOf(await handlers.agentsPage(getCtx(session('viewer'))))
 
-    expect(page).toContain('Claude Code, Cursor, Claude Desktop on this machine')
+    expect(page).toContain('Claude Code, Cursor, Claude Desktop on the machine where you run your client')
     expect(page).toContain(`<pre class="ag-config" data-adopt-command>${NPX} adopt</pre>`)
     expect(page).toContain(`>${NPX} adopt --apply</pre>`)
     expect(page).toContain(`>${NPX} adopt --undo</pre>`)
@@ -1113,7 +1113,7 @@ describe('the adopt block (a local install shows the commands, never runs them)'
     const page = bodyOf(await hosted.agentsPage(getCtx(session('owner'))))
 
     expect(page).not.toContain('data-adopt-command')
-    expect(page).not.toContain('adopt')
+    expect(page).not.toContain('ag-adopt')
   })
 
   test('the empty state names adopt first for someone alone on a laptop, and still offers create', () => {
@@ -1131,7 +1131,8 @@ describe('the adopt block (a local install shows the commands, never runs them)'
       tenant: HOSTED_TENANT,
     })
 
-    expect(page).not.toContain('adopt')
+    expect(page).not.toContain('Using mcpcut alone')
+    expect(page).not.toContain('ag-adopt')
     expect(page).toContain('Create an agent')
   })
 })

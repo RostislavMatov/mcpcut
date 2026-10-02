@@ -4,6 +4,7 @@ import { noAdminsYetNotice } from '../../src/cli/admin-token.js'
 import {
   anchorHeadHint,
   cliCommand,
+  npxCommand,
   exportReportHint,
   heldCallNotice,
   keygenHint,
@@ -38,6 +39,13 @@ function asNpx(): void {
 function asInstalled(): void {
   vi.stubEnv('npm_command', '')
 }
+
+describe('npxCommand', () => {
+  test('is the pinned npx form whatever launched this process, and what cliCommand uses', () => {
+    expect(npxCommand()).toBe(NPX)
+    expect(cliCommand({ npm_command: 'exec' })).toBe(npxCommand())
+  })
+})
 
 describe('cliCommand', () => {
   test('is the pinned npx form when npm exec (npx) started this process', () => {

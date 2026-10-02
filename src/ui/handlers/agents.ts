@@ -90,11 +90,7 @@ export interface AgentsHandlersDeps {
    * config of the host this daemon runs on.
    */
   readonly serveAddress: ServeAddress
-  /**
-   * Tenant mode settings (ADR-0017): a hosted install hides the adopt block.
-   * Defaults to `TENANT_SETTINGS`, the same optional dependency the servers
-   * handlers take.
-   */
+  /** Tenant mode settings (ADR-0017); default `TENANT_SETTINGS`. A hosted install hides the adopt block. */
   readonly tenant?: TenantSettings
   readonly audit?: UiAuditSink
   /**
