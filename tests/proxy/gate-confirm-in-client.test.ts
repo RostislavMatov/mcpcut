@@ -139,7 +139,7 @@ function createGate(policy: Policy | PolicyProvider, opts: GateOptions = {}): Po
     clock: () => now,
     onError: (error: unknown) => errors.push(error),
     ...(opts.agent !== undefined ? { agentScope: agentScope(opts.agent) } : {}),
-    ...(opts.confirm === false ? {} : { confirmInClient: { command: 'mcpcut', onNotice: (text: string) => notices.push(text) } }),
+    ...(opts.confirm === false ? {} : { confirmInClient: { onNotice: (text: string) => notices.push(text) } }),
   })
 }
 

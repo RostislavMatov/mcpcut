@@ -318,6 +318,7 @@ describe('withdrawing the question', () => {
     await flush()
 
     pending?.withdraw()
+    await flush()
 
     expect(h.sent[1]).toEqual({
       jsonrpc: '2.0',
@@ -420,6 +421,60 @@ describe('one question at a time', () => {
 
     expect(questionsSent(h)).toHaveLength(2)
     expect(messageOf(h, 1)).toContain('allow delete_file on fs?')
+  })
+})
+
+describe('a send that throws instead of rejecting', () => {
+  test('answers failed and still asks the next question', async () => {
+    const h = harness()
+    const errors: unknown[] = []
+    let sends = 0
+    const confirmer = createClientConfirmer({
+      ...h.deps,
+      send: (message) => {
+        sends += 1
+        if (sends === 1) throw new Error('sink closed')
+        h.sent.push(message as Record<string, unknown>)
+        return Promise.resolve()
+      },
+      onError: (error) => errors.push(error),
+    })
+    confirmer.observeInitialize(INITIALIZE_WITH_FORMS)
+
+    const first = confirmer.confirm(QUESTION)
+    const second = confirmer.confirm({ ...QUESTION, toolName: 'delete_file' })
+    await flush()
+    await flush()
+
+    expect(await first?.answer).toEqual({ kind: 'failed' })
+    expect(errors).toHaveLength(1)
+    expect(messageOf(h)).toContain('allow delete_file on fs?')
+    expect(await stateOf(second?.answer as Promise<ConfirmAnswer>)).toBe('pending')
+  })
+
+  test('withdrawing never throws even when the cancellation cannot be sent', async () => {
+    const h = harness()
+    const errors: unknown[] = []
+    let sends = 0
+    const confirmer = createClientConfirmer({
+      ...h.deps,
+      send: (message) => {
+        sends += 1
+        if (sends === 2) throw new Error('sink closed')
+        h.sent.push(message as Record<string, unknown>)
+        return Promise.resolve()
+      },
+      onError: (error) => errors.push(error),
+    })
+    confirmer.observeInitialize(INITIALIZE_WITH_FORMS)
+    const pending = confirmer.confirm(QUESTION)
+    await flush()
+
+    expect(() => pending?.withdraw()).not.toThrow()
+    await flush()
+
+    expect(await pending?.answer).toEqual({ kind: 'withdrawn' })
+    expect(errors).toHaveLength(1)
   })
 })
 

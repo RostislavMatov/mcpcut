@@ -69,6 +69,8 @@ interface Refusal {
   readonly rule: string
   readonly reason: ClientConfirmErrorReason
   readonly actor?: string
+  /** What the operator's terminal is told, when the refusal is not the person's own choice. */
+  readonly operatorLine?: 'no-dialog' | 'too-fast'
 }
 
 const REFUSED: ConfirmOutcome = { kind: 'refused' }
@@ -81,13 +83,13 @@ function refusalOf(answer: Exclude<ConfirmAnswer, { kind: 'accepted' }>, timedOu
     case 'cancelled':
       return { outcome: 'denied-by-operator', rule: CLIENT_CONFIRM_RULES.cancelled, reason: 'refused', actor: answer.actor }
     case 'too-fast':
-      return { outcome: 'deny', rule: CLIENT_CONFIRM_RULES.tooFast, reason: 'refused' }
+      return { outcome: 'deny', rule: CLIENT_CONFIRM_RULES.tooFast, reason: 'unconfirmed', operatorLine: 'too-fast' }
     case 'failed':
-      return { outcome: 'deny', rule: CLIENT_CONFIRM_RULES.failed, reason: 'unavailable' }
+      return { outcome: 'deny', rule: CLIENT_CONFIRM_RULES.failed, reason: 'unavailable', operatorLine: 'no-dialog' }
     case 'withdrawn':
       return timedOut
         ? { outcome: 'timeout', rule: CLIENT_CONFIRM_RULES.timeout, reason: 'timeout' }
-        : { outcome: 'deny', rule: CLIENT_CONFIRM_RULES.sessionEnded, reason: 'refused' }
+        : { outcome: 'deny', rule: CLIENT_CONFIRM_RULES.sessionEnded, reason: 'unconfirmed' }
   }
 }
 
@@ -106,27 +108,27 @@ export function createConfirmStep(deps: ConfirmStepDeps): ConfirmStep {
     return REFUSED
   }
 
-  function toldOperator(facts: CallFacts, rule: string): void {
+  function tellOperator(facts: CallFacts, line: Refusal['operatorLine']): void {
     const tool = `${replaceControlChars(facts.toolName)} on ${serverName}`
-    const client = confirmer?.clientName() ?? 'this client'
-    if (rule === CLIENT_CONFIRM_RULES.unavailable || rule === CLIENT_CONFIRM_RULES.failed) {
+    if (line === 'no-dialog') {
       notice(
-        `${tool} needs confirmation in the client, and ${client} cannot show the dialog: refused.\n` +
+        `${tool} needs confirmation in the client, and ${confirmer?.clientName() ?? 'this client'} cannot show the dialog: refused.\n` +
           `  Use a client with MCP form elicitation (Claude Code), or remove it from "confirmInClient" in the policy.\n`,
       )
     }
-    if (rule === CLIENT_CONFIRM_RULES.tooFast) {
+    if (line === 'too-fast') {
       notice(`An Accept for ${tool} came too fast twice to be a person reading it: refused. The agent may retry.\n`)
     }
   }
 
   async function run(call: ParsedToolCall, facts: CallFacts, thenAdmin: boolean): Promise<ConfirmOutcome> {
     // No return address: the result of a confirmation could never be delivered.
-    if (call.id === null) return refuse(call, facts, { outcome: 'deny', rule: CLIENT_CONFIRM_RULES.idless, reason: 'refused' })
+    if (call.id === null) return refuse(call, facts, { outcome: 'deny', rule: CLIENT_CONFIRM_RULES.idless, reason: 'unconfirmed' })
     const pending = confirmer?.confirm({ toolName: facts.toolName, serverName, args: call.args, thenAdmin })
     if (pending === undefined) {
-      toldOperator(facts, CLIENT_CONFIRM_RULES.unavailable)
-      return refuse(call, facts, { outcome: 'deny', rule: CLIENT_CONFIRM_RULES.unavailable, reason: 'unavailable' })
+      const refusal: Refusal = { outcome: 'deny', rule: CLIENT_CONFIRM_RULES.unavailable, reason: 'unavailable', operatorLine: 'no-dialog' }
+      tellOperator(facts, refusal.operatorLine)
+      return refuse(call, facts, refusal)
     }
     const waitKey = idKeyOf(call.id)
     deps.answerGuard.beginWait(waitKey)
@@ -140,7 +142,7 @@ export function createConfirmStep(deps: ConfirmStepDeps): ConfirmStep {
       const answer = await pending.answer
       if (answer.kind === 'accepted') return { kind: 'confirmed', by: answer.actor }
       const refusal = refusalOf(answer, timedOut)
-      toldOperator(facts, refusal.rule)
+      tellOperator(facts, refusal.operatorLine)
       return await refuse(call, facts, refusal)
     } finally {
       clearTimeout(timer)

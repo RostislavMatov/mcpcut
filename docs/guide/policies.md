@@ -213,13 +213,18 @@ client's name.
 - **Whose agents.** The list holds agent names, or `"*"` for every agent and
   for `mcpcut wrap` (which has no agent). An agent not on the list gets the
   admin's rule alone. Names match tools as tool rules do (exact, or a
-  trailing `*`; the most specific entry wins).
+  trailing `*`), and the most specific entry wins **with its own list**: with
+  `{ "write_*": ["*"], "write_file": ["laptop"] }`, `write_file` is confirmed
+  for `laptop` only — repeat `"*"` or the other agents in the exact entry if
+  you meant them too.
 - **This assumes a person answers the client's dialogs.** A client driven by
   a program — an SDK host or a CI job that answers such questions on its own,
   or routes them to the model — would confirm on the agent's behalf; leave
   such agents off the list.
 - **Anything but an Accept refuses the call.** Decline, Esc, no answer within
-  `approval.timeoutMs`, a client that cannot show the dialog or answers it
+  `approval.timeoutMs` (read when the session starts; the wait counts from
+  the call, so with several calls at once the later dialogs have less of it),
+  a client that cannot show the dialog or answers it
   with an error, and the session ending — each refuses the call and is
   recorded. It never falls back to the approval queue: the confirmation and an
   admin's approval are two rules, and one never stands in for the other. When

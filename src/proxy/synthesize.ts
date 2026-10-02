@@ -120,7 +120,7 @@ export function approvalDeniedError(id: SynthesizableId, info: ApprovalDeniedErr
 }
 
 /** Why a call that needed the person at the client's confirmation did not get it. */
-export type ClientConfirmErrorReason = 'refused' | 'timeout' | 'unavailable'
+export type ClientConfirmErrorReason = 'refused' | 'unconfirmed' | 'timeout' | 'unavailable'
 
 export interface ClientConfirmErrorInfo {
   readonly toolName: string
@@ -129,6 +129,7 @@ export interface ClientConfirmErrorInfo {
 
 const CLIENT_CONFIRM_MESSAGES: Readonly<Record<ClientConfirmErrorReason, (toolName: string) => string>> = {
   refused: (toolName) => `Call to tool "${toolName}" was refused by the person at the client, who was asked to confirm it.`,
+  unconfirmed: (toolName) => `Call to tool "${toolName}" needs confirmation by the person at the client and was not confirmed.`,
   timeout: (toolName) =>
     `Call to tool "${toolName}" needs confirmation by the person at the client, and none came in time. ` +
     'Retry when they are there to confirm it.',
@@ -147,7 +148,9 @@ const CLIENT_CONFIRM_MESSAGES: Readonly<Record<ClientConfirmErrorReason, (toolNa
 export function clientConfirmError(id: SynthesizableId, info: ClientConfirmErrorInfo): Buffer {
   return synthesizeError(id, {
     code: ERROR_CODE_APPROVAL,
-    message: (CLIENT_CONFIRM_MESSAGES[info.reason] ?? CLIENT_CONFIRM_MESSAGES.refused)(info.toolName),
+    // Total over the union for typed callers; the fallback is for an untyped one
+    // (the reflective no-override-command test probes every builder with junk).
+    message: (CLIENT_CONFIRM_MESSAGES[info.reason] ?? CLIENT_CONFIRM_MESSAGES.unconfirmed)(info.toolName),
     data: { reason: `client_confirm_${info.reason}`, toolName: info.toolName },
   })
 }

@@ -159,14 +159,20 @@ export function createClientConfirmer(deps: ClientConfirmDeps): ClientConfirmer 
     const mode = abilities?.sendsMode === true ? { mode: 'form' } : {}
     const current: Shown = { id, entry, sentAtMs: deps.clock(), round }
     shown = current
-    const message = { jsonrpc: '2.0', id, method: ELICITATION_METHOD, params: { ...mode, message: questionText(entry.question, round), requestedSchema: EMPTY_FORM } }
-    deps.send(message).catch((error: unknown) => {
-      deps.onError(error)
-      if (shown !== current) return
-      shown = undefined
-      entry.settle({ kind: 'failed' })
-      next()
-    })
+    // A send that throws before it returns a promise fails the same way as one
+    // that rejects: either way the dialog never reached the client.
+    Promise.resolve()
+      .then(() => {
+        const params = { ...mode, message: questionText(entry.question, round), requestedSchema: EMPTY_FORM }
+        return deps.send({ jsonrpc: '2.0', id, method: ELICITATION_METHOD, params })
+      })
+      .catch((error: unknown) => {
+        deps.onError(error)
+        if (shown !== current) return
+        shown = undefined
+        entry.settle({ kind: 'failed' })
+        next()
+      })
   }
 
   /** Shows the next waiting question once nothing is on screen; one at a time. */
@@ -210,8 +216,9 @@ export function createClientConfirmer(deps: ClientConfirmDeps): ClientConfirmer 
     const index = waiting.indexOf(entry)
     if (index >= 0) waiting.splice(index, 1)
     if (shown?.entry === entry) {
-      deps
-        .send({ jsonrpc: '2.0', method: CANCELLED_METHOD, params: { requestId: shown.id, reason: 'The call was settled outside this dialog.' } })
+      const requestId = shown.id
+      Promise.resolve()
+        .then(() => deps.send({ jsonrpc: '2.0', method: CANCELLED_METHOD, params: { requestId, reason: 'The call was settled outside this dialog.' } }))
         .catch(deps.onError)
       shown = undefined
     }
