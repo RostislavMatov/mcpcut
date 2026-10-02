@@ -136,7 +136,9 @@ const APP_JS_SOURCE = `"use strict";
       if (!name || name === "csrf_token") continue;
       // An unchecked checkbox posts nothing; a repeated name (the client-rule
       // agent boxes) becomes an array, as a native urlencoded post repeats it.
-      if (fields[i].type === "checkbox" && !fields[i].checked) continue;
+      // A disabled control and an unchosen radio post nothing either.
+      if (fields[i].disabled) continue;
+      if ((fields[i].type === "checkbox" || fields[i].type === "radio") && !fields[i].checked) continue;
       if (Object.prototype.hasOwnProperty.call(out, name)) {
         out[name] = [].concat(out[name], fields[i].value);
       } else {

@@ -6,6 +6,7 @@ import { parsePolicy, type Policy } from '../../src/policy/schema.js'
 import { confirmRuleViewOf, confirmSummaryOf } from '../../src/ui/pages/servers-confirm-rule.js'
 import { renderServersPage, toServerToolsByName, type ServersView } from '../../src/ui/pages/servers.js'
 import { TENANT_SETTINGS } from '../../src/tenant/settings.js'
+import { APP_JS } from '../../src/ui/assets/app-js.js'
 
 /**
  * The per-tool client rule on the Servers card (ADR-0019): the union pill, the
@@ -271,5 +272,62 @@ describe('On this machine (wrap)', () => {
     const document = page({ inventory, wrapServers: ['my-local'], canManage: false })
     expect(document).toContain('On this machine (wrap)')
     expect(document).not.toContain('/servers/my-local/tools/run/confirm')
+  })
+})
+
+/**
+ * A scripted form posts what `formPayload` serialises, so it must send what a
+ * native post would: no disabled control, and only the checked radio of a group.
+ */
+describe('the scripted post of the agents form equals a native one', () => {
+  const source = /\n {2}function formPayload\(el\) \{[\s\S]*?\n {2}\}/.exec(APP_JS.body.toString('utf8'))?.[0] ?? ''
+  const formPayload = new Function(`${source}\nreturn formPayload;`)() as (form: unknown) => string | null
+
+  interface StubField {
+    name: string
+    type: string
+    value: string
+    checked: boolean
+    disabled: boolean
+  }
+
+  /** `form.elements` of the rendered agents form, with `ticked` agents' boxes ticked by the "user". */
+  function stubOf(form: string, ticked: readonly string[]): { elements: StubField[]; getAttribute: () => null } {
+    const elements = [...form.matchAll(/<input[^>]*>/g)].map((match) => {
+      const tag = match[0]
+      const attr = (name: string): string => new RegExp(`\\s${name}="([^"]*)"`).exec(tag)?.[1] ?? ''
+      const value = attr('value')
+      const type = attr('type')
+      return {
+        name: attr('name'),
+        type,
+        value,
+        checked: / checked[ />]/.test(tag) || (type === 'checkbox' && ticked.includes(value)),
+        disabled: / disabled[ />]/.test(tag),
+      }
+    })
+    return { elements, getAttribute: () => null }
+  }
+
+  test('a pattern-covered agent (checked, disabled) is not copied into the exact key; a ticked one and a kept-exact one are', () => {
+    const policy = policyOf({ servers: { github: { confirmInClient: { 'create_*': ['laptop', 'ci'], create_issue: ['ci'] } } } })
+    const directory = { known: ['laptop', 'alice-cursor', 'ci'], grantedBy: new Map([['github', ['laptop', 'alice-cursor', 'ci']]]) }
+    const form = clientForms(page({ policy, agentDirectory: directory }))[2] ?? ''
+    const payload = JSON.parse(formPayload(stubOf(form, ['alice-cursor'])) ?? '{}') as Record<string, unknown>
+    expect(payload['confirm']).toBe('agents')
+    expect(payload['agent']).toEqual(['alice-cursor', 'ci'])
+  })
+
+  test('only the checked radio of a group is posted; a disabled field never is', () => {
+    const payload = formPayload({
+      elements: [
+        { name: 'mode', type: 'radio', value: 'a', checked: false },
+        { name: 'mode', type: 'radio', value: 'b', checked: true },
+        { name: 'x', type: 'text', value: 'nope', disabled: true },
+        { name: 'y', type: 'text', value: 'yes' },
+      ],
+      getAttribute: () => null,
+    })
+    expect(JSON.parse(payload ?? '{}')).toEqual({ mode: 'b', y: 'yes' })
   })
 })
