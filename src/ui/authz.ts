@@ -111,6 +111,8 @@ export const ROUTE_TABLE: readonly RouteEntry[] = [
   // boundary — the same threshold as registering a server. The two `:params`
   // arrive percent-encoded; the handler decodes each exactly once.
   { method: 'POST', pattern: '/servers/:name/tools/:tool/rule', minRole: 'owner', handler: 'serversToolRule' },
+  // The client-confirmation rule (ADR-0019): the same file, the same owner threshold.
+  { method: 'POST', pattern: '/servers/:name/tools/:tool/confirm', minRole: 'owner', handler: 'serversConfirmRule' },
   // Server groups (M5.5 п.2, decision G4): `viewer` reads the page, only
   // `owner` writes — one group edit moves every member's access at once. Since
   // decision T4 the personal grant routes above carry the SAME threshold, so
