@@ -3,7 +3,6 @@ import type { GrantRegistry } from '../policy/approvals/grants.js'
 import type { PolicyProvider } from '../policy/reload.js'
 import type { Policy } from '../policy/schema.js'
 import type { MessageGate, MessageSink } from '../transport/message.js'
-import type { ClientApprovalDeps } from './client-approval.js'
 import type { GateApprovalQueue } from './gate-approvals.js'
 import type {
   DecisionProvenance,
@@ -80,22 +79,17 @@ export interface MessagePolicyGateDeps {
    */
   readonly onApprovalPending?: (notice: PendingApprovalNotice) => void
   /**
-   * Present on the stdio `wrap` path when the policy has `approval.askClient`
-   * (P2): a held call is also asked in the client, whose answer is written
-   * into the queue through `resolve`. Absent — the HTTP paths, every test
-   * double — means the queue alone, exactly as before.
+   * Present on the stdio paths (`wrap`, `connect`), which have a client to
+   * ask: a call the policy lists in `confirmInClient` for this agent is
+   * confirmed by the person at the client first (ADR-0019). Absent — the HTTP
+   * paths — such a call is refused: nobody can be asked.
    */
-  readonly askClient?: AskClientDeps
+  readonly confirmInClient?: ConfirmInClientDeps
 }
 
-/** What the gate needs to ask the client about a held call (see `client-approval.ts`). */
-export interface AskClientDeps {
-  readonly resolve: ClientApprovalDeps['resolve']
-  /** Checked before each question (see `ask-client-rule.ts`). */
-  readonly mayAsk?: ClientApprovalDeps['mayAsk']
-  /** How mcpcut is started here, for the commands the dialog names. */
-  readonly command?: string
-  /** Lines for the operator's terminal. */
+/** What the gate needs for the confirmation in the client (see `gate-confirm.ts`). */
+export interface ConfirmInClientDeps {
+  /** Lines for the operator's terminal: why a confirmation was refused. */
   readonly onNotice?: (text: string) => void
 }
 

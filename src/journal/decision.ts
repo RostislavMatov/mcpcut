@@ -51,6 +51,10 @@ export function buildDecisionRecord(input: BuildDecisionRecordInput): JournalRec
     ...(input.decision.actor !== undefined
       ? { actor: redactString(input.decision.actor) }
       : {}),
+    // `confirmedBy` is built from the client's self-declared name: traffic, so redacted here too.
+    ...(input.decision.confirmedBy !== undefined
+      ? { confirmedBy: redactString(input.decision.confirmedBy) }
+      : {}),
   })
 
   const record: JournalRecord = {

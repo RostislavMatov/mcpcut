@@ -15,8 +15,6 @@ import {
   type SessionHandle,
 } from '../session/core.js'
 import { DIAGNOSTIC_PREFIX } from './connect-constants.js'
-import { askClientDepsOf } from '../proxy/ask-client-rule.js'
-import { cliCommand } from './next-step.js'
 
 /**
  * Assembles one `connect` session's non-transport half — journal, tool
@@ -186,13 +184,9 @@ export function startConnectSession(args: StartConnectSessionArgs): ConnectSessi
       ? { revocationPollIntervalMs: args.revocationPollIntervalMs }
       : {}),
     onError,
-    // ADR-0019: the agent's user is asked only about tools the policy lists
-    // in `approveInClient` — no `mayAskUnlisted` on this path.
-    ...askClientDepsOf(
-      { policy: effectivePolicy, serverName: args.serverName },
-      { command: cliCommand(), onNotice: args.onDiagnostic },
-      approvalQueue,
-    ),
+    // ADR-0019: a stdio client is there to ask about the tools the policy
+    // lists in `confirmInClient` for this agent.
+    confirmInClient: { onNotice: args.onDiagnostic },
   })
 
   failure.arm(session)

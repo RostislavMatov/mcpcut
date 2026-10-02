@@ -8,7 +8,6 @@ import type { ParsedToolCall } from '../protocol/mcp.js'
 import type { Verdict } from './pipeline.js'
 import { approvalDeniedError, approvalTimeoutError, type SynthesizableId } from './synthesize.js'
 import type { PendingApprovalNotice } from './gate-types.js'
-import type { ApprovalQuestion, AskedQuestion } from './client-approval.js'
 import {
   ALREADY_ANSWERED_RULE,
   DROP,
@@ -44,6 +43,8 @@ interface ApprovalContext {
   readonly startedAtMs: number
   /** How the wait settled, and who settled it when a human did (M5 wave 2). */
   readonly result: WaitResult
+  /** Rides every record the flow writes: the confirmation in the client that came first (ADR-0019). */
+  readonly base: DecisionExtras
   /**
    * The provenance pair as of the instant this call was DECIDED, captured
    * before the enqueue and carried to whichever record ends the flow. The
@@ -96,8 +97,6 @@ export interface ApprovalFlowDeps {
   readonly onError: (error: unknown) => void
   /** Hears of each call queued for a human, once, before its wait starts. */
   readonly onApprovalPending?: (notice: PendingApprovalNotice) => void
-  /** Also asks the person at the client (P2); `undefined` when the client cannot be asked. */
-  readonly askClient?: (question: ApprovalQuestion) => AskedQuestion | undefined
 }
 
 export interface ApprovalFlow {
@@ -118,22 +117,14 @@ export interface ApprovalFlow {
     grantKey: GrantKey,
     decision: PolicyDecision,
     captured: ProvenanceSnapshot,
+    /** Extras every record of the flow carries (`confirmedBy`, ADR-0019). */
+    base?: DecisionExtras,
   ): Promise<Verdict>
 }
 
 export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
   const { policy, serverName, approvalQueue, approvalWaiter, grantRegistry, clock } = deps
   const { writeDecision, settleJournal, answerLocally, answerGuard, enqueuedUnresolved } = deps
-
-  /** Asking in the client is a courtesy too: the queue decides, so a failure here changes nothing. */
-  function askInClient(question: ApprovalQuestion): AskedQuestion | undefined {
-    try {
-      return deps.askClient?.(question)
-    } catch (error: unknown) {
-      deps.onError(error)
-      return undefined
-    }
-  }
 
   /** An announcement is a courtesy to the operator: its failure never decides the call. */
   function announcePending(notice: PendingApprovalNotice): void {
@@ -155,8 +146,9 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
     grantKey: GrantKey,
     decision: PolicyDecision,
     captured: ProvenanceSnapshot,
+    base: DecisionExtras = {},
   ): Promise<Verdict> {
-    const lateGrant = await resolveLateApproval(call, facts, grantKey)
+    const lateGrant = await resolveLateApproval(call, facts, grantKey, base)
     if (lateGrant !== null) return lateGrant
 
     const startedAtMs = clock()
@@ -195,6 +187,7 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
     enqueuedUnresolved.add(approvalId)
     writeDecision(
       decisionInfoOf(facts, 'require-approval-pending', decision.rule, {
+        ...base,
         approvalId,
         ...(deps.agentName !== undefined ? { agentName: deps.agentName } : {}),
       }),
@@ -209,7 +202,6 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
     // exactly-one-outcome burn survives even a 10k-id LRU flood (M8).
     const waitKey = call.id !== null ? idKeyOf(call.id) : null
     if (waitKey !== null) answerGuard.beginWait(waitKey)
-    const asked = askInClient({ approvalId, toolName: facts.toolName, serverName, args: call.args })
     try {
       const result = await approvalWaiter.wait(approvalQueue, approvalId, policy.approval.timeoutMs)
       const ctx: ApprovalContext = {
@@ -221,11 +213,10 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
         startedAtMs,
         result,
         captured,
+        base,
       }
       return await finishApproval(ctx)
     } finally {
-      // Settled here or elsewhere: an open dialog would ask about a call that is over.
-      asked?.withdraw()
       if (waitKey !== null) answerGuard.endWait(waitKey)
     }
   }
@@ -248,7 +239,12 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
    * recorded nowhere on the one record an auditor reads for that retry (M5
    * wave 2).
    */
-  async function resolveLateApproval(call: ParsedToolCall, facts: CallFacts, grantKey: GrantKey): Promise<Verdict | null> {
+  async function resolveLateApproval(
+    call: ParsedToolCall,
+    facts: CallFacts,
+    grantKey: GrantKey,
+    base: DecisionExtras,
+  ): Promise<Verdict | null> {
     const granted = await checkRecentApproval(deps.approvalsBaseDir, {
       ...grantKey,
       sessionId: deps.sessionId,
@@ -271,12 +267,12 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
     // them would backdate this one's provenance (M5 wave-2 review).
     const decision = deps.decideWithGrant(facts, true)
     if (decision.outcome !== 'allow') return null
-    const extras: DecisionExtras = { approvalId: granted.approvalId, ...actorExtra(granted.actor) }
+    const extras: DecisionExtras = { ...base, approvalId: granted.approvalId, ...actorExtra(granted.actor) }
     return await deps.applyAllow(call, facts, decision, extras)
   }
 
   async function finishApproval(ctx: ApprovalContext): Promise<Verdict> {
-    const extras: DecisionExtras = { approvalId: ctx.approvalId, latencyMs: clock() - ctx.startedAtMs }
+    const extras: DecisionExtras = { ...ctx.base, approvalId: ctx.approvalId, latencyMs: clock() - ctx.startedAtMs }
     if (ctx.result.outcome === 'approved') return await finishApproved(ctx, extras)
 
     const isDenied = ctx.result.outcome === 'denied'

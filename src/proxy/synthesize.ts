@@ -119,6 +119,40 @@ export function approvalDeniedError(id: SynthesizableId, info: ApprovalDeniedErr
   })
 }
 
+/** Why a call that needed the person at the client's confirmation did not get it. */
+export type ClientConfirmErrorReason = 'refused' | 'unconfirmed' | 'timeout' | 'unavailable'
+
+export interface ClientConfirmErrorInfo {
+  readonly toolName: string
+  readonly reason: ClientConfirmErrorReason
+}
+
+const CLIENT_CONFIRM_MESSAGES: Readonly<Record<ClientConfirmErrorReason, (toolName: string) => string>> = {
+  refused: (toolName) => `Call to tool "${toolName}" was refused by the person at the client, who was asked to confirm it.`,
+  unconfirmed: (toolName) => `Call to tool "${toolName}" needs confirmation by the person at the client and was not confirmed.`,
+  timeout: (toolName) => `Call to tool "${toolName}" needs confirmation by the person at the client, and none came in time.`,
+  // Says what is missing, never how to lift the rule: the agent reads this
+  // (the operator's own line, with the rule's name, goes to their terminal).
+  unavailable: (toolName) =>
+    `Call to tool "${toolName}" needs confirmation by the person at the client, and this client cannot show ` +
+    'the confirmation dialog (MCP form elicitation). The person needs a client that can.',
+}
+
+/**
+ * A `tools/call` the policy makes the person at the client confirm
+ * (`confirmInClient`, ADR-0019) that was not confirmed: refused in the
+ * dialog, not answered in time, or not askable in this client at all.
+ */
+export function clientConfirmError(id: SynthesizableId, info: ClientConfirmErrorInfo): Buffer {
+  return synthesizeError(id, {
+    code: ERROR_CODE_APPROVAL,
+    // Total over the union for typed callers; the fallback is for an untyped one
+    // (the reflective no-override-command test probes every builder with junk).
+    message: (CLIENT_CONFIRM_MESSAGES[info.reason] ?? CLIENT_CONFIRM_MESSAGES.unconfirmed)(info.toolName),
+    data: { reason: `client_confirm_${info.reason}`, toolName: info.toolName },
+  })
+}
+
 export interface QuarantinedErrorInfo {
   readonly toolName: string
   readonly serverName: string

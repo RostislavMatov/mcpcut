@@ -62,9 +62,12 @@ const SEMANTIC_ALLOWLIST: ReadonlySet<string> = new Set([
   // they name the policy the entry point is handed, as `wrap.ts` did.
   'src/proxy/wrap-options.ts',
   'src/proxy/wire-policy.ts',
-  // Who may be asked in the client (ADR-0019): reads the live policy's
-  // `approveInClient` and `approval.askClient`, so it is semantic by definition.
-  'src/proxy/ask-client-rule.ts',
+  // The confirmation in the client (ADR-0019): reads the live policy's
+  // `confirmInClient`, so it is semantic by definition.
+  'src/proxy/gate-confirm.ts',
+  // How one `tools/call` is decided, extracted from `gate-core.ts` for the
+  // line budget when the confirmation step arrived (ADR-0019).
+  'src/proxy/gate-call.ts',
   'src/proxy/journal-failure.ts',
   'src/protocol/classify.ts',
   'src/protocol/mcp.ts',

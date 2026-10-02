@@ -34,10 +34,15 @@ The first start downloads mcpcut and the server; if your client gives up on it, 
 
 A server added by hand can take its own file instead: `--policy "$PWD/policy.json"` right after `wrap`.
 
-A write now waits, and Claude Code asks you right in the session — **Accept** lets it through, **Decline** refuses it ([in the client](docs/guide/policies.md#approving-in-the-client)). Or approve it from another terminal within the agent's wait (60 s; after it, the agent's retry passes) — no token needed until you add your first admin ([Approvals](docs/guide/policies.md#approval-scenario)):
+A write now waits. Approve it from another terminal within the agent's wait (60 s; after it, the agent's retry passes) — no token needed until you add your first admin ([Approvals](docs/guide/policies.md#approval-scenario)):
 
     npx -y mcpcut@0.2.4 approvals list
     npx -y mcpcut@0.2.4 approvals approve <id>
+
+Or be asked right in the session: let everything pass and stop only the tools you name — Claude Code shows **Accept** / **Decline**, no second terminal ([Confirming in the client](docs/guide/policies.md#confirming-in-the-client)):
+
+    { "version": 1, "defaultDecision": "allow", "quarantine": { "enabled": false },
+      "servers": { "fs": { "confirmInClient": { "write_file": ["*"], "edit_file": ["*"] } } } }
 
 **Prove.** Sign the history, export it, and check it offline — with nothing but the directory:
 
