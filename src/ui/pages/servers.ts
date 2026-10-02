@@ -16,7 +16,10 @@ import {
   renderServerToolsModal,
   type ServerCardOptions,
   type ServerToolsByName,
+  type ToolsPanelContext,
 } from './servers-parts.js'
+import { confirmAgentsOf, type AgentDirectory } from './servers-confirm-rule.js'
+import { renderWrapSection } from './servers-wrap.js'
 import { renderPolicyBanner, renderPolicySources, ruleControlsOf, toolsNoteOf } from './servers-policy-view.js'
 import type { ServerStatusesByName } from './servers-status.js'
 import { plural } from './plural.js'
@@ -120,6 +123,13 @@ export interface ServersView {
    * stdio/http choice, byte for byte as before this task.
    */
   readonly tenant?: TenantSettings
+  /** Agents and their grants, for the client rule's agent choices (ADR-0019). Absent → off / all only. */
+  readonly agentDirectory?: AgentDirectory
+  /**
+   * Inventory servers that run under `wrap` here and are not registered: the
+   * "On this machine" section. The handler leaves it out on a tenant install.
+   */
+  readonly wrapServers?: readonly string[]
 }
 
 function navMetaOf(view: ServersView): string {
@@ -183,8 +193,29 @@ function cardOptionsOf(view: ServersView): readonly ServerCardOptions[] {
       csrfToken: view.csrfToken,
       ...(ruleControls !== undefined ? { ruleControls } : {}),
       ...(toolsNote !== undefined ? { toolsNote } : {}),
+      ...(view.agentDirectory !== undefined
+        ? {
+            confirmAgents: confirmAgentsOf(view.agentDirectory, record.name),
+            ...(view.agentDirectory.known[0] !== undefined ? { grantExample: view.agentDirectory.known[0] } : {}),
+          }
+        : {}),
     }
   })
+}
+
+/** Panel context of a wrap server: the same rule controls, and a client rule with no agent to name. */
+function wrapContextOf(view: ServersView, serverName: string): ToolsPanelContext {
+  const ruleControls = ruleControlsOf(view.policyView, view.canManage)
+  const toolsNote = toolsNoteOf(view.policyView)
+  return {
+    serverName,
+    csrfToken: view.csrfToken,
+    confirmAgents: { kind: 'wrap' },
+    ...(view.openTools !== undefined ? { open: view.openTools === serverName } : {}),
+    ...(view.canRelease !== undefined ? { canRelease: view.canRelease } : {}),
+    ...(ruleControls !== undefined ? { ruleControls } : {}),
+    ...(toolsNote !== undefined ? { note: toolsNote } : {}),
+  }
 }
 
 /**
@@ -210,6 +241,7 @@ export function renderServersPage(view: ServersView): string {
     ${renderManage(view)}
     ${renderPolicySources(view.policyView)}
     ${renderGrid(view, mode)}
+    ${renderWrapSection({ names: view.tenant?.isTenant === true ? [] : (view.wrapServers ?? []), tools: view.tools, contextOf: (name) => wrapContextOf(view, name) })}
   `
   const query = (view.query ?? '').slice(0, MAX_ECHOED_QUERY_CHARS)
   return renderLayout({

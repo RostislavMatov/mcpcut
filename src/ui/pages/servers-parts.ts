@@ -15,6 +15,7 @@ import {
   type ServerToolsView,
   type ToolsPanelContext,
 } from './servers-tools.js'
+import type { ConfirmAgents } from './servers-confirm-rule.js'
 import type { ToolRuleControls } from './servers-tool-rule.js'
 
 export {
@@ -221,6 +222,10 @@ export interface ServerCardOptions {
   readonly toolsNote?: string
   /** True when `?tools=<name>` named this server: its tools modal renders open. */
   readonly toolsOpen?: boolean
+  /** The client rule's agent choices for this server (ADR-0019); absent → off / all with no agent line. */
+  readonly confirmAgents?: ConfirmAgents
+  /** An agent name for the `agent grant` next step. */
+  readonly grantExample?: string
 }
 
 /** The tools context of one card; exported so the page can render the modal outside the card. */
@@ -233,6 +238,8 @@ export function toolsPanelContextOf(options: ServerCardOptions): ToolsPanelConte
     ...(options.canRelease !== undefined ? { canRelease: options.canRelease } : {}),
     ...(options.ruleControls !== undefined ? { ruleControls: options.ruleControls } : {}),
     ...(options.toolsNote !== undefined ? { note: options.toolsNote } : {}),
+    ...(options.confirmAgents !== undefined ? { confirmAgents: options.confirmAgents } : {}),
+    ...(options.grantExample !== undefined ? { grantExample: options.grantExample } : {}),
   }
 }
 

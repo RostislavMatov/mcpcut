@@ -45,6 +45,18 @@ export type ConfirmAgents =
   /** A server run under `wrap` here: there is no agent name, only off / all. */
   | { readonly kind: 'wrap' }
 
+/** Who the agents store knows, and which of them hold a grant on each registry server. */
+export interface AgentDirectory {
+  /** Every agent name in the store (a name in the policy but not here is flagged). */
+  readonly known: readonly string[]
+  readonly grantedBy: ReadonlyMap<string, readonly string[]>
+}
+
+/** The agent choices of one registry server's panel, from the directory. */
+export function confirmAgentsOf(directory: AgentDirectory, serverName: string): Extract<ConfirmAgents, { kind: 'agents' }> {
+  return { kind: 'agents', granted: directory.grantedBy.get(serverName) ?? [], known: directory.known }
+}
+
 const WILDCARD_SUFFIX = '*'
 const ALL_LABEL = 'all'
 
@@ -126,7 +138,7 @@ function formHead(options: ConfirmControlsOptions, controls: EditableControls, c
   const target = confirmActionPath(options.serverName, options.toolName)
   const scripted = controls.mode === 'enabled' ? html` data-action="${target}"` : html``
   const expectedHash = controls.mode === 'enabled' ? controls.expectedHash : ''
-  return html`<form method="post" action="${target}"${scripted} class="inline srv-rule-form srv-client-form">
+  return html`<form method="post" action="${target}"${scripted} class="inline srv-client-form">
       ${csrfField(options.csrfToken)}
       <input type="hidden" name="confirm" value="${confirm}" />
       <input type="hidden" name="expected_hash" value="${expectedHash}" />`
@@ -142,7 +154,7 @@ function renderButton(controls: EditableControls, cls: string, label: string, pr
 function renderChoice(options: ConfirmControlsOptions, controls: EditableControls, confirm: 'off' | 'all'): Html {
   const exact = options.view.exact
   const pressed = confirm === 'all' ? exact?.includes(CONFIRM_ANY_AGENT) === true : exact === undefined
-  const cls = `secondary srv-rule-btn srv-client-btn${pressed ? ' is-on' : ''}`
+  const cls = `secondary srv-client-btn${pressed ? ' is-on' : ''}`
   return html`${formHead(options, controls, confirm)}${renderButton(controls, cls, confirm, pressed)}</form>`
 }
 
@@ -191,7 +203,7 @@ function renderAgentChoice(choice: AgentChoice, controls: EditableControls): Htm
 
 function renderAgentsForm(options: ConfirmControlsOptions, controls: EditableControls, choices: readonly AgentChoice[]): Html {
   const isOn = options.view.exact !== undefined && !options.view.exact.includes(CONFIRM_ANY_AGENT)
-  const cls = `secondary srv-rule-btn srv-client-btn${isOn ? ' is-on' : ''}`
+  const cls = `secondary srv-client-btn${isOn ? ' is-on' : ''}`
   return html`${formHead(options, controls, 'agents')}
       <span class="srv-client-agents">${join(choices.map((choice) => renderAgentChoice(choice, controls)))}</span>
       ${renderButton(controls, cls, 'set agents', isOn)}</form>`
