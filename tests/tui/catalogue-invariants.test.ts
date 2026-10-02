@@ -82,6 +82,8 @@ const CONFIRMING_ACTIONS: readonly string[] = [
   'vault/remove',
   'vault/rekey',
   'agents/revoke',
+  'agents/adopt-apply',
+  'agents/adopt-undo',
   'groups/remove',
   'quarantine/approve-all',
   'quarantine/reject',

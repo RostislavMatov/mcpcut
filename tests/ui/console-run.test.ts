@@ -100,6 +100,22 @@ describe('the allowlist', () => {
     expect(called).toBe(false)
   })
 
+  test('adopt stays closed over the wire: it would edit the plane host, not the developer', async () => {
+    let called = false
+    const ui = await start(async () => {
+      called = true
+      return 0
+    })
+    const token = await ui.tokenFor('owner')
+
+    for (const argv of [['adopt'], ['adopt', '--apply'], ['adopt', '--undo']]) {
+      const res = await postRun(ui.base, token, { argv })
+      expect(res.status).toBe(403)
+      expect(consoleErrorSchema.parse(await res.json()).error).toBe('forbidden')
+    }
+    expect(called).toBe(false)
+  })
+
   test('a known first word runs', async () => {
     let seenArgv: readonly string[] | undefined
     const ui = await start(async (request) => {

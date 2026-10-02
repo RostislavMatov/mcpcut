@@ -24,13 +24,9 @@ import type { CommandPair } from '../../src/tui/catalogue/types.js'
  * stdin and stdout (PRD): a screen that redraws cannot host one. `ui` and
  * `serve` ARE the daemons this console is a client of — they are reached
  * through `start|stop|logs` in Services (phase 5), never run in the
- * foreground of a console session. `tui` is the console itself. `adopt`
- * rewrites the client configs of the machine it runs on (ADR-0018): run from
- * a console attached with `--remote`, it would edit the plane host's files,
- * not the developer's — it belongs in the developer's own shell, as `wrap`.
+ * foreground of a console session. `tui` is the console itself.
  */
 const EXCLUDED_FROM_CATALOGUE: readonly CommandPair[] = [
-  { command: 'adopt' },
   { command: 'wrap' },
   { command: 'connect' },
   { command: 'ui' },

@@ -179,7 +179,7 @@ describe('an install somebody else supervises is offered less', () => {
     expect(meetsRequirement(actionOf('setup'), EXTERNAL_FACTS)).toBe(true)
   })
 
-  test('connect, disconnect, start, stop and setup are the only actions that declare a requirement', () => {
+  test('connect, disconnect, adopt, start, stop and setup are the only actions that declare a requirement', () => {
     const requiring = SECTIONS.flatMap((section) =>
       section.actions
         .filter((action) => action.requires !== undefined)
@@ -192,6 +192,9 @@ describe('an install somebody else supervises is offered less', () => {
     expect(requiring).toEqual([
       'home/connect',
       'home/disconnect',
+      'agents/adopt',
+      'agents/adopt-apply',
+      'agents/adopt-undo',
       'services/start',
       'services/stop',
       'services/setup',

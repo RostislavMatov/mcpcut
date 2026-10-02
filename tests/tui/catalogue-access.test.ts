@@ -227,7 +227,7 @@ describe('role thresholds mirror ACCESS_MIN_ROLE: every mutation is owner-only',
     // `config` prints the block with <token> — nothing secret — so it is a read.
     ['viewer' as Role, ['list', 'config']],
     ['operator' as Role, ['list', 'config']],
-    ['owner' as Role, ['list', 'create', 'config', 'grant', 'ungrant', 'revoke']],
+    ['owner' as Role, ['list', 'create', 'config', 'grant', 'ungrant', 'revoke', 'adopt', 'adopt-apply', 'adopt-undo']],
   ])('a %s sees exactly the agents actions it may run', (role, expected) => {
     // Arrange & Act
     const ids = actionIdsFor(AGENTS_SECTION, role)
@@ -273,14 +273,14 @@ describe('only the two destructive actions ask first', () => {
   })
 
   test.each([
-    ['agents', AGENTS_SECTION, 'revoke'],
-    ['groups', GROUPS_SECTION, 'remove'],
-  ])('%s carries confirm on that action alone', (_id, section, confirming) => {
+    ['agents', AGENTS_SECTION, ['revoke', 'adopt-apply', 'adopt-undo']],
+    ['groups', GROUPS_SECTION, ['remove']],
+  ])('%s carries confirm on those actions alone', (_id, section, confirming) => {
     // Arrange & Act
     const asking = section.actions.filter((action) => action.confirm !== undefined)
 
     // Assert
-    expect(asking.map((action) => action.id)).toEqual([confirming])
+    expect(asking.map((action) => action.id)).toEqual(confirming)
   })
 })
 

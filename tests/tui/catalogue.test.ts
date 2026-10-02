@@ -290,6 +290,7 @@ const CATALOGUE_PAIR_KEYS: readonly string[] = [
   'agent grant',
   'agent ungrant',
   'agent revoke',
+  'adopt',
   'group list',
   'group show',
   'group create',
@@ -386,5 +387,38 @@ describe('actionAt', () => {
   test('a role that may not run the action gets nothing, whatever list it indexes', () => {
     expect(actionAt(SECTIONS, 'viewer', 1, 0)).toBeUndefined()
     expect(actionAt(SECTIONS, 'operator', 1, 0)).toBeUndefined()
+  })
+})
+
+describe('the adopt actions of the Agents section', () => {
+  const agents = SECTIONS.find((section) => section.id === 'agents')
+  const adopts = agents?.actions.filter((action) => action.command === 'adopt') ?? []
+
+  test('are three, all local-only and owner-floor', () => {
+    expect(adopts.map((action) => action.id)).toEqual(['adopt', 'adopt-apply', 'adopt-undo'])
+    expect(adopts.every((action) => action.requires === 'local' && action.minRole === 'owner')).toBe(true)
+  })
+
+  test('build the argv the CLI takes, with one --client per ticked client', () => {
+    const [preview, apply, undo] = adopts
+    const both = { 'claude-code': 'true', cursor: 'true' }
+
+    expect(preview?.argv({})).toEqual(['adopt'])
+    expect(preview?.argv(both)).toEqual(['adopt', '--client', 'claude-code', '--client', 'cursor'])
+    expect(apply?.argv({ 'claude-desktop': 'true' })).toEqual(['adopt', '--apply', '--client', 'claude-desktop'])
+    expect(undo?.argv({})).toEqual(['adopt', '--undo'])
+  })
+
+  test('only the preview runs unasked', () => {
+    const [preview, apply, undo] = adopts
+
+    expect(preview?.confirm).toBeUndefined()
+    expect(apply?.confirm?.({})).toContain('adopt --undo')
+    expect(undo?.confirm?.({})).toBeDefined()
+  })
+
+  test('a remote console does not offer them', () => {
+    expect(adopts.length).toBe(3)
+    expect(adopts.every((action) => action.requires === 'local')).toBe(true)
   })
 })
