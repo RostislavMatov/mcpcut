@@ -120,6 +120,7 @@ export async function runWrap(
     serverName: opts.serverName ?? autoServerName(command, args),
     ...(opts.agentScope !== undefined ? { agentScope: opts.agentScope } : {}),
     ...approvalNoticeOf(opts, diagnostics),
+    ...askClientOf(opts, diagnostics),
     ...policyLocationsOf(opts),
   })
   journalFailure.arm(handle, wiring)
@@ -195,6 +196,13 @@ function approvalNoticeOf(opts: RunWrapOptions, diagnostics: Writable): Pick<Rel
       diagnostics.write(format(notice))
     },
   }
+}
+
+/** Asking in the client (P2), with its notices on the same guarded stderr as the held-call line. */
+function askClientOf(opts: RunWrapOptions, diagnostics: Writable): Pick<RelayArgs, 'askClient'> {
+  const options = opts.askClient
+  if (options === undefined) return {}
+  return { askClient: { ...options, onNotice: (text) => diagnostics.write(text) } }
 }
 
 /** Forwards only the on-disk locations that were actually specified, so each keeps its own default. */

@@ -3,6 +3,7 @@ import type { GrantRegistry } from '../policy/approvals/grants.js'
 import type { PolicyProvider } from '../policy/reload.js'
 import type { Policy } from '../policy/schema.js'
 import type { MessageGate, MessageSink } from '../transport/message.js'
+import type { ClientApprovalDeps } from './client-approval.js'
 import type { GateApprovalQueue } from './gate-approvals.js'
 import type {
   DecisionProvenance,
@@ -78,6 +79,24 @@ export interface MessagePolicyGateDeps {
    * A throw is reported through `onError` and changes nothing about the call.
    */
   readonly onApprovalPending?: (notice: PendingApprovalNotice) => void
+  /**
+   * Present on the stdio `wrap` path when the policy has `approval.askClient`
+   * (P2): a held call is also asked in the client, whose answer is written
+   * into the queue through `resolve`. Absent — the HTTP paths, every test
+   * double — means the queue alone, exactly as before.
+   */
+  readonly askClient?: AskClientDeps
+}
+
+/** What the gate needs to ask the client about a held call (see `client-approval.ts`). */
+export interface AskClientDeps {
+  readonly resolve: ClientApprovalDeps['resolve']
+  /** Checked before each question (see `ask-client-rule.ts`). */
+  readonly mayAsk?: ClientApprovalDeps['mayAsk']
+  /** How mcpcut is started here, for the commands the dialog names. */
+  readonly command?: string
+  /** Lines for the operator's terminal. */
+  readonly onNotice?: (text: string) => void
 }
 
 export interface MessagePolicyGate {

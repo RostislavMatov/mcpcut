@@ -179,6 +179,56 @@ A `require-approval` tool call does not reach the server immediately:
    `(server, tool, args)` triple, so an agent's retry a few minutes later
    passes without a second manual approval.
 
+### Approving in the client
+
+Under `mcpcut wrap`, a held call is also asked in the client when the client
+can show a form (MCP form elicitation — Claude Code does): a dialog names the
+tool, the server and the arguments (secrets redacted), with **Accept** and
+**Decline**. Accept approves the call in the queue and it goes through at
+once; Decline denies it; Esc — or no answer — leaves it waiting in
+`mcpcut approvals list` as before. The resolution is stored as
+`client:<the client's name>` (for example `client:claude-code`), so the
+journal says the call was approved in the client.
+
+- **Tools you name: always.** List held tools under the server's
+  `approveInClient` and the person at the client is asked about them on any
+  stdio path — `wrap`, and an agent's `mcpcut connect` too — and on an
+  installation with admins:
+  ```json
+  "servers": { "fs": { "tools": { "write_file": "require-approval" },
+                       "approveInClient": ["write_file"] } }
+  ```
+  Names match as tool rules do (exact, or a trailing `*`); a short prefix
+  such as `"a*"` hands nearly every tool to the client, so list names. Other
+  held tools still go to an admin. **This assumes a person answers the
+  client's dialogs.** A client driven by a program — an SDK host or a CI job
+  that answers such questions automatically, or routes them to the model —
+  would approve listed tools on the agent's behalf; for such agents leave the
+  list empty or set `"approval": { "askClient": false }`. This is how an agent's user approves a specific tool
+  without an admin token — never by running `approvals approve` with the
+  agent's token, which the agent can read and would use to approve itself.
+- **Any other held tool: only on `wrap` while the installation has no
+  admin.** Once `mcpcut admin add` has run, an approval of an unlisted tool
+  must name an admin, so it goes through `approvals approve` with a token, as
+  above. On `connect` the person at the client is an agent's user, so only
+  listed tools are asked there. A rule or an admin that changes before the
+  answer lands makes that Accept count for nothing, with a line naming the
+  command to use instead.
+- **Not over HTTP yet.** `serve`, the pool behind `connect --url` and hosted
+  installs ask nothing in the client; their approvals go through the queue.
+- **An Accept faster than a second does not count.** The dialog opens with
+  Accept focused, so an Enter typed into the prompt as it appears would
+  approve. Such an Accept is asked once more; a second fast one leaves the
+  call to the queue. With several calls held at once, the dialogs come one
+  at a time.
+- **What the dialog shows.** Every argument by name, each value cut at 160
+  characters with a count of what is hidden; when anything is hidden, the
+  dialog says so and names `mcpcut approvals list --json` to read it whole.
+- **Turning it off.** A client that answers such questions without a person
+  would approve on its own; set `"approval": { "askClient": false }` to keep
+  approvals to the queue alone — it wins over `approveInClient`. Both are read
+  for each question, so an edit applies without a restart.
+
 ## Quarantine
 
 The first time a server advertises a tool (or advertises one whose schema —
