@@ -68,6 +68,15 @@ export interface DecisionInfo {
    */
   readonly actor?: string
   /**
+   * WHO confirmed the call in the client, when the policy asked for that
+   * (`confirmInClient`, ADR-0019): `client:<name>`, from the client's own
+   * `initialize`. A confirmation of its own, beside `actor` — on an
+   * `approved` record `actor` is the admin and this is the person at the
+   * client. Absent wherever no confirmation was asked or given, under the
+   * same "absent, not null" convention as `actor`.
+   */
+  readonly confirmedBy?: string
+  /**
    * Fingerprint of the *effective* policy this call was decided under
    * (`policy/provenance.ts`). Required: every decision record carries it, so
    * an auditor can tell which ruleset produced the outcome instead of having

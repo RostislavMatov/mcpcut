@@ -191,6 +191,8 @@ export interface DecisionExtras {
   readonly latencyMs?: number
   readonly agentName?: string
   readonly actor?: string
+  /** The person at the client who confirmed the call (`confirmInClient`), as `client:<name>`. */
+  readonly confirmedBy?: string
 }
 
 /**

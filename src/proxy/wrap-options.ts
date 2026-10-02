@@ -4,7 +4,6 @@ import type { PolicyProvider } from '../policy/reload.js'
 import type { Policy } from '../policy/schema.js'
 import type { GateAgentScope } from './gate.js'
 import type { PendingApprovalNotice } from './gate-types.js'
-import type { AskClientOptions } from './client-approval.js'
 
 /**
  * Everything `runWrap` can be told, split out of `wrap.ts` for the 400-line
@@ -63,12 +62,6 @@ export interface RunWrapOptions {
    * means a held call stays silent, as before. Mode B only.
    */
   readonly approvalNotice?: (notice: PendingApprovalNotice) => string
-  /**
-   * Also ask the person at the client about a held call (P2), when the
-   * policy's `approval.askClient` allows it. Decided by the CLI, which knows
-   * the installation (no admins yet) and how mcpcut was started. Mode B only.
-   */
-  readonly askClient?: AskClientOptions
   /**
    * The one line written when the session ends (the wrapped server exited or
    * the client left), after the journal is flushed: it names the session and

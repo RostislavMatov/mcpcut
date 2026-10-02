@@ -168,6 +168,22 @@ export const MAX_SERVERS_IN_POLICY = 100
 export const MAX_TOOL_RULES_PER_SERVER = 500
 
 /**
+ * `confirmInClient` (ADR-0019): the entry that names every agent, and the
+ * local `wrap` path, which has no agent at all.
+ */
+export const CONFIRM_ANY_AGENT = '*'
+
+/**
+ * An agent name in a `confirmInClient` list. The same shape as the agents
+ * store's names (`agents/constants.ts`, a test keeps the two equal): a policy
+ * may name an agent that does not exist yet, never one that cannot.
+ */
+export const CONFIRM_AGENT_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/
+
+/** Max names in one `confirmInClient` list: the agents store's own cap. */
+export const MAX_CONFIRM_AGENTS = 200
+
+/**
  * Shape of a tool-rule key: an exact tool name, or a name with a single
  * trailing glob (`prefix*`). No mid-name or multiple wildcards -- rule
  * matching (`policy/match.ts`) only ever needs "exact" or "longest prefix",

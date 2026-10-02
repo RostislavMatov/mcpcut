@@ -9,10 +9,10 @@ import type { PolicyProvider } from '../policy/reload.js'
 import type { Policy } from '../policy/schema.js'
 import { classify } from '../protocol/classify.js'
 import type { GateAgentScope } from './gate.js'
-import type { PendingApprovalNotice } from './gate-types.js'
+import type { ConfirmInClientDeps, PendingApprovalNotice } from './gate-types.js'
 import type { ServerHandle } from './spawn.js'
 import { splice, type SpliceErrorOrigin, type SpliceHandle } from './splice.js'
-import { wirePolicyRelay, type AskClientWiring, type RelayWiring } from './wire-policy.js'
+import { wirePolicyRelay, type RelayWiring } from './wire-policy.js'
 
 /**
  * Relay mode selection for one wrapped session, plus the mode A (M1) relay
@@ -58,8 +58,8 @@ export interface RelayArgs {
   readonly agentScope?: GateAgentScope
   /** Hears of each call queued for a human; mode B only (mode A holds nothing). */
   readonly onApprovalPending?: (notice: PendingApprovalNotice) => void
-  /** Ask the person at the client too (P2); mode B only. */
-  readonly askClient?: AskClientWiring
+  /** The client channel for `confirmInClient` (ADR-0019); mode B only. */
+  readonly confirmInClient?: ConfirmInClientDeps
 }
 
 /** Wires client stdio through the child, in whichever mode this run calls for. */
@@ -90,7 +90,7 @@ function wirePipelines(args: RelayArgs, policy: Policy | PolicyProvider): RelayW
       : {}),
     ...(args.agentScope !== undefined ? { agentScope: args.agentScope } : {}),
     ...(args.onApprovalPending !== undefined ? { onApprovalPending: args.onApprovalPending } : {}),
-    ...(args.askClient !== undefined ? { askClient: args.askClient } : {}),
+    ...(args.confirmInClient !== undefined ? { confirmInClient: args.confirmInClient } : {}),
   })
 }
 

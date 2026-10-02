@@ -8,8 +8,7 @@ import { autoServerName } from '../proxy/wire-policy.js'
 import { SpawnServerError } from '../proxy/spawn.js'
 import { runWrap, type RunWrapOptions } from '../proxy/wrap.js'
 import { preflightDatabases } from '../store/preflight.js'
-import { adminStoreEmptiness } from './admin-token.js'
-import { cliCommand, heldCallNotice, noPolicyNotice, sessionJournaledNotice, spawnFailureHint, wrapExampleLine } from './next-step.js'
+import { heldCallNotice, noPolicyNotice, sessionJournaledNotice, spawnFailureHint, wrapExampleLine } from './next-step.js'
 import { formatPolicyLoadErrors } from './policy-load-errors.js'
 import { createReloadingPolicy } from './policy-reload.js'
 
@@ -47,18 +46,6 @@ export interface WrapCommandOptions {
 }
 
 const DEFAULT_IO: WrapCliIo = { stderr: process.stderr }
-
-/**
- * True while the installation has no admin: the person at the client may
- * approve. Exactly `approvals approve`'s rule without a token — `no-install`
- * does not count, as there (a client config missing MCPCUT_DATA_DIR must not
- * open what "nobody exists" opens; the queue's own write creates the
- * database before anything is asked).
- */
-async function hasNoAdmins(journalDir: string | undefined): Promise<boolean> {
-  const emptiness = await adminStoreEmptiness(journalDir !== undefined ? { journalDir } : {})
-  return emptiness.kind === 'empty'
-}
 
 /** The usage block; its example names the directory the operator is in, so it can be pasted as is. */
 function wrapUsage(cwd: string): string {
@@ -122,11 +109,6 @@ export async function runWrapCommand(
       // A held call is named on stderr with the command that releases it: the
       // Stop step used to wait out its whole window in silence (0.2.3).
       approvalNotice: heldCallNotice,
-      // P2: a held call is also asked in the client — a tool the policy
-      // lists in `approveInClient` always, any other only while nobody but
-      // its user can approve (no admins yet, as `approvals approve` needs no
-      // token only then).
-      askClient: { mayAskUnlisted: () => hasNoAdmins(opts.runWrap?.dir), command: cliCommand() },
       sessionEndNotice: sessionJournaledNotice,
       ...opts.runWrap,
       ...(flags.server !== undefined ? { serverName: flags.server } : {}),

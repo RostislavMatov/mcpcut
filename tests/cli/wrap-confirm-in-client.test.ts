@@ -2,23 +2,22 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
-import { createAdminStore } from '../../src/admin/store.js'
 import { runWrapCommand } from '../../src/cli/wrap-cmd.js'
 import { createApprovalQueue } from '../../src/policy/approvals/queue.js'
-import { MIN_HUMAN_ANSWER_MS } from '../../src/proxy/client-approval.js'
+import { MIN_HUMAN_ANSWER_MS } from '../../src/proxy/client-confirm.js'
 import { FAKE_SERVER_PATH, createClientHarness, receivedMessagesOf, requestLine, waitUntil, waitUntilAsync } from '../proxy/harness.js'
 
 /**
- * P2 end to end through `mcpcut wrap`: a client that declares form
- * elicitation is asked about the held call in the session, and Accept lets
- * the call through — in the client's name. With an admin on the
- * installation nobody is asked: approvals then need a token.
+ * ADR-0019 end to end through `mcpcut wrap` — the owner's scenario: the
+ * client in full auto mode, everything passes, and only the tools named in
+ * `confirmInClient` stop for the person at the client. A tool held for an
+ * admin alone never opens a dialog: that is the queue's.
  */
 
 let journalDir: string
 
 beforeEach(async () => {
-  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-wrap-ask-client-'))
+  journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-wrap-confirm-'))
   vi.stubEnv('npm_command', '')
 })
 
@@ -27,24 +26,24 @@ afterEach(async () => {
   await rm(journalDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
 })
 
-const HELD_POLICY = {
-  version: 1,
-  defaultDecision: 'allow',
-  quarantine: { enabled: false },
-  approval: { timeoutMs: 20_000 },
-  servers: { fs: { tools: { echo: 'require-approval' } } },
+function initialize(capabilities: Record<string, unknown>): string {
+  return `${JSON.stringify({
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'initialize',
+    params: { protocolVersion: '2025-11-25', capabilities, clientInfo: { name: 'claude-code', version: '2.1.287' } },
+  })}\n`
 }
 
-const INITIALIZE = `${JSON.stringify({
-  jsonrpc: '2.0',
-  id: 1,
-  method: 'initialize',
-  params: { protocolVersion: '2025-11-25', capabilities: { elicitation: { form: {} } }, clientInfo: { name: 'claude-code', version: '2.1.287' } },
-})}\n`
+const WITH_FORMS = initialize({ elicitation: { form: {} } })
 
-async function startWrap(harness: ReturnType<typeof createClientHarness>): Promise<{ run: Promise<number>; approvalsBaseDir: string }> {
+async function startWrap(
+  harness: ReturnType<typeof createClientHarness>,
+  server: Record<string, unknown>,
+): Promise<{ run: Promise<number>; approvalsBaseDir: string }> {
   const policyPath = join(journalDir, 'policy.json')
-  await writeFile(policyPath, JSON.stringify(HELD_POLICY), 'utf8')
+  const policy = { version: 1, defaultDecision: 'allow', quarantine: { enabled: false }, approval: { timeoutMs: 20_000 }, servers: { fs: server } }
+  await writeFile(policyPath, JSON.stringify(policy), 'utf8')
   const approvalsBaseDir = join(journalDir, 'approvals')
   const run = runWrapCommand(['--server', 'fs', '--policy', policyPath, '--', 'node', FAKE_SERVER_PATH], { stderr: { write: () => true } }, {
     runWrap: {
@@ -63,13 +62,12 @@ async function startWrap(harness: ReturnType<typeof createClientHarness>): Promi
 const questionsOf = (harness: ReturnType<typeof createClientHarness>): Record<string, unknown>[] =>
   receivedMessagesOf(harness).filter((m) => m['method'] === 'elicitation/create')
 
-describe('wrap asks the person at the client', () => {
-  test('Accept in the client lets the held call through, recorded in the client\'s name', async () => {
+describe('wrap: the person at the client confirms the named tools', () => {
+  test('allow + confirm: Accept in the client runs the call, and nothing waits for an admin', async () => {
     const harness = createClientHarness()
-    const { run, approvalsBaseDir } = await startWrap(harness)
-    const queue = createApprovalQueue({ baseDir: approvalsBaseDir })
+    const { run, approvalsBaseDir } = await startWrap(harness, { confirmInClient: { echo: ['*'] } })
 
-    harness.clientOutbox.write(INITIALIZE)
+    harness.clientOutbox.write(WITH_FORMS)
     harness.clientOutbox.write(requestLine(7, 'tools/call', { name: 'echo', arguments: { t: 7 } }))
     await waitUntil(() => questionsOf(harness).length === 1)
     const [question] = questionsOf(harness)
@@ -82,27 +80,42 @@ describe('wrap asks the person at the client', () => {
     const answer = receivedMessagesOf(harness).find((m) => m['id'] === 7)
     expect(answer?.['error']).toBeUndefined()
     expect(JSON.stringify(answer?.['result'])).toContain('\\"t\\":7')
-    const [resolved] = await queue.listResolved({ limit: 1 })
-    expect(resolved?.resolution).toMatchObject({ outcome: 'approved', actor: 'client:claude-code' })
     expect((question?.['params'] as { message: string }).message).toContain('mcpcut: allow echo on fs?')
+    const queue = createApprovalQueue({ baseDir: approvalsBaseDir })
+    expect(await queue.list()).toEqual([])
+    expect(await queue.listResolved({ limit: 5 })).toEqual([])
   })
 
-  test('with an admin on the installation, nobody is asked: the queue and a token decide', async () => {
-    await createAdminStore({ journalDir }).createAdmin('owner', 'owner')
+  test('require-approval alone: no dialog, even with no admins — the queue decides', async () => {
     const harness = createClientHarness()
-    const { run, approvalsBaseDir } = await startWrap(harness)
+    const { run, approvalsBaseDir } = await startWrap(harness, { tools: { echo: 'require-approval' } })
     const queue = createApprovalQueue({ baseDir: approvalsBaseDir })
 
-    harness.clientOutbox.write(INITIALIZE)
+    harness.clientOutbox.write(WITH_FORMS)
     harness.clientOutbox.write(requestLine(8, 'tools/call', { name: 'echo', arguments: { t: 8 } }))
     await waitUntilAsync(async () => (await queue.list()).length === 1)
     await new Promise((resolve) => setTimeout(resolve, 100))
     const [pending] = await queue.list()
-    await queue.resolve(pending!.approvalId, { outcome: 'approved', actor: 'cli:test' })
+    await queue.resolve(pending!.approvalId, { outcome: 'approved', actor: 'cli' })
     await waitUntil(() => receivedMessagesOf(harness).some((m) => m['id'] === 8))
     harness.clientOutbox.end()
     await run
 
     expect(questionsOf(harness)).toEqual([])
+    expect(receivedMessagesOf(harness).find((m) => m['id'] === 8)?.['error']).toBeUndefined()
+  })
+
+  test('a client that cannot show the dialog: the call is refused, and the operator reads what to do', async () => {
+    const harness = createClientHarness()
+    const { run } = await startWrap(harness, { confirmInClient: { echo: ['*'] } })
+
+    harness.clientOutbox.write(initialize({}))
+    harness.clientOutbox.write(requestLine(9, 'tools/call', { name: 'echo', arguments: { t: 9 } }))
+    await waitUntil(() => receivedMessagesOf(harness).some((m) => m['id'] === 9))
+    harness.clientOutbox.end()
+    await run
+
+    expect(receivedMessagesOf(harness).find((m) => m['id'] === 9)?.['error']).toMatchObject({ data: { reason: 'client_confirm_unavailable' } })
+    expect(harness.receivedStderrText()).toContain('"confirmInClient"')
   })
 })

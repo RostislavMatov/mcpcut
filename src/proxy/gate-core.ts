@@ -2,14 +2,15 @@ import { join } from 'node:path'
 import { JOURNAL_DIR } from '../config.js'
 import type { JsonRpcId } from '../protocol/classify.js'
 import { decide, type PolicyDecision } from '../policy/decide.js'
-import type { GrantKey } from '../policy/approvals/grants.js'
 import { toPolicyProvider } from '../policy/reload.js'
 import type { ParsedToolCall } from '../protocol/mcp.js'
 import { serverMessage } from '../transport/message.js'
 import type { Verdict } from './pipeline.js'
 import type { SynthesizableId } from './synthesize.js'
 import { createApprovalFlow } from './gate-approvals.js'
-import { createClientApprover } from './client-approval.js'
+import { createClientConfirmer } from './client-confirm.js'
+import { createConfirmStep } from './gate-confirm.js'
+import { createCallDecider } from './gate-call.js'
 import { createDecideInputAssembler } from './gate-decide-input.js'
 import { createGateRouter } from './gate-router.js'
 import { createToolCatalog } from './tool-catalog.js'
@@ -17,7 +18,6 @@ import {
   DROP,
   FORWARD,
   GATE_ERROR_RULE,
-  IDLESS_APPROVAL_RULE,
   QUARANTINE_RULE,
   createAnswerGuard,
   createDecisionProvenance,
@@ -224,20 +224,29 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     return DROP
   }
 
-  // P2: present only when the caller (the stdio `wrap` path) asked for it.
-  const askClient = deps.askClient
-  const clientApprover =
-    askClient === undefined
+  // ADR-0019: the client channel exists on the stdio paths (`wrap`, `connect`);
+  // without it a call the policy makes the person confirm is refused.
+  const confirmer =
+    deps.confirmInClient === undefined
       ? undefined
-      : createClientApprover({
+      : createClientConfirmer({
           send: (message) => deps.clientSink.write(serverMessage(Buffer.from(JSON.stringify(message)))),
-          resolve: askClient.resolve,
           clock,
-          ...(askClient.mayAsk !== undefined ? { mayAsk: askClient.mayAsk } : {}),
-          ...(askClient.command !== undefined ? { command: askClient.command } : {}),
           onError,
-          ...(askClient.onNotice !== undefined ? { onNotice: askClient.onNotice } : {}),
         })
+  const confirmStep = createConfirmStep({
+    policy,
+    serverName,
+    ...(agentScope !== undefined ? { agentName: agentScope.agentName } : {}),
+    ...(confirmer !== undefined ? { confirmer } : {}),
+    // Read once, like the approval flow's wait below.
+    timeoutMs: policy.current().approval.timeoutMs,
+    writeDecision,
+    settleJournal,
+    answerLocally,
+    answerGuard,
+    ...(deps.confirmInClient?.onNotice !== undefined ? { onNotice: deps.confirmInClient.onNotice } : {}),
+  })
 
   const approvalFlow = createApprovalFlow({
     // Wiring-time snapshot on purpose: the flow reads only `approval.timeoutMs`
@@ -262,7 +271,6 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     applyAllow,
     onError,
     ...(deps.onApprovalPending !== undefined ? { onApprovalPending: deps.onApprovalPending } : {}),
-    ...(clientApprover !== undefined ? { askClient: (question) => clientApprover.ask(question) } : {}),
   })
 
   /** Fail-closed handling of a gate-internal error on a `tools/call`. */
@@ -280,39 +288,22 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     return DROP
   }
 
-  function decideToolCall(call: ParsedToolCall): Verdict | Promise<Verdict> {
-    // Schedules a `stat` of the policy file (rate-limited); a pending edit
-    // lands asynchronously, so THIS call is still decided under the policy in
-    // force — `factsOf`, `decideInputOf` and `snapshot()` below all read the
-    // same object because nothing in this synchronous stretch can swap it.
-    policy.maybeRefresh()
-    const facts = factsOf(call)
-    const grantKey: GrantKey = { serverName, toolName: facts.toolName, argsHash: facts.argsHash }
-    const decision = enforceCatalogTrust(decide(decideInputOf(facts, grantRegistry.isGranted(grantKey))))
-    // Provenance is sampled HERE, in the same synchronous run as `decide()`,
-    // because this is the instant the rules produced the verdict. Only the
-    // deferred path needs it explicitly: `applyAllow`/`applyDeny` journal
-    // before they await anything, so the writer's own default snapshot is
-    // already this same instant, while `requestApproval` awaits a storage read
-    // before it writes and would otherwise sample a matrix an `agent-watch`
-    // poll had already replaced (M5 wave-2 review, finding 2).
-    const captured = provenance.snapshot()
-
-    if (decision.outcome === 'allow') return applyAllow(call, facts, decision)
-    if (decision.outcome === 'deny') return applyDeny(call, facts, decision)
-    // An id-less call has no return address: an approval could never deliver
-    // it, yet its grant would still be minted and consumable by a later
-    // id-bearing call — pure operator-fatigue cost with zero upside, so it
-    // short-circuits to deny instead of enqueuing (re-review L4).
-    if (call.id === null) {
-      return applyDeny(call, facts, {
-        outcome: 'deny',
-        rule: IDLESS_APPROVAL_RULE,
-        reason: 'id-less tools/call cannot receive an approval result; denying instead of enqueuing',
-      })
-    }
-    return approvalFlow.requestApproval(call, facts, grantKey, decision, captured)
-  }
+  const { decideToolCall } = createCallDecider({
+    policy,
+    serverName,
+    factsOf,
+    decideInputOf,
+    enforceCatalogTrust,
+    grantRegistry,
+    provenance,
+    applyAllow,
+    applyDeny,
+    requestApproval: approvalFlow.requestApproval,
+    confirmStep,
+    answerGuard,
+    writeDecision,
+    settleJournal,
+  })
 
   /**
    * Entry point for every gated `tools/call` (id-bearing or id-less alike).
@@ -358,7 +349,7 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
   }
 
   const router = createGateRouter({
-    ...(clientApprover !== undefined ? { clientApprover } : {}),
+    ...(confirmer !== undefined ? { clientConfirmer: confirmer } : {}),
     serverName,
     writeDecision,
     settleJournal,
@@ -382,6 +373,7 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
   })
 
   async function cancelPending(): Promise<void> {
+    confirmStep.withdrawAll()
     approvalWaiter.cancelAll()
     await Promise.allSettled(Array.from(outstanding))
     // H6: every approval we enqueued but no operator resolved is marked

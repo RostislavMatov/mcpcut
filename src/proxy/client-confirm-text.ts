@@ -2,12 +2,12 @@ import { replaceControlChars } from '../journal/format.js'
 import { redact } from '../redact/redact.js'
 
 /**
- * The words of the in-client approval question (P2, ADR-0019). The person
- * approves what this text shows, so nothing is cut silently: arguments are
- * shown field by field, every field's name is shown, and a value or a list
- * of fields that does not fit says how much is hidden and where to read it
- * whole. Values pass through the redactor and lose control characters — the
- * agent chose them, and the dialog is drawn by the client's terminal UI.
+ * The words of the confirmation in the client (ADR-0019). The person confirms
+ * what this text shows, so nothing is cut silently: arguments are shown field
+ * by field, every field's name is shown, and a value or a list of fields that
+ * does not fit says how much is hidden. Values pass through the redactor and
+ * lose control characters — the agent chose them, and the dialog is drawn by
+ * the client's terminal UI.
  */
 
 const MAX_FIELDS = 12
@@ -19,8 +19,9 @@ const MAX_NAME_CHARS = 80
 export interface QuestionText {
   readonly toolName: string
   readonly serverName: string
-  readonly approvalId: string
   readonly args: unknown
+  /** An admin approves after this confirmation: Accept does not run the call yet. */
+  readonly thenAdmin: boolean
 }
 
 function cut(text: string, max: number): { readonly text: string; readonly hidden: number } {
@@ -54,7 +55,7 @@ function argumentLines(args: unknown): { readonly lines: readonly string[]; read
   return { lines, isCut: more > 0 || shown.some((s) => s.isCut) }
 }
 
-export function questionText(question: QuestionText, round: number, command: string): string {
+export function questionText(question: QuestionText, round: number): string {
   const name = (value: string): string => {
     const shown = cut(replaceControlChars(value), MAX_NAME_CHARS)
     return shown.hidden > 0 ? `${shown.text}…` : shown.text
@@ -63,9 +64,8 @@ export function questionText(question: QuestionText, round: number, command: str
   const server = name(question.serverName)
   const again = round > 1 ? 'That Accept came too fast to be read, so it did not count. Press Accept again if you mean it.\n' : ''
   const args = argumentLines(question.args)
-  const whole = args.isCut ? `Not everything is shown. Read it whole: ${command} approvals list --json\n` : ''
-  return (
-    `${again}mcpcut: allow ${tool} on ${server}?\n${args.lines.join('\n')}\n${whole}` +
-    `Accept runs it now; Decline refuses it; Esc leaves it waiting in: ${command} approvals list`
-  )
+  // Nothing waits in a queue yet, so there is no other place to read the call whole.
+  const whole = args.isCut ? 'Not everything is shown. Decline if you are not sure.\n' : ''
+  const accept = question.thenAdmin ? 'Accept passes it on to an admin, who approves it too.' : 'Accept runs it now.'
+  return `${again}mcpcut: allow ${tool} on ${server}?\n${args.lines.join('\n')}\n${whole}${accept} Decline or Esc refuses it.`
 }

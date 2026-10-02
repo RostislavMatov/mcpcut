@@ -4,15 +4,14 @@ import { JOURNAL_DIR } from '../config.js'
 import type { ClientServerDirection, JournalDirection } from '../journal/record.js'
 import type { JournalSink } from '../journal/sink.js'
 import { createGrantRegistry } from '../policy/approvals/grants.js'
-import { createApprovalQueue, type ApprovalQueue } from '../policy/approvals/queue.js'
+import { createApprovalQueue } from '../policy/approvals/queue.js'
 import { createApprovalWaiter } from '../policy/approvals/waiter.js'
 import { canonicalJson, sha256Hex } from '../policy/hash.js'
 import { createInventory, INVENTORY_FILE_NAME } from '../policy/inventory.js'
 import type { PolicyProvider } from '../policy/reload.js'
 import type { Policy } from '../policy/schema.js'
 import { createPolicyGate, type GateAgentScope } from './gate.js'
-import { askClientDepsOf, type AskClientWiring } from './ask-client-rule.js'
-import type { MessagePolicyGateDeps, PendingApprovalNotice } from './gate-types.js'
+import type { ConfirmInClientDeps, PendingApprovalNotice } from './gate-types.js'
 import { startPipeline, type GateFn } from './pipeline.js'
 import type { ServerHandle } from './spawn.js'
 import { splice, type SpliceErrorOrigin } from './splice.js'
@@ -112,23 +111,8 @@ export interface PolicyRelayArgs {
   readonly agentScope?: GateAgentScope
   /** Hears of each call queued for a human (see `MessagePolicyGateDeps`). */
   readonly onApprovalPending?: (notice: PendingApprovalNotice) => void
-  /** Ask the person at the client too (P2); see `askClientOf`. */
-  readonly askClient?: AskClientWiring
-}
-
-/** The entry point's half of asking in the client (see `ask-client-rule.ts`). */
-export type { AskClientWiring } from './ask-client-rule.js'
-
-/**
- * `wrap`'s asker. `agentScope` marks an agent's session: its user is asked
- * only about tools the policy lists, never under the installation rule.
- */
-function askClientOf(args: PolicyRelayArgs, queue: ApprovalQueue): Pick<MessagePolicyGateDeps, 'askClient'> {
-  const wiring = args.askClient
-  if (wiring === undefined) return {}
-  const { mayAskUnlisted, ...rest } = wiring
-  const scoped = args.agentScope === undefined && mayAskUnlisted !== undefined ? { ...rest, mayAskUnlisted } : rest
-  return askClientDepsOf({ policy: args.policy, serverName: args.serverName }, scoped, queue)
+  /** The client channel for `confirmInClient` (ADR-0019); stdio `wrap` always has one. */
+  readonly confirmInClient?: ConfirmInClientDeps
 }
 
 /** Where the policy layer's on-disk state lives for one run. */
@@ -196,7 +180,7 @@ export function wirePolicyRelay(args: PolicyRelayArgs): RelayWiring {
     approvalsBaseDir,
     ...(args.agentScope !== undefined ? { agentScope: args.agentScope } : {}),
     ...(args.onApprovalPending !== undefined ? { onApprovalPending: args.onApprovalPending } : {}),
-    ...askClientOf(args, approvalQueue),
+    ...(args.confirmInClient !== undefined ? { confirmInClient: args.confirmInClient } : {}),
     // A gate-internal failure is a proxy defect, not a broken stream: log it
     // (the gate has already failed the call closed) and keep the session up.
     onError: onInternalError,

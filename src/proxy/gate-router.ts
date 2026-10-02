@@ -14,7 +14,7 @@ import {
 } from '../protocol/classify.js'
 import { INITIALIZE_METHOD, TOOLS_CALL_METHOD, isToolsListRequest, parseToolCall, type ParsedToolCall } from '../protocol/mcp.js'
 import type { McpMessage } from '../transport/message.js'
-import type { ClientApprover } from './client-approval.js'
+import type { ClientConfirmer } from './client-confirm.js'
 import { createMethodGrantRouter, type MethodFrame } from './gate-method-router.js'
 import type { Verdict } from './pipeline.js'
 import { methodNotGrantableError, methodNotGrantedError, type SynthesizableId } from './synthesize.js'
@@ -118,10 +118,10 @@ export interface GateRouterDeps {
    */
   readonly methodGrants?: GateMethodGrants
   /**
-   * The in-client approval asker (P2), when on: it reads the client's
-   * `initialize` and takes the answers to its own questions out of the stream.
+   * The confirmation in the client (ADR-0019), on the stdio paths: it reads the
+   * client's `initialize` and takes the answers to its own questions out of the stream.
    */
-  readonly clientApprover?: Pick<ClientApprover, 'observeInitialize' | 'takeResponse'>
+  readonly clientConfirmer?: Pick<ClientConfirmer, 'observeInitialize' | 'takeResponse'>
 }
 
 export interface GateRouter {
@@ -296,9 +296,9 @@ export function createGateRouter(deps: GateRouterDeps): GateRouter {
     ) {
       return track(methodRouter.gateFrame(msg))
     }
-    // P2: answers to mcpcut's own questions never reach the server, which
-    // never asked; the client's `initialize` says whether it can be asked.
-    const approver = deps.clientApprover
+    // ADR-0019: answers to mcpcut's own questions never reach the server,
+    // which never asked; the client's `initialize` says whether it can be asked.
+    const approver = deps.clientConfirmer
     if (approver !== undefined && msg.kind === 'response' && approver.takeResponse(msg)) return DROP
     if (approver !== undefined && msg.kind === 'request' && msg.method === INITIALIZE_METHOD) approver.observeInitialize(text)
     // Fail closed: FORWARD only frames positively identified as safe.

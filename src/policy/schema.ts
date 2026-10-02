@@ -1,7 +1,10 @@
 import { z } from 'zod'
 import {
+  CONFIRM_AGENT_NAME_PATTERN,
+  CONFIRM_ANY_AGENT,
   DEFAULT_APPROVAL_TIMEOUT_MS,
   DEFAULT_GRANT_TTL_MS,
+  MAX_CONFIRM_AGENTS,
   MAX_SERVERS_IN_POLICY,
   MAX_TOOL_RULES_PER_SERVER,
   RESERVED_OBJECT_KEYS,
@@ -43,6 +46,21 @@ const toolClassSchema = z.enum(TOOL_CLASS_VALUES)
 const toolRuleNameSchema = z
   .string()
   .regex(TOOL_RULE_NAME_PATTERN, 'tool rule name must be an exact name or end with a single "*"')
+
+/**
+ * Whose clients confirm a tool: agent names, or `"*"` for every agent and the
+ * local `wrap` path. Never empty — an empty list would read as a rule and
+ * confirm nothing.
+ */
+const confirmAgentsSchema = z
+  .array(
+    z.union([
+      z.literal(CONFIRM_ANY_AGENT),
+      z.string().regex(CONFIRM_AGENT_NAME_PATTERN, 'agent name must match ^[a-z0-9][a-z0-9-]{0,63}$ or be "*"'),
+    ]),
+  )
+  .min(1, 'name at least one agent, or "*" for all')
+  .max(MAX_CONFIRM_AGENTS)
 
 const serverNameSchema = z
   .string()
@@ -110,14 +128,6 @@ const approvalSchema = z
     timeoutMs: z.number().int().positive().default(DEFAULT_APPROVAL_TIMEOUT_MS),
     onTimeout: z.literal('deny').default('deny'),
     grantTtlMs: z.number().int().positive().default(DEFAULT_GRANT_TTL_MS),
-    /**
-     * Also ask the person at the client (MCP form elicitation, P2): Accept /
-     * Decline in the session. `false` keeps approvals to the queue alone —
-     * for a client that answers such questions without a person. Optional
-     * with no default on purpose: absent means on, and an existing policy
-     * keeps the fingerprint it had (`policyHash` covers the parsed policy).
-     */
-    askClient: z.boolean().optional(),
   })
   .prefault({})
 
@@ -142,11 +152,17 @@ const serverPolicySchema = z.strictObject({
     'tools entries',
   ).optional(),
   /**
-   * Held tools the person at the client may approve in the session (MCP form
-   * elicitation, ADR-0019) whoever they are — also on an agent's `connect`
-   * and on an installation with admins. Exact names or a trailing `*`.
+   * Tools the person at the client must confirm (MCP form elicitation,
+   * ADR-0019), and for whose agents: a rule of its own, beside the admin's
+   * `tools` outcome — `allow` with it is a confirmation alone, `require-approval`
+   * with it is a confirmation and then an admin. Keys as in `tools`.
    */
-  approveInClient: z.array(toolRuleNameSchema).max(MAX_TOOL_RULES_PER_SERVER).optional(),
+  confirmInClient: withMaxEntries(
+    toolRuleNameSchema,
+    confirmAgentsSchema,
+    MAX_TOOL_RULES_PER_SERVER,
+    'confirmInClient entries',
+  ).optional(),
 })
 
 const serversSchema = withMaxEntries(serverNameSchema, serverPolicySchema, MAX_SERVERS_IN_POLICY, 'servers').optional()
