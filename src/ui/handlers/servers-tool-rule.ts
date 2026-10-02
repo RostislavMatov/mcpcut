@@ -1,29 +1,30 @@
-import type { PolicyEditInfo } from '../../journal/policy-edit-record.js'
-import { RESERVED_OBJECT_KEYS, TOOL_RULE_NAME_PATTERN } from '../../policy/constants.js'
-import type { JournalPolicyEditOutcome } from '../../policy/edit/journal-edit.js'
-import type { PolicyFileReadResult, PolicyFileWriteResult, WritePolicyFileOptions } from '../../policy/edit/policy-file.js'
+import type { PolicyFileWriteResult } from '../../policy/edit/policy-file.js'
 import { applyToolRuleToDocument } from '../../policy/edit/set-tool-rule.js'
-import type { PolicyEditTarget } from '../../policy/edit/write-target.js'
 import { effectiveToolRule } from '../../policy/effective.js'
 import { DEFAULT_INVENTORY_STORE, type InventoryStoreData } from '../../policy/inventory-store.js'
-import { SERVER_NAME_PATTERN, type PolicyOutcome } from '../../policy/schema.js'
+import { isExactToolRuleName } from '../../policy/tool-name.js'
+import type { PolicyOutcome } from '../../policy/schema.js'
 import type { UiSession } from '../auth.js'
 import { roleSatisfies } from '../authz.js'
-import {
-  AUDIT_RECORD_DROPPED_WARNING,
-  CONTENT_TYPE_HTML,
-  CONTENT_TYPE_JSON,
-  HTTP_STATUS_BAD_REQUEST,
-  HTTP_STATUS_CONFLICT,
-  HTTP_STATUS_FORBIDDEN,
-  HTTP_STATUS_INTERNAL_ERROR,
-  HTTP_STATUS_OK,
-  HTTP_STATUS_SEE_OTHER,
-} from '../constants.js'
-import { renderNotice } from '../pages/notice.js'
+import { HTTP_STATUS_BAD_REQUEST, HTTP_STATUS_FORBIDDEN, HTTP_STATUS_OK } from '../constants.js'
 import { quarantineStateOf, TOOL_RULE_FIELD_VALUES, type ToolRuleField } from '../pages/servers-tool-rule.js'
 import { headerValue, parseBodyFields, type UiHandler, type UiRequestContext, type UiResult } from '../routes.js'
-import type { UiAuditEvent } from './servers.js'
+import {
+  decodeOnce,
+  EXPECTED_HASH_FIELD,
+  formAnswer,
+  isRefusal,
+  isValidServerName,
+  jsonResult,
+  loadTarget,
+  recordPolicyEdit,
+  refusal,
+  wantsJson,
+  writeRefusal,
+  type PolicyEditJournalOutcome,
+  type PolicyEditPorts,
+  type Refusal,
+} from './policy-edit-common.js'
 
 /**
  * `POST /servers/:name/tools/:tool/rule` (plan policy-tool-rules-ui §6,
@@ -57,31 +58,11 @@ import type { UiAuditEvent } from './servers.js'
  * the warning line instead of the redirect, which has nowhere to say it.
  */
 
-/**
- * What the handler learns from the journal port: whether the record landed
- * (`policy/edit/journal-edit.ts` also counts the drops; the handler needs the
- * verdict, honestly typed rather than widened to `unknown`).
- */
-export type PolicyEditJournalOutcome = Pick<JournalPolicyEditOutcome, 'written'>
+export type { PolicyEditJournalOutcome } from './policy-edit-common.js'
 
-/** The `journal` field of the JSON success payload. */
-type JournalRecordState = 'written' | 'dropped'
-
-export interface ServersToolRuleDeps {
-  /** The file THIS process loaded its policy from — bound by the composition root, never by a request. */
-  readonly resolveEditTarget: () => Promise<PolicyEditTarget>
-  readonly readPolicyFile: (path: string) => Promise<PolicyFileReadResult>
-  readonly writePolicyFile: (
-    path: string,
-    document: unknown,
-    options: WritePolicyFileOptions,
-  ) => Promise<PolicyFileWriteResult>
+export interface ServersToolRuleDeps extends PolicyEditPorts {
   /** Read port for the inventory; the effective outcome after an edit honors quarantine through it. */
   readonly readInventory?: () => Promise<InventoryStoreData>
-  /** The journal sink for the edit record; must not throw (the file is already written) and answers whether the record landed. */
-  readonly journal: (edit: PolicyEditInfo) => Promise<PolicyEditJournalOutcome>
-  /** Attribution line sink, as every other UI mutation. */
-  readonly audit?: (event: UiAuditEvent) => void
 }
 
 export interface ServersToolRuleHandlers {
@@ -90,11 +71,7 @@ export interface ServersToolRuleHandlers {
 
 /** Body field names of the rule form (`pages/servers-tool-rule.ts` renders them). */
 const RULE_FIELD = 'rule'
-const EXPECTED_HASH_FIELD = 'expected_hash'
 const AUDIT_ACTION = 'policy.set'
-const WILDCARD_SUFFIX = '*'
-
-type Refusal = { readonly status: number; readonly payload: Record<string, unknown> }
 
 interface ParsedRequest {
   readonly serverName: string
@@ -102,36 +79,6 @@ interface ParsedRequest {
   readonly rule: PolicyOutcome | null
   readonly ruleField: ToolRuleField
   readonly expectedHash: string
-}
-
-function jsonResult(status: number, payload: unknown): UiResult {
-  return {
-    kind: 'response',
-    status,
-    headers: { 'content-type': CONTENT_TYPE_JSON },
-    body: Buffer.from(JSON.stringify(payload), 'utf8'),
-  }
-}
-
-function refusal(status: number, payload: Record<string, unknown>): Refusal {
-  return { status, payload }
-}
-
-/** Exactly one decode; a malformed escape is `undefined`, never a throw. */
-function decodeOnce(segment: string): string | undefined {
-  try {
-    return decodeURIComponent(segment)
-  } catch {
-    return undefined
-  }
-}
-
-function isValidServerName(name: string): boolean {
-  return SERVER_NAME_PATTERN.test(name) && !RESERVED_OBJECT_KEYS.includes(name)
-}
-
-function isExactToolName(name: string): boolean {
-  return TOOL_RULE_NAME_PATTERN.test(name) && !name.endsWith(WILDCARD_SUFFIX) && !RESERVED_OBJECT_KEYS.includes(name)
 }
 
 function isRuleField(value: string): value is ToolRuleField {
@@ -145,7 +92,7 @@ function parseRequest(ctx: UiRequestContext): ParsedRequest | Refusal {
   if (serverName === undefined || !isValidServerName(serverName)) {
     return refusal(HTTP_STATUS_BAD_REQUEST, { status: 'invalid', message: 'invalid server name' })
   }
-  if (toolName === undefined || !isExactToolName(toolName)) {
+  if (toolName === undefined || !isExactToolRuleName(toolName)) {
     return refusal(HTTP_STATUS_BAD_REQUEST, { status: 'invalid', message: 'invalid tool name: a per-tool rule must be an exact name' })
   }
   const fields = parseBodyFields(ctx.body, headerValue(ctx.headers, 'content-type'))
@@ -161,44 +108,6 @@ function parseRequest(ctx: UiRequestContext): ParsedRequest | Refusal {
     return refusal(HTTP_STATUS_BAD_REQUEST, { status: 'invalid', message: `"${EXPECTED_HASH_FIELD}" is required` })
   }
   return { serverName, toolName, rule: ruleField === 'clear' ? null : ruleField, ruleField, expectedHash }
-}
-
-function isRefusal<T extends object>(value: T | Refusal): value is Refusal {
-  return 'payload' in value
-}
-
-/** JSON callers (the client script posts JSON) get JSON; a native form gets the redirect. */
-function wantsJson(ctx: UiRequestContext): boolean {
-  const contentType = headerValue(ctx.headers, 'content-type') ?? ''
-  const accept = headerValue(ctx.headers, 'accept') ?? ''
-  return contentType.includes('application/json') || accept.includes('application/json')
-}
-
-/** The file this process loaded, read for edit; refusable before an edit is even computed. */
-async function loadTarget(
-  deps: ServersToolRuleDeps,
-): Promise<{ readonly path: string; readonly read: Extract<PolicyFileReadResult, { status: 'loaded' }> } | Refusal> {
-  const target = await deps.resolveEditTarget()
-  const read = await deps.readPolicyFile(target.path)
-  if (read.status === 'absent') {
-    return refusal(HTTP_STATUS_CONFLICT, { status: 'no-policy', message: 'no policy — enforcement off; nothing to edit' })
-  }
-  if (read.status === 'error') {
-    // The loader's lines never carry the path (0.2.4): name the file once, in front, as the CLI does.
-    return refusal(HTTP_STATUS_CONFLICT, {
-      status: 'invalid-policy',
-      message: 'the policy file on disk is invalid; fix it by hand before editing here',
-      errors: read.errors.map((line) => `${target.path}: ${line}`),
-    })
-  }
-  return { path: target.path, read }
-}
-
-function writeRefusal(written: Exclude<PolicyFileWriteResult, { status: 'written' }>): Refusal {
-  if (written.status === 'conflict') {
-    return refusal(HTTP_STATUS_CONFLICT, { status: 'conflict', message: 'policy changed on disk — reload the page and retry' })
-  }
-  return refusal(HTTP_STATUS_INTERNAL_ERROR, { status: 'error', message: 'the policy file could not be written', errors: written.errors })
 }
 
 /**
@@ -221,61 +130,25 @@ function editMessage(parsed: ParsedRequest): string {
 }
 
 export function createServersToolRuleHandlers(deps: ServersToolRuleDeps): ServersToolRuleHandlers {
-  /**
-   * After the file is on disk: the attribution line, then the journal record —
-   * each exactly once — and whether the record landed. The port never throws
-   * by contract (`policy/edit/journal-edit.ts` answers with a drop indicator);
-   * the guard keeps that true for ANY injected port, because a throw here
-   * would turn a rule that is already live into a 500 with no record at all.
-   */
-  async function recordEdit(
+  function recordEdit(
     session: UiSession,
     parsed: ParsedRequest,
     sourcePath: string,
     written: Extract<PolicyFileWriteResult, { status: 'written' }>,
   ): Promise<PolicyEditJournalOutcome> {
-    deps.audit?.({
-      actor: 'ui',
-      adminName: session.adminName,
-      action: AUDIT_ACTION,
-      target: `${parsed.serverName}/${parsed.toolName} ${parsed.ruleField}`,
-    })
-    try {
-      const outcome = await deps.journal({
-        actor: { adminName: session.adminName, role: session.role, via: 'ui' },
+    return recordPolicyEdit(
+      deps,
+      session,
+      { action: AUDIT_ACTION, target: `${parsed.serverName}/${parsed.toolName} ${parsed.ruleField}` },
+      {
         serverName: parsed.serverName,
         toolName: parsed.toolName,
         rule: parsed.rule,
         policyHashBefore: written.hashBefore,
         policyHashAfter: written.hashAfter,
         sourcePath,
-      })
-      return { written: outcome.written }
-    } catch {
-      return { written: false }
-    }
-  }
-
-  /**
-   * The no-JS answer: the 303 back to `/servers` when the audit record landed,
-   * a success notice carrying the F1 warning when it was dropped — a redirect
-   * has nowhere to say it and `/servers` has no query-notice flag. Still a
-   * 200: the file is on disk and the rule is live.
-   */
-  function formAnswer(session: UiSession, parsed: ParsedRequest, journal: PolicyEditJournalOutcome): UiResult {
-    if (journal.written) {
-      return { kind: 'response', status: HTTP_STATUS_SEE_OTHER, headers: { location: '/servers' } }
-    }
-    const body = renderNotice({
-      title: 'Servers',
-      message: editMessage(parsed),
-      ok: true,
-      backHref: '/servers',
-      backLabel: 'Back to servers',
-      session,
-      warning: AUDIT_RECORD_DROPPED_WARNING,
-    })
-    return { kind: 'response', status: HTTP_STATUS_OK, headers: { 'content-type': CONTENT_TYPE_HTML }, body }
+      },
+    )
   }
 
   async function serversToolRule(ctx: UiRequestContext): Promise<UiResult> {
@@ -301,14 +174,14 @@ export function createServersToolRuleHandlers(deps: ServersToolRuleDeps): Server
     // The file is on disk: attribute FIRST. Everything after this line is
     // display-only and must never turn a completed edit into an unjournaled one.
     const journal = await recordEdit(session, parsed, target.path, written)
-    if (!wantsJson(ctx)) return formAnswer(session, parsed, journal)
+    if (!wantsJson(ctx)) return formAnswer(session, editMessage(parsed), journal)
     const inventory = await readInventoryOrDefault(deps)
     const effective = effectiveToolRule({
       policy: applied.policy,
       serverName: parsed.serverName,
       tool: { name: parsed.toolName, quarantineState: quarantineStateOf(inventory, parsed.serverName, parsed.toolName) },
     })
-    const journalState: JournalRecordState = journal.written ? 'written' : 'dropped'
+    const journalState: 'written' | 'dropped' = journal.written ? 'written' : 'dropped'
     return jsonResult(HTTP_STATUS_OK, {
       status: 'ok',
       server: parsed.serverName,

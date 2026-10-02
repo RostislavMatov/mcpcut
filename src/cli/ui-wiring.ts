@@ -32,6 +32,7 @@ import {
   type QuarantineAuditEvent,
 } from '../ui/handlers/quarantine.js'
 import { createServersHandlers } from '../ui/handlers/servers.js'
+import { createServersConfirmRuleHandlers } from '../ui/handlers/servers-confirm-rule.js'
 import { createServersToolRuleHandlers } from '../ui/handlers/servers-tool-rule.js'
 import {
   createServersStatusHandlers,
@@ -327,6 +328,19 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
       }),
     audit,
   })
+  const serversConfirmRule = createServersConfirmRuleHandlers({
+    resolveEditTarget: () => resolvePolicyEditTarget(policyEnv),
+    readPolicyFile: (path) => readPolicyFileForEdit(path, defaultPolicyFileDeps),
+    writePolicyFile: (path, document, options) => writePolicyFile(path, document, options, defaultPolicyFileDeps),
+    journal: (edit) =>
+      journalPolicyEdit({
+        edit,
+        dir: deps.journalDir,
+        diagnostics: (line) => deps.stderr.write(line),
+        ...(deps.clock !== undefined ? { clock: deps.clock } : {}),
+      }),
+    audit,
+  })
   const serversStatus = createServersStatusHandlers({
     probes: probes.port,
     hasServer: async (name) => (await deps.registry.getServer(name)) !== undefined,
@@ -384,6 +398,7 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
     ...servers,
     ...groupHandlers,
     ...serversToolRule,
+    ...serversConfirmRule,
     ...serversStatus,
     ...agents,
     ...admins,

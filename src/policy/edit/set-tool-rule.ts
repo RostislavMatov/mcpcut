@@ -1,5 +1,7 @@
-import { MAX_SERVERS_IN_POLICY, MAX_TOOL_RULES_PER_SERVER, RESERVED_OBJECT_KEYS, TOOL_RULE_NAME_PATTERN } from '../constants.js'
+import { MAX_SERVERS_IN_POLICY, MAX_TOOL_RULES_PER_SERVER, RESERVED_OBJECT_KEYS } from '../constants.js'
 import { formatPolicyErrors } from '../load.js'
+import { isOptionalObject, isPlainObject, keyCount, omitKey, ownValue, type PlainObject } from './plain-object.js'
+import { isExactToolRuleName } from '../tool-name.js'
 import { parsePolicy, SERVER_NAME_PATTERN, type Policy, type PolicyOutcome } from '../schema.js'
 
 /**
@@ -38,7 +40,6 @@ export type ApplyToolRuleResult =
   | { readonly ok: false; readonly reason: ToolRuleEditFailureReason; readonly message: string }
 
 type Failure = Extract<ApplyToolRuleResult, { readonly ok: false }>
-type PlainObject = Record<string, unknown>
 
 /** The three nested maps an edit touches, each `undefined` when the document does not have it yet. */
 interface DocumentShape {
@@ -50,8 +51,6 @@ interface DocumentShape {
 
 const SERVERS_KEY = 'servers'
 const TOOLS_KEY = 'tools'
-/** The wildcard suffix a tool-rule key may carry; a per-tool rule never does. */
-const WILDCARD_SUFFIX = '*'
 
 /**
  * Sets `rule` as the exact rule for `toolName` on `serverName` in the raw
@@ -87,8 +86,7 @@ function validateNames(serverName: string, toolName: string): Failure | undefine
   if (!SERVER_NAME_PATTERN.test(serverName) || RESERVED_OBJECT_KEYS.includes(serverName)) {
     return failure('invalid-server-name', `invalid server name "${serverName}"`)
   }
-  const isExactToolName = TOOL_RULE_NAME_PATTERN.test(toolName) && !toolName.endsWith(WILDCARD_SUFFIX)
-  if (!isExactToolName || RESERVED_OBJECT_KEYS.includes(toolName)) {
+  if (!isExactToolRuleName(toolName)) {
     return failure('invalid-tool-name', `invalid tool name "${toolName}": a per-tool rule must be an exact name`)
   }
   return undefined
@@ -150,28 +148,6 @@ function withoutRule(shape: DocumentShape, serverName: string, toolName: string)
   const nextEntry = keyCount(remainingTools) > 0 ? { ...bareEntry, [TOOLS_KEY]: remainingTools } : bareEntry
   const nextServers = keyCount(nextEntry) > 0 ? { ...servers, [serverName]: nextEntry } : omitKey(servers, serverName)
   return keyCount(nextServers) > 0 ? { ...document, [SERVERS_KEY]: nextServers } : omitKey(document, SERVERS_KEY)
-}
-
-function isPlainObject(value: unknown): value is PlainObject {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function isOptionalObject(value: unknown): value is PlainObject | undefined {
-  return value === undefined || isPlainObject(value)
-}
-
-/** Own-property lookup: a `constructor` server name must never reach the prototype. */
-function ownValue(record: PlainObject, key: string): unknown {
-  return Object.hasOwn(record, key) ? record[key] : undefined
-}
-
-function keyCount(record: PlainObject | undefined): number {
-  return record === undefined ? 0 : Object.keys(record).length
-}
-
-/** A copy of `record` without `key`, key order preserved; the input is never touched. */
-function omitKey(record: PlainObject, key: string): PlainObject {
-  return Object.fromEntries(Object.entries(record).filter(([name]) => name !== key))
 }
 
 function failure(reason: ToolRuleEditFailureReason, message: string): Failure {

@@ -177,6 +177,24 @@ button.srv-rule-btn.is-on, button.srv-rule-btn[aria-pressed="true"] { background
 button.srv-rule-btn-clear { border-style: dashed; }
 .srv-tools-note { padding: 9px 11px; }
 
+/* --- Per-tool client rule (ADR-0019) -------------------------------------
+   The union pill beside the admin pill, off / all / agents forms in the same
+   button style, the agent checkboxes (pattern-covered ones fixed), and the
+   "On this machine (wrap)" section. */
+.srv-client { letter-spacing: 0.02em; }
+.srv-client-off { opacity: 0.7; }
+.srv-client-ctl { flex-wrap: wrap; align-items: center; }
+.srv-client-ctl form.inline { display: inline-flex; align-items: center; gap: 6px; }
+.srv-client-label { font-size: 10px; }
+button.srv-client-btn { padding: 5px 9px; font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; }
+button.srv-client-btn.is-on, button.srv-client-btn[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.srv-client-agents { display: inline-flex; flex-wrap: wrap; gap: 4px 10px; }
+.srv-client-agent { font-size: 11px; display: inline-flex; align-items: center; gap: 4px; }
+.srv-client-next, .srv-client-deny { margin: 2px 0 0; }
+.srv-wrap { margin-top: 18px; }
+.srv-wrap-hd { font-size: 11px; margin: 0 0 6px; }
+.srv-wrap-row { display: flex; flex-direction: column; gap: 4px; padding: 8px 0; }
+
 /* The state word beside the transport pill (the design's stateLabel). */
 .srv-state { letter-spacing: 0.14em; white-space: nowrap; }
 

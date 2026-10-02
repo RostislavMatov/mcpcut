@@ -1,10 +1,19 @@
 import type { InventoryStoreData } from '../../policy/inventory-store.js'
 import type { Policy } from '../../policy/schema.js'
+import { TOOL_RULE_WILDCARD_SUFFIX } from '../../policy/tool-name.js'
 import { POOL_NAME_HIDE_ABOVE_CHARS, POOL_NAME_WARN_ABOVE_CHARS } from '../../pool/constants.js'
 import { encodePoolName, poolNameFit } from '../../pool/name-codec.js'
 import { renderToolName } from '../display-name.js'
 import { html, join, safeUrl, type Html } from '../html.js'
 import { csrfField } from './csrf-field.js'
+import {
+  confirmRuleViewOf,
+  renderConfirmControls,
+  renderConfirmHint,
+  renderConfirmPill,
+  type ConfirmAgents,
+  type ConfirmRuleView,
+} from './servers-confirm-rule.js'
 import {
   renderToolRuleControls,
   renderToolRulePill,
@@ -41,6 +50,8 @@ export interface ServerToolView {
   readonly quarantined?: 'new' | 'changed'
   /** The effective policy outcome + source (ADR-0009); absent when the page has no loaded policy. */
   readonly rule?: ToolRuleView
+  /** The client-confirmation entries that apply (ADR-0019); present with `rule`, i.e. when a policy is loaded. */
+  readonly confirm?: ConfirmRuleView
   /**
    * How `<server>__<tool>` sits against the pool's client limits (ADR-0015
    * PE2); absent when it fits, or when the server can never be a pool member.
@@ -103,7 +114,7 @@ export function toServerToolsByName(inventory: InventoryStoreData, policy?: Poli
     const tools = [...byName.values()]
       .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
       .map((tool) => withPoolName(tool, serverName))
-      .map((tool) => (policy === undefined ? tool : { ...tool, rule: toolRuleViewOf(policy, inventory, serverName, tool.name) }))
+      .map((tool) => (policy === undefined ? tool : withPolicyViews(tool, policy, inventory, serverName)))
     const hidden = tools.filter((tool) => tool.poolName?.fit === 'hidden').length
     out.set(serverName, {
       tools,
@@ -112,6 +123,14 @@ export function toServerToolsByName(inventory: InventoryStoreData, policy?: Poli
     })
   }
   return out
+}
+
+function withPolicyViews(tool: ServerToolView, policy: Policy, inventory: InventoryStoreData, serverName: string): ServerToolView {
+  return {
+    ...tool,
+    rule: toolRuleViewOf(policy, inventory, serverName, tool.name),
+    confirm: confirmRuleViewOf(policy, serverName, tool.name),
+  }
 }
 
 function withDescription(view: ServerToolView, description: string | undefined): ServerToolView {
@@ -173,6 +192,10 @@ export interface ToolsPanelContext {
   readonly open?: boolean
   /** True when the viewer's role may release a quarantined tool (operator+). */
   readonly canRelease?: boolean
+  /** Which agents the client control can offer; absent → off / all only, with no agent line. */
+  readonly confirmAgents?: ConfirmAgents
+  /** An agent name for the `agent grant` next step; absent → a placeholder. */
+  readonly grantExample?: string
 }
 
 /**
@@ -227,6 +250,20 @@ function renderTool(tool: ServerToolView, ctx: ToolsPanelContext): Html {
       ? html`<a class="small" href="${safeUrl('/quarantine')}">review in quarantine</a>`
       : html``
   const rulePill = tool.rule !== undefined ? renderToolRulePill(tool.rule) : html``
+  const confirmPill = tool.confirm !== undefined ? renderConfirmPill(tool.confirm) : html``
+  const confirmControls =
+    tool.confirm !== undefined && ctx.ruleControls !== undefined && !tool.name.endsWith(TOOL_RULE_WILDCARD_SUFFIX)
+      ? renderConfirmControls({
+          serverName: ctx.serverName,
+          toolName: tool.name,
+          csrfToken: ctx.csrfToken,
+          view: tool.confirm,
+          controls: ctx.ruleControls,
+          agents: ctx.confirmAgents ?? { kind: 'unavailable' },
+          isDenied: tool.rule?.outcome === 'deny',
+          ...(ctx.grantExample !== undefined ? { grantExample: ctx.grantExample } : {}),
+        })
+      : html``
   const controls =
     tool.rule !== undefined && ctx.ruleControls !== undefined
       ? renderToolRuleControls({
@@ -238,9 +275,10 @@ function renderTool(tool: ServerToolView, ctx: ToolsPanelContext): Html {
         })
       : html``
   return html`<div class="srv-tool">
-    <div class="row"><span class="srv-tool-name">${renderToolName(tool.name)}</span>${pill}${rulePill}${renderPoolNamePill(tool)}<span class="spacer"></span>${review}</div>
+    <div class="row"><span class="srv-tool-name">${renderToolName(tool.name)}</span>${pill}${rulePill}${confirmPill}${renderPoolNamePill(tool)}<span class="spacer"></span>${review}</div>
     ${tool.description !== undefined ? renderDescription(tool.description) : html``}
     ${controls}
+    ${confirmControls}
     ${renderRelease(tool, ctx)}
   </div>`
 }
@@ -288,6 +326,7 @@ export function renderToolsModal(tools: ServerToolsView | undefined, ctx: ToolsP
       ? html`<div class="srv-probing"><span class="dot dot-s dot-blink"></span><span class="small">probing… receiving tool list from ${ctx.serverName}</span></div>`
       : html``
   const note = ctx.note !== undefined ? html`<div class="srv-tools-note faint small">${ctx.note}</div>` : html``
+  const hint = tools?.tools.some((tool) => tool.confirm !== undefined) === true ? renderConfirmHint() : html``
   const count = tools?.tools.length ?? 0
   const body =
     tools === undefined || count === 0
@@ -304,7 +343,7 @@ export function renderToolsModal(tools: ServerToolsView | undefined, ctx: ToolsP
       </div>
       <div class="srv-modal-bd">
         ${probing}
-        <div class="rows srv-tool-rows" data-live-region="${serverToolsRegionKey(ctx.serverName)}" data-live-src="/servers" data-live-settle>${note}${body}</div>
+        <div class="rows srv-tool-rows" data-live-region="${serverToolsRegionKey(ctx.serverName)}" data-live-src="/servers" data-live-settle>${note}${hint}${body}</div>
       </div>
     </div>
   </details>`

@@ -217,6 +217,13 @@ name; an Esc is a plain refusal (the client may close its own dialog).
   `{ "write_*": ["*"], "write_file": ["laptop"] }`, `write_file` is confirmed
   for every agent. An exact entry can add agents to a pattern, never take
   them away — this is a stop rule, so it fails closed.
+- **In the web UI.** The Servers page sets it per tool, beside the admin's
+  rule: **client** → off, all, or the agents with a grant on that server. The
+  buttons change only that tool's own entry; agents a `prefix*` entry already
+  covers show as fixed, with the rule named — edit that one in `policy.json`.
+  Servers you run under `mcpcut wrap` are not registered, so the tools the
+  inventory has seen for them appear under **On this machine** on the same page
+  (off / all only: `wrap` has no agent).
 - **This assumes a person answers the client's dialogs.** A client driven by
   a program — an SDK host or a CI job that answers such questions on its own,
   or routes them to the model — would confirm on the agent's behalf; leave

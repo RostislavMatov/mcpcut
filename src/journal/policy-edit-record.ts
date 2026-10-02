@@ -59,6 +59,13 @@ export interface PolicyEditInfo {
   readonly serverName: string
   readonly toolName: string
   readonly rule: PolicyOutcome | null
+  /**
+   * Present only on an edit of the client-confirmation rule (ADR-0019, `rule`
+   * is then `null`): the agents now confirming this tool (`"*"` = everyone), or
+   * `null` when that rule was removed. Absent keys keep every rule edit's
+   * record exactly as it was.
+   */
+  readonly confirmInClient?: readonly string[] | null
   readonly policyHashBefore: string | null
   readonly policyHashAfter: string
   /** The file that was written (`<journalDir>/policy.json`). */
@@ -98,6 +105,7 @@ function flatInfoOf(edit: PolicyEditInfo): Record<string, unknown> {
     serverName: edit.serverName,
     toolName: edit.toolName,
     rule: edit.rule,
+    ...(edit.confirmInClient !== undefined ? { confirmInClient: edit.confirmInClient } : {}),
     policyHashBefore: edit.policyHashBefore,
     policyHashAfter: edit.policyHashAfter,
     sourcePath: edit.sourcePath,

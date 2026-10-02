@@ -14,10 +14,12 @@ import {
   renderServerCard,
   renderServerDetails,
   renderServerToolsModal,
-  type ServerCardOptions,
   type ServerToolsByName,
 } from './servers-parts.js'
-import { renderPolicyBanner, renderPolicySources, ruleControlsOf, toolsNoteOf } from './servers-policy-view.js'
+import type { AgentDirectory } from './servers-confirm-rule.js'
+import { cardOptionsOf, wrapContextOf } from './servers-card-options.js'
+import { renderWrapSection } from './servers-wrap.js'
+import { renderPolicyBanner, renderPolicySources } from './servers-policy-view.js'
 import type { ServerStatusesByName } from './servers-status.js'
 import { plural } from './plural.js'
 
@@ -120,6 +122,15 @@ export interface ServersView {
    * stdio/http choice, byte for byte as before this task.
    */
   readonly tenant?: TenantSettings
+  /** Agents and their grants, for the client rule's agent choices (ADR-0019). Absent → off / all only. */
+  readonly agentDirectory?: AgentDirectory
+  /** True when the agents or groups store could not be read: the client rule then offers off / all only. */
+  readonly agentsUnavailable?: boolean
+  /**
+   * Inventory servers that run under `wrap` here and are not registered: the
+   * "On this machine" section. The handler leaves it out on a tenant install.
+   */
+  readonly wrapServers?: readonly string[]
 }
 
 function navMetaOf(view: ServersView): string {
@@ -164,29 +175,6 @@ function renderGrid(view: ServersView, mode: ServersViewMode): Html {
   ${join(options.map(renderServerToolsModal))}`
 }
 
-/** One `ServerCardOptions` per registered server, shared by the card and its modal. */
-function cardOptionsOf(view: ServersView): readonly ServerCardOptions[] {
-  const ruleControls = ruleControlsOf(view.policyView, view.canManage)
-  const toolsNote = toolsNoteOf(view.policyView)
-  return view.servers.map((record) => {
-    const tools = view.tools?.get(record.name)
-    const status = view.statuses?.get(record.name)
-    return {
-      record,
-      ...(tools !== undefined ? { tools } : {}),
-      ...(status !== undefined ? { status } : {}),
-      hasInventory: view.tools !== undefined,
-      canManage: view.canManage,
-      ...(view.canRefresh !== undefined ? { canRefresh: view.canRefresh } : {}),
-      ...(view.canRelease !== undefined ? { canRelease: view.canRelease } : {}),
-      ...(view.openTools !== undefined ? { toolsOpen: view.openTools === record.name } : {}),
-      csrfToken: view.csrfToken,
-      ...(ruleControls !== undefined ? { ruleControls } : {}),
-      ...(toolsNote !== undefined ? { toolsNote } : {}),
-    }
-  })
-}
-
 /**
  * The owner's modal drawer. Always rendered for an owner (closed and blank
  * when nothing forced it open) so the tab bar's `+` has a node to open; the
@@ -210,6 +198,7 @@ export function renderServersPage(view: ServersView): string {
     ${renderManage(view)}
     ${renderPolicySources(view.policyView)}
     ${renderGrid(view, mode)}
+    ${renderWrapSection({ names: view.tenant?.isTenant === true ? [] : (view.wrapServers ?? []), tools: view.tools, contextOf: (name) => wrapContextOf(view, name) })}
   `
   const query = (view.query ?? '').slice(0, MAX_ECHOED_QUERY_CHARS)
   return renderLayout({

@@ -28,6 +28,7 @@ import {
   statusesViewOf,
   type ServerStatusPort,
 } from './servers-status.js'
+import { agentDirectoryOf, wrapServerNamesOf } from './servers-confirm-view.js'
 import { echoableServerForm, serverRecordToForm, EMPTY_SERVER_FORM } from '../server-form.js'
 import { buildCandidate } from './servers-candidate.js'
 import {
@@ -120,15 +121,18 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
    * per-server tools. Reads run concurrently; either failing fails the page.
    */
   async function baseView(ctx: UiRequestContext): Promise<ServersView> {
-    const [servers, inventory, policyView] = await Promise.all([
+    const [servers, inventory, policyView, directory] = await Promise.all([
       deps.registry.listServers(),
       deps.readInventory?.() ?? Promise.resolve(undefined),
       deps.readPolicyView?.() ?? Promise.resolve(undefined),
+      deps.readPolicyView !== undefined ? agentDirectoryOf(deps) : Promise.resolve(undefined),
     ])
     const query = ctx.query.get('q') ?? ''
     const openTools = ctx.query.get(TOOLS_QUERY_PARAM) ?? ''
     const names = servers.map((record) => record.name)
     const policy = policyView?.status === 'loaded' ? policyView.policy : undefined
+    const tenant = deps.tenant ?? TENANT_SETTINGS
+    const wrapServers = inventory === undefined || tenant.isTenant ? [] : wrapServerNamesOf(inventory, names)
     return {
       servers,
       canManage: ctx.session?.role === 'owner',
@@ -136,10 +140,13 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
       canRelease: ctx.session !== undefined && roleSatisfies(ctx.session.role, 'operator'),
       csrfToken: csrfTokenOf(ctx),
       currentAdmin: currentAdminOf(ctx),
-      tenant: deps.tenant ?? TENANT_SETTINGS,
+      tenant,
       viewMode: ctx.query.get('view') === 'list' ? 'list' : 'grid',
       ...(inventory !== undefined ? { tools: toServerToolsByName(inventory, policy) } : {}),
       ...(policyView !== undefined ? { policyView } : {}),
+      ...(directory?.status === 'read' ? { agentDirectory: directory.directory } : {}),
+      ...(directory?.status === 'unavailable' ? { agentsUnavailable: true } : {}),
+      ...(wrapServers.length > 0 ? { wrapServers } : {}),
       ...(deps.probes !== undefined
         ? { statuses: await statusesViewOf(deps.probes, names) }
         : {}),
