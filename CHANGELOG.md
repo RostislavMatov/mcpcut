@@ -26,7 +26,8 @@ All notable changes to this project are documented here. The format follows
   Anything but an Accept refuses the call; a client that cannot show the
   dialog is refused with a line on stderr. Recorded as
   `confirmedBy: "client:<name>"`. On `wrap` and an agent's `connect`; an
-  Accept faster than a second is asked again.
+  Accept faster than a second is asked again, at most five calls wait at
+  once, and a declined call is not asked again for 30 seconds.
 
 ### Fixed
 

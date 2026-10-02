@@ -122,6 +122,12 @@ export interface GateRouterDeps {
    * client's `initialize` and takes the answers to its own questions out of the stream.
    */
   readonly clientConfirmer?: Pick<ClientConfirmer, 'observeInitialize' | 'takeResponse'>
+  /**
+   * Hears each `notifications/cancelled` from the client, before it is
+   * ordered behind its request: a call waiting for the person's confirmation
+   * must not run on a later Accept once the client gave it up (ADR-0019).
+   */
+  readonly onClientCancelled?: (idKey: string) => void
 }
 
 export interface GateRouter {
@@ -244,6 +250,7 @@ export function createGateRouter(deps: GateRouterDeps): GateRouter {
     if (msg.method !== 'notifications/cancelled') return FORWARD
     const requestId = parseCancelledRequestId(msg.raw)
     if (requestId === null) return FORWARD
+    deps.onClientCancelled?.(idKeyOf(requestId))
     const pending = verdictsByRequestId.get(idKeyOf(requestId))
     if (pending === undefined) return FORWARD
     // Order the cancellation strictly behind the request it cancels: the

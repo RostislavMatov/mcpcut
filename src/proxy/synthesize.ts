@@ -130,9 +130,7 @@ export interface ClientConfirmErrorInfo {
 const CLIENT_CONFIRM_MESSAGES: Readonly<Record<ClientConfirmErrorReason, (toolName: string) => string>> = {
   refused: (toolName) => `Call to tool "${toolName}" was refused by the person at the client, who was asked to confirm it.`,
   unconfirmed: (toolName) => `Call to tool "${toolName}" needs confirmation by the person at the client and was not confirmed.`,
-  timeout: (toolName) =>
-    `Call to tool "${toolName}" needs confirmation by the person at the client, and none came in time. ` +
-    'Retry when they are there to confirm it.',
+  timeout: (toolName) => `Call to tool "${toolName}" needs confirmation by the person at the client, and none came in time.`,
   // Says what is missing, never how to lift the rule: the agent reads this
   // (the operator's own line, with the rule's name, goes to their terminal).
   unavailable: (toolName) =>

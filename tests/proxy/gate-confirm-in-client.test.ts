@@ -193,9 +193,10 @@ describe('allow + confirm: the person at the client alone', () => {
   })
 
   test.each([
-    ['decline', 'client-confirm-declined'],
-    ['cancel', 'client-confirm-cancelled'],
-  ])('%s refuses the call in the client\'s name', async (action, rule) => {
+    ['decline', 'client-confirm-declined', { outcome: 'denied-by-operator', actor: 'client:claude-code' }],
+    // Esc may be the client closing the dialog itself: refused, but nobody is named.
+    ['cancel', 'client-confirm-cancelled', { outcome: 'deny' }],
+  ])('%s refuses the call', async (action, rule, recorded) => {
     const gate = createGate(POLICY)
     await gate.gateClientMessage(INITIALIZE)
 
@@ -205,10 +206,10 @@ describe('allow + confirm: the person at the client alone', () => {
     await answer(gate, asked, action)
 
     expect(await verdict).toEqual({ action: 'drop' })
-    expect(errorTo(1)).toMatchObject({ code: -32002, data: { reason: 'client_confirm_refused', toolName: 'write_file' } })
-    expect(await decisions()).toEqual([
-      expect.objectContaining({ outcome: 'denied-by-operator', rule, actor: 'client:claude-code' }),
-    ])
+    expect(errorTo(1)).toMatchObject({ code: -32002, data: { toolName: 'write_file' } })
+    const [record] = await decisions()
+    expect(record).toMatchObject({ rule, ...recorded })
+    if (action === 'cancel') expect(record).not.toHaveProperty('actor')
   })
 
   test('an Accept too fast twice is refused, and the operator is told why', async () => {
@@ -254,6 +255,74 @@ describe('allow + confirm: the person at the client alone', () => {
 
     expect(verdict).toEqual({ action: 'forward' })
     expect(questionsAsked()).toEqual([])
+  })
+})
+
+describe('the agent cannot wear the person down', () => {
+  const POLICY = policyOf({ confirmInClient: { write_file: ['*'] } })
+
+  test('after a Decline the same call is refused at once for a while, without a dialog', async () => {
+    const gate = createGate(POLICY)
+    await gate.gateClientMessage(INITIALIZE)
+
+    const first = gate.gateClientMessage(WRITE_CALL)
+    await answer(gate, await question(), 'decline')
+    await first
+    now += 1_000
+    const again = await gate.gateClientMessage(frameOf({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'write_file', arguments: { path: '/w/a.txt' } } }))
+
+    expect(again).toEqual({ action: 'drop' })
+    expect(questionsAsked()).toHaveLength(1)
+    expect((await decisions()).at(-1)).toMatchObject({ outcome: 'deny', rule: 'client-confirm-declined-recently' })
+  })
+
+  test('the pause is for that call only, and it ends', async () => {
+    const gate = createGate(POLICY)
+    await gate.gateClientMessage(INITIALIZE)
+    const first = gate.gateClientMessage(WRITE_CALL)
+    await answer(gate, await question(), 'decline')
+    await first
+
+    void gate.gateClientMessage(frameOf({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'write_file', arguments: { path: '/w/other.txt' } } }))
+    await waitFor(() => questionsAsked()[1])
+    now += 60_000
+    void gate.gateClientMessage(frameOf({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'write_file', arguments: { path: '/w/a.txt' } } }))
+
+    expect(await waitFor(() => questionsAsked()[1])).toBeDefined()
+    await gate.cancelPending()
+  })
+
+  test('no more than five calls wait for the person at once; the sixth is refused without a dialog', async () => {
+    const gate = createGate(POLICY)
+    await gate.gateClientMessage(INITIALIZE)
+
+    for (let id = 1; id <= 5; id += 1) {
+      void gate.gateClientMessage(frameOf({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'write_file', arguments: { path: `/w/${id}` } } }))
+    }
+    await question()
+    const sixth = await gate.gateClientMessage(frameOf({ jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'write_file', arguments: { path: '/w/6' } } }))
+
+    expect(sixth).toEqual({ action: 'drop' })
+    expect(errorTo(6)).toMatchObject({ data: { reason: 'client_confirm_unconfirmed' } })
+    expect(notices.join('')).toContain('Too many calls')
+    await gate.cancelPending()
+  })
+
+  test('the client cancels the request: the dialog closes and the call never runs', async () => {
+    const gate = createGate(POLICY)
+    await gate.gateClientMessage(INITIALIZE)
+
+    const verdict = gate.gateClientMessage(WRITE_CALL)
+    const asked = await question()
+    void gate.gateClientMessage(frameOf({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 1, reason: 'user interrupted' } }))
+    now += HUMAN_PACE_MS
+    await answer(gate, asked, 'accept')
+
+    expect(await verdict).toEqual({ action: 'drop' })
+    expect(toClient).toContainEqual({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: asked['id'], reason: expect.any(String) } })
+    expect(await decisions()).toEqual([expect.objectContaining({ outcome: 'deny', rule: 'client-confirm-request-cancelled' })])
+    // The client cancelled it: no answer is sent for that id.
+    expect(errorTo(1)).toBeUndefined()
   })
 })
 

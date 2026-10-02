@@ -108,17 +108,25 @@ export function createCallDecider(deps: CallDeciderDeps): CallDecider {
    * meanwhile must win over the Accept.
    */
   async function confirmThenGo(call: ParsedToolCall, facts: CallFacts, thenAdmin: boolean): Promise<Verdict> {
-    const confirmed = await confirmStep.run(call, facts, thenAdmin)
-    if (confirmed.kind === 'refused') return DROP
-    const base: DecisionExtras = { confirmedBy: confirmed.by }
-    const evaluation = evaluate(call)
-    // Exactly one outcome per id: an id answered meanwhile is never forwarded.
-    if (call.id !== null && deps.answerGuard.isAnswered(idKeyOf(call.id))) {
-      deps.writeDecision(decisionInfoOf(evaluation.facts, 'deny', ALREADY_ANSWERED_RULE, base), call.args)
-      await deps.settleJournal()
-      return DROP
+    // The burn of an id answered meanwhile must outlast the dialog's own wait
+    // until the check below, or a flooded LRU could forget it (security review).
+    const waitKey = call.id !== null ? idKeyOf(call.id) : null
+    if (waitKey !== null) deps.answerGuard.beginWait(waitKey)
+    try {
+      const confirmed = await confirmStep.run(call, facts, thenAdmin)
+      if (confirmed.kind === 'refused') return DROP
+      const base: DecisionExtras = { confirmedBy: confirmed.by }
+      const evaluation = evaluate(call)
+      // Exactly one outcome per id: an id answered meanwhile is never forwarded.
+      if (waitKey !== null && deps.answerGuard.isAnswered(waitKey)) {
+        deps.writeDecision(decisionInfoOf(evaluation.facts, 'deny', ALREADY_ANSWERED_RULE, base), call.args)
+        await deps.settleJournal()
+        return DROP
+      }
+      return await go(call, evaluation, base)
+    } finally {
+      if (waitKey !== null) deps.answerGuard.endWait(waitKey)
     }
-    return await go(call, evaluation, base)
   }
 
   return {

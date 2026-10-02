@@ -245,6 +245,7 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     settleJournal,
     answerLocally,
     answerGuard,
+    clock,
     ...(deps.confirmInClient?.onNotice !== undefined ? { onNotice: deps.confirmInClient.onNotice } : {}),
   })
 
@@ -350,6 +351,7 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
 
   const router = createGateRouter({
     ...(confirmer !== undefined ? { clientConfirmer: confirmer } : {}),
+    onClientCancelled: (idKey) => confirmStep.cancelByClient(idKey),
     serverName,
     writeDecision,
     settleJournal,

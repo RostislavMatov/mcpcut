@@ -20,11 +20,15 @@
  * Plus the invisible characters that change how text READS without moving
  * the cursor (0.2.3 review, Trojan Source class): bidi marks and overrides
  * (U+061C, U+200E-200F, U+202A-202E, U+2066-2069), zero-width characters
- * (U+200B-200D, U+2060, U+FEFF) and the line/paragraph separators (U+2028-2029).
+ * (U+200B-200D, U+2060, U+FEFF) and the line/paragraph separators (U+2028-2029);
+ * and the ones that print as nothing at all (2026-10-02 security review): the
+ * soft hyphen U+00AD, the grapheme joiner U+034F, the Hangul fillers U+115F,
+ * U+1160, U+3164, U+FFA0, and the tag characters U+E0000-E007F.
  * A tool name the agent's side chose is printed on the line an operator
  * approves from; it must read as exactly what it is.
  */
-const CONTROL_CHAR_PATTERN = /[\x00-\x1f\x7f-\x9f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g
+const CONTROL_CHAR_PATTERN =
+  /[\x00-\x1f\x7f-\x9f\u00ad\u034f\u061c\u115f\u1160\u200b-\u200f\u2028-\u202e\u2060-\u2069\u3164\ufeff\uffa0\u{e0000}-\u{e007f}]/gu
 
 /** What an unsafe control character is replaced with. */
 const CONTROL_CHAR_REPLACEMENT = '?'

@@ -136,7 +136,7 @@ describe('the question', () => {
         },
       },
     ])
-    expect(messageOf(h)).toContain('  path: "/w/a.txt"')
+    expect(messageOf(h)).toContain('  "path": "/w/a.txt"')
     expect(messageOf(h)).toMatch(/Accept runs it now\. Decline or Esc refuses it\.$/)
   })
 
@@ -156,9 +156,35 @@ describe('the question', () => {
 
     expect(messageOf(h)).not.toContain('hunter2xyz')
     expect(messageOf(h)).not.toContain('\u001b')
-    expect(messageOf(h)).toMatch(/content: "x{159}… \(1842 more characters\)\n/)
+    expect(messageOf(h)).toMatch(/"content": "x{159}… \(1842 more characters\)\n/)
     // Nothing waits in a queue yet, so there is no other place to read it whole.
     expect(messageOf(h)).toContain('Not everything is shown. Decline if you are not sure.')
+  })
+
+  test('values hidden as secrets are named, so nobody accepts what they cannot see', async () => {
+    const h = harness()
+    ready(h).confirm({ ...QUESTION, args: { host: 'db1', password: 'hunter2xyz', options: { api_key: 'k-123456789' } } })
+    await flush()
+
+    expect(messageOf(h)).not.toContain('hunter2xyz')
+    expect(messageOf(h)).toContain('Hidden as secrets: "password", "options".')
+    expect(messageOf(h)).toContain('Not everything is shown. Decline if you are not sure.')
+  })
+
+  test('a field name is quoted: a key cannot pose as a second field', async () => {
+    const h = harness()
+    ready(h).confirm({ ...QUESTION, args: { 'path": "/tmp/ok"  ': '/etc/passwd' } })
+    await flush()
+
+    expect(messageOf(h)).toContain('  "path\\": \\"/tmp/ok\\"  ": "/etc/passwd"')
+  })
+
+  test('invisible characters a terminal would not show are replaced', async () => {
+    const h = harness()
+    ready(h).confirm({ ...QUESTION, toolName: 'write\u00adfile\u3164\u{e0041}' })
+    await flush()
+
+    expect(messageOf(h)).toContain('allow write?file??')
   })
 
   test('a very long tool name is cut so Decline and Esc stay in view', async () => {
@@ -167,6 +193,7 @@ describe('the question', () => {
     await flush()
 
     expect(messageOf(h)).toContain(`allow ${'t'.repeat(80)}… on fs?`)
+    expect(messageOf(h)).toContain('Not everything is shown')
     expect(messageOf(h)).toContain('Decline or Esc refuses it')
   })
 
@@ -175,7 +202,7 @@ describe('the question', () => {
     ready(h).confirm({ ...QUESTION, args: Object.fromEntries(Array.from({ length: 15 }, (_, i) => [`f${i}`, i])) })
     await flush()
 
-    expect(messageOf(h)).toContain('  f11: 11')
+    expect(messageOf(h)).toContain('  "f11": 11')
     expect(messageOf(h)).toContain('  … and 3 more fields')
     expect(messageOf(h)).toContain('Not everything is shown')
   })

@@ -207,16 +207,16 @@ The two rules are independent:
 This is the setup for a client in full auto mode: everything passes, and only
 the tools you name stop and ask you in the session. The journal records the
 person's Accept as `confirmedBy: "client:<the client's name>"` (for example
-`client:claude-code`); a Decline or Esc is `denied-by-operator` in the
-client's name.
+`client:claude-code`); a Decline is `denied-by-operator` in the client's
+name; an Esc is a plain refusal (the client may close its own dialog).
 
 - **Whose agents.** The list holds agent names, or `"*"` for every agent and
   for `mcpcut wrap` (which has no agent). An agent not on the list gets the
-  admin's rule alone. Names match tools as tool rules do (exact, or a
-  trailing `*`), and the most specific entry wins **with its own list**: with
+  admin's rule alone. Keys are written as tool rules are (an exact name, or a
+  trailing `*`), but **every entry that covers the tool counts**: with
   `{ "write_*": ["*"], "write_file": ["laptop"] }`, `write_file` is confirmed
-  for `laptop` only — repeat `"*"` or the other agents in the exact entry if
-  you meant them too.
+  for every agent. An exact entry can add agents to a pattern, never take
+  them away — this is a stop rule, so it fails closed.
 - **This assumes a person answers the client's dialogs.** A client driven by
   a program — an SDK host or a CI job that answers such questions on its own,
   or routes them to the model — would confirm on the agent's behalf; leave
@@ -229,6 +229,11 @@ client's name.
   recorded. It never falls back to the approval queue: the confirmation and an
   admin's approval are two rules, and one never stands in for the other. When
   the client cannot show the dialog, `wrap` and `connect` say so on stderr.
+- **The agent cannot wear you down.** No more than five calls wait for a
+  confirmation at once — the next is refused without a dialog. After a
+  Decline or Esc, the same call (tool and arguments) is refused without a
+  dialog for 30 seconds. If the client gives up a call itself (the user
+  interrupts the agent), its dialog closes and the call never runs.
 - **Stdio only, for now.** `wrap` and an agent's `mcpcut connect` ask in the
   client. Over HTTP (`serve`, the pool behind `connect --url`, hosted
   installs) there is no channel to ask on, so a call that needs the
@@ -241,8 +246,9 @@ client's name.
   repeat passes unasked. After an Accept the call is decided again, so a rule
   turned to `deny` while the dialog was open still wins.
 - **What the dialog shows.** Every argument by name, each value cut at 160
-  characters with a count of what is hidden; when anything is hidden, the
-  dialog says so — decline if you are not sure. The rule is read for every
+  characters with a count of what is hidden, and every field whose value was
+  hidden as a secret named; when anything is hidden, the dialog says so —
+  decline if you are not sure. The rule is read for every
   call, so an edit applies without a restart.
 
 ## Quarantine

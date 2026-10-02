@@ -40,11 +40,19 @@ describe('isConfirmInClient', () => {
     expect(isConfirmInClient(policy, 'fs', tool, agent)).toBe(expected)
   })
 
-  test('the most specific entry decides, as for tool rules', () => {
-    const specific = policyOf({ fs: { confirmInClient: { 'write_*': ['*'], write_file: ['laptop'] } } })
-    expect(isConfirmInClient(specific, 'fs', 'write_file', 'ci-bot')).toBe(false)
-    expect(isConfirmInClient(specific, 'fs', 'write_file', 'laptop')).toBe(true)
-    expect(isConfirmInClient(specific, 'fs', 'write_dir', 'ci-bot')).toBe(true)
+  test('every matching entry counts: an exact entry never narrows a pattern (a stop rule fails closed)', () => {
+    const both = policyOf({ fs: { confirmInClient: { 'write_*': ['*'], write_file: ['laptop'] } } })
+    expect(isConfirmInClient(both, 'fs', 'write_file', 'ci-bot')).toBe(true)
+    expect(isConfirmInClient(both, 'fs', 'write_file', 'laptop')).toBe(true)
+    expect(isConfirmInClient(both, 'fs', 'write_file', undefined)).toBe(true)
+    expect(isConfirmInClient(both, 'fs', 'write_dir', 'ci-bot')).toBe(true)
+  })
+
+  test('nested patterns add up too', () => {
+    const nested = policyOf({ fs: { confirmInClient: { 'git*': ['alice'], 'github_*': ['bob'] } } })
+    expect(isConfirmInClient(nested, 'fs', 'github_push', 'alice')).toBe(true)
+    expect(isConfirmInClient(nested, 'fs', 'github_push', 'bob')).toBe(true)
+    expect(isConfirmInClient(nested, 'fs', 'git_commit', 'bob')).toBe(false)
   })
 
   test('another server, or no servers at all', () => {
