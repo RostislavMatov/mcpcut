@@ -275,6 +275,11 @@ describe('On this machine (wrap)', () => {
     expect(panel).toContain('Under wrap there is no agent name: only off / all apply')
   })
 
+  test('the copy says "seen", not "running": a removed server can linger in the inventory', () => {
+    const document = page({ inventory, wrapServers: ['my-local'], agentDirectory: DIRECTORY })
+    expect(document).toContain('Seen in the tool inventory, not registered here')
+  })
+
   test('an auto: server is shown, with the --server hint', () => {
     const document = page({ inventory, wrapServers: ['auto:ab12cd'], agentDirectory: DIRECTORY })
     expect(document).toContain('auto:ab12cd')

@@ -259,7 +259,7 @@ function renderTool(tool: ServerToolView, ctx: ToolsPanelContext): Html {
           csrfToken: ctx.csrfToken,
           view: tool.confirm,
           controls: ctx.ruleControls,
-          agents: ctx.confirmAgents ?? { kind: 'agents', granted: [], known: [] },
+          agents: ctx.confirmAgents ?? { kind: 'unavailable' },
           isDenied: tool.rule?.outcome === 'deny',
           ...(ctx.grantExample !== undefined ? { grantExample: ctx.grantExample } : {}),
         })

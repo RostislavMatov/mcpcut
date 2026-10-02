@@ -28,8 +28,7 @@ import {
   statusesViewOf,
   type ServerStatusPort,
 } from './servers-status.js'
-import { effectiveGrantsOf } from '../../agents/effective.js'
-import type { AgentDirectory } from '../pages/servers-confirm-rule.js'
+import { agentDirectoryOf, wrapServerNamesOf } from './servers-confirm-view.js'
 import { echoableServerForm, serverRecordToForm, EMPTY_SERVER_FORM } from '../server-form.js'
 import { buildCandidate } from './servers-candidate.js'
 import {
@@ -122,11 +121,11 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
    * per-server tools. Reads run concurrently; either failing fails the page.
    */
   async function baseView(ctx: UiRequestContext): Promise<ServersView> {
-    const [servers, inventory, policyView, agentDirectory] = await Promise.all([
+    const [servers, inventory, policyView, directory] = await Promise.all([
       deps.registry.listServers(),
       deps.readInventory?.() ?? Promise.resolve(undefined),
       deps.readPolicyView?.() ?? Promise.resolve(undefined),
-      policyViewWantsAgents(deps) ? agentDirectoryOf(deps) : Promise.resolve(undefined),
+      deps.readPolicyView !== undefined ? agentDirectoryOf(deps) : Promise.resolve(undefined),
     ])
     const query = ctx.query.get('q') ?? ''
     const openTools = ctx.query.get(TOOLS_QUERY_PARAM) ?? ''
@@ -145,7 +144,8 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
       viewMode: ctx.query.get('view') === 'list' ? 'list' : 'grid',
       ...(inventory !== undefined ? { tools: toServerToolsByName(inventory, policy) } : {}),
       ...(policyView !== undefined ? { policyView } : {}),
-      ...(agentDirectory !== undefined ? { agentDirectory } : {}),
+      ...(directory?.status === 'read' ? { agentDirectory: directory.directory } : {}),
+      ...(directory?.status === 'unavailable' ? { agentsUnavailable: true } : {}),
       ...(wrapServers.length > 0 ? { wrapServers } : {}),
       ...(deps.probes !== undefined
         ? { statuses: await statusesViewOf(deps.probes, names) }
@@ -367,34 +367,6 @@ export function createServersHandlers(deps: ServersHandlersDeps): ServersHandler
   }
 
   return { serversPage, serversAdd, serversEdit, serversRemove, vaultPage }
-}
-
-/** Only a page with a policy port renders the client control, so only then are the agents read. */
-function policyViewWantsAgents(deps: ServersHandlersDeps): boolean {
-  return deps.readPolicyView !== undefined
-}
-
-/**
- * Who can be asked to confirm: every non-revoked agent, and per server the
- * agents whose EFFECTIVE grants (personal, else the groups') name it — the
- * same reading the gate authorizes with. Sorted by name for a stable page.
- */
-async function agentDirectoryOf(deps: ServersHandlersDeps): Promise<AgentDirectory> {
-  const [agents, groups] = await Promise.all([deps.agents.listAgents(), deps.groups.listGroups()])
-  const live = agents.filter((agent) => agent.revokedAt === undefined).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
-  const grantedBy = new Map<string, string[]>()
-  for (const agent of live) {
-    for (const serverName of Object.keys(effectiveGrantsOf(agent, groups).grants)) {
-      grantedBy.set(serverName, [...(grantedBy.get(serverName) ?? []), agent.name])
-    }
-  }
-  return { known: live.map((agent) => agent.name), grantedBy }
-}
-
-/** Inventory servers that are not in the registry: the ones that run under `wrap` here. Sorted. */
-function wrapServerNamesOf(inventory: InventoryStoreData, registered: readonly string[]): readonly string[] {
-  const known = new Set(registered)
-  return Object.keys(inventory.servers).filter((name) => !known.has(name)).sort()
 }
 
 /** Maps a `listSecrets` result to the value-free vault view fields. */

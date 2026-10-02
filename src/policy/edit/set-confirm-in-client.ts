@@ -19,6 +19,13 @@ import { isOptionalObject, isPlainObject, keyCount, omitKey, ownValue, type Plai
  * it), exact (an exact key beats any `prefix*`, and a reset removes only that
  * key), immutable, never throwing for a bad edit, and never returning a
  * document the loader would refuse: the candidate goes through `parsePolicy`.
+ *
+ * Matching of `confirmInClient` is a UNION: a tool needs confirmation for an
+ * agent when ANY matching entry (the exact key and every matching `prefix*`
+ * key) names that agent or `"*"`. So an exact key only ever ADDS agents — it
+ * never narrows what a pattern already covers, and removing it never lifts a
+ * pattern's coverage. The UI therefore offers this edit beside the pattern's
+ * agents, never instead of them.
  */
 
 export type ConfirmEditFailureReason =

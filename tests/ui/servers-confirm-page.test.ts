@@ -91,6 +91,22 @@ describe('the client rule agent choices', () => {
   })
 })
 
+describe('a failing agents or groups store never fails the page', () => {
+  test.each([
+    ['listAgents', { agents: { listAgents: async () => Promise.reject(new Error('agents.json is locked')) } }],
+    ['listGroups', { groups: { listGroups: async () => Promise.reject(new Error('groups.json is corrupt')) } }],
+  ])('%s rejecting: the page renders, off / all only, with a line saying why', async (_label, overrides) => {
+    const lines: string[] = []
+    const document = await pageWith({ ...overrides, diagnostics: (line: string) => lines.push(line) } as never)
+    const panel = githubPanel(document)
+    expect(panel).toContain('name="confirm" value="off"')
+    expect(panel).toContain('name="confirm" value="all"')
+    expect(panel).not.toContain('name="confirm" value="agents"')
+    expect(panel).toContain('Agents could not be read, so only off / all are offered')
+    expect(lines.join('')).toMatch(/is (locked|corrupt)/)
+  })
+})
+
 describe('On this machine (wrap)', () => {
   test('lists inventory servers that are not registered', async () => {
     const document = await pageWith()

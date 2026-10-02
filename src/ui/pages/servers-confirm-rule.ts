@@ -45,6 +45,8 @@ export type ConfirmAgents =
   | { readonly kind: 'agents'; readonly granted: readonly string[]; readonly known: readonly string[] }
   /** A server run under `wrap` here: there is no agent name, only off / all. */
   | { readonly kind: 'wrap' }
+  /** The agents or groups store could not be read: off / all only, and the line says so. */
+  | { readonly kind: 'unavailable' }
 
 /** Who the agents store knows, and which of them hold a grant on each registry server. */
 export interface AgentDirectory {
@@ -215,6 +217,9 @@ function nextStepOf(options: ConfirmControlsOptions): Html {
   const { serverName, agents, view } = options
   const pattern = view.patterns[0]?.pattern
   const patternLine = pattern !== undefined ? html` To change what rule ${pattern} covers, edit it in policy.json.` : html``
+  if (agents.kind === 'unavailable') {
+    return html`<p class="srv-client-next faint small">Agents could not be read, so only off / all are offered — reload the page to retry.${patternLine}</p>`
+  }
   if (agents.kind === 'wrap') {
     return html`<p class="srv-client-next faint small">Under wrap there is no agent name: only off / all apply. Run it with <code>--server &lt;name&gt;</code> for a readable name.${patternLine}</p>`
   }

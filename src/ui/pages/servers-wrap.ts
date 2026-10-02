@@ -18,6 +18,7 @@ export interface WrapSectionOptions {
 }
 
 const WRAP_HEADING = 'On this machine (wrap)'
+const WRAP_LEAD = 'Seen in the tool inventory, not registered here — wrap on this machine, or a server removed since. Rules apply by name.'
 
 /** The section, or nothing when no wrap server is known. */
 export function renderWrapSection(options: WrapSectionOptions): Html {
@@ -31,7 +32,7 @@ export function renderWrapSection(options: WrapSectionOptions): Html {
   )
   return html`<section class="srv-wrap" aria-label="${WRAP_HEADING}">
     <h2 class="pixel upper srv-wrap-hd">${WRAP_HEADING}</h2>
-    <p class="muted small">Run here with <code>mcpcut wrap</code>, not in the registry. Rules apply by name.</p>
+    <p class="muted small">${WRAP_LEAD}</p>
     ${autoHint}
     <div class="rows">${join(rows)}</div>
   </section>

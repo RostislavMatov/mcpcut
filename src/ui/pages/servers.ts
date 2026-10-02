@@ -14,13 +14,12 @@ import {
   renderServerCard,
   renderServerDetails,
   renderServerToolsModal,
-  type ServerCardOptions,
   type ServerToolsByName,
-  type ToolsPanelContext,
 } from './servers-parts.js'
-import { confirmAgentsOf, type AgentDirectory } from './servers-confirm-rule.js'
+import type { AgentDirectory } from './servers-confirm-rule.js'
+import { cardOptionsOf, wrapContextOf } from './servers-card-options.js'
 import { renderWrapSection } from './servers-wrap.js'
-import { renderPolicyBanner, renderPolicySources, ruleControlsOf, toolsNoteOf } from './servers-policy-view.js'
+import { renderPolicyBanner, renderPolicySources } from './servers-policy-view.js'
 import type { ServerStatusesByName } from './servers-status.js'
 import { plural } from './plural.js'
 
@@ -125,6 +124,8 @@ export interface ServersView {
   readonly tenant?: TenantSettings
   /** Agents and their grants, for the client rule's agent choices (ADR-0019). Absent → off / all only. */
   readonly agentDirectory?: AgentDirectory
+  /** True when the agents or groups store could not be read: the client rule then offers off / all only. */
+  readonly agentsUnavailable?: boolean
   /**
    * Inventory servers that run under `wrap` here and are not registered: the
    * "On this machine" section. The handler leaves it out on a tenant install.
@@ -172,50 +173,6 @@ function renderGrid(view: ServersView, mode: ServersViewMode): Html {
     <p class="empty srv-no-match" data-filter-empty hidden>No server matches this search.</p>
   </section>
   ${join(options.map(renderServerToolsModal))}`
-}
-
-/** One `ServerCardOptions` per registered server, shared by the card and its modal. */
-function cardOptionsOf(view: ServersView): readonly ServerCardOptions[] {
-  const ruleControls = ruleControlsOf(view.policyView, view.canManage)
-  const toolsNote = toolsNoteOf(view.policyView)
-  return view.servers.map((record) => {
-    const tools = view.tools?.get(record.name)
-    const status = view.statuses?.get(record.name)
-    return {
-      record,
-      ...(tools !== undefined ? { tools } : {}),
-      ...(status !== undefined ? { status } : {}),
-      hasInventory: view.tools !== undefined,
-      canManage: view.canManage,
-      ...(view.canRefresh !== undefined ? { canRefresh: view.canRefresh } : {}),
-      ...(view.canRelease !== undefined ? { canRelease: view.canRelease } : {}),
-      ...(view.openTools !== undefined ? { toolsOpen: view.openTools === record.name } : {}),
-      csrfToken: view.csrfToken,
-      ...(ruleControls !== undefined ? { ruleControls } : {}),
-      ...(toolsNote !== undefined ? { toolsNote } : {}),
-      ...(view.agentDirectory !== undefined
-        ? {
-            confirmAgents: confirmAgentsOf(view.agentDirectory, record.name),
-            ...(view.agentDirectory.known[0] !== undefined ? { grantExample: view.agentDirectory.known[0] } : {}),
-          }
-        : {}),
-    }
-  })
-}
-
-/** Panel context of a wrap server: the same rule controls, and a client rule with no agent to name. */
-function wrapContextOf(view: ServersView, serverName: string): ToolsPanelContext {
-  const ruleControls = ruleControlsOf(view.policyView, view.canManage)
-  const toolsNote = toolsNoteOf(view.policyView)
-  return {
-    serverName,
-    csrfToken: view.csrfToken,
-    confirmAgents: { kind: 'wrap' },
-    ...(view.openTools !== undefined ? { open: view.openTools === serverName } : {}),
-    ...(view.canRelease !== undefined ? { canRelease: view.canRelease } : {}),
-    ...(ruleControls !== undefined ? { ruleControls } : {}),
-    ...(toolsNote !== undefined ? { note: toolsNote } : {}),
-  }
 }
 
 /**
