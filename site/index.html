@@ -94,6 +94,7 @@ npx -y mcpcut@0.3.0 approvals approve &lt;id&gt;</pre>
         <p>Or be asked right in the session: let everything pass and stop only the tools you name — Claude Code shows Accept / Decline, no second terminal. <code>fs</code> is the server's name in your client — <code>adopt</code> keeps those names:</p>
 <pre data-from-readme>{ "version": 1, "defaultDecision": "allow", "quarantine": { "enabled": false },
   "servers": { "fs": { "confirmInClient": { "write_file": ["*"], "edit_file": ["*"] } } } }</pre>
+        <p>Rather click than write JSON? <code>npx -y mcpcut@0.3.0 ui</code> opens the admin UI. On Servers, <b>Create policy</b> writes a policy that lets every call pass — restart the client once — and then every tool of every server behind mcpcut has its buttons: <i>all</i> under <i>client</i> makes that tool ask you in the session, <i>approval</i> holds it for the queue, <i>deny</i> blocks it.</p>
       </div>
       <div class="step">
         <h3>Prove</h3>

@@ -26,6 +26,20 @@ timeouts and fail-closed setting they were wired with until they are reopened,
 and `wrap` without a policy is a different mode altogether (no gate is built),
 so a `wrap` run still needs a restart to come under a new policy.
 
+No file yet, and rather not write one? In the [admin UI](admin-ui.md)
+(`mcpcut ui`), the **Servers** page offers **Create policy** to an owner. It
+writes `{ "version": 1, "defaultDecision": "allow", "quarantine": { "enabled": false } }`
+to `~/.mcpcut/data/policy.json` — the path and the content are shown before
+you click. Every call still passes and nothing is held, so the click changes
+no call by itself; it turns on the buttons by each tool (the admin rule and
+the [client rule](#confirming-in-the-client)). Restart your client once so the
+servers under `wrap` read the new file; from then on each button takes effect
+on the next call. The creation is journaled like any policy edit
+(`policy-edit`, `created: true`). An existing file is never overwritten.
+With quarantine off, the tools panel marks nothing as quarantined — nothing is
+held — except a tool that changed after you approved it: it keeps a
+**changed since approval · not held** marker and a link to review it.
+
 Resolution order (first found wins, **no merging** across sources):
 `--policy <path>` → `$MCPCUT_POLICY` → `./.mcpcut-project/policy.json` →
 `~/.mcpcut/data/policy.json`. A broken or explicitly-named-but-missing policy
@@ -193,6 +207,10 @@ agents they are confirmed for, under the server's `confirmInClient`:
   "confirmInClient": { "write_file": ["*"], "delete_file": ["laptop"] }
 } }
 ```
+
+Or click it: the **Servers** page of the admin UI lists every tool of every
+server behind mcpcut, and **all** under **client** by a tool writes this rule
+for you (no policy yet? **Create policy** on the same page, above).
 
 The two rules are independent:
 

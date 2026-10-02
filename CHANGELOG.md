@@ -40,6 +40,13 @@ All notable changes to this project are documented here. The format follows
   grant on that server — and servers you run under `wrap` (not in the
   registry) now appear there under "On this machine (wrap)". The edit is journaled
   like any rule change.
+- **Create policy from the Servers page — no JSON to write.** With no policy
+  file, the page says that mcpcut only journals and offers an owner one
+  button: it writes `~/.mcpcut/data/policy.json` with every call allowed and
+  quarantine off (path and content shown before the click), so nothing
+  changes until you press the buttons by each tool. The answer names the next
+  step — restart the client once. An existing file is never overwritten; the
+  creation is journaled. `policy set` without a file now points to it.
 
 ### Fixed
 
@@ -53,6 +60,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- **With quarantine off, the Servers page marks nothing as quarantined** —
+  nothing is held then. A tool that changed after you approved it keeps a
+  neutral "changed since approval · not held" marker. The empty page also
+  says where servers behind mcpcut from `adopt` or `wrap` appear.
 - **README: the Windows form of the Quick start** — `cmd /c` before both
   `npx`, checked on a Windows runner together with the rest of the Quick start.
 - **The Quick start on mcpcut.com follows the README** — `adopt` first, the

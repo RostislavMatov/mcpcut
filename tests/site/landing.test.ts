@@ -291,6 +291,12 @@ describe('site/ — one truth with the README and the console', () => {
     expect(html).toContain('<code>~/.mcpcut/data/policy.json</code>')
   })
 
+  test('Stop also offers the path without JSON: Create policy in the admin UI, then the buttons', () => {
+    expect(html).toContain('<code>npx -y mcpcut@0.3.0 ui</code>')
+    expect(html).toContain('<b>Create policy</b>')
+    expect(html).toContain('restart the client once')
+  })
+
   test('Stop also offers the confirmation in the session, with the README\'s policy', () => {
     expect(commandBlocks().some((block) => block.includes('"confirmInClient"'))).toBe(true)
   })
