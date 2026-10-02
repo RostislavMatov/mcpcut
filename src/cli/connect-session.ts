@@ -15,6 +15,8 @@ import {
   type SessionHandle,
 } from '../session/core.js'
 import { DIAGNOSTIC_PREFIX } from './connect-constants.js'
+import { askClientDepsOf } from '../proxy/ask-client-rule.js'
+import { cliCommand } from './next-step.js'
 
 /**
  * Assembles one `connect` session's non-transport half — journal, tool
@@ -161,15 +163,17 @@ export function startConnectSession(args: StartConnectSessionArgs): ConnectSessi
     args.now !== undefined ? { now: args.now } : {},
   )
 
+  const approvalQueue = createApprovalQueue({ baseDir: approvalsBaseDir })
+  const effectivePolicy = effectivePolicyOf(policy, isFailClosed)
   const session = createSession({
     sessionId: args.sessionId,
     serverName: args.serverName,
     client: args.client,
     server: args.server,
-    policy: effectivePolicyOf(policy, isFailClosed),
+    policy: effectivePolicy,
     inventory: createInventory(args.serverName, { storePath: inventoryStorePath, onError }),
     approvals: {
-      queue: createApprovalQueue({ baseDir: approvalsBaseDir }),
+      queue: approvalQueue,
       waiter: createApprovalWaiter(),
       baseDir: approvalsBaseDir,
     },
@@ -182,6 +186,13 @@ export function startConnectSession(args: StartConnectSessionArgs): ConnectSessi
       ? { revocationPollIntervalMs: args.revocationPollIntervalMs }
       : {}),
     onError,
+    // ADR-0019: the agent's user is asked only about tools the policy lists
+    // in `approveInClient` — no `mayAskUnlisted` on this path.
+    ...askClientDepsOf(
+      { policy: effectivePolicy, serverName: args.serverName },
+      { command: cliCommand(), onNotice: args.onDiagnostic },
+      approvalQueue,
+    ),
   })
 
   failure.arm(session)

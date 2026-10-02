@@ -107,7 +107,7 @@ function createGate(askClient: Partial<AskClientDeps> | null = {}): PolicyGate {
     approvalsBaseDir: approvalsDir,
     clock: () => now,
     onError: (error: unknown) => errors.push(error),
-    ...(askClient === null ? {} : { askClient: { resolve: (id, resolution) => queue.resolve(id, resolution), ...askClient } }),
+    ...(askClient === null ? {} : { askClient: { resolve: (question, resolution) => queue.resolve(question.approvalId, resolution), ...askClient } }),
   })
 }
 

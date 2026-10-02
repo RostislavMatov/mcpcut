@@ -8,10 +8,10 @@ import { createApprovalQueue, type ApprovalQueue } from '../policy/approvals/que
 import { createApprovalWaiter } from '../policy/approvals/waiter.js'
 import { canonicalJson, sha256Hex } from '../policy/hash.js'
 import { createInventory, INVENTORY_FILE_NAME } from '../policy/inventory.js'
-import { toPolicyProvider, type PolicyProvider } from '../policy/reload.js'
+import type { PolicyProvider } from '../policy/reload.js'
 import type { Policy } from '../policy/schema.js'
 import { createPolicyGate, type GateAgentScope } from './gate.js'
-import type { AskClientOptions } from './client-approval.js'
+import { askClientDepsOf, type AskClientWiring } from './ask-client-rule.js'
 import type { MessagePolicyGateDeps, PendingApprovalNotice } from './gate-types.js'
 import { startPipeline, type GateFn } from './pipeline.js'
 import type { ServerHandle } from './spawn.js'
@@ -116,39 +116,19 @@ export interface PolicyRelayArgs {
   readonly askClient?: AskClientWiring
 }
 
-/** The entry point's half of asking in the client, plus where its notices go. */
-export interface AskClientWiring extends AskClientOptions {
-  readonly onNotice?: (text: string) => void
-}
+/** The entry point's half of asking in the client (see `ask-client-rule.ts`). */
+export type { AskClientWiring } from './ask-client-rule.js'
 
 /**
- * The gate's in-client asker, or nothing. Only on the ad-hoc `wrap` path: on
- * `connect` the person at the client is an agent's user, not someone who
- * may approve. Only when the policy allows it (`approval.askClient`). And the
- * answer is re-checked against the installation when it lands — an admin
- * added mid-session means approvals need a token from then on.
+ * `wrap`'s asker. `agentScope` marks an agent's session: its user is asked
+ * only about tools the policy lists, never under the installation rule.
  */
-export function askClientOf(args: Pick<PolicyRelayArgs, 'askClient' | 'agentScope' | 'policy'>, queue: Pick<ApprovalQueue, 'resolve'>): Pick<MessagePolicyGateDeps, 'askClient'> {
+function askClientOf(args: PolicyRelayArgs, queue: ApprovalQueue): Pick<MessagePolicyGateDeps, 'askClient'> {
   const wiring = args.askClient
-  if (wiring === undefined || args.agentScope !== undefined) return {}
-  if (toPolicyProvider(args.policy).current().approval.askClient === false) return {}
-  const notice = wiring.onNotice ?? ((): void => undefined)
-  return {
-    askClient: {
-      mayAsk: wiring.mayAsk,
-      command: wiring.command,
-      ...(wiring.onNotice !== undefined ? { onNotice: wiring.onNotice } : {}),
-      resolve: async (approvalId, resolution) => {
-        // A check that fails counts as "admins": the answer is dropped, never applied unchecked.
-        const mayStill = await wiring.mayAsk().catch(() => false)
-        if (!mayStill) {
-          notice(`An answer in the client cannot settle ${approvalId}: this installation has admins, or they could not be read.\n  Approve with your token: ${wiring.command} approvals approve ${approvalId}\n`)
-          return undefined
-        }
-        return queue.resolve(approvalId, resolution)
-      },
-    },
-  }
+  if (wiring === undefined) return {}
+  const { mayAskUnlisted, ...rest } = wiring
+  const scoped = args.agentScope === undefined && mayAskUnlisted !== undefined ? { ...rest, mayAskUnlisted } : rest
+  return askClientDepsOf({ policy: args.policy, serverName: args.serverName }, scoped, queue)
 }
 
 /** Where the policy layer's on-disk state lives for one run. */

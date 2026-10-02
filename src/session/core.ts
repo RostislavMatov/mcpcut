@@ -16,6 +16,7 @@ import {
 import type { AgentRecord } from '../agents/schema.js'
 import type { GateApprovalQueue } from '../proxy/gate-approvals.js'
 import { createMessagePolicyGate, type MessagePolicyGate } from '../proxy/gate-core.js'
+import type { MessagePolicyGateDeps } from '../proxy/gate-types.js'
 import {
   createDecisionProvenance,
   createDecisionWriter,
@@ -125,6 +126,12 @@ export interface CreateSessionDeps {
   readonly revocationPollIntervalMs?: number
   /** Reports session-internal failures. Defaults to one line on stderr. */
   readonly onError?: (error: unknown) => void
+  /**
+   * Ask the person at the client about held calls (ADR-0019). Given only by
+   * the stdio `connect`, whose client is one process with one person; the
+   * HTTP front never passes it (a held POST has no channel for the question).
+   */
+  readonly askClient?: MessagePolicyGateDeps['askClient']
   /** Fired exactly once, after the session has fully ended. */
   readonly onSessionEnd?: (reason: SessionEndReason) => void
 }
@@ -215,6 +222,7 @@ export function createSession(deps: CreateSessionDeps): SessionHandle {
     provenance,
     ...(watch !== null ? { agentScope: watch.scope } : {}),
     ...(deps.approvals.baseDir !== undefined ? { approvalsBaseDir: deps.approvals.baseDir } : {}),
+    ...(deps.askClient !== undefined ? { askClient: deps.askClient } : {}),
     clock,
     onError,
   })

@@ -141,6 +141,12 @@ const serverPolicySchema = z.strictObject({
     MAX_TOOL_RULES_PER_SERVER,
     'tools entries',
   ).optional(),
+  /**
+   * Held tools the person at the client may approve in the session (MCP form
+   * elicitation, ADR-0019) whoever they are — also on an agent's `connect`
+   * and on an installation with admins. Exact names or a trailing `*`.
+   */
+  approveInClient: z.array(toolRuleNameSchema).max(MAX_TOOL_RULES_PER_SERVER).optional(),
 })
 
 const serversSchema = withMaxEntries(serverNameSchema, serverPolicySchema, MAX_SERVERS_IN_POLICY, 'servers').optional()

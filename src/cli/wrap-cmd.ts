@@ -122,10 +122,11 @@ export async function runWrapCommand(
       // A held call is named on stderr with the command that releases it: the
       // Stop step used to wait out its whole window in silence (0.2.3).
       approvalNotice: heldCallNotice,
-      // P2: a held call is also asked in the client while nobody but its
-      // user can approve — no admins yet, as `approvals approve` needs no
-      // token only then.
-      askClient: { mayAsk: () => hasNoAdmins(opts.runWrap?.dir), command: cliCommand() },
+      // P2: a held call is also asked in the client — a tool the policy
+      // lists in `approveInClient` always, any other only while nobody but
+      // its user can approve (no admins yet, as `approvals approve` needs no
+      // token only then).
+      askClient: { mayAskUnlisted: () => hasNoAdmins(opts.runWrap?.dir), command: cliCommand() },
       sessionEndNotice: sessionJournaledNotice,
       ...opts.runWrap,
       ...(flags.server !== undefined ? { serverName: flags.server } : {}),

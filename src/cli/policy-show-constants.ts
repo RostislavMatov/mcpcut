@@ -49,7 +49,6 @@ export const HOT_RELOADED_FIELDS: readonly string[] = [
 export const RESTART_REQUIRED_FIELDS: readonly string[] = [
   'approval.timeoutMs',
   'approval.grantTtlMs',
-  'approval.askClient',
   'journal.failClosed',
   'quarantine.enabled',
 ]

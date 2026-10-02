@@ -51,23 +51,25 @@ export interface ClientResolution {
 }
 
 /**
- * What the entry point decides about asking in the client: whether a person
- * there may approve at all — only while the installation has no admins, as
- * `approvals approve` needs no token only then — and how mcpcut is started.
+ * What the entry point decides about asking in the client: how mcpcut is
+ * started there, and whether a held tool the policy does NOT list in
+ * `approveInClient` may be asked too — `wrap` while the installation has no
+ * admins (`approvals approve` needs no token only then); absent on an
+ * agent's `connect`, where only listed tools are asked (ADR-0019).
  */
 export interface AskClientOptions {
-  readonly mayAsk: () => Promise<boolean>
   readonly command: string
+  readonly mayAskUnlisted?: () => Promise<boolean>
 }
 
 export interface ClientApprovalDeps {
   /** Writes one message to the client (the same ordered writer the gate answers through). */
   readonly send: (message: Readonly<Record<string, unknown>>) => Promise<void>
-  /** Resolves the pending approval in the queue; first resolution wins there. */
-  readonly resolve: (approvalId: string, resolution: ClientResolution) => Promise<unknown>
+  /** Resolves the question's pending approval in the queue; first resolution wins there. */
+  readonly resolve: (question: ApprovalQuestion, resolution: ClientResolution) => Promise<unknown>
   readonly clock: () => number
-  /** Checked before each question; `false` asks nothing (an install with admins). */
-  readonly mayAsk?: () => Promise<boolean>
+  /** Checked before each question; `false` leaves that call to the queue. */
+  readonly mayAsk?: (question: ApprovalQuestion) => Promise<boolean>
   /** How mcpcut is started here (`mcpcut`, or the npx form), for the commands the text names. */
   readonly command?: string
   readonly onError: (error: unknown) => void
@@ -177,7 +179,7 @@ export function createClientApprover(deps: ClientApprovalDeps): ClientApprover {
       while (shown === undefined && waiting.length > 0) {
         const next = waiting[0]
         if (next === undefined) break
-        const allowed = deps.mayAsk === undefined || (await deps.mayAsk())
+        const allowed = deps.mayAsk === undefined || (await deps.mayAsk(next))
         // Withdrawn while the installation was being checked: go on with the new head.
         if (waiting[0] !== next || shown !== undefined) continue
         waiting.shift()
@@ -197,7 +199,7 @@ export function createClientApprover(deps: ClientApprovalDeps): ClientApprover {
   function settle(question: ApprovalQuestion, outcome: ClientResolution['outcome']): void {
     const actor = `client:${abilities?.name ?? 'unknown'}`
     const reason = outcome === 'approved' ? 'accepted in the client' : 'declined in the client'
-    deps.resolve(question.approvalId, { outcome, actor, reason }).catch(deps.onError)
+    deps.resolve(question, { outcome, actor, reason }).catch(deps.onError)
   }
 
   function onAccept(entry: Shown): void {

@@ -14,6 +14,11 @@ All notable changes to this project are documented here. The format follows
   in `approvals list`. Recorded as `client:<name>`. Only while the install has
   no admin and only on `wrap`; an Accept faster than a second is asked again.
   `"approval": { "askClient": false }` turns it off.
+- **Name the tools anyone at the client may approve.** A server's
+  `approveInClient` list (`"approveInClient": ["write_file"]`) lets the person
+  at the client approve those held tools in the session on any stdio path —
+  an agent's `mcpcut connect` too — and on an installation with admins. Other
+  held tools still need an admin.
 
 ### Fixed
 

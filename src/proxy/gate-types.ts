@@ -91,8 +91,8 @@ export interface MessagePolicyGateDeps {
 /** What the gate needs to ask the client about a held call (see `client-approval.ts`). */
 export interface AskClientDeps {
   readonly resolve: ClientApprovalDeps['resolve']
-  /** Checked before each question (see `AskClientOptions`). */
-  readonly mayAsk?: () => Promise<boolean>
+  /** Checked before each question (see `ask-client-rule.ts`). */
+  readonly mayAsk?: ClientApprovalDeps['mayAsk']
   /** How mcpcut is started here, for the commands the dialog names. */
   readonly command?: string
   /** Lines for the operator's terminal. */

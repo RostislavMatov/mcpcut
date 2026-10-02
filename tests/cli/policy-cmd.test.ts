@@ -710,7 +710,7 @@ describe('runPolicyShow -- hot reload line', () => {
     for (const field of ['servers.*', 'classDefaults', 'defaultDecision', 'toolsList.filter', 'quarantine.onQuarantined']) {
       expect(line).toContain(field)
     }
-    for (const field of ['approval.timeoutMs', 'approval.grantTtlMs', 'approval.askClient', 'journal.failClosed', 'quarantine.enabled']) {
+    for (const field of ['approval.timeoutMs', 'approval.grantTtlMs', 'journal.failClosed', 'quarantine.enabled']) {
       expect(line).toContain(field)
     }
     expect(line).toContain('restart')
@@ -726,7 +726,7 @@ describe('runPolicyShow -- hot reload line', () => {
     const parsed = JSON.parse(io.out()) as { hotReload: { reloads: string[]; restartRequired: string[] } }
     expect(parsed.hotReload).toEqual({
       reloads: ['servers.*', 'classDefaults', 'defaultDecision', 'toolsList.filter', 'quarantine.onQuarantined'],
-      restartRequired: ['approval.timeoutMs', 'approval.grantTtlMs', 'approval.askClient', 'journal.failClosed', 'quarantine.enabled'],
+      restartRequired: ['approval.timeoutMs', 'approval.grantTtlMs', 'journal.failClosed', 'quarantine.enabled'],
     })
   })
 })

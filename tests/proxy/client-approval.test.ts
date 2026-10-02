@@ -26,8 +26,8 @@ function harness(): Harness {
       send: async (message) => {
         h.sent.push(message as Record<string, unknown>)
       },
-      resolve: async (approvalId, resolution) => {
-        h.resolved.push({ approvalId, outcome: resolution.outcome, actor: resolution.actor })
+      resolve: async (question, resolution) => {
+        h.resolved.push({ approvalId: question.approvalId, outcome: resolution.outcome, actor: resolution.actor })
       },
       clock: () => h.now,
       onError: (error) => {
