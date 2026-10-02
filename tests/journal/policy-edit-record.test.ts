@@ -378,6 +378,22 @@ describe('buildPolicyEditRecord', () => {
     expect(payload['actor']).toEqual({ adminName: 'bob', role: 'owner', via: 'cli' })
   })
 
+  test('a client-confirmation edit carries the agent list beside rule: null; a reset keeps null', () => {
+    const set = buildPolicyEditRecord({
+      edit: editOf({ rule: null, confirmInClient: ['laptop', 'alice-cursor'] }),
+      clock: () => FIXED_NOW_MS,
+    })
+    expect(set.payload).toMatchObject({ rule: null, confirmInClient: ['laptop', 'alice-cursor'] })
+    const cleared = buildPolicyEditRecord({ edit: editOf({ rule: null, confirmInClient: null }), clock: () => FIXED_NOW_MS })
+    const payload = cleared.payload as Record<string, unknown>
+    expect(Object.hasOwn(payload, 'confirmInClient')).toBe(true)
+    expect(payload['confirmInClient']).toBeNull()
+  })
+
+  test('an ordinary rule edit has no confirmInClient key at all (records stay byte-identical)', () => {
+    expect(Object.hasOwn(denyEditRecord().payload as object, 'confirmInClient')).toBe(false)
+  })
+
   test('a first-ever write keeps policyHashBefore: null verbatim', () => {
     const record = buildPolicyEditRecord({
       edit: editOf({ policyHashBefore: null }),
