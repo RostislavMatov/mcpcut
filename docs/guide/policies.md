@@ -179,55 +179,66 @@ A `require-approval` tool call does not reach the server immediately:
    `(server, tool, args)` triple, so an agent's retry a few minutes later
    passes without a second manual approval.
 
-### Approving in the client
+### Confirming in the client
 
-Under `mcpcut wrap`, a held call is also asked in the client when the client
-can show a form (MCP form elicitation — Claude Code does): a dialog names the
-tool, the server and the arguments (secrets redacted), with **Accept** and
-**Decline**. Accept approves the call in the queue and it goes through at
-once; Decline denies it; Esc — or no answer — leaves it waiting in
-`mcpcut approvals list` as before. The resolution is stored as
-`client:<the client's name>` (for example `client:claude-code`), so the
-journal says the call was approved in the client.
+A second rule, next to the admin's: the person at the client confirms a call
+in the session. When the client can show a form (MCP form elicitation —
+Claude Code does), a dialog names the tool, the server and the arguments
+(secrets redacted), with **Accept** and **Decline**. Name the tools, and whose
+agents they are confirmed for, under the server's `confirmInClient`:
 
-- **Tools you name: always.** List held tools under the server's
-  `approveInClient` and the person at the client is asked about them on any
-  stdio path — `wrap`, and an agent's `mcpcut connect` too — and on an
-  installation with admins:
-  ```json
-  "servers": { "fs": { "tools": { "write_file": "require-approval" },
-                       "approveInClient": ["write_file"] } }
-  ```
-  Names match as tool rules do (exact, or a trailing `*`); a short prefix
-  such as `"a*"` hands nearly every tool to the client, so list names. Other
-  held tools still go to an admin. **This assumes a person answers the
-  client's dialogs.** A client driven by a program — an SDK host or a CI job
-  that answers such questions automatically, or routes them to the model —
-  would approve listed tools on the agent's behalf; for such agents leave the
-  list empty or set `"approval": { "askClient": false }`. This is how an agent's user approves a specific tool
-  without an admin token — never by running `approvals approve` with the
-  agent's token, which the agent can read and would use to approve itself.
-- **Any other held tool: only on `wrap` while the installation has no
-  admin.** Once `mcpcut admin add` has run, an approval of an unlisted tool
-  must name an admin, so it goes through `approvals approve` with a token, as
-  above. On `connect` the person at the client is an agent's user, so only
-  listed tools are asked there. A rule or an admin that changes before the
-  answer lands makes that Accept count for nothing, with a line naming the
-  command to use instead.
-- **Not over HTTP yet.** `serve`, the pool behind `connect --url` and hosted
-  installs ask nothing in the client; their approvals go through the queue.
+```json
+"servers": { "fs": {
+  "tools":           { "delete_file": "require-approval" },
+  "confirmInClient": { "write_file": ["*"], "delete_file": ["laptop"] }
+} }
+```
+
+The two rules are independent:
+
+| `tools` (the admin) | `confirmInClient` | What happens |
+|---|---|---|
+| allow | — | the call passes |
+| allow | listed | the dialog; Accept runs the call — no admin involved |
+| require-approval | — | the approval queue, as above; no dialog |
+| require-approval | listed | the dialog first; Accept puts the call in the queue for an admin, Decline refuses it at once |
+| deny | anything | refused; no dialog |
+
+This is the setup for a client in full auto mode: everything passes, and only
+the tools you name stop and ask you in the session. The journal records the
+person's Accept as `confirmedBy: "client:<the client's name>"` (for example
+`client:claude-code`); a Decline or Esc is `denied-by-operator` in the
+client's name.
+
+- **Whose agents.** The list holds agent names, or `"*"` for every agent and
+  for `mcpcut wrap` (which has no agent). An agent not on the list gets the
+  admin's rule alone. Names match tools as tool rules do (exact, or a
+  trailing `*`; the most specific entry wins).
+- **This assumes a person answers the client's dialogs.** A client driven by
+  a program — an SDK host or a CI job that answers such questions on its own,
+  or routes them to the model — would confirm on the agent's behalf; leave
+  such agents off the list.
+- **Anything but an Accept refuses the call.** Decline, Esc, no answer within
+  `approval.timeoutMs`, a client that cannot show the dialog or answers it
+  with an error, and the session ending — each refuses the call and is
+  recorded. It never falls back to the approval queue: the confirmation and an
+  admin's approval are two rules, and one never stands in for the other. When
+  the client cannot show the dialog, `wrap` and `connect` say so on stderr.
+- **Stdio only, for now.** `wrap` and an agent's `mcpcut connect` ask in the
+  client. Over HTTP (`serve`, the pool behind `connect --url`, hosted
+  installs) there is no channel to ask on, so a call that needs the
+  confirmation is refused.
 - **An Accept faster than a second does not count.** The dialog opens with
   Accept focused, so an Enter typed into the prompt as it appears would
-  approve. Such an Accept is asked once more; a second fast one leaves the
-  call to the queue. With several calls held at once, the dialogs come one
-  at a time.
+  accept. Such an Accept is asked once more; a second fast one refuses the
+  call. With several calls waiting at once, the dialogs come one at a time.
+- **Every call is confirmed on its own** — there is no window in which a
+  repeat passes unasked. After an Accept the call is decided again, so a rule
+  turned to `deny` while the dialog was open still wins.
 - **What the dialog shows.** Every argument by name, each value cut at 160
   characters with a count of what is hidden; when anything is hidden, the
-  dialog says so and names `mcpcut approvals list --json` to read it whole.
-- **Turning it off.** A client that answers such questions without a person
-  would approve on its own; set `"approval": { "askClient": false }` to keep
-  approvals to the queue alone — it wins over `approveInClient`. Both are read
-  for each question, so an edit applies without a restart.
+  dialog says so — decline if you are not sure. The rule is read for every
+  call, so an edit applies without a restart.
 
 ## Quarantine
 

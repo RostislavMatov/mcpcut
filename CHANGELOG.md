@@ -17,17 +17,16 @@ All notable changes to this project are documented here. The format follows
   servers and entries already behind mcpcut are named and skipped.
   `adopt --undo` puts back the last run's entries, keeping whatever you
   changed since.
-- **Approve a held call right in Claude Code.** Under `wrap`, a call a policy
-  holds for approval is also asked in the client when it can show a form (MCP
-  form elicitation): Accept lets it through, Decline refuses it, Esc leaves it
-  in `approvals list`. Recorded as `client:<name>`. Only while the install has
-  no admin and only on `wrap`; an Accept faster than a second is asked again.
-  `"approval": { "askClient": false }` turns it off.
-- **Name the tools anyone at the client may approve.** A server's
-  `approveInClient` list (`"approveInClient": ["write_file"]`) lets the person
-  at the client approve those held tools in the session on any stdio path —
-  an agent's `mcpcut connect` too — and on an installation with admins. Other
-  held tools still need an admin.
+- **Confirm a call right in Claude Code.** A server's `confirmInClient`
+  (`"confirmInClient": { "write_file": ["*"] }`) makes the person at the client
+  confirm those tools in the session — Accept / Decline in a dialog (MCP form
+  elicitation) — for the agents it names, or `"*"` for all and for `wrap`. It
+  is a rule of its own beside the admin's: with `allow` the confirmation alone
+  lets the call through, with `require-approval` an admin approves after it.
+  Anything but an Accept refuses the call; a client that cannot show the
+  dialog is refused with a line on stderr. Recorded as
+  `confirmedBy: "client:<name>"`. On `wrap` and an agent's `connect`; an
+  Accept faster than a second is asked again.
 
 ### Fixed
 
