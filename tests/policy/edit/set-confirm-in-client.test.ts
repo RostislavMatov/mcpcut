@@ -57,13 +57,14 @@ describe('setting the agents of a tool', () => {
     expect(next).toEqual({ version: 1, servers: { s: { confirmInClient: { t: ['*'] } } } })
   })
 
-  test('the exact key beats a pattern that also matches', () => {
-    const before = { version: 1, servers: { s: { confirmInClient: { 'write_*': ['*'] } } } }
+  test('an exact key only adds agents: it never narrows a pattern that also matches', () => {
+    const before = { version: 1, servers: { s: { confirmInClient: { 'write_*': ['ci'] } } } }
     const result = applyConfirmInClientToDocument(before, 's', 'write_file', ['laptop'])
     if (!result.ok) throw new Error(result.message)
     expect(isConfirmInClient(result.policy, 's', 'write_file', 'laptop')).toBe(true)
+    expect(isConfirmInClient(result.policy, 's', 'write_file', 'ci')).toBe(true)
     expect(isConfirmInClient(result.policy, 's', 'write_file', 'other')).toBe(false)
-    expect(isConfirmInClient(result.policy, 's', 'write_other', 'other')).toBe(true)
+    expect(isConfirmInClient(result.policy, 's', 'write_other', 'ci')).toBe(true)
   })
 
   test('never mutates its input', () => {
