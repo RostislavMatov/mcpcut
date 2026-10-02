@@ -27,6 +27,11 @@ All notable changes to this project are documented here. The format follows
   dialog is refused with a line on stderr. Recorded as
   `confirmedBy: "client:<name>"`. On `wrap` and an agent's `connect`; an
   Accept faster than a second is asked again.
+- **Set the client confirmation from the Servers page.** Each tool gets a
+  **client** control beside the admin's rule — off, all, or the agents with a
+  grant on that server — and servers you run under `wrap` (not in the
+  registry) now appear there under "On this machine". The edit is journaled
+  like any rule change.
 
 ### Fixed
 

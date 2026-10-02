@@ -566,6 +566,40 @@ describe('scripted forms post their hidden fields (quarantine approve/reject)', 
     expect(payload).toBeNull()
   })
 
+  test('checkboxes: only the checked ones post, and a repeated name becomes an array', () => {
+    const payload = loadFormPayload()({
+      elements: [
+        { name: 'csrf_token', value: 'x' },
+        { name: 'confirm', value: 'agents' },
+        { name: 'agent', type: 'checkbox', checked: true, value: 'laptop' },
+        { name: 'agent', type: 'checkbox', checked: false, value: 'ci' },
+        { name: 'agent', type: 'checkbox', checked: true, value: 'alice-cursor' },
+        { name: 'agent', type: 'hidden', value: 'kept' },
+      ],
+      getAttribute: () => null,
+    })
+    expect(JSON.parse(payload ?? '{}')).toEqual({ confirm: 'agents', agent: ['laptop', 'alice-cursor', 'kept'] })
+  })
+
+  test('a single checked checkbox still posts a plain string, and none checked posts no agent key', () => {
+    const one = loadFormPayload()({
+      elements: [
+        { name: 'confirm', value: 'agents' },
+        { name: 'agent', type: 'checkbox', checked: true, value: 'laptop' },
+      ],
+      getAttribute: () => null,
+    })
+    expect(JSON.parse(one ?? '{}')).toEqual({ confirm: 'agents', agent: 'laptop' })
+    const none = loadFormPayload()({
+      elements: [
+        { name: 'confirm', value: 'agents' },
+        { name: 'agent', type: 'checkbox', checked: false, value: 'laptop' },
+      ],
+      getAttribute: () => null,
+    })
+    expect(JSON.parse(none ?? '{}')).toEqual({ confirm: 'agents' })
+  })
+
   test('runAction falls back to the form fields when no data-payload is set', () => {
     expect(JS_SOURCE).toMatch(/if \(payload === null\) payload = formPayload\(el\);/)
   })

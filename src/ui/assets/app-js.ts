@@ -22,7 +22,8 @@ import { buildAsset, type Asset } from './asset.js'
  *   - `data-method` (default `POST`), `data-confirm` (optional confirm text),
  *     `data-payload` (optional JSON string sent as the request body). Without
  *     it, a <form> posts its own named fields as the JSON body (all but the
- *     `csrf_token` field, which rides in the header) — a form whose identity
+ *     `csrf_token` field, which rides in the header; unchecked checkboxes are
+ *     skipped and a repeated name becomes an array) — a form whose identity
  *     lives in hidden inputs (quarantine: `server`/`tool`) then sends the same
  *     thing over fetch as over a native submit.
  *   - after a 2xx the script re-fetches the live region the control sits in
@@ -133,7 +134,14 @@ const APP_JS_SOURCE = `"use strict";
     for (var i = 0; i < fields.length; i++) {
       var name = fields[i].name;
       if (!name || name === "csrf_token") continue;
-      out[name] = fields[i].value;
+      // An unchecked checkbox posts nothing; a repeated name (the client-rule
+      // agent boxes) becomes an array, as a native urlencoded post repeats it.
+      if (fields[i].type === "checkbox" && !fields[i].checked) continue;
+      if (Object.prototype.hasOwnProperty.call(out, name)) {
+        out[name] = [].concat(out[name], fields[i].value);
+      } else {
+        out[name] = fields[i].value;
+      }
       any = true;
     }
     return any ? JSON.stringify(out) : null;
