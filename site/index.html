@@ -58,7 +58,7 @@
     </article>
     <article class="tile panel">
       <h2><span class="tile-index">02</span> Stop</h2>
-      <p>A policy per tool — <code>allow</code>, <code>deny</code> or <code>require-approval</code>. A risky call waits until you approve it from the CLI, the web UI or the terminal console. A new tool, or one whose schema changed after you trusted it, is quarantined with a diff.</p>
+      <p>A policy per tool — <code>allow</code>, <code>deny</code> or <code>require-approval</code>. A risky call waits until you approve it from the CLI, the web UI, the terminal console or right in your Claude Code session. A new tool, or one whose schema changed after you trusted it, is quarantined with a diff.</p>
     </article>
     <article class="tile panel">
       <h2><span class="tile-index">03</span> Prove</h2>
@@ -74,7 +74,10 @@
     <div class="panel-body steps">
       <div class="step">
         <h3>See</h3>
-        <p>Put mcpcut in front of a server — here for Claude Code. In any other client, the server's command becomes <code>npx -y mcpcut@0.2.4 wrap -- &lt;your server&gt;</code>.</p>
+        <p>Put the MCP servers you already have behind mcpcut. <code>adopt</code> finds them in Claude Code, Cursor and Claude Desktop and shows the change; <code>--apply</code> writes it, keeping a copy of each file. Then restart the client:</p>
+<pre data-from-readme>npx -y mcpcut@0.2.4 adopt
+npx -y mcpcut@0.2.4 adopt --apply</pre>
+        <p>Or put mcpcut in front of one server by hand — here for Claude Code. In any other client, the server's command becomes <code>npx -y mcpcut@0.2.4 wrap -- &lt;your server&gt;</code>.</p>
 <pre data-from-readme>claude mcp add fs -- npx -y mcpcut@0.2.4 wrap --server fs -- npx -y @modelcontextprotocol/server-filesystem ~/project</pre>
         <p>Let the agent work, then read what happened — every request and response, secrets redacted (with a policy, every decision too):</p>
 <pre data-from-readme>npx -y mcpcut@0.2.4 sessions
@@ -82,12 +85,15 @@ npx -y mcpcut@0.2.4 show &lt;id&gt;</pre>
       </div>
       <div class="step">
         <h3>Stop</h3>
-        <p>Save this as <code>policy.json</code> and re-add the server with <code>--policy "$PWD/policy.json"</code> right after <code>wrap</code>: reads pass, everything else waits for you.</p>
+        <p>Save this as <code>~/.mcpcut/data/policy.json</code> — every server behind mcpcut reads it when it starts — and restart the client: reads pass, everything else waits for you.</p>
 <pre data-from-readme>{ "version": 1, "defaultDecision": "require-approval", "classDefaults": { "read": "allow" },
   "quarantine": { "enabled": false } }</pre>
         <p>A write now waits. Approve it from another terminal within the agent's wait:</p>
 <pre data-from-readme>npx -y mcpcut@0.2.4 approvals list
 npx -y mcpcut@0.2.4 approvals approve &lt;id&gt;</pre>
+        <p>Or be asked right in the session: let everything pass and stop only the tools you name — Claude Code shows Accept / Decline, no second terminal:</p>
+<pre data-from-readme>{ "version": 1, "defaultDecision": "allow", "quarantine": { "enabled": false },
+  "servers": { "fs": { "confirmInClient": { "write_file": ["*"], "edit_file": ["*"] } } } }</pre>
       </div>
       <div class="step">
         <h3>Prove</h3>

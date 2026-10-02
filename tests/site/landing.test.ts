@@ -260,17 +260,39 @@ describe('site/ — self-contained under a strict CSP', () => {
 })
 
 describe('site/ — one truth with the README and the console', () => {
-  test('every command block on the page is a line of the README', () => {
-    const readme = read(README)
-    const blocks = [...html.matchAll(/<pre\b[^>]*data-from-readme[^>]*>([\s\S]*?)<\/pre>/gi)].map((match) =>
+  /** The page's command blocks, in page order, as text. */
+  const commandBlocks = (): readonly string[] =>
+    [...html.matchAll(/<pre\b[^>]*data-from-readme[^>]*>([\s\S]*?)<\/pre>/gi)].map((match) =>
       decodeEntities((match[1] ?? '').replace(/<[^>]*>/g, '')).trim(),
     )
+
+  test('every command block on the page is a line of the README', () => {
+    const readme = read(README)
+    const blocks = commandBlocks()
     expect(blocks.length).toBeGreaterThan(0)
     for (const block of blocks) {
       for (const line of block.split('\n').map((l) => l.trim()).filter(Boolean)) {
         expect(readme, line).toContain(line)
       }
     }
+  })
+
+  test('See starts with adopt, as the README does, before the one-server line', () => {
+    const blocks = commandBlocks()
+    const adopt = blocks.findIndex((block) => / adopt$/m.test(block))
+    const apply = blocks.findIndex((block) => / adopt --apply$/m.test(block))
+    const byHand = blocks.findIndex((block) => block.startsWith('claude mcp add '))
+    expect(adopt).toBeGreaterThanOrEqual(0)
+    expect(apply).toBeGreaterThanOrEqual(0)
+    expect(byHand).toBeGreaterThan(adopt)
+  })
+
+  test('Stop saves the policy where every server behind mcpcut reads it', () => {
+    expect(html).toContain('<code>~/.mcpcut/data/policy.json</code>')
+  })
+
+  test('Stop also offers the confirmation in the session, with the README\'s policy', () => {
+    expect(commandBlocks().some((block) => block.includes('"confirmInClient"'))).toBe(true)
   })
 
   test('the pixel font is byte for byte the admin console\'s', () => {
