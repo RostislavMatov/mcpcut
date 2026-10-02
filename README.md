@@ -39,7 +39,7 @@ A write now waits. Approve it from another terminal within the agent's wait (60 
     npx -y mcpcut@0.3.0 approvals list
     npx -y mcpcut@0.3.0 approvals approve <id>
 
-Or be asked right in the session: let everything pass and stop only the tools you name — Claude Code shows **Accept** / **Decline**, no second terminal ([Confirming in the client](docs/guide/policies.md#confirming-in-the-client)):
+Or be asked right in the session: let everything pass and stop only the tools you name — Claude Code shows **Accept** / **Decline**, no second terminal. `fs` is the server's name in your client — `adopt` keeps those names ([Confirming in the client](docs/guide/policies.md#confirming-in-the-client)):
 
     { "version": 1, "defaultDecision": "allow", "quarantine": { "enabled": false },
       "servers": { "fs": { "confirmInClient": { "write_file": ["*"], "edit_file": ["*"] } } } }

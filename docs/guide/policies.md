@@ -210,10 +210,12 @@ person's Accept as `confirmedBy: "client:<the client's name>"` (for example
 `client:claude-code`); a Decline is `denied-by-operator` in the client's
 name; an Esc is a plain refusal (the client may close its own dialog).
 
-Claude Code can ask about a tool by itself, too: an `ask` permission rule
-such as `mcp__fs__write_file` prompts even in auto mode and with permissions
-bypassed. For one person in one client that may be all you need. This
-rule is for what that one does not give: the same rule per agent across
+Claude Code can ask about a tool by itself, too: by its
+[permission modes docs](https://code.claude.com/docs/en/permission-modes)
+(checked October 2026), an `ask` permission rule such as
+`mcp__fs__write_file` prompts even in auto mode and with permissions
+bypassed. For one person in one client that may be all you need.
+`confirmInClient` is for what an `ask` rule does not give: the same rule per agent across
 clients, the answer and who gave it in the hash-chained journal, and a call
 that needs both the person's Accept and an admin's approval.
 
@@ -234,10 +236,12 @@ that needs both the person's Accept and an admin's approval.
 - **This assumes a person answers the client's dialogs.** A client driven by
   a program — an SDK host or a CI job that answers such questions on its own,
   or routes them to the model — would confirm on the agent's behalf; leave
-  such agents off the list. In Claude Code, an `Elicitation` hook answers the
-  dialog without showing it, so an agent allowed to edit Claude Code's
-  settings (bypass mode allows it) can answer for you — a brake for mistakes,
-  like the rest of this page, not a sandbox.
+  such agents off the list. In Claude Code, an
+  [`Elicitation` hook](https://code.claude.com/docs/en/mcp) can answer the
+  dialog without showing it, and with permissions bypassed an agent can edit
+  Claude Code's settings — so it can answer for you. Two Accepts faster than
+  a second refuse the call, but this is a brake for mistakes, like the rest of
+  this page, not a sandbox.
 - **Anything but an Accept refuses the call.** Decline, Esc, no answer within
   `approval.timeoutMs` (read when the session starts; the wait counts from
   the call, so with several calls at once the later dialogs have less of it),

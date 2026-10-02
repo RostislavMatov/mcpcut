@@ -283,7 +283,7 @@ describe('site/ — one truth with the README and the console', () => {
     const apply = blocks.findIndex((block) => / adopt --apply$/m.test(block))
     const byHand = blocks.findIndex((block) => block.startsWith('claude mcp add '))
     expect(adopt).toBeGreaterThanOrEqual(0)
-    expect(apply).toBeGreaterThanOrEqual(0)
+    expect(apply).toBeGreaterThanOrEqual(adopt)
     expect(byHand).toBeGreaterThan(adopt)
   })
 
