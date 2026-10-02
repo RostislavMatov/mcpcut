@@ -19,6 +19,7 @@ import {
 import type { AgentDirectory } from './servers-confirm-rule.js'
 import { cardOptionsOf, wrapContextOf } from './servers-card-options.js'
 import { renderWrapSection } from './servers-wrap.js'
+import { renderPolicyCreate } from './servers-policy-create.js'
 import { renderPolicyBanner, renderPolicySources } from './servers-policy-view.js'
 import type { ServerStatusesByName } from './servers-status.js'
 import { plural } from './plural.js'
@@ -160,11 +161,21 @@ function renderViewToggle(view: ServersView, mode: ServersViewMode): Html {
   return html`<span class="view-toggle">${cell('grid', '▦', 'Tiles')}${cell('list', '≡', 'List')}</span>`
 }
 
+/**
+ * Under the empty grid when nothing runs under `wrap` here yet: where servers
+ * put behind mcpcut by `adopt` or `wrap` appear. They are seen once a session
+ * runs with a policy, so a fresh `adopt` is not mistaken for "register first".
+ */
+function adoptedHint(view: ServersView): Html {
+  if (view.tenant?.isTenant === true || (view.wrapServers ?? []).length > 0) return html``
+  return html` Servers behind mcpcut on this machine (<code>adopt</code>, <code>wrap</code>) show up here once your client has started them with a policy.`
+}
+
 function renderGrid(view: ServersView, mode: ServersViewMode): Html {
   if (view.servers.length === 0) {
     return view.canManage
-      ? html`<p class="empty">No servers registered. <a href="/servers?add=1#add-server">Register a server</a> — its tools then show up here for rules and review.</p>`
-      : html`<p class="empty">No servers registered. An owner registers them.</p>`
+      ? html`<p class="empty">No servers registered. <a href="/servers?add=1#add-server">Register a server</a> — its tools then show up here for rules and review.${adoptedHint(view)}</p>`
+      : html`<p class="empty">No servers registered. An owner registers them.${adoptedHint(view)}</p>`
   }
   const options = cardOptionsOf(view)
   const viewClass = mode === 'list' ? 'srv-grid view-list' : 'srv-grid view-grid'
@@ -195,6 +206,7 @@ export function renderServersPage(view: ServersView): string {
   const mode: ServersViewMode = view.viewMode ?? 'grid'
   const content = html`
     ${renderPolicyBanner(view.policyView)}
+    ${renderPolicyCreate({ view: view.policyView, isOwner: view.canManage, isTenant: view.tenant?.isTenant === true, csrfToken: view.csrfToken })}
     ${renderManage(view)}
     ${renderPolicySources(view.policyView)}
     ${renderGrid(view, mode)}

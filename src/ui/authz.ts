@@ -113,6 +113,9 @@ export const ROUTE_TABLE: readonly RouteEntry[] = [
   { method: 'POST', pattern: '/servers/:name/tools/:tool/rule', minRole: 'owner', handler: 'serversToolRule' },
   // The client-confirmation rule (ADR-0019): the same file, the same owner threshold.
   { method: 'POST', pattern: '/servers/:name/tools/:tool/confirm', minRole: 'owner', handler: 'serversConfirmRule' },
+  // "Create policy" (ADR-0009, amendment 2026-10-02): the one explicit way from
+  // no policy to a file — the same file and threshold as the two rows above.
+  { method: 'POST', pattern: '/servers/create-policy', minRole: 'owner', handler: 'serversCreatePolicy' },
   // Server groups (M5.5 п.2, decision G4): `viewer` reads the page, only
   // `owner` writes — one group edit moves every member's access at once. Since
   // decision T4 the personal grant routes above carry the SAME threshold, so

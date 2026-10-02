@@ -32,7 +32,9 @@ import {
   type QuarantineAuditEvent,
 } from '../ui/handlers/quarantine.js'
 import { createServersHandlers } from '../ui/handlers/servers.js'
+import type { PolicyEditPorts } from '../ui/handlers/policy-edit-common.js'
 import { createServersConfirmRuleHandlers } from '../ui/handlers/servers-confirm-rule.js'
+import { createServersCreatePolicyHandlers } from '../ui/handlers/servers-create-policy.js'
 import { createServersToolRuleHandlers } from '../ui/handlers/servers-tool-rule.js'
 import {
   createServersStatusHandlers,
@@ -314,21 +316,7 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
   // as the view) — and never derived from a request; the journal record goes
   // through the same sink the probe facts use, and its drop verdict reaches
   // the handler unwidened for the same reason as `writeAccessEdit` above.
-  const serversToolRule = createServersToolRuleHandlers({
-    resolveEditTarget: () => resolvePolicyEditTarget(policyEnv),
-    readPolicyFile: (path) => readPolicyFileForEdit(path, defaultPolicyFileDeps),
-    writePolicyFile: (path, document, options) => writePolicyFile(path, document, options, defaultPolicyFileDeps),
-    readInventory: () => inventory.read(),
-    journal: (edit) =>
-      journalPolicyEdit({
-        edit,
-        dir: deps.journalDir,
-        diagnostics: (line) => deps.stderr.write(line),
-        ...(deps.clock !== undefined ? { clock: deps.clock } : {}),
-      }),
-    audit,
-  })
-  const serversConfirmRule = createServersConfirmRuleHandlers({
+  const policyEditPorts: PolicyEditPorts = {
     resolveEditTarget: () => resolvePolicyEditTarget(policyEnv),
     readPolicyFile: (path) => readPolicyFileForEdit(path, defaultPolicyFileDeps),
     writePolicyFile: (path, document, options) => writePolicyFile(path, document, options, defaultPolicyFileDeps),
@@ -340,7 +328,12 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
         ...(deps.clock !== undefined ? { clock: deps.clock } : {}),
       }),
     audit,
-  })
+  }
+  const serversToolRule = createServersToolRuleHandlers({ ...policyEditPorts, readInventory: () => inventory.read() })
+  const serversConfirmRule = createServersConfirmRuleHandlers(policyEditPorts)
+  // "Create policy" (ADR-0009, amendment 2026-10-02): the same ports, so the
+  // file it creates is the one the rule routes then edit.
+  const serversCreatePolicy = createServersCreatePolicyHandlers(policyEditPorts)
   const serversStatus = createServersStatusHandlers({
     probes: probes.port,
     hasServer: async (name) => (await deps.registry.getServer(name)) !== undefined,
@@ -399,6 +392,7 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
     ...groupHandlers,
     ...serversToolRule,
     ...serversConfirmRule,
+    ...serversCreatePolicy,
     ...serversStatus,
     ...agents,
     ...admins,

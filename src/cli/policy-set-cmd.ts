@@ -28,6 +28,7 @@ import { effectiveToolRule, type EffectiveToolRule } from '../policy/effective.j
 import { INVENTORY_FILE_NAME } from '../policy/inventory.js'
 import { POLICY_OUTCOME_VALUES, type Policy, type PolicyOutcome } from '../policy/schema.js'
 import { whoOf } from './access-cmd-write.js'
+import { cliCommand } from './next-step.js'
 import { requireAdminUnlessNone, type AdminRefusalWording } from './admin-token.js'
 import type { PolicyCliIo } from './policy-cmd.js'
 import { toolFactsForEffectiveRule } from './policy-set-facts.js'
@@ -173,7 +174,8 @@ async function resolveTarget(journalDir: string, opts: PolicySetOptions): Promis
 
 function absentFileMessage(path: string): string {
   return (
-    `no policy file at ${path} -- enforcement is off; create it by hand first ` +
+    `no policy file at ${path} -- enforcement is off. Create it: ${cliCommand()} ui, page Servers, ` +
+    `button "Create policy" (it allows every call until you set rules); or write it by hand ` +
     `(see "policy.json example" in ${GUIDE_URL}/policies.md)\n`
   )
 }

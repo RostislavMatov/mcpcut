@@ -1,7 +1,7 @@
 import {
   buildPolicyEditRecord,
   POLICY_EDIT_SESSION_ID,
-  type PolicyEditInfo,
+  type PolicyJournalEdit,
 } from '../../journal/policy-edit-record.js'
 import { createJournalSink, type JournalSinkOptions } from '../../journal/sink.js'
 
@@ -16,7 +16,7 @@ import { createJournalSink, type JournalSinkOptions } from '../../journal/sink.j
  */
 
 export interface JournalPolicyEditInput {
-  readonly edit: PolicyEditInfo
+  readonly edit: PolicyJournalEdit
   /** Journal directory holding `journal.db`. Defaults to the sink's JOURNAL_DIR. */
   readonly dir?: string
   /** Injectable clock for deterministic tests. Defaults to Date.now. */

@@ -100,8 +100,14 @@ export function serverToolsModalId(serverName: string): string {
  * `changed` tool keeps its approved record while the new one waits). Sorted by
  * name so the listing is stable across re-renders. With a loaded `policy`,
  * every tool also carries its effective rule (`effectiveToolRule`).
+ *
+ * A policy with quarantine OFF (the "Create policy" starter, ADR-0009
+ * amendment 2026-10-02) holds nothing, so no tool is shown as quarantined and
+ * the count is 0: the inventory still keeps the state, and turning
+ * quarantine on shows it again.
  */
 export function toServerToolsByName(inventory: InventoryStoreData, policy?: Policy): ServerToolsByName {
+  const isQuarantineShown = policy?.quarantine.enabled !== false
   const out = new Map<string, ServerToolsView>()
   for (const [serverName, inv] of Object.entries(inventory.servers)) {
     const byName = new Map<string, ServerToolView>()
@@ -109,7 +115,8 @@ export function toServerToolsByName(inventory: InventoryStoreData, policy?: Poli
       byName.set(name, withDescription({ name }, record.descriptor?.description))
     }
     for (const [name, record] of Object.entries(inv.quarantined)) {
-      byName.set(name, withDescription({ name, quarantined: record.state }, record.descriptor.description))
+      const view: ServerToolView = isQuarantineShown ? { name, quarantined: record.state } : { name }
+      byName.set(name, withDescription(view, record.descriptor.description))
     }
     const tools = [...byName.values()]
       .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
@@ -118,7 +125,7 @@ export function toServerToolsByName(inventory: InventoryStoreData, policy?: Poli
     const hidden = tools.filter((tool) => tool.poolName?.fit === 'hidden').length
     out.set(serverName, {
       tools,
-      quarantinedCount: Object.keys(inv.quarantined).length,
+      quarantinedCount: isQuarantineShown ? Object.keys(inv.quarantined).length : 0,
       ...(hidden > 0 ? { poolHiddenCount: hidden } : {}),
     })
   }

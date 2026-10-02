@@ -59,9 +59,11 @@ export type {
 } from './pool-record.js'
 
 export type {
+  PolicyCreateInfo,
   PolicyEditActor,
   PolicyEditInfo,
   PolicyEditVia,
+  PolicyJournalEdit,
 } from './policy-edit-record.js'
 
 export type {

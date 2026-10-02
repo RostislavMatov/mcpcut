@@ -72,8 +72,24 @@ export interface PolicyEditInfo {
   readonly sourcePath: string
 }
 
+/**
+ * The file created by "Create policy" on the Servers page (ADR-0009,
+ * amendment 2026-10-02): no rule yet, only the starter. `created: true` is
+ * the marker; there is no tool, so none of the rule fields appear.
+ */
+export interface PolicyCreateInfo {
+  readonly actor: PolicyEditActor
+  readonly created: true
+  readonly policyHashBefore: null
+  readonly policyHashAfter: string
+  readonly sourcePath: string
+}
+
+/** Every `policy-edit` record: a rule edit, or the file's creation. */
+export type PolicyJournalEdit = PolicyEditInfo | PolicyCreateInfo
+
 export interface BuildPolicyEditRecordInput {
-  readonly edit: PolicyEditInfo
+  readonly edit: PolicyJournalEdit
   /** Injectable clock for deterministic tests. Defaults to Date.now. */
   readonly clock?: () => number
 }
@@ -99,9 +115,13 @@ export function buildPolicyEditRecord(input: BuildPolicyEditRecordInput): Journa
 }
 
 /** The payload object, assembled field by field so nothing beyond the contract rides along. */
-function flatInfoOf(edit: PolicyEditInfo): Record<string, unknown> {
+function flatInfoOf(edit: PolicyJournalEdit): Record<string, unknown> {
+  const actor = { adminName: edit.actor.adminName, role: edit.actor.role, via: edit.actor.via }
+  if ('created' in edit) {
+    return { actor, created: true, policyHashBefore: null, policyHashAfter: edit.policyHashAfter, sourcePath: edit.sourcePath }
+  }
   return {
-    actor: { adminName: edit.actor.adminName, role: edit.actor.role, via: edit.actor.via },
+    actor,
     serverName: edit.serverName,
     toolName: edit.toolName,
     rule: edit.rule,

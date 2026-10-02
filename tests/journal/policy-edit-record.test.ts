@@ -414,3 +414,31 @@ describe('buildPolicyEditRecord', () => {
     expect(serialized).toContain(REDACTED_PLACEHOLDER)
   })
 })
+
+describe('policy-edit record: the file created from the Servers page (ADR-0009, amendment 2026-10-02)', () => {
+  test('says created, the hash after and the path — and carries no rule fields', () => {
+    const record = buildPolicyEditRecord({
+      edit: {
+        actor: { adminName: 'alice', role: 'owner', via: 'ui' },
+        created: true,
+        policyHashBefore: null,
+        policyHashAfter: HASH_AFTER,
+        sourcePath: SOURCE_PATH,
+      },
+      clock: () => FIXED_NOW_MS,
+    })
+    expect(record.kind).toBe('policy-edit')
+    expect(record.sessionId).toBe(POLICY_EDIT_SESSION_ID)
+    expect(record.payload).toEqual({
+      actor: { adminName: 'alice', role: 'owner', via: 'ui' },
+      created: true,
+      policyHashBefore: null,
+      policyHashAfter: HASH_AFTER,
+      sourcePath: SOURCE_PATH,
+    })
+  })
+
+  test('an ordinary rule edit has no created key at all (records stay byte-identical)', () => {
+    expect(Object.hasOwn(denyEditRecord().payload as object, 'created')).toBe(false)
+  })
+})

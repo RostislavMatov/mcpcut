@@ -1,4 +1,4 @@
-import type { PolicyEditInfo } from '../../journal/policy-edit-record.js'
+import type { PolicyCreateInfo, PolicyEditInfo, PolicyJournalEdit } from '../../journal/policy-edit-record.js'
 import { RESERVED_OBJECT_KEYS } from '../../policy/constants.js'
 import type { JournalPolicyEditOutcome } from '../../policy/edit/journal-edit.js'
 import type { PolicyFileReadResult, PolicyFileWriteResult, WritePolicyFileOptions } from '../../policy/edit/policy-file.js'
@@ -40,7 +40,7 @@ export interface PolicyEditPorts {
     options: WritePolicyFileOptions,
   ) => Promise<PolicyFileWriteResult>
   /** The journal sink for the edit record; must not throw (the file is already written) and answers whether the record landed. */
-  readonly journal: (edit: PolicyEditInfo) => Promise<PolicyEditJournalOutcome>
+  readonly journal: (edit: PolicyJournalEdit) => Promise<PolicyEditJournalOutcome>
   /** Attribution line sink, as every other UI mutation. */
   readonly audit?: (event: UiAuditEvent) => void
 }
@@ -95,15 +95,18 @@ export async function loadTarget(
   if (read.status === 'absent') {
     return refusal(HTTP_STATUS_CONFLICT, { status: 'no-policy', message: 'no policy — enforcement off; nothing to edit' })
   }
-  if (read.status === 'error') {
-    // The loader's lines never carry the path (0.2.4): name the file once, in front, as the CLI does.
-    return refusal(HTTP_STATUS_CONFLICT, {
-      status: 'invalid-policy',
-      message: 'the policy file on disk is invalid; fix it by hand before editing here',
-      errors: read.errors.map((line) => `${target.path}: ${line}`),
-    })
-  }
+  if (read.status === 'error') return invalidPolicyRefusal(target.path, read.errors)
   return { path: target.path, read }
+}
+
+/** An unparseable file on disk (O3): never a write target, its errors named. */
+export function invalidPolicyRefusal(path: string, errors: readonly string[]): Refusal {
+  // The loader's lines never carry the path (0.2.4): name the file once, in front, as the CLI does.
+  return refusal(HTTP_STATUS_CONFLICT, {
+    status: 'invalid-policy',
+    message: 'the policy file on disk is invalid; fix it by hand before editing here',
+    errors: errors.map((line) => `${path}: ${line}`),
+  })
 }
 
 export function writeRefusal(written: Exclude<PolicyFileWriteResult, { status: 'written' }>): Refusal {
@@ -123,7 +126,7 @@ export async function recordPolicyEdit(
   deps: Pick<PolicyEditPorts, 'journal' | 'audit'>,
   session: UiSession,
   audit: { readonly action: string; readonly target: string },
-  edit: Omit<PolicyEditInfo, 'actor'>,
+  edit: Omit<PolicyEditInfo, 'actor'> | Omit<PolicyCreateInfo, 'actor'>,
 ): Promise<PolicyEditJournalOutcome> {
   deps.audit?.({ actor: 'ui', adminName: session.adminName, action: audit.action, target: audit.target })
   try {

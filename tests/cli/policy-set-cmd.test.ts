@@ -286,7 +286,9 @@ describe('runPolicySet -- write target and file state', () => {
     expect(code).toBe(1)
     expect(io.err()).toContain(`no policy file at ${policyPath()}`)
     expect(io.err()).toContain('enforcement is off')
-    expect(io.err()).toContain('create it by hand first')
+    // The next step names the one-click path first (ADR-0009, amendment 2026-10-02), then the by-hand one.
+    expect(io.err()).toContain('ui, page Servers, button "Create policy" (it allows every call until you set rules)')
+    expect(io.err()).toContain('or write it by hand')
     // The npm package ships no guide, so the hint is an address, not a file name.
     expect(io.err()).toContain('https://github.com/RostislavMatov/mcpcut/blob/main/docs/guide/policies.md')
     await expect(stat(policyPath())).rejects.toMatchObject({ code: 'ENOENT' })

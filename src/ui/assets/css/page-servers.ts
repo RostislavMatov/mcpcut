@@ -236,6 +236,10 @@ summary.srv-release-open::marker, summary.srv-release-open::-webkit-details-mark
 .srv-policy-sources { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; line-height: 1.6; }
 .srv-policy-src code { font-size: 11px; }
 .srv-policy-banner { margin-bottom: 12px; }
+.srv-policy-create { margin-bottom: 12px; }
+.srv-policy-create-body { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.srv-policy-create-body p { margin: 0; }
+.srv-policy-create-body code { overflow-wrap: anywhere; }
 .srv-policy-errors { margin: 6px 0 0 14px; display: flex; flex-direction: column; gap: 4px; }
 
 /* --- Modal drawers (register / edit, and the tools list) ------------------ */
