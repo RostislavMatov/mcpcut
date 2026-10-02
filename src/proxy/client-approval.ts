@@ -179,7 +179,8 @@ export function createClientApprover(deps: ClientApprovalDeps): ClientApprover {
       while (shown === undefined && waiting.length > 0) {
         const next = waiting[0]
         if (next === undefined) break
-        const allowed = deps.mayAsk === undefined || (await deps.mayAsk(next))
+        // A check that fails asks nothing — and does not hold up the questions behind it.
+        const allowed = deps.mayAsk === undefined || (await deps.mayAsk(next).catch(() => false))
         // Withdrawn while the installation was being checked: go on with the new head.
         if (waiting[0] !== next || shown !== undefined) continue
         waiting.shift()

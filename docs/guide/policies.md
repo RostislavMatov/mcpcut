@@ -198,8 +198,13 @@ journal says the call was approved in the client.
   "servers": { "fs": { "tools": { "write_file": "require-approval" },
                        "approveInClient": ["write_file"] } }
   ```
-  Names match as tool rules do (exact, or a trailing `*`). Other held tools
-  still go to an admin. This is how an agent's user approves a specific tool
+  Names match as tool rules do (exact, or a trailing `*`); a short prefix
+  such as `"a*"` hands nearly every tool to the client, so list names. Other
+  held tools still go to an admin. **This assumes a person answers the
+  client's dialogs.** A client driven by a program — an SDK host or a CI job
+  that answers such questions automatically, or routes them to the model —
+  would approve listed tools on the agent's behalf; for such agents leave the
+  list empty or set `"approval": { "askClient": false }`. This is how an agent's user approves a specific tool
   without an admin token — never by running `approvals approve` with the
   agent's token, which the agent can read and would use to approve itself.
 - **Any other held tool: only on `wrap` while the installation has no

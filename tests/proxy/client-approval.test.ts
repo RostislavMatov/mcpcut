@@ -466,4 +466,19 @@ describe('the session', () => {
     expect(message).toContain('  … and 3 more fields')
     expect(message).toContain('Not everything is shown')
   })
+
+  test('a failing check skips that question and does not hold up the next', async () => {
+    const h = harness()
+    const approver = createClientApprover({
+      ...h.deps,
+      mayAsk: (question) => (question.approvalId === 'A1' ? Promise.reject(new Error('locked')) : Promise.resolve(true)),
+    })
+    approver.observeInitialize(INITIALIZE_WITH_FORMS)
+    approver.ask(QUESTION)
+    approver.ask({ ...QUESTION, approvalId: 'B2' })
+    await flush()
+    await flush()
+
+    expect(h.sent.filter((m) => m['method'] === 'elicitation/create').map((m) => m['id'])).toEqual([expect.stringMatching(/-B2$/)])
+  })
 })
