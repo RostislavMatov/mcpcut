@@ -1,5 +1,6 @@
 import type { AgentRecord } from '../../agents/schema.js'
 import type { GroupRecord } from '../../groups/schema.js'
+import type { TenantSettings } from '../../tenant/settings.js'
 import type { ServeAddress } from '../../setup/serve-address.js'
 import type { UiSession } from '../auth.js'
 import { roleSatisfies } from '../authz.js'
@@ -10,6 +11,7 @@ import {
   renderGrantDrawer,
   renderGroupGrantDrawer,
 } from './agents-parts.js'
+import { adoptPreviewCommand, renderAdoptBlock } from './agents-adopt.js'
 import { renderTokenPageConfig } from './agents-config.js'
 import { type CurrentAdmin, renderLayout } from './layout.js'
 import { plural } from './plural.js'
@@ -83,14 +85,20 @@ export function renderAgentsPage(view: {
   readonly session: UiSession
   /** The address every card's client config dials (ADR-0015, phase 4). */
   readonly serveAddress: ServeAddress
+  /**
+   * Tenant mode settings, built by the handler. On a hosted install the
+   * user's clients are not on this host, so the adopt block is left out.
+   */
+  readonly tenant?: TenantSettings
 }): string {
   const { agents, session, serveAddress } = view
+  const showAdopt = view.tenant?.isTenant !== true
   const groups = view.groups ?? []
   const canManage = roleSatisfies(session.role, 'owner')
   const cards = agents.map((agent) => renderAgentCard({ agent, groups, canManage, session, serveAddress }))
   const list =
     agents.length === 0
-      ? renderNoAgents(canManage)
+      ? renderNoAgents(canManage, showAdopt)
       : html`<div class="stack ag-list">${join(cards)}</div>`
   const content = html`<section class="panel ag-panel" aria-label="Agent permissions">
     <div class="panel-hd">
@@ -100,6 +108,7 @@ export function renderAgentsPage(view: {
     <div class="panel-bd">
       ${editDrawers(groups, agents, session)}
       ${list}
+      ${showAdopt ? renderAdoptBlock() : html``}
     </div>
   </section>`
   return renderLayout({
@@ -169,9 +178,16 @@ export function renderAgentNotice(view: {
   })
 }
 
-/** The empty list names the next step: the create drawer for an owner, who can for anyone else. */
-function renderNoAgents(canManage: boolean): Html {
+/**
+ * The empty list names the next step: for someone using mcpcut alone on a
+ * laptop `adopt` (not on a hosted install), the create drawer for an owner,
+ * who can for anyone else.
+ */
+function renderNoAgents(canManage: boolean, showAdopt: boolean): Html {
+  const alone = showAdopt
+    ? html` Using mcpcut alone on your laptop? Start with <code>${adoptPreviewCommand()}</code> — it puts the servers your clients already use behind mcpcut.`
+    : html``
   return canManage
-    ? html`<p class="empty">No agents yet. <a href="#${CREATE_DRAWER_ID}" data-open-details="${CREATE_DRAWER_ID}">Create an agent</a>, then put its token in your MCP client.</p>`
-    : html`<p class="empty">No agents yet. An owner creates them.</p>`
+    ? html`<p class="empty">No agents yet.${alone} <a href="#${CREATE_DRAWER_ID}" data-open-details="${CREATE_DRAWER_ID}">Create an agent</a>, then put its token in your MCP client.</p>`
+    : html`<p class="empty">No agents yet.${alone} An owner creates them.</p>`
 }

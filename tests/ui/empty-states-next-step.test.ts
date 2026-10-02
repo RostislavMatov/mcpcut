@@ -40,7 +40,7 @@ describe('empty screens name the next step', () => {
 
   test('no agents: an owner gets the create drawer', () => {
     const page = renderAgentsPage({ serveAddress: 'http://127.0.0.1:8090', agents: [], session: session('owner') })
-    expect(page).toMatch(/<p class="empty">No agents yet\.[^<]*<a href="#create-agent" data-open-details="create-agent">/)
+    expect(page).toMatch(/<p class="empty">No agents yet\.(?:[^<]|<code>[^<]*<\/code>)*<a href="#create-agent" data-open-details="create-agent">/)
   })
 
   test('no agents: a viewer is told an owner creates them', () => {

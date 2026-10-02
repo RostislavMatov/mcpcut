@@ -25,6 +25,7 @@ import {
 import { renderAgentsPage } from '../../src/ui/pages/agents.js'
 import type { ClientConfigDocument, HttpClientEntry, StdioClientEntry } from '../../src/agents/client-config.js'
 import { renderClientConfig } from '../../src/agents/client-config.js'
+import type { TenantSettings } from '../../src/tenant/settings.js'
 import type { ServeAddress } from '../../src/setup/serve-address.js'
 import type { UiRequestContext, UiResult } from '../../src/ui/routes.js'
 
@@ -1066,5 +1067,71 @@ describe('personal grant edits are journalled (T1)', () => {
     // Assert
     expect(asResponseStatus(result)).toBe(200)
     expect(accessEdits).toEqual([])
+  })
+})
+
+/** A hosted install: the user's clients are not on that host. */
+const HOSTED_TENANT: TenantSettings = {
+  isTenant: true,
+  stdioServers: 'refused',
+  upstreams: 'public-https',
+  limits: { servers: 5, agents: 5, groups: 2, requestsPerSecond: 10, requestsPerDay: 10_000 },
+}
+
+describe('the adopt block (a local install shows the commands, never runs them)', () => {
+  const NPX = `npx -y mcpcut@${PRODUCT_VERSION}`
+
+  test('names the three clients, the three commands pinned to this version, and the next step', async () => {
+    await store.createAgent('bot')
+    const page = bodyOf(await handlers.agentsPage(getCtx(session('viewer'))))
+
+    expect(page).toContain('Claude Code, Cursor, Claude Desktop on this machine')
+    expect(page).toContain(`<pre class="ag-config" data-adopt-command>${NPX} adopt</pre>`)
+    expect(page).toContain(`>${NPX} adopt --apply</pre>`)
+    expect(page).toContain(`>${NPX} adopt --undo</pre>`)
+    expect(page).toContain('restart the client')
+    expect(page).toContain('href="/journal"')
+  })
+
+  test('is shown to every role: it only prints commands', () => {
+    for (const role of ['viewer', 'operator', 'owner'] as const) {
+      const page = renderAgentsPage({ serveAddress: SERVE_ADDRESS, agents: [], session: session(role) })
+      expect(page).toContain('data-adopt-command')
+    }
+  })
+
+  test('is absent on a hosted tenant install', async () => {
+    const hosted = createAgentsHandlers({
+      serveAddress: SERVE_ADDRESS,
+      agentsStore: store,
+      groups,
+      registry,
+      tenant: HOSTED_TENANT,
+    })
+    await store.createAgent('bot')
+
+    const page = bodyOf(await hosted.agentsPage(getCtx(session('owner'))))
+
+    expect(page).not.toContain('data-adopt-command')
+    expect(page).not.toContain('adopt')
+  })
+
+  test('the empty state names adopt first for someone alone on a laptop, and still offers create', () => {
+    const page = renderAgentsPage({ serveAddress: SERVE_ADDRESS, agents: [], session: session('owner') })
+
+    expect(page).toContain(`Using mcpcut alone on your laptop? Start with <code>${NPX} adopt</code>`)
+    expect(page).toContain('Create an agent')
+  })
+
+  test('the empty state of a hosted install does not mention adopt', () => {
+    const page = renderAgentsPage({
+      serveAddress: SERVE_ADDRESS,
+      agents: [],
+      session: session('owner'),
+      tenant: HOSTED_TENANT,
+    })
+
+    expect(page).not.toContain('adopt')
+    expect(page).toContain('Create an agent')
   })
 })

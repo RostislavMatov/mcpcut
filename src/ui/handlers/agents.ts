@@ -27,6 +27,7 @@ import {
   HTTP_STATUS_FORBIDDEN,
   HTTP_STATUS_OK,
 } from '../constants.js'
+import { TENANT_SETTINGS, type TenantSettings } from '../../tenant/settings.js'
 import { renderAgentNotice, renderAgentsPage, renderAgentTokenOnce } from '../pages/agents.js'
 import { renderUngrantConfirm } from '../pages/agents-ungrant.js'
 import { renderNotice } from '../pages/notice.js'
@@ -89,6 +90,12 @@ export interface AgentsHandlersDeps {
    * config of the host this daemon runs on.
    */
   readonly serveAddress: ServeAddress
+  /**
+   * Tenant mode settings (ADR-0017): a hosted install hides the adopt block.
+   * Defaults to `TENANT_SETTINGS`, the same optional dependency the servers
+   * handlers take.
+   */
+  readonly tenant?: TenantSettings
   readonly audit?: UiAuditSink
   /**
    * Journal port for access changes (owner decision T1, 2026-09-01), injected
@@ -225,7 +232,13 @@ export function createAgentsHandlers(deps: AgentsHandlersDeps): AgentsHandlers {
     const [agents, groupList] = await Promise.all([agentsStore.listAgents(), groups.listGroups()])
     return htmlResult(
       HTTP_STATUS_OK,
-      renderAgentsPage({ agents, groups: groupList, session, serveAddress: deps.serveAddress }),
+      renderAgentsPage({
+        agents,
+        groups: groupList,
+        session,
+        serveAddress: deps.serveAddress,
+        tenant: deps.tenant ?? TENANT_SETTINGS,
+      }),
     )
   }
 

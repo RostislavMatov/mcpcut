@@ -17,6 +17,11 @@ All notable changes to this project are documented here. The format follows
   servers and entries already behind mcpcut are named and skipped.
   `adopt --undo` puts back the last run's entries, keeping whatever you
   changed since.
+- **`adopt` is also in the console and on the web Agents page.** The terminal
+  console's Agents section runs `adopt`, `adopt --apply` and `adopt --undo`
+  (the last two ask first; not offered over `--remote`, where "this machine" is
+  not yours). The web Agents page shows the same three commands to copy, and
+  never runs them; a hosted install does not show them.
 - **Approve a held call right in Claude Code.** Under `wrap`, a call a policy
   holds for approval is also asked in the client when it can show a form (MCP
   form elicitation): Accept lets it through, Decline refuses it, Esc leaves it
