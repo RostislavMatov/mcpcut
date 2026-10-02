@@ -136,6 +136,36 @@ describe('after Create policy: quarantine off means nothing shows as quarantined
     expect(tools?.tools[0]?.quarantined).toBeUndefined()
   })
 
+  test('quarantine off keeps the rug-pull signal: a changed tool is marked, neutrally, as not held', () => {
+    const changed: InventoryStoreData = {
+      version: 1,
+      servers: {
+        fs: {
+          approved: {},
+          quarantined: {
+            write_file: { ...inventory.servers.fs!.quarantined.write_file!, state: 'changed' },
+          },
+        },
+      },
+    }
+    const parsed = parsePolicy(CREATED_POLICY_DOCUMENT)
+    if (!parsed.ok) throw new Error('bad fixture')
+    const tools = toServerToolsByName(changed, parsed.policy)
+    expect(tools.get('fs')?.quarantinedCount).toBe(0)
+    expect(tools.get('fs')?.tools[0]).toMatchObject({ name: 'write_file', changedNotHeld: true })
+    expect(tools.get('fs')?.tools[0]?.quarantined).toBeUndefined()
+    const document = renderServersPage({
+      servers: [{ name: 'fs', transport: 'stdio', command: 'fs-mcp' }],
+      canManage: true,
+      csrfToken: 'c',
+      currentAdmin: OWNER,
+      tools,
+      policyView: { ...ABSENT, status: 'loaded', policy: parsed.policy, hash: policyHashOf(parsed.policy) },
+    })
+    expect(document).toContain('changed since approval · not held')
+    expect(document).not.toContain('quarantined · changed')
+  })
+
   test('quarantine on (the default): the state and the count are shown as before', () => {
     const tools = toolsOf({ version: 1, defaultDecision: 'allow' })
     expect(tools?.quarantinedCount).toBe(1)

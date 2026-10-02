@@ -48,6 +48,11 @@ export interface ServerToolView {
   readonly description?: string
   /** Present when the tool is quarantined; the quarantine state it is in. */
   readonly quarantined?: 'new' | 'changed'
+  /**
+   * Quarantine is off, and the tool changed after it was approved: nothing
+   * holds it, but the rug-pull signal stays visible (neutral, not blinking).
+   */
+  readonly changedNotHeld?: true
   /** The effective policy outcome + source (ADR-0009); absent when the page has no loaded policy. */
   readonly rule?: ToolRuleView
   /** The client-confirmation entries that apply (ADR-0019); present with `rule`, i.e. when a policy is loaded. */
@@ -103,7 +108,8 @@ export function serverToolsModalId(serverName: string): string {
  *
  * A policy with quarantine OFF (the "Create policy" starter, ADR-0009
  * amendment 2026-10-02) holds nothing, so no tool is shown as quarantined and
- * the count is 0: the inventory still keeps the state, and turning
+ * the count is 0; a tool that CHANGED since approval keeps a neutral marker
+ * (`changedNotHeld`). The inventory still keeps the state, and turning
  * quarantine on shows it again.
  */
 export function toServerToolsByName(inventory: InventoryStoreData, policy?: Policy): ServerToolsByName {
@@ -115,7 +121,11 @@ export function toServerToolsByName(inventory: InventoryStoreData, policy?: Poli
       byName.set(name, withDescription({ name }, record.descriptor?.description))
     }
     for (const [name, record] of Object.entries(inv.quarantined)) {
-      const view: ServerToolView = isQuarantineShown ? { name, quarantined: record.state } : { name }
+      const view: ServerToolView = isQuarantineShown
+        ? { name, quarantined: record.state }
+        : record.state === 'changed'
+          ? { name, changedNotHeld: true }
+          : { name }
       byName.set(name, withDescription(view, record.descriptor.description))
     }
     const tools = [...byName.values()]
@@ -251,9 +261,11 @@ function renderTool(tool: ServerToolView, ctx: ToolsPanelContext): Html {
   const pill =
     tool.quarantined !== undefined
       ? html`<span class="pill pill-pixel pill-on"><span class="dot dot-s dot-blink"></span>quarantined · ${tool.quarantined}</span>`
-      : html``
+      : tool.changedNotHeld === true
+        ? html`<span class="pill pill-pixel">changed since approval · not held</span>`
+        : html``
   const review =
-    tool.quarantined !== undefined
+    tool.quarantined !== undefined || tool.changedNotHeld === true
       ? html`<a class="small" href="${safeUrl('/quarantine')}">review in quarantine</a>`
       : html``
   const rulePill = tool.rule !== undefined ? renderToolRulePill(tool.rule) : html``
