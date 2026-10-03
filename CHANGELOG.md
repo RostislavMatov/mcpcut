@@ -64,6 +64,15 @@ All notable changes to this project are documented here. The format follows
   nothing is held then. A tool that changed after you approved it keeps a
   neutral "changed since approval · not held" marker. The empty page also
   says where servers behind mcpcut from `adopt` or `wrap` appear.
+- **With quarantine off, the dashboard and the Quarantine page agree** —
+  the tile reads "Quarantine · off" instead of counting every tool as
+  quarantined, and the page says the tools are seen, not held, and what
+  turning quarantine on would hold. The dashboard names servers seen through
+  `wrap` instead of "No servers registered".
+- **No admin token: the refusal names ways out that need none** — the token
+  shown when your admin was created, the web UI's dashboard, or
+  `admin rotate <your-name> --recover`; it no longer points at `admin add`,
+  which itself asks for the owner's token once an admin exists.
 - **README: the Windows form of the Quick start** — `cmd /c` before both
   `npx`, checked on a Windows runner together with the rest of the Quick start.
 - **The Quick start on mcpcut.com follows the README** — `adopt` first, the
