@@ -97,6 +97,42 @@ describe('dashboard rendering', () => {
     expect(doc).toContain('<title>Dashboard · McpCut</title>')
   })
 
+  /**
+   * "Create policy" and the README's Stop policy turn quarantine off
+   * (ADR-0009 amendment 2026-10-02). A strong "Quarantined 14" tile then told
+   * a first-minute user that every tool was held while every call passed.
+   */
+  test('with quarantine off, the tile says off and nothing is flagged as quarantined', () => {
+    const doc = renderDashboardPage({
+      cards: [],
+      csrfToken: 'c',
+      summary: { ...SUMMARY, quarantineOff: true, quarantinedCount: 0, quarantinedServers: new Set() },
+    })
+    expect(doc).toMatch(/<a class="tile" href="\/quarantine">\s*<span class="label">Quarantine<\/span>/)
+    expect(doc).toContain('<span class="tile-value num">off</span><span class="tile-unit">rules still apply</span>')
+    expect(doc).toContain('2 registered · quarantine off')
+    expect(doc).not.toContain('tool(s) quarantined')
+    expect(doc).not.toContain('dot-blink')
+  })
+
+  test('servers seen on this machine but not registered are named, not reported as none', () => {
+    const doc = renderDashboardPage({
+      cards: [],
+      csrfToken: 'c',
+      currentAdmin: { name: 'alice', role: 'owner' },
+      summary: { ...SUMMARY, servers: [], machineServers: ['fs', 'git'] },
+    })
+    expect(doc).toContain('Seen in the tool inventory, not registered: fs, git — wrap on this machine, or removed since; their tools and rules are on')
+    expect(doc).toContain('href="/servers"')
+  })
+
+  test('the inventory names are escaped and capped', () => {
+    const names = ['<img src=x onerror=alert(1)>', 'b', 'c', 'd', 'e', 'f', 'g']
+    const doc = renderDashboardPage({ cards: [], csrfToken: 'c', summary: { ...SUMMARY, servers: [], machineServers: names } })
+    expect(doc).not.toContain('<img src=x')
+    expect(doc).toContain('&lt;img src=x onerror=alert(1)&gt;, b, c, d, e +2 more')
+  })
+
   test('escapes hostile registry and journal values', () => {
     const doc = renderDashboardPage({
       cards: [],
@@ -205,6 +241,20 @@ describe('dashboard handler composition', () => {
     expect(doc).toContain('of 2 active')
     expect(doc).toContain('list_issues') // recent decision
     expect(doc).toContain('read stopped early')
+  })
+
+  test('with quarantine off in the policy, the handler counts nothing as quarantined', async () => {
+    const handlers = createApprovalsHandlers({ queue, summary: { ...ports, readQuarantineHolding: async () => false } })
+    const doc = bodyOf(await handlers.approvalsPage(ctx()))
+    expect(doc).toContain('<span class="tile-value num">off</span><span class="tile-unit">rules still apply</span>')
+    expect(doc).toContain('1 registered · quarantine off')
+    expect(doc).not.toContain('dot-blink')
+  })
+
+  test('with quarantine holding, the handler counts the inventory as before', async () => {
+    const handlers = createApprovalsHandlers({ queue, summary: { ...ports, readQuarantineHolding: async () => true } })
+    const doc = bodyOf(await handlers.approvalsPage(ctx()))
+    expect(doc).toContain('1 tool(s) quarantined')
   })
 
   test('without summary ports the handler renders the queue alone', async () => {

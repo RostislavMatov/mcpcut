@@ -41,6 +41,11 @@ export interface QuarantineAuditEvent {
 export interface QuarantineHandlerDeps {
   /** Reads the current inventory store (approved + quarantined for every server). */
   readonly readStore: () => Promise<InventoryStoreData>
+  /**
+   * False when the policy turns quarantine off (ADR-0009 amendment
+   * 2026-10-02); absent: holding, as before the port existed.
+   */
+  readonly readQuarantineHolding?: () => Promise<boolean>
   /** Approves a quarantined tool; `false` when it was not quarantined. */
   readonly approve: (serverName: string, toolName: string) => Promise<boolean>
   /** Rejects (discards) a quarantined tool; `false` when it was not quarantined. */
@@ -88,11 +93,12 @@ function currentAdminOf(session: UiSession | undefined): { name: string; role: s
 }
 
 async function renderPage(deps: QuarantineHandlerDeps, ctx: UiRequestContext): Promise<UiResult> {
-  const store = await deps.readStore()
+  const [store, isHolding] = await Promise.all([deps.readStore(), deps.readQuarantineHolding?.() ?? Promise.resolve(true)])
   const currentAdmin = currentAdminOf(ctx.session)
   const html = renderQuarantinePage({
     cards: toQuarantineCards(store),
     csrfToken: ctx.session?.csrfToken ?? '',
+    ...(isHolding ? {} : { quarantineOff: true as const }),
     ...(currentAdmin !== undefined ? { currentAdmin } : {}),
   })
   return { kind: 'response', status: HTTP_STATUS_OK, body: html }

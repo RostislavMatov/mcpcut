@@ -55,3 +55,32 @@ export async function readPolicyView(
   if (read.status === 'error') return { ...sources, status: 'error', errors: read.errors }
   return { ...sources, status: 'absent' }
 }
+
+/**
+ * Whether quarantine holds new and changed tools under this view. Only a
+ * LOADED policy turns it off (`quarantine.enabled: false` — the "Create
+ * policy" starter and the README's Stop policy, ADR-0009 amendment
+ * 2026-10-02); an absent or unreadable file reads as holding, as on the
+ * Servers page (`toServerToolsByName`).
+ */
+export function isQuarantineHolding(view: PolicyView): boolean {
+  return view.status !== 'loaded' || view.policy.quarantine.enabled !== false
+}
+
+/**
+ * `isQuarantineHolding` over a read that may throw (the target resolver
+ * touches the file system). The dashboard is the landing page: a failed read
+ * must not turn it into a 500, so it falls back to holding — the reading the
+ * dashboard had before it looked at the policy — and reports the error.
+ */
+export async function readQuarantineHolding(
+  read: () => Promise<PolicyView>,
+  onError: (error: unknown) => void,
+): Promise<boolean> {
+  try {
+    return isQuarantineHolding(await read())
+  } catch (error: unknown) {
+    onError(error)
+    return true
+  }
+}

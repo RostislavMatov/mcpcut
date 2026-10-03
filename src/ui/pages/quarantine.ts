@@ -76,6 +76,11 @@ export function toQuarantineCards(store: InventoryStoreData): QuarantineCardView
 export interface QuarantinePageInput {
   readonly cards: readonly QuarantineCardView[]
   readonly csrfToken: string
+  /**
+   * The policy turns quarantine off (ADR-0009 amendment 2026-10-02): the
+   * inventory still lists new and changed tools, but nothing holds them.
+   */
+  readonly quarantineOff?: true
   readonly currentAdmin?: CurrentAdmin
 }
 
@@ -90,6 +95,13 @@ const QUARANTINE_LIVE_TOPICS = 'quarantine-changed'
 /** Where the client refetches this region from (`GET /quarantine`). */
 const QUARANTINE_LIVE_SRC = '/quarantine'
 
+/** With quarantine off nothing ever "waits here", so the empty state does not say it does. */
+function renderEmpty(isOff: boolean): Html {
+  return isOff
+    ? html`<p class="empty">No new or changed tools seen.</p>`
+    : html`<p class="empty">No quarantined tools. A tool waits here when its server first lists it or changes its schema, until it is approved; each server's tools are in <a href="${safeUrl('/servers')}">Servers</a>.</p>`
+}
+
 /**
  * The live region: the node `assets/app-js.ts` re-fetches and swaps on
  * `quarantine-changed`, so its `data-live-region` value and `data-live-src`
@@ -102,7 +114,7 @@ function renderLiveRegion(input: QuarantinePageInput): Html {
   const canResolve = canResolveQuarantine(input.currentAdmin)
   const body =
     input.cards.length === 0
-      ? html`<p class="empty">No quarantined tools. A tool waits here when its server first lists it or changes its schema, until it is approved; each server's tools are in <a href="${safeUrl('/servers')}">Servers</a>.</p>`
+      ? renderEmpty(input.quarantineOff === true)
       : html`<div class="qr-cards">${join(input.cards.map((card) => renderQuarantineCard(card, input.csrfToken, canResolve)))}</div>`
   return html`<section
     class="quarantine"
@@ -114,10 +126,20 @@ function renderLiveRegion(input: QuarantinePageInput): Html {
   </section>`
 }
 
+/**
+ * What "off" means here, and the one line that turns it on. Approving still
+ * counts: once it is on, every tool not approved by then waits, not only the
+ * ones that appear later (`decideByQuarantine`).
+ */
+const QUARANTINE_OFF_NOTE = html`<div class="panel-bd"><p class="small muted">Quarantine is off in the policy: these tools are not held for review; their calls follow your other rules. Approve the ones you trust now — once you set <code>"quarantine": { "enabled": true }</code>, the tools you have not approved wait here, and so does any tool that is new or changed later. <a href="${safeUrl('/servers')}">Servers</a> shows the policy file.</p></div>`
+
 /** Renders the full quarantine document (string ready for the HTTP body). */
 export function renderQuarantinePage(input: QuarantinePageInput): string {
+  const isOff = input.quarantineOff === true
+  const count = isOff ? `${String(input.cards.length)} seen · not held` : `${String(input.cards.length)} held`
   const content = html`<section class="panel panel-strong qr-panel" aria-label="Quarantine">
-    <div class="panel-hd"><h1>Quarantine</h1><span class="small dim num" data-live-text="quarantine-held">${String(input.cards.length)} held</span></div>
+    <div class="panel-hd"><h1>Quarantine</h1><span class="small dim num" data-live-text="quarantine-held">${count}</span></div>
+    ${isOff ? QUARANTINE_OFF_NOTE : html``}
     ${renderLiveRegion(input)}
   </section>`
   return renderLayout({
@@ -126,6 +148,6 @@ export function renderQuarantinePage(input: QuarantinePageInput): string {
     csrfToken: input.csrfToken,
     ...(input.currentAdmin !== undefined ? { currentAdmin: input.currentAdmin } : {}),
     activeNav: 'quarantine',
-    navMeta: `${String(input.cards.length)} held`,
+    navMeta: count,
   })
 }

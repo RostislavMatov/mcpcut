@@ -47,6 +47,13 @@ export interface DashboardSummary {
   readonly quarantinedCount: number
   /** Servers that currently hold at least one quarantined tool. */
   readonly quarantinedServers: ReadonlySet<string>
+  /**
+   * The policy turns quarantine off (ADR-0009 amendment 2026-10-02): nothing
+   * is held, so the counts above are 0 and the tile says "off".
+   */
+  readonly quarantineOff?: true
+  /** Servers in the tool inventory but not in the registry — `wrap` on this machine. */
+  readonly machineServers?: readonly string[]
   /** Approved (reviewed) tools across every server. */
   readonly approvedToolCount: number
   /** Agents with no `revokedAt`. */
@@ -106,6 +113,16 @@ function tile(
   </a>`
 }
 
+/**
+ * Off in the policy: a quiet "off" instead of a count of tools nothing holds.
+ * Not "new tools pass": under a `require-approval` default they still wait.
+ */
+function quarantineTile(s: DashboardSummary): Html {
+  return s.quarantineOff === true
+    ? tile('Quarantine', 'off', 'rules still apply', '/quarantine', false)
+    : tile('Quarantined', String(s.quarantinedCount), `${s.approvedToolCount} tools approved`, '/quarantine', s.quarantinedCount > 0)
+}
+
 function renderTiles(input: DashboardPageInput): Html {
   const held = pendingTotalOf(input)
   const s = input.summary
@@ -115,7 +132,7 @@ function renderTiles(input: DashboardPageInput): Html {
   if (s === undefined) return html`<section class="tiles dash-tiles">${heldTile}</section>`
   return html`<section class="tiles dash-tiles">
     ${heldTile}
-    ${tile('Quarantined', String(s.quarantinedCount), `${s.approvedToolCount} tools approved`, '/quarantine', s.quarantinedCount > 0)}
+    ${quarantineTile(s)}
     ${tile('Servers', String(s.servers.length), 'registered', '/servers', false)}
     ${tile('Agents', String(s.agentsActive), `of ${s.agentsTotal} active`, '/agents', false)}
   </section>`
@@ -144,12 +161,27 @@ function renderServerCell(
   </a>`
 }
 
+/** Inventory names shown on the empty strip; the rest are on `/servers`. */
+const MACHINE_SERVERS_SHOWN = 5
+
+function namesOf(names: readonly string[]): string {
+  const shown = names.slice(0, MACHINE_SERVERS_SHOWN).join(', ')
+  const rest = names.length - MACHINE_SERVERS_SHOWN
+  return rest > 0 ? `${shown} +${String(rest)} more` : shown
+}
+
 /**
  * The empty strip names the next step (owner's rule 2026-09-29), as on
  * `/servers`: the register form for an owner — the `POST /servers/add` row's
  * threshold — and who can for anyone else.
  */
-function renderNoServers(admin: CurrentAdmin | undefined): Html {
+function renderNoServers(admin: CurrentAdmin | undefined, machineServers: readonly string[]): Html {
+  if (machineServers.length > 0) {
+    // Their calls already show up in the journal above: "register one so its
+    // calls show up" would send the user to do what is already done. Worded
+    // as on `/servers`: the inventory also keeps servers removed since.
+    return html`<p class="empty">No servers registered. Seen in the tool inventory, not registered: ${namesOf(machineServers)} — wrap on this machine, or removed since; their tools and rules are on <a href="${safeUrl('/servers')}">Servers</a>.</p>`
+  }
   return roleAllows(admin, SERVER_REGISTER_MIN_ROLE)
     ? html`<p class="empty">No servers registered. <a href="${safeUrl('/servers?add=1#add-server')}">Register a server</a> — its calls then show up here.</p>`
     : html`<p class="empty">No servers registered. An owner registers them.</p>`
@@ -158,10 +190,10 @@ function renderNoServers(admin: CurrentAdmin | undefined): Html {
 function renderServersStrip(s: DashboardSummary, admin: CurrentAdmin | undefined): Html {
   const cells =
     s.servers.length === 0
-      ? renderNoServers(admin)
+      ? renderNoServers(admin, s.machineServers ?? [])
       : html`<div class="dash-servers">${join(s.servers.map((r) => renderServerCell(r, s.quarantinedServers, s.recentDecisions)))}</div>`
   return html`<section class="panel" aria-label="Servers">
-    <div class="panel-hd"><h2>Servers</h2><span class="small muted">${String(s.servers.length)} registered · ${String(s.quarantinedCount)} tool(s) quarantined</span></div>
+    <div class="panel-hd"><h2>Servers</h2><span class="small muted">${String(s.servers.length)} registered · ${s.quarantineOff === true ? 'quarantine off' : `${String(s.quarantinedCount)} tool(s) quarantined`}</span></div>
     ${cells}
   </section>`
 }

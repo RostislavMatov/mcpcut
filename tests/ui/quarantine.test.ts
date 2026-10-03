@@ -273,6 +273,37 @@ describe('McpCut quarantine page structure', () => {
   })
 
   /**
+   * The "Create policy" starter and the README's Stop policy both turn
+   * quarantine OFF (ADR-0009 amendment 2026-10-02): the inventory still
+   * records new and changed tools, but nothing holds them. "14 held" over a
+   * list whose calls all pass told a first-minute user the opposite.
+   */
+  test('with quarantine off, nothing is called held and the page says the calls pass', () => {
+    const doc = renderQuarantinePage({ cards: [changedCard], csrfToken: CSRF, quarantineOff: true })
+    expect(doc).not.toMatch(/\d held</)
+    expect(doc).toContain('data-live-text="quarantine-held">1 seen · not held</span>')
+    expect(doc).toContain('Quarantine is off in the policy: these tools are not held for review; their calls follow your other rules.')
+    expect(doc).toContain('"quarantine": { "enabled": true }')
+    // Turning it on holds every tool not approved by then, not only later ones.
+    expect(doc).toContain('the tools you have not approved wait here, and so does any tool that is new or changed later')
+    // Approving still counts: with quarantine on later, only what is new or changed since waits.
+    expect(doc).toContain('data-tool="create_issue"')
+  })
+
+  test('with quarantine off and nothing seen, the page still says it is off', () => {
+    const doc = renderQuarantinePage({ cards: [], csrfToken: CSRF, quarantineOff: true })
+    expect(doc).toContain('0 seen · not held')
+    expect(doc).toContain('Quarantine is off in the policy')
+  })
+
+  test('the handler reads whether quarantine holds, and says so', async () => {
+    const off = createQuarantineHandlers(deps({ readQuarantineHolding: async () => false }))
+    expect(bodyText(await off.quarantinePage(makeCtx()))).toContain('seen · not held')
+    const on = createQuarantineHandlers(deps({ readQuarantineHolding: async () => true }))
+    expect(bodyText(await on.quarantinePage(makeCtx()))).toContain('1 held')
+  })
+
+  /**
    * A form the route would refuse with a 403 is worse than no form (the rule
    * `pages/agents.ts` already follows). Until the user-journey smoke
    * (2026-09-18, UX-5) this page was the one exception: a `viewer` saw

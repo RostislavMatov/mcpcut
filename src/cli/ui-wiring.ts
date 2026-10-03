@@ -11,7 +11,7 @@ import { approveTool, rejectTool } from '../policy/inventory.js'
 import { openInventoryStore } from '../policy/inventory-store.js'
 import { journalPolicyEdit } from '../policy/edit/journal-edit.js'
 import { defaultPolicyFileDeps, readPolicyFileForEdit, writePolicyFile } from '../policy/edit/policy-file.js'
-import { readPolicyView } from '../policy/edit/policy-view.js'
+import { readPolicyView, readQuarantineHolding } from '../policy/edit/policy-view.js'
 import { resolvePolicyEditTarget } from '../policy/edit/write-target.js'
 import type { ServerStatusChange } from '../probe/orchestrator.js'
 import { createApprovalQueue, type ApprovalQueue } from '../policy/approvals/queue.js'
@@ -225,6 +225,15 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
     )
   }
 
+  const policyEnv = { journalDir: deps.journalDir, env: deps.env ?? process.env, cwd: deps.cwd ?? process.cwd() }
+  // The dashboard and the Quarantine page say whether quarantine holds
+  // anything, read from the same file the Servers page shows.
+  const quarantineHolding = (): Promise<boolean> =>
+    readQuarantineHolding(
+      () => readPolicyView(policyEnv),
+      (error) => deps.stderr.write(`[ui] policy read for the quarantine state failed: ${formatReadableField(error instanceof Error ? error.message : String(error))}\n`),
+    )
+
   // Dashboard summary ports: reads only, each narrowed to the one method the
   // panel needs (same adapter-literal discipline as the servers handlers
   // below). The decisions walk is bounded tightly — it runs on every render
@@ -235,6 +244,7 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
     summary: {
       listServers: () => deps.registry.listServers(),
       readInventory: () => inventory.read(),
+      readQuarantineHolding: quarantineHolding,
       listAgents: () => deps.agents.listAgents(),
       recentDecisions: () =>
         searchAllSessions({
@@ -262,6 +272,7 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
     })
   const quarantine = createQuarantineHandlers({
     readStore: () => inventory.read(),
+    readQuarantineHolding: quarantineHolding,
     approve: (serverName, toolName) => approveTool(serverName, toolName, deps.inventoryStorePath),
     reject: (serverName, toolName) => rejectTool(serverName, toolName, deps.inventoryStorePath),
     audit: quarantineAudit,
@@ -277,7 +288,6 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
   // forever — building an object with only the granted methods makes the
   // Pick<> a runtime fact, not just a type-checker fact.
   const probes = composeProbes(deps)
-  const policyEnv = { journalDir: deps.journalDir, env: deps.env ?? process.env, cwd: deps.cwd ?? process.cwd() }
   // The one group store of this process: the servers handlers cascade through
   // it on removal (G6) and the groups surfaces read and write it.
   const groups = createGroupsStore({ journalDir: deps.journalDir })

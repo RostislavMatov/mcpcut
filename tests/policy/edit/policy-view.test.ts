@@ -1,6 +1,12 @@
 import { join } from 'node:path'
 import { describe, expect, test } from 'vitest'
-import { readPolicyView, type ReadPolicyViewDeps } from '../../../src/policy/edit/policy-view.js'
+import {
+  isQuarantineHolding,
+  readPolicyView,
+  readQuarantineHolding,
+  type PolicyView,
+  type ReadPolicyViewDeps,
+} from '../../../src/policy/edit/policy-view.js'
 import type { PolicyFileReadResult } from '../../../src/policy/edit/policy-file.js'
 import { parsePolicy, type Policy } from '../../../src/policy/schema.js'
 
@@ -93,5 +99,41 @@ describe('readPolicyView', () => {
     }))
 
     expect(seen).toEqual([{ journalDir: JOURNAL_DIR, env: { MCPCUT_POLICY: '/etc/p.json' }, cwd: WORK_DIR }])
+  })
+})
+
+describe('whether quarantine holds (ADR-0009 amendment 2026-10-02)', () => {
+  const sources = { sourcePath: FLAT, readers: { kind: 'every-entry-point' as const } }
+  const loaded = (raw: unknown): PolicyView => ({ ...sources, status: 'loaded', policy: policyOf(raw), hash: 'b'.repeat(64) })
+
+  test('only a loaded policy that turns it off says it does not hold', () => {
+    expect(isQuarantineHolding(loaded({ version: 1, quarantine: { enabled: false } }))).toBe(false)
+    expect(isQuarantineHolding(loaded({ version: 1, quarantine: { enabled: true } }))).toBe(true)
+    expect(isQuarantineHolding(loaded({ version: 1 }))).toBe(true)
+  })
+
+  test('an absent or broken file reads as holding, never as off', () => {
+    expect(isQuarantineHolding({ ...sources, status: 'absent' })).toBe(true)
+    expect(isQuarantineHolding({ ...sources, status: 'error', errors: ['bad json'] })).toBe(true)
+  })
+
+  test('a read that throws reads as holding and is reported, so the dashboard still renders', async () => {
+    const reported: unknown[] = []
+    const failure = new Error('EACCES')
+    const isHolding = await readQuarantineHolding(
+      async () => {
+        throw failure
+      },
+      (error) => reported.push(error),
+    )
+    expect(isHolding).toBe(true)
+    expect(reported).toEqual([failure])
+  })
+
+  test('a read that succeeds is decided by the view', async () => {
+    const reported: unknown[] = []
+    const off = loaded({ version: 1, quarantine: { enabled: false } })
+    expect(await readQuarantineHolding(async () => off, (error) => reported.push(error))).toBe(false)
+    expect(reported).toEqual([])
   })
 })

@@ -40,6 +40,12 @@ export type ApprovalsQueue = Pick<ApprovalQueue, 'list' | 'resolve' | 'countPend
 export interface DashboardSummaryPorts {
   readonly listServers: () => Promise<readonly ServerRecord[]>
   readonly readInventory: () => Promise<InventoryStoreData>
+  /**
+   * False when the policy turns quarantine off (ADR-0009 amendment
+   * 2026-10-02): the inventory still records new tools, but nothing holds
+   * them. Absent: holding, as before the port existed.
+   */
+  readonly readQuarantineHolding?: () => Promise<boolean>
   readonly listAgents: () => Promise<readonly AgentRecord[]>
   /** Newest-first walk over decision records, bounded by the caller. */
   readonly recentDecisions: () => Promise<CrossSessionSearchResult>
@@ -123,25 +129,30 @@ function currentAdminOf(session: UiSession | undefined): { name: string; role: s
  * server core, never as a half-rendered dashboard that looks whole).
  */
 async function loadSummary(ports: DashboardSummaryPorts): Promise<DashboardSummary> {
-  const [servers, inventory, agents, decisions] = await Promise.all([
+  const [servers, inventory, agents, decisions, isHolding] = await Promise.all([
     ports.listServers(),
     ports.readInventory(),
     ports.listAgents(),
     ports.recentDecisions(),
+    ports.readQuarantineHolding?.() ?? Promise.resolve(true),
   ])
   let quarantinedCount = 0
   let approvedToolCount = 0
   const quarantinedServers = new Set<string>()
   for (const [serverName, inv] of Object.entries(inventory.servers)) {
-    const q = Object.keys(inv.quarantined).length
+    const q = isHolding ? Object.keys(inv.quarantined).length : 0
     quarantinedCount += q
     approvedToolCount += Object.keys(inv.approved).length
     if (q > 0) quarantinedServers.add(serverName)
   }
+  const registered = new Set(servers.map((record) => record.name))
+  const machineServers = Object.keys(inventory.servers).filter((name) => !registered.has(name)).sort()
   return {
     servers,
     quarantinedCount,
     quarantinedServers,
+    ...(isHolding ? {} : { quarantineOff: true as const }),
+    ...(machineServers.length > 0 ? { machineServers } : {}),
     approvedToolCount,
     agentsActive: agents.filter((a) => a.revokedAt === undefined).length,
     agentsTotal: agents.length,
