@@ -21,7 +21,7 @@ import {
 } from './admin-token.js'
 import { findDefaultPolicyPath } from './approvals-policy-lookup.js'
 import { formatListReadable, formatTruncationNote } from './approvals-list-format.js'
-import { listApprovalsHint, noPendingApprovalsHint, resolveApprovalHint } from './next-step.js'
+import { cliCommand, listApprovalsHint, noPendingApprovalsHint, resolveApprovalHint } from './next-step.js'
 
 /**
  * `approvals list|approve|deny`: the operator-facing half of the approvals
@@ -82,14 +82,22 @@ const MS_PER_MINUTE = 60_000
 const CLI_ACTOR_PREFIX = 'cli:'
 
 /**
- * No token at all. Says what to do without echoing anything that was supplied
- * (there was nothing) and without claiming the token is a barrier: it names
- * the human, it does not keep anyone out.
+ * No token at all, on an install that HAS an admin (with none, no token is
+ * needed). Says what to do without echoing anything that was supplied (there
+ * was nothing) and without claiming the token is a barrier: it names the
+ * human, it does not keep anyone out. Every way out works without a token —
+ * `admin add` would not: once an admin exists it asks for the owner's
+ * (stranger run 2026-10-03: the web UI's first run makes that admin, so the
+ * README's click path ends here).
  */
-const MISSING_TOKEN_MESSAGE =
-  `Refusing to resolve: no admin token. Set ${ADMIN_TOKEN_ENV_VAR} to your personal admin token so ` +
-  `the resolution records which admin decided it.\n` +
-  `Get one with: mcpcut admin add <name> --role operator   (existing admin: mcpcut admin rotate <name>)\n`
+function missingTokenMessage(): string {
+  return (
+    `Refusing to resolve: no admin token. Set ${ADMIN_TOKEN_ENV_VAR} to your personal admin token — shown once, ` +
+    `when your admin was created — so the resolution records which admin decided it.\n` +
+    `Or approve it on the web UI's dashboard while signed in. ` +
+    `Lost the token? ${cliCommand()} admin rotate <your-name> --recover\n`
+  )
+}
 
 /**
  * A token was supplied and matched no ACTIVE admin. Deliberately says nothing
@@ -102,7 +110,7 @@ const MISSING_TOKEN_MESSAGE =
 const UNKNOWN_TOKEN_MESSAGE =
   `Refusing to resolve: ${ADMIN_TOKEN_ENV_VAR} does not match any active admin — it may have been ` +
   `rotated, or the admin removed.\n` +
-  `Check "mcpcut admin list", then: mcpcut admin rotate <name>\n`
+  `Check "mcpcut admin list", then: mcpcut admin rotate <name>   (no working token: mcpcut admin rotate <name> --recover)\n`
 
 /**
  * A real, active admin whose role is below the resolve threshold. Names the
@@ -300,7 +308,7 @@ async function actorWithoutToken(io: ApprovalsCliIo, opts: ApprovalsCliOptions):
   // The note itself waits for the resolution to land (`runResolve`): said
   // before an unknown-id error, it described an action that never happened.
   if (emptiness.kind === 'empty') return NO_ADMINS_YET_ACTOR
-  io.stderr.write(emptiness.kind === 'unreadable' ? storeUnreadableMessage(emptiness.detail) : MISSING_TOKEN_MESSAGE)
+  io.stderr.write(emptiness.kind === 'unreadable' ? storeUnreadableMessage(emptiness.detail) : missingTokenMessage())
   return undefined
 }
 

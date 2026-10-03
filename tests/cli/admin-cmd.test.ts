@@ -606,6 +606,16 @@ describe('the owner gate in front of admin *', () => {
     expect(await createAdminStore({ journalDir }).getActiveAdmin('bob')).toBeUndefined()
   })
 
+  test('the no-token refusal points a lost token at the rotation that needs none', async () => {
+    await seedOwner('alice')
+
+    const { io } = await runAdmin(['add', 'bob', '--role', 'viewer'], captureIo(), {})
+
+    // A plain `admin rotate` asks for the owner token it is meant to replace.
+    expect(io.errText()).toContain('lost yours: mcpcut admin rotate <name> --recover')
+    expect(io.errText()).not.toContain('existing admin:')
+  })
+
   test('a token that matches no admin is refused', async () => {
     await seedOwner('alice')
 
@@ -615,6 +625,8 @@ describe('the owner gate in front of admin *', () => {
 
     expect(code).toBe(1)
     expect(io.errText()).toContain('does not match any active admin')
+    // `admin list` and a plain rotate both ask for a working owner token.
+    expect(io.errText()).toContain('no working token: mcpcut admin rotate <name> --recover')
   })
 
   test.each([

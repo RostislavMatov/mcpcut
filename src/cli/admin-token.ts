@@ -89,7 +89,7 @@ function missingTokenMessage(minRole: Role, wording: AdminRefusalWording): strin
   return (
     `Refusing to ${wording.action}: no admin token. Set ${ADMIN_TOKEN_ENV_VAR} to your personal admin token ` +
     `(role "${minRole}") ${wording.purpose ?? `so the ${wording.noun} records which admin made it`}.\n` +
-    `Get one with: mcpcut admin add <name> --role ${minRole}   (existing admin: mcpcut admin rotate <name>)\n`
+    `Get one with: mcpcut admin add <name> --role ${minRole}   (lost yours: mcpcut admin rotate <name> --recover)\n`
   )
 }
 
@@ -97,7 +97,7 @@ function unknownTokenMessage(wording: AdminRefusalWording): string {
   return (
     `Refusing to ${wording.action}: ${ADMIN_TOKEN_ENV_VAR} does not match any active admin — it may have been ` +
     `rotated, or the admin removed.\n` +
-    `Check "mcpcut admin list", then: mcpcut admin rotate <name>\n`
+    `Check "mcpcut admin list", then: mcpcut admin rotate <name>   (no working token: mcpcut admin rotate <name> --recover)\n`
   )
 }
 

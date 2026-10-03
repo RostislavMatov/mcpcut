@@ -73,12 +73,12 @@ const REFRESH_USAGE = `Usage:
 const REFRESH_MISSING_TOKEN_MESSAGE =
   `Refusing to refresh: no admin token. Set ${ADMIN_TOKEN_ENV_VAR} to your personal admin token ` +
   `(role "${SERVER_REFRESH_MIN_ROLE}" or higher) so the probe records which admin forced it.\n` +
-  `Get one with: mcpcut admin add <name> --role ${SERVER_REFRESH_MIN_ROLE}   (existing admin: mcpcut admin rotate <name>)\n`
+  `Get one with: mcpcut admin add <name> --role ${SERVER_REFRESH_MIN_ROLE}   (lost yours: mcpcut admin rotate <name> --recover)\n`
 
 const REFRESH_UNKNOWN_TOKEN_MESSAGE =
   `Refusing to refresh: ${ADMIN_TOKEN_ENV_VAR} does not match any active admin — it may have been ` +
   `rotated, or the admin removed.\n` +
-  `Check "mcpcut admin list", then: mcpcut admin rotate <name>\n`
+  `Check "mcpcut admin list", then: mcpcut admin rotate <name>   (no working token: mcpcut admin rotate <name> --recover)\n`
 
 const REFRESH_INSUFFICIENT_ROLE_MESSAGE =
   `Refusing to refresh: this admin token's role may not force a probe ` +

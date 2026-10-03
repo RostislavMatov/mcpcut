@@ -138,6 +138,21 @@ describe('approvals approve|deny on an install with no admins yet', () => {
     expect(await createApprovalQueue({ baseDir }).readResolution(approvalId)).toBeNull()
   })
 
+  test('without the token, the refusal names ways out that do not need it', async () => {
+    // The owner made in the web UI's first run: the README's click path leaves
+    // an admin behind, so a held call then needs a token here.
+    await createAdminStore({ journalDir: tempDir }).createAdmin('me', 'owner')
+    const io = fakeIo()
+
+    await runApprovals(['approve', await pendingId()], io, opts())
+
+    expect(io.err()).toContain('shown once, when your admin was created')
+    expect(io.err()).toContain("Or approve it on the web UI's dashboard while signed in.")
+    expect(io.err()).toContain('Lost the token? mcpcut admin rotate <your-name> --recover')
+    // `admin add` needs the owner's token itself once an admin exists: a dead end.
+    expect(io.err()).not.toContain('admin add')
+  })
+
   test('a token that IS set is still checked: on an empty store it matches nobody and is refused', async () => {
     const approvalId = await pendingId()
     const io = fakeIo()
@@ -146,6 +161,7 @@ describe('approvals approve|deny on an install with no admins yet', () => {
 
     expect(exitCode).toBe(1)
     expect(io.err()).not.toContain('no admins yet')
+    expect(io.err()).toContain('no working token: mcpcut admin rotate <name> --recover')
     expect(await createApprovalQueue({ baseDir }).readResolution(approvalId)).toBeNull()
   })
 
