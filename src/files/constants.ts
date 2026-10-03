@@ -22,3 +22,12 @@ export const FILES_SERVER_NAME = 'files'
 
 /** The roots document (a row in `state.db` next to agents and the registry). */
 export const ROOTS_FILE_NAME = 'files-roots.json'
+
+/** The largest file the I/O layer reads (10 MiB); a bigger one is `too-large`. */
+export const MAX_READ_BYTES = 10 * 1024 * 1024
+
+/** The largest content one write or edit may produce (10 MiB). */
+export const MAX_WRITE_BYTES = 10 * 1024 * 1024
+
+/** The most entries one directory listing returns; the rest is `truncated`. */
+export const MAX_LIST_ENTRIES = 1000
