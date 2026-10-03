@@ -26,6 +26,7 @@ import type { BackupCommandOptions } from './backup-cmd.js'
 import type { ConnectBridgeDeps } from './connect-bridge-cmd.js'
 import type { ConnectDeps } from './connect-cmd.js'
 import type { ExportCommandOptions } from './export-cmd.js'
+import type { FilesCliOptions } from './files-cmd.js'
 import type { GroupCliOptions } from './group-cmd.js'
 import type { AdoptCommandOptions } from './adopt-cmd.js'
 import type { KeygenCommandOptions } from './keygen-cmd.js'
@@ -65,6 +66,7 @@ export interface DispatchOptions {
   readonly server?: ServerCliOptions
   readonly vault?: VaultCmdDeps
   readonly agent?: AgentCliOptions
+  readonly files?: FilesCliOptions
   readonly group?: GroupCliOptions
   readonly connect?: ConnectDeps
   /** Seams for the REMOTE form, `connect --url` (ADR-0015): env, stdio, the HTTP client. */

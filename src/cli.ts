@@ -15,6 +15,7 @@ import { pathToFileURL } from 'node:url'
 import { runAdminCommand } from './cli/admin-cmd.js'
 import { runAdoptCommand } from './cli/adopt-cmd.js'
 import { runAgentCommand } from './cli/agent-cmd.js'
+import { runFilesCommand } from './cli/files-cmd.js'
 import { runGroupCommand } from './cli/group-cmd.js'
 import { runApprovals } from './cli/approvals-cmd.js'
 import { runBackupCommand } from './cli/backup-cmd.js'
@@ -218,6 +219,7 @@ export async function dispatch(
   if (command === 'server') return runServerCommand(rest, io, opts.server)
   if (command === 'vault') return runVault(rest, io, opts.vault)
   if (command === 'agent') return runAgentCommand(rest, io, opts.agent)
+  if (command === 'files') return runFilesCommand(rest, io, opts.files)
   if (command === 'group') return runGroupCommand(rest, io, opts.group)
   if (command === 'migrate') return runMigrateCommand(rest, io, opts.migrate)
   if (command === 'export') return runExportCommand(rest, io, opts.export)

@@ -13,3 +13,12 @@ export const MAX_PATH_LENGTH = 4096
 
 /** Max folder rules in one grant (one agent's or one group's, for the files server). */
 export const MAX_PATHS_PER_GRANT = 100
+
+/** Max declared roots (folders the module works with at all). */
+export const MAX_ROOTS = 50
+
+/** The built-in file server's name — the key of its grant in an agent's (or group's) grants. */
+export const FILES_SERVER_NAME = 'files'
+
+/** The roots document (a row in `state.db` next to agents and the registry). */
+export const ROOTS_FILE_NAME = 'files-roots.json'

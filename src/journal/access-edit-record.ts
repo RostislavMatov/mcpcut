@@ -73,6 +73,13 @@ export type AccessEditAction =
   | 'agent.grant'
   | 'agent.ungrant'
   | 'agent.revoke'
+  // The file module (ADR-0020): folder rules in an agent's `files` grant and
+  // the declared roots. Own actions, so "who gave this agent that folder" is
+  // one search; the rule path rides in the `grant`, the root in `path`.
+  | 'files.grant'
+  | 'files.revoke'
+  | 'files.root.add'
+  | 'files.root.remove'
   // Vault mutations (owner decision S2, 2026-09-03): replacing a secret
   // replaces the identity a server uses against an external system, so the
   // journal must show WHO swapped it — by the secret's name, never its value.
@@ -152,6 +159,8 @@ export interface AccessEditInfo {
    * runs it through `formatReadableField` first.
    */
   readonly tool?: string
+  /** `files.root.add|remove`, `files.revoke`: the canonical folder the change is about. */
+  readonly path?: string
   /** `prune` (Q17): the retention window as the operator typed it, e.g. `90d`. */
   readonly olderThan?: string
   /** `prune` (Q17): how many records the delete actually removed. */
@@ -278,6 +287,7 @@ function flatInfoOf(info: AccessEditInfo): Record<string, unknown> {
     ...(info.deletedCount !== undefined ? { deletedCount: info.deletedCount } : {}),
     ...(info.prunedThroughSeq !== undefined ? { prunedThroughSeq: info.prunedThroughSeq } : {}),
     ...(info.dest !== undefined ? { dest: info.dest } : {}),
+    ...(info.path !== undefined ? { path: info.path } : {}),
     ...(info.keyFingerprint !== undefined ? { keyFingerprint: info.keyFingerprint } : {}),
     ...(info.vaultEntry !== undefined ? { vaultEntry: info.vaultEntry } : {}),
     ...(info.admin !== undefined ? { admin: info.admin } : {}),
@@ -301,5 +311,6 @@ function flatGrantOf(grant: AgentGrant): Record<string, unknown> {
     tools: grant.tools,
     ...(grant.resources !== undefined ? { resources: grant.resources } : {}),
     ...(grant.prompts !== undefined ? { prompts: grant.prompts } : {}),
+    ...(grant.paths !== undefined ? { paths: grant.paths.map((rule) => ({ path: rule.path, ops: [...rule.ops] })) } : {}),
   }
 }

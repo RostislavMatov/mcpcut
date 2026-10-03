@@ -43,7 +43,17 @@ const EXCLUDED_FROM_CATALOGUE: readonly CommandPair[] = [
  * `USAGE` lands here with its name in the diff instead of turning test (2)
  * into a comparison of two empty sets nobody reads.
  */
-const NOT_YET_COVERED: readonly CommandPair[] = []
+const NOT_YET_COVERED: readonly CommandPair[] = [
+  // `mcpcut files` (ADR-0020, 2026-10-04): admin commands of the file module,
+  // CLI-only for now; the Files console screen is a later phase of the plan.
+  // `list` and `remove` are the parser's reading of `files root add|list|remove`.
+  { command: 'files', subcommand: 'grant' },
+  { command: 'files', subcommand: 'list' },
+  { command: 'files', subcommand: 'remove' },
+  { command: 'files', subcommand: 'revoke' },
+  { command: 'files', subcommand: 'root' },
+  { command: 'files', subcommand: 'show' },
+]
 
 /**
  * Console-only actions with no CLI command behind them at all (2026-09-20):

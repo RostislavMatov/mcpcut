@@ -103,6 +103,19 @@ export interface AgentsStore {
     tools: readonly string[] | '*',
     methods?: MethodGrantsInput,
   ): Promise<AgentRecord>
+  /**
+   * Writes a WHOLE grant for `server` (folder rules in `paths` included),
+   * validated by the agents-file schema like every other write. A function
+   * receives the current grant (`undefined` when none) and returns the new
+   * one: it runs inside the store's CAS cycle — pure, possibly more than
+   * once — so a read-modify-write such as adding one folder rule cannot lose
+   * a concurrent edit. Used by `mcpcut files grant|revoke`.
+   */
+  setServerGrant(
+    agentName: string,
+    serverName: string,
+    grant: AgentGrant | ((current: AgentGrant | undefined) => AgentGrant),
+  ): Promise<AgentRecord>
   /** Removes the grant for `server`; idempotent when no such grant exists. */
   ungrantServer(agentName: string, serverName: string): Promise<AgentRecord>
   /**
@@ -200,11 +213,26 @@ export function createAgentsStore(opts: AgentsStoreOptions = {}): AgentsStore {
     assertValidServerName(serverName)
     const grant: AgentGrant = buildGrant(tools, methods)
 
+    // Folder rules (ADR-0020) are not part of this input: rewriting the tools
+    // of a grant must not silently drop them.
+    return setServerGrant(agentName, serverName, (existing) =>
+      existing?.paths !== undefined ? { ...grant, paths: existing.paths } : grant,
+    )
+  }
+
+  async function setServerGrant(
+    agentName: string,
+    serverName: string,
+    grant: AgentGrant | ((current: AgentGrant | undefined) => AgentGrant),
+  ): Promise<AgentRecord> {
+    assertValidServerName(serverName)
     const next = await store.update((current) => {
       const record = requireAgent(current, agentName)
+      const existing = Object.hasOwn(record.grants, serverName) ? record.grants[serverName] : undefined
+      const value = typeof grant === 'function' ? grant(existing) : grant
       return withAgent(current, {
         ...record,
-        grants: { ...record.grants, [serverName]: grant },
+        grants: { ...record.grants, [serverName]: structuredClone(value) },
       })
     })
     return next.agents[agentName] as AgentRecord
@@ -273,6 +301,7 @@ export function createAgentsStore(opts: AgentsStoreOptions = {}): AgentsStore {
     createAgent,
     revokeAgent,
     grantServer,
+    setServerGrant,
     ungrantServer,
     ungrantServerEverywhere,
     getAgent,

@@ -32,7 +32,7 @@ import { requireAdminFromEnv, type AdminRefusalWording, type RequiredAdmin } fro
 export const ACCESS_MIN_ROLE: Role = 'owner'
 
 /** Which store the change landed in — the first word of the audit line. */
-export type AccessSubject = 'group' | 'agent' | 'vault' | 'admin' | 'quarantine' | 'journal' | 'host'
+export type AccessSubject = 'group' | 'agent' | 'files' | 'vault' | 'admin' | 'quarantine' | 'journal' | 'host'
 
 /** The mutating subcommands, as they appear in the audit line. */
 export type AccessOp =

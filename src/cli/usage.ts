@@ -69,6 +69,14 @@ ${TUI_SYNOPSIS_LINES.join('\n')}
                                          Edit or inspect agent identities and grants (create,
                                          grant, ungrant and revoke need an owner token in
                                          MCP_ADMIN_TOKEN; list needs none)
+  mcpcut files root add <folder> | list | remove <folder>
+                                         Declare, list or drop the folders the file module works in
+                                         (add creates the folder's trash; owner token for add/remove)
+  mcpcut files grant <agent> <folder> --ops read,write,edit,delete|none
+                                         Give an agent operations on a folder and everything in it;
+                                         none cuts a subfolder out of a wider rule
+  mcpcut files revoke <agent> <folder> | show <agent>
+                                         Remove a folder rule / print the agent's folder rules
   mcpcut group create <name>|remove <name>|list|show <name>
                                          Manage server groups: a group carries per-server grants
                                          and the agents that inherit them (owner token via
