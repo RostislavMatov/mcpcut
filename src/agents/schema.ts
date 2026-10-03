@@ -1,4 +1,6 @@
 import { z } from 'zod'
+import { MAX_PATHS_PER_GRANT } from '../files/constants.js'
+import { fileRuleSchema } from '../files/rule-schema.js'
 import { RESERVED_OBJECT_KEYS, TOOL_RULE_NAME_PATTERN } from '../policy/constants.js'
 import {
   AGENT_NAME_PATTERN,
@@ -115,6 +117,11 @@ export const agentGrantSchema = z.strictObject({
   prompts: z
     .union([z.literal('*'), z.array(promptPatternSchema).max(MAX_PROMPTS_PER_GRANT)])
     .optional(),
+  /**
+   * ADR-0020 §2, additive and optional like the two above: folder rules for
+   * the built-in `files` server. Absent — no file rights at all.
+   */
+  paths: z.array(fileRuleSchema).max(MAX_PATHS_PER_GRANT).optional(),
 })
 
 /** One agent's grant for one server. */

@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { FILE_OPS, type FileOp } from './constants.js'
 import { canonicalPath, isWithin } from './paths.js'
 
 /**
@@ -8,11 +9,6 @@ import { canonicalPath, isWithin } from './paths.js'
  * on the same path (the agent's own and its groups') add up. No containing
  * rule means no operations: fail closed.
  */
-
-/** In the order they are shown and returned. */
-export const FILE_OPS = ['read', 'write', 'edit', 'delete'] as const
-
-export type FileOp = (typeof FILE_OPS)[number]
 
 export interface FileRule {
   readonly path: string

@@ -1,0 +1,21 @@
+import path from 'node:path'
+import { z } from 'zod'
+import { FILE_OPS, MAX_PATH_LENGTH } from './constants.js'
+
+/**
+ * One folder rule in a grant (ADR-0020 §2): an absolute path and the
+ * operations on it. An empty `ops` list is meaningful — it cuts a subfolder
+ * out of a wider rule — so it is allowed; a repeated operation is not.
+ */
+export const fileRuleSchema = z.strictObject({
+  path: z
+    .string()
+    .min(1)
+    .max(MAX_PATH_LENGTH)
+    .refine((value) => !value.includes('\u0000'), 'path must not contain a NUL byte')
+    .refine((value) => path.isAbsolute(value), 'path must be absolute'),
+  ops: z
+    .array(z.enum(FILE_OPS))
+    .max(FILE_OPS.length)
+    .refine((ops) => new Set(ops).size === ops.length, 'ops must not repeat an operation'),
+})

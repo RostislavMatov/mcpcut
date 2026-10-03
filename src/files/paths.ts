@@ -1,5 +1,6 @@
 import { lstat, realpath } from 'node:fs/promises'
 import path from 'node:path'
+import { MAX_PATH_LENGTH, TRASH_DIR_NAME } from './constants.js'
 
 /**
  * The one resolver every agent-named path goes through before a file is
@@ -27,12 +28,6 @@ import path from 'node:path'
  * Opening the file without following a last-moment symlink swap (O_NOFOLLOW,
  * dev/ino check) is the I/O layer's job; this module only names the file.
  */
-
-/** The per-root trash folder (ADR-0020 §4); no file tool may name it. */
-export const TRASH_DIR_NAME = '.mcpcut-trash'
-
-/** Longer paths are refused outright — no real folder tree needs more. */
-export const MAX_PATH_LENGTH = 4096
 
 export type PathRefusal =
   | 'empty'

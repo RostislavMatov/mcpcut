@@ -117,7 +117,21 @@ function normalizeGrant(grant: unknown): unknown {
  * stable, so equal entries keep their relative order.
  */
 function sortedCopy(items: readonly unknown[]): unknown[] {
-  return [...items].sort((left, right) => compareAsText(String(left), String(right)))
+  return items
+    .map((item) => normalizeGrant(item))
+    .map((item) => ({ item, key: sortKeyOf(item) }))
+    .sort((left, right) => compareAsText(left.key, right.key))
+    .map(({ item }) => item)
+}
+
+/**
+ * A string sorts as itself (every pre-ADR-0020 field, so their fingerprints
+ * are unchanged); an object — a folder rule `{ path, ops }` — sorts by its
+ * canonical JSON after its own arrays were sorted, so the same rules in
+ * another order fingerprint the same.
+ */
+function sortKeyOf(item: unknown): string {
+  return typeof item === 'object' && item !== null ? canonicalJson(item) : String(item)
 }
 
 function compareAsText(left: string, right: string): number {

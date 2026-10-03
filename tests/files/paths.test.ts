@@ -2,7 +2,8 @@ import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
-import { checkName, resolveWithinRoots, TRASH_DIR_NAME, type PathResult } from '../../src/files/paths.js'
+import { TRASH_DIR_NAME } from '../../src/files/constants.js'
+import { checkName, resolveWithinRoots, type PathResult } from '../../src/files/paths.js'
 
 /**
  * ADR-0020 §3: every path an agent names goes through ONE resolver before any

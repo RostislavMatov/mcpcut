@@ -1,3 +1,4 @@
+import { FILE_OPS } from '../files/constants.js'
 import type { GroupRecord } from '../groups/schema.js'
 import type { AgentGrant, AgentRecord } from './schema.js'
 
@@ -101,16 +102,38 @@ function unionOptional(
   return declared.length === 0 ? undefined : unionValues(declared)
 }
 
+type PathRules = NonNullable<AgentGrant['paths']>
+
+/** A rule with its operations in `FILE_OPS` order — one spelling per meaning. */
+function normalizedRule(rule: PathRules[number]): PathRules[number] {
+  return { path: rule.path, ops: FILE_OPS.filter((op) => rule.ops.includes(op)) }
+}
+
+/**
+ * ADR-0020 §2: folder rules of several groups add up — concatenated, each
+ * rule's operations in a fixed order, sorted by path (then operations) and
+ * deduplicated, for the same fingerprint reason as `unionValues`. Rules on the
+ * same path are NOT merged into one: `files/rights.ts` adds them at check time.
+ */
+function unionPaths(grants: readonly AgentGrant[]): PathRules | undefined {
+  const declared = grants.map((grant) => grant.paths).filter((paths): paths is PathRules => paths !== undefined)
+  if (declared.length === 0) return undefined
+  const keyed = new Map(declared.flat().map(normalizedRule).map((rule) => [`${rule.path}\u0000${rule.ops.join(',')}`, rule]))
+  return [...keyed.entries()].sort(([left], [right]) => compareAsText(left, right)).map(([, rule]) => rule)
+}
+
 /** One merged grant from every group grant for the same server. */
 function mergeGrants(grants: readonly AgentGrant[]): AgentGrant {
   const resources = unionOptional(grants, 'resources')
   const prompts = unionOptional(grants, 'prompts')
+  const paths = unionPaths(grants)
   return {
     // `tools` is required on every grant, so it needs no "was it declared?"
-    // branch — unlike the two optional fields below.
+    // branch — unlike the optional fields below.
     tools: unionValues(grants.map((grant) => grant.tools)),
     ...(resources !== undefined ? { resources } : {}),
     ...(prompts !== undefined ? { prompts } : {}),
+    ...(paths !== undefined ? { paths } : {}),
   }
 }
 
