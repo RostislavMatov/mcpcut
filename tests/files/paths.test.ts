@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
 import { TRASH_DIR_NAME } from '../../src/files/constants.js'
-import { checkName, resolveWithinRoots, type PathResult } from '../../src/files/paths.js'
+import { checkName, hasTrashSegment, isLexicallyUnder } from '../../src/files/names.js'
+import { resolveWithinRoots, type PathResult } from '../../src/files/paths.js'
 
 /**
  * ADR-0020 §3: every path an agent names goes through ONE resolver before any
@@ -56,12 +57,13 @@ describe('resolveWithinRoots — inside a root', () => {
   test('an existing file resolves to its canonical path, its root and the path relative to the root', async () => {
     const result = await resolveWithinRoots(join(root, 'Data', 'a.txt'), [root])
     expectOk(result)
-    expect(result.path).toEqual({
+    expect(result.path).toMatchObject({
       root,
       absolute: join(root, 'Data', 'a.txt'),
       relative: join('Data', 'a.txt'),
       exists: true,
     })
+    expect(result.path.chain[0]?.path).toBe(join(root, 'Data', 'a.txt'))
   })
 
   test('the root itself is inside, with an empty relative path', async () => {
@@ -175,6 +177,67 @@ describe('resolveWithinRoots — refusals', () => {
   })
 })
 
+describe('resolveWithinRoots — review findings (03.10)', () => {
+  test('a trash-like name is refused at any depth, so the trash of a nested root is unreachable from the outer one', async () => {
+    await mkdir(join(root, 'proj', TRASH_DIR_NAME), { recursive: true })
+    expectRefused(await resolveWithinRoots(join(root, 'proj', TRASH_DIR_NAME, 'x.txt'), [root]), 'trash')
+  })
+
+  test('a name the volume folds to the trash name (long s, U+017F) is refused before the trash exists', async () => {
+    const fresh = join(base, 'fresh-fold')
+    await mkdir(fresh, { recursive: true })
+    expectRefused(await resolveWithinRoots(join(fresh, '.mcpcut-tra\u017fh', 'x.txt'), [fresh]), 'trash')
+  })
+
+  test('a symlink inside the root that points into the trash is refused by identity', async () => {
+    await symlink(join(root, TRASH_DIR_NAME), join(root, 'to-trash'))
+    expectRefused(await resolveWithinRoots(join(root, 'to-trash', 'old.txt'), [root]), 'trash')
+  })
+
+  test('a path nowhere near a root is refused without being resolved', async () => {
+    expectRefused(await resolveWithinRoots(join(outside, 'secret.txt'), [root]), 'outside-roots')
+  })
+
+  test.runIf(process.platform === 'darwin')('an NFD spelling of an NFC folder resolves inside the same root', async () => {
+    await mkdir(join(root, 'caf\u00e9'), { recursive: true })
+    const result = await resolveWithinRoots(join(root, 'cafe\u0301', 'n.txt'), [root])
+    expectOk(result)
+    expect(result.path.root).toBe(root)
+  })
+})
+
+describe('isLexicallyUnder — the gate before any file system call', () => {
+  test('a UNC path to another host is not under a local root', () => {
+    expect(isLexicallyUnder('\\\\attacker\\share\\x', ['C:\\data'], 'win32')).toBe(false)
+  })
+
+  test('letter case and Unicode form do not matter where volumes fold them', () => {
+    expect(isLexicallyUnder('C:\\DATA\\x', ['C:\\data'], 'win32')).toBe(true)
+    expect(isLexicallyUnder('/Data/cafe\u0301/x', ['/data/caf\u00e9'], 'darwin')).toBe(true)
+  })
+
+  test('on Linux they do — two spellings are two folders', () => {
+    expect(isLexicallyUnder('/Data/x', ['/data'], 'linux')).toBe(false)
+  })
+
+  test('a sibling sharing the prefix is not under the root', () => {
+    expect(isLexicallyUnder('/data-evil/x', ['/data'], 'linux')).toBe(false)
+  })
+})
+
+describe('hasTrashSegment', () => {
+  test.each<[input: string, expected: boolean]>([
+    [`a/${TRASH_DIR_NAME}/b`, true],
+    ['a/.MCPCUT-TRASH', true],
+    ['a/.mcpcut-trash.', true],
+    ['a/.mcpcut-tra\u017fh', true],
+    ['a/mcpcut-trash', false],
+    ['a/.mcpcut-trashes', false],
+  ])('%s → %s', (input, expected) => {
+    expect(hasTrashSegment(input)).toBe(expected)
+  })
+})
+
 describe('checkName — names Windows cannot hold safely', () => {
   test.each<[input: string]>([
     ['C:\\data\\report.txt:hidden'],
@@ -185,9 +248,20 @@ describe('checkName — names Windows cannot hold safely', () => {
     ['C:\\data\\name.'],
     ['C:\\data\\name '],
     ['C:\\data\\dir.\\file.txt'],
+    ['C:\\data\\CONIN$'],
+    ['C:\\data\\conout$.txt'],
+    ['C:\\data\\CLOCK$'],
+    ['C:\\data\\NUL .txt'],
   ])('%s is refused on win32', (input) => {
     expect(checkName(input, 'win32')).toBe('reserved-name')
   })
+
+  test.each<[input: string]>([['\\\\.\\pipe\\x'], ['\\\\?\\C:\\data\\x'], ['//./COM1'], ['\\\\.\\C:\\data']])(
+    '%s is a device or extended path on win32',
+    (input) => {
+      expect(checkName(input, 'win32')).toBe('device-path')
+    },
+  )
 
   test.each<[input: string]>([
     ['C:\\data\\report.txt'],
