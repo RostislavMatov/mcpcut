@@ -1,11 +1,12 @@
-import { lstat, mkdir, realpath, stat } from 'node:fs/promises'
+import { lstat, mkdir, readdir, realpath, rmdir, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { MAX_PATH_LENGTH, TRASH_DIR_NAME } from './constants.js'
+import { identitiesCollapse, statIdentity, type StatFn } from './identity.js'
 import { hasTrashSegment } from './names.js'
 import { resolveWithinRoots } from './paths.js'
 
 /**
- * Declaring a root (ADR-0020 §2, §3.7): the admin's path is made canonical,
+ * Declaring a root (ADR-0020 §2, §3.7-3.8): the admin's path is made canonical,
  * checked, and the trash folder is created by mcpcut itself — before any agent
  * can name a path there. Every refusal is ONE line that says what to do.
  */
@@ -15,6 +16,9 @@ export type PrepareRootResult =
   | { readonly ok: false; readonly message: string }
 
 const TRASH_MODE = 0o700
+const PERMISSION_BITS = 0o777
+/** What mcpcut itself puts in a trash: `<ulid>` folders, `<ulid>.json` manifests, and a manifest's temp file while it is written. */
+const TRASH_ENTRY_NAME = /^(?:[0-9A-HJKMNP-TV-Z]{26}(?:\.json)?|\.manifest-[0-9A-HJKMNP-TV-Z]{26}\.tmp)$/
 
 function refuse(message: string): PrepareRootResult {
   return { ok: false, message }
@@ -72,6 +76,21 @@ async function checkExistingTrash(trash: string): Promise<TrashOutcome> {
   if (process.platform !== 'win32' && typeof process.getuid === 'function' && info.uid !== process.getuid()) {
     return { ok: false, message: `${trash} is owned by another user: remove or rename it, then run the command again` }
   }
+  return checkExistingTrashShape(trash, info.mode)
+}
+
+/** On POSIX the trash is private (700) and holds only what mcpcut put there: nothing an agent or a stranger prepared. */
+async function checkExistingTrashShape(trash: string, mode: number): Promise<TrashOutcome> {
+  const inspect = 'inspect it, then remove or rename it and run the command again'
+  if (process.platform !== 'win32' && (mode & PERMISSION_BITS) !== TRASH_MODE) {
+    const actual = (mode & PERMISSION_BITS).toString(8)
+    return { ok: false, message: `${trash} has mode ${actual}, not 700: ${inspect}` }
+  }
+  const names = await readdir(trash).catch(() => null)
+  if (names === null) return { ok: false, message: `${trash} cannot be read: ${inspect}` }
+  if (names.some((name) => !TRASH_ENTRY_NAME.test(name))) {
+    return { ok: false, message: `${trash} holds entries mcpcut did not put there: ${inspect}` }
+  }
   return { ok: true, created: false }
 }
 
@@ -91,7 +110,11 @@ async function ensureTrash(root: string): Promise<TrashOutcome> {
  * are the roots already declared: a candidate inside one of their trashes is
  * refused by identity, not by spelling. Nested roots are allowed.
  */
-export async function prepareRoot(raw: string, existing: readonly string[] = []): Promise<PrepareRootResult> {
+export async function prepareRoot(
+  raw: string,
+  existing: readonly string[] = [],
+  identityOf: StatFn = statIdentity,
+): Promise<PrepareRootResult> {
   const problem = syntaxProblem(raw)
   if (problem !== null) return refuse(problem)
   const folder = await existingFolder(raw)
@@ -101,5 +124,16 @@ export async function prepareRoot(raw: string, existing: readonly string[] = [])
   const within = await resolveWithinRoots(folder.real, existing)
   if (!within.ok && within.refusal === 'trash') return refuse(`${folder.real} lies inside a trash folder: ${trashNote}`)
   const trash = await ensureTrash(folder.real)
-  return trash.ok ? { ok: true, path: folder.real, trashCreated: trash.created } : refuse(trash.message)
+  if (!trash.ok) return refuse(trash.message)
+  if (await hasUnstableIdentities(folder.real, identityOf)) {
+    if (trash.created) await rmdir(path.join(folder.real, TRASH_DIR_NAME)).catch(() => undefined)
+    return refuse(`${folder.real} is on a file system that does not report stable file identities, so the folder cannot be shared safely: choose a folder on a local disk`)
+  }
+  return { ok: true, path: folder.real, trashCreated: trash.created }
+}
+
+/** The root and its trash must be told apart by identity (and neither may be 0), or containment would collapse. */
+async function hasUnstableIdentities(folder: string, identityOf: StatFn): Promise<boolean> {
+  const [identity, trash] = await Promise.all([identityOf(folder), identityOf(path.join(folder, TRASH_DIR_NAME))])
+  return identity === null || trash === null || identitiesCollapse(identity, trash)
 }

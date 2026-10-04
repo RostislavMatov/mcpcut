@@ -1,4 +1,4 @@
-import { mkdir, lstat, rename, rmdir } from 'node:fs/promises'
+import { mkdir, lstat, rmdir } from 'node:fs/promises'
 import type { BigIntStats } from 'node:fs'
 import {
   checkNewEntry,
@@ -8,9 +8,12 @@ import {
   lstatEntry,
   parentUnchanged,
   requireSingleLink,
+  stillAsChecked,
   succeed,
+  type IoHooks,
   type IoResult,
 } from './io-common.js'
+import { relocate } from './io-relocate.js'
 import { isWithinOn } from './names.js'
 import type { ResolvedPath } from './paths.js'
 
@@ -47,14 +50,17 @@ function refuseMove(message: string): IoResult<never> {
   return fail('io-error', message)
 }
 
-/** Moves a file or folder to a name that does not exist yet; a file with several hard links stays put. */
-export async function moveEntry(source: ResolvedPath, destination: ResolvedPath): Promise<IoResult<null>> {
+/**
+ * Moves a file or folder to a name that does not exist yet; a file with several hard links stays put.
+ * Source and destination folders are checked again right before the move and the arrival is verified (`relocate`).
+ */
+export async function moveEntry(source: ResolvedPath, destination: ResolvedPath, hooks: IoHooks = {}): Promise<IoResult<null>> {
   if (!source.exists) return failFromErrno({ code: 'ENOENT' }, '')
   if (source.relative === '') return refuseMove('A root folder cannot be moved: move something inside it.')
   const entry = await lstatEntry(source)
   if (!entry.ok) return entry
   const kind = kindOf(entry.value)
-  if (kind === 'other') return fail('special-file', 'That is not a regular file or folder (a pipe, socket or device) and was refused.')
+  if (kind !== 'file' && kind !== 'directory') return fail('special-file', 'That is not a regular file or folder (a pipe, socket or device) and was refused.')
   if (kind === 'directory' && isWithinOn(source.absolute, destination.absolute)) {
     return refuseMove('A folder cannot be moved into itself: choose a destination outside it.')
   }
@@ -64,10 +70,9 @@ export async function moveEntry(source: ResolvedPath, destination: ResolvedPath)
   }
   const unfit = (await checkNewEntry(destination)) ?? (await parentUnchanged(source))
   if (unfit !== null) return unfit
-  try {
-    await rename(source.absolute, destination.absolute)
-  } catch (error: unknown) {
-    return failFromErrno(error, 'moving it')
+  const recheck = async () => {
+    await hooks.beforeCommit?.()
+    return (await stillAsChecked(source)) ?? (await checkNewEntry(destination))
   }
-  return succeed(null)
+  return relocate(source.absolute, destination.absolute, kind, entry.value, recheck)
 }

@@ -24,6 +24,12 @@ export interface IdentityStat extends FileIdentity {
   readonly isSymbolicLink: boolean
 }
 
+/**
+ * How identities are read. The default is `lstat`; tests pass their own to
+ * stand in for a mount whose identities cannot be faked on a real disk.
+ */
+export type StatFn = (target: string) => Promise<IdentityStat | null>
+
 /** `lstat` with bigint numbers; `null` when the path does not exist or cannot be read. */
 export async function statIdentity(target: string): Promise<IdentityStat | null> {
   try {
@@ -44,15 +50,31 @@ export function sameIdentity(left: FileIdentity, right: FileIdentity): boolean {
  * ancestor is the folder itself; names past the nearest existing one (a file
  * about to be created) have no identity yet and are skipped.
  */
-export async function existingChain(canonical: string): Promise<readonly ChainEntry[]> {
+export async function existingChain(canonical: string, stat: StatFn = statIdentity): Promise<readonly ChainEntry[]> {
   const ancestors: string[] = []
   for (let current = canonical; ; current = path.dirname(current)) {
     ancestors.push(current)
     if (path.dirname(current) === current) break
   }
-  const stats = await Promise.all(ancestors.map((ancestor) => statIdentity(ancestor)))
+  const stats = await Promise.all(ancestors.map((ancestor) => stat(ancestor)))
   return ancestors.flatMap((ancestor, index) => {
     const stat = stats[index]
     return stat === null || stat === undefined ? [] : [{ path: ancestor, dev: stat.dev, ino: stat.ino }]
   })
+}
+
+/** Some SMB/NFS/FUSE mounts report inode 0 for everything: such an identity says nothing. */
+export function isUsableIdentity(identity: FileIdentity): boolean {
+  return identity.ino !== 0n
+}
+
+/** A folder and its trash cannot be told apart by identity: containment on this file system would collapse. */
+export function identitiesCollapse(folder: FileIdentity, trash: FileIdentity | null): boolean {
+  if (!isUsableIdentity(folder)) return true
+  return trash !== null && (!isUsableIdentity(trash) || sameIdentity(folder, trash))
+}
+
+/** Two different paths of one chain that report one identity: this file system does not tell folders apart. */
+export function hasDuplicateIdentity(chain: readonly ChainEntry[]): boolean {
+  return chain.some((entry, index) => chain.slice(index + 1).some((other) => sameIdentity(entry, other)))
 }

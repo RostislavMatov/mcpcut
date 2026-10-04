@@ -78,7 +78,7 @@ export const TOOL_SPECS: readonly ToolSpec[] = [
   {
     name: 'write_file',
     description:
-      'Create a text file, or replace an existing one (needs the edit right; pass expectedSha256 from read_file to avoid overwriting a concurrent change). The parent folder must exist.',
+      'Create a text file, or replace an existing one (needs the edit right, and read as well when you pass expectedSha256 from read_file to avoid overwriting a concurrent change). The parent folder must exist.',
     annotations: OVERWRITE,
     schema: writeFileSchema,
   },
@@ -91,19 +91,19 @@ export const TOOL_SPECS: readonly ToolSpec[] = [
   {
     name: 'edit_file',
     description:
-      'Replace exact text in a text file: every oldText must occur exactly once, and all edits apply or none. Pass expectedSha256 from read_file to guard against concurrent changes.',
+      'Replace exact text in a text file (needs the read and edit rights): every oldText must occur exactly once, and all edits apply or none. Pass expectedSha256 from read_file to guard against concurrent changes.',
     annotations: WRITE,
     schema: editFileSchema,
   },
   {
     name: 'move_file',
-    description: 'Move or rename a file or folder. Needs the delete right on the source and the write right on the destination.',
+    description: 'Move or rename a file or folder. Needs the delete right on the source and the write right on the destination; the destination may not give you read or edit rights you lack at the source. A folder that contains a separately granted folder cannot be moved.',
     annotations: WRITE,
     schema: moveFileSchema,
   },
   {
     name: 'delete_file',
-    description: 'Delete a file or folder by moving it to the trash; only an administrator can restore it.',
+    description: 'Delete a file or folder by moving it to the trash; only an administrator can restore it. A folder that contains a separately granted folder cannot be deleted.',
     annotations: DESTROY,
     schema: pathArgsSchema,
   },

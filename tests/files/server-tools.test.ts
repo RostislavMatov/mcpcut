@@ -138,7 +138,9 @@ describe('files server tools', () => {
       expect(result.text).toContain('trash')
       expect(result.text).toContain('administrator can restore')
       const id = (await readdir(join(root, TRASH_DIR_NAME))).find((name) => name.endsWith('.json'))?.replace('.json', '')
-      expect(result.text).toContain(`mcpcut files trash restore ${root} ${id}`)
+      expect(result.text).toContain(`id ${id}`)
+      expect(result.text.replace(at('gone.txt'), '')).not.toContain(root)
+      expect(result.text).not.toContain('mcpcut files')
       const listing = JSON.parse((await h.call('list_directory', { path: root })).text) as { entries: { name: string }[] }
       expect(listing.entries).toEqual([])
       expect(await readdir(join(root, TRASH_DIR_NAME))).toHaveLength(2)

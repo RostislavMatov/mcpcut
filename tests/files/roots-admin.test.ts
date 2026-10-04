@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
@@ -153,5 +153,44 @@ describe('prepareRoot', () => {
     } finally {
       await chmod(dir, 0o700)
     }
+  })
+})
+
+describe('prepareRoot: a pre-existing trash folder (M4)', () => {
+  const INSPECT = /inspect.*remove or rename/
+
+  test.runIf(isPosix)('refuses a trash with a mode other than 700', async () => {
+    const dir = await folder('data')
+    await mkdir(join(dir, TRASH_DIR_NAME))
+    await chmod(join(dir, TRASH_DIR_NAME), 0o755)
+
+    expectRefused(await prepareRoot(dir), /mode 755.*700/)
+  })
+
+  test.runIf(isPosix)('refuses a trash holding a foreign file', async () => {
+    const dir = await folder('data')
+    await mkdir(join(dir, TRASH_DIR_NAME), { mode: 0o700 })
+    await writeFile(join(dir, TRASH_DIR_NAME, 'payload.sh'), 'x')
+
+    expectRefused(await prepareRoot(dir), INSPECT)
+  })
+
+  test.runIf(isPosix)('accepts a valid existing trash and does not recreate it', async () => {
+    const dir = await folder('data')
+    const trash = join(dir, TRASH_DIR_NAME)
+    await mkdir(join(trash, '01K9Z3Q8M5R7T2V4X6B8D0F1GH'), { recursive: true, mode: 0o700 })
+    await writeFile(join(trash, '01K9Z3Q8M5R7T2V4X6B8D0F1GH.json'), '{}')
+    await writeFile(join(trash, '.manifest-01K9Z3Q8M5R7T2V4X6B8D0F1GH.tmp'), '{}')
+    await chmod(trash, 0o700)
+
+    expect(await prepareRoot(dir)).toEqual({ ok: true, path: dir, trashCreated: false })
+  })
+
+  test.runIf(isPosix)('accepts an empty trash with mode 700', async () => {
+    const dir = await folder('data')
+    await mkdir(join(dir, TRASH_DIR_NAME), { mode: 0o700 })
+    await chmod(join(dir, TRASH_DIR_NAME), 0o700)
+
+    expect((await prepareRoot(dir)).ok).toBe(true)
   })
 })

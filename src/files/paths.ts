@@ -1,7 +1,17 @@
 import { realpath } from 'node:fs/promises'
 import path from 'node:path'
 import { MAX_PATH_LENGTH, TRASH_DIR_NAME } from './constants.js'
-import { existingChain, sameIdentity, statIdentity, type ChainEntry, type FileIdentity } from './identity.js'
+import {
+  existingChain,
+  hasDuplicateIdentity,
+  identitiesCollapse,
+  isUsableIdentity,
+  sameIdentity,
+  statIdentity,
+  type ChainEntry,
+  type FileIdentity,
+  type StatFn,
+} from './identity.js'
 import { checkName, hasTrashSegment, isLexicallyUnder, isWithinOn } from './names.js'
 
 /**
@@ -82,9 +92,12 @@ interface RootInfo {
   readonly trash: FileIdentity | null
 }
 
-function refuse(refusal: PathRefusal): Refused {
-  return { ok: false, refusal, message: REFUSAL_MESSAGES[refusal] }
+function refuse(refusal: PathRefusal, message: string = REFUSAL_MESSAGES[refusal]): Refused {
+  return { ok: false, refusal, message }
 }
+
+const UNRELIABLE_IDENTITIES_MESSAGE =
+  'The path could not be resolved safely: file identities are not reliable on this file system, so folders cannot be told apart; ask an administrator.'
 
 function checkSyntax(raw: string): PathRefusal | null {
   if (raw === '') return 'empty'
@@ -133,14 +146,16 @@ export async function canonicalPath(raw: string): Promise<string | null> {
   return target.ok ? target.real : null
 }
 
-/** A root that no longer resolves is skipped — never trusted. Its trash counts only as a real folder. */
-async function describeRoot(declared: string): Promise<RootInfo | null> {
+/** A root that no longer resolves, or whose file system gives unreliable identities, is skipped — never trusted. Its trash counts only as a real folder. */
+async function describeRoot(declared: string, stat: StatFn): Promise<RootInfo | null> {
   const outcome = await realpathOf(declared)
   if (outcome.kind !== 'found') return null
-  const identity = await statIdentity(outcome.real)
+  const identity = await stat(outcome.real)
   if (identity === null) return null
-  const trash = await statIdentity(path.join(outcome.real, TRASH_DIR_NAME))
+  const trash = await stat(path.join(outcome.real, TRASH_DIR_NAME))
   const isRealTrash = trash !== null && trash.isDirectory && !trash.isSymbolicLink
+  // Identities that cannot tell the root from its trash (or are 0) would collapse containment: unusable.
+  if (identitiesCollapse(identity, isRealTrash ? trash : null)) return null
   return { declared: path.resolve(declared), canonical: outcome.real, identity, trash: isRealTrash ? trash : null }
 }
 
@@ -150,6 +165,17 @@ function deepestRoot(chain: readonly ChainEntry[], roots: readonly RootInfo[]): 
 
 function touchesTrash(chain: readonly ChainEntry[], roots: readonly RootInfo[]): boolean {
   return chain.some((entry) => roots.some((root) => root.trash !== null && sameIdentity(root.trash, entry)))
+}
+
+/**
+ * The entries from the target up to the root decide the outcome, so each must
+ * carry a real identity (entries above the root decide nothing and are not
+ * looked at for that). No two ancestors of any depth may share one: on a real
+ * disk they never do, and where they do the file system cannot tell folders apart.
+ */
+function isChainReliable(chain: readonly ChainEntry[], root: ChainEntry): boolean {
+  const decisive = chain.slice(0, chain.indexOf(root) + 1)
+  return decisive.every((entry) => isUsableIdentity(entry)) && !hasDuplicateIdentity(chain)
 }
 
 /** `target` below an ancestor taken from its own `dirname` chain — a plain slice, no re-spelling. */
@@ -163,17 +189,18 @@ function relativeBelow(ancestor: string, target: string): string {
  * means the canonical target lies inside one of them and outside every
  * trash; nothing about the agent's operations on it — that is `rights.ts`.
  */
-export async function resolveWithinRoots(raw: string, roots: readonly string[]): Promise<PathResult> {
+export async function resolveWithinRoots(raw: string, roots: readonly string[], stat: StatFn = statIdentity): Promise<PathResult> {
   const syntaxRefusal = checkSyntax(raw)
   if (syntaxRefusal !== null) return refuse(syntaxRefusal)
   const lexical = path.resolve(raw)
-  const infos = (await Promise.all(roots.map((root) => describeRoot(root)))).filter((info) => info !== null)
+  const infos = (await Promise.all(roots.map((root) => describeRoot(root, stat)))).filter((info) => info !== null)
   if (!isLexicallyUnder(lexical, infos.flatMap((info) => [info.declared, info.canonical]))) return refuse('outside-roots')
   const target = await canonicalTarget(lexical)
   if (!target.ok) return target
-  const chain = await existingChain(target.real)
+  const chain = await existingChain(target.real, stat)
   const root = deepestRoot(chain, infos)
   if (root === undefined || !isWithinOn(root.path, target.real)) return refuse('outside-roots')
+  if (!isChainReliable(chain, root)) return refuse('unresolvable', UNRELIABLE_IDENTITIES_MESSAGE)
   const relative = relativeBelow(root.path, target.real)
   if (hasTrashSegment(relative) || touchesTrash(chain, infos)) return refuse('trash')
   return { ok: true, path: { root: root.path, absolute: target.real, relative, exists: target.exists, chain } }

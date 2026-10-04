@@ -1,6 +1,9 @@
-import { lstat, readdir, realpath, rename, rm, rmdir, unlink } from 'node:fs/promises'
+import { lstat, readdir, realpath, rm, rmdir, unlink } from 'node:fs/promises'
 import path from 'node:path'
-import { fail, failFromErrno, kindOf, succeed, type IoResult } from './io-common.js'
+import { changed, fail, failFromErrno, kindOf, succeed, type IoFailure, type IoHooks, type IoResult } from './io-common.js'
+import { hashRegularFile } from './io-hash.js'
+import { relocate } from './io-relocate.js'
+import { sameIdentity } from './identity.js'
 import { hasTrashSegment, isWithinOn } from './names.js'
 import {
   isTrashId,
@@ -56,7 +59,7 @@ function isSafeRelative(relative: string): boolean {
   return relative.split(/[\\/]/).every((segment) => segment !== '' && segment !== '.' && segment !== '..')
 }
 
-type Destination = { readonly ok: true; readonly path: string } | { readonly ok: false; readonly failure: IoResult<never> }
+type Destination = { readonly ok: true; readonly path: string } | { readonly ok: false; readonly failure: IoFailure }
 
 /** Where a restored entry goes: under the root's real path, in a parent folder that still exists. */
 async function destinationOf(root: string, relative: string): Promise<Destination> {
@@ -79,8 +82,16 @@ async function exists(file: string): Promise<boolean> {
   return lstat(file).then(() => true, () => false)
 }
 
-/** Puts an entry back at its original path; refuses when something is there now or the folder is gone. */
-export async function restoreFromTrash(root: string, id: string): Promise<IoResult<TrashManifest>> {
+const HASH_MISMATCH_MESSAGE =
+  'The trashed file differs from the manifest (its content changed in the trash) and was not restored: inspect it in the trash folder.'
+
+/**
+ * Puts an entry back at its original path; refuses when something is there
+ * now, the folder is gone, or a file's content no longer matches the manifest.
+ * A file is moved with `link`+`unlink`, so something that appears at the
+ * original path meanwhile is never overwritten (see `relocate`).
+ */
+export async function restoreFromTrash(root: string, id: string, hooks: IoHooks = {}): Promise<IoResult<TrashManifest>> {
   if (!isTrashId(id)) return notFoundId()
   const trash = await requireTrashDir(root)
   if (!trash.ok) return trash
@@ -93,17 +104,41 @@ export async function restoreFromTrash(root: string, id: string): Promise<IoResu
   const payload = await lstat(stored, { bigint: true }).catch(() => null)
   if (payload === null) return fail('not-found', 'The trashed item is missing from its trash folder: nothing to restore.')
   if (kindOf(payload) !== manifest.kind) return fail('changed', 'The trashed item is not what the manifest says and was not restored.')
-  if (await exists(destination.path)) {
-    return fail('exists', 'Something already exists at the original path: move or rename it, then restore again.')
+  if (manifest.kind === 'file' && manifest.sha256 !== undefined && (await hashRegularFile(stored)) !== manifest.sha256) {
+    return fail('changed', HASH_MISMATCH_MESSAGE)
   }
+  const recheck = async () => {
+    await hooks.beforeCommit?.()
+    return recheckRestore(root, manifest.relative, destination.path, stored, payload)
+  }
+  const moved = await relocate(stored, destination.path, manifest.kind, payload, recheck)
+  if (!moved.ok) return moved
   try {
-    await rename(stored, destination.path)
     await unlink(manifestPath(trash.value, id))
     await rmdir(path.join(trash.value, id))
   } catch (error: unknown) {
     return failFromErrno(error, 'restoring it')
   }
   return succeed(manifest)
+}
+
+/** Right before the move: the destination resolves as before and is free, and the payload is still the one checked. */
+async function recheckRestore(
+  root: string,
+  relative: string,
+  destination: string,
+  stored: string,
+  payload: { readonly dev: bigint; readonly ino: bigint },
+): Promise<IoFailure | null> {
+  const again = await destinationOf(root, relative)
+  if (!again.ok) return again.failure
+  if (again.path !== destination) return changed()
+  const now = await lstat(stored, { bigint: true }).catch(() => null)
+  if (now === null || now.isSymbolicLink() || !sameIdentity(now, payload)) return changed()
+  if (await exists(destination)) {
+    return fail('exists', 'Something already exists at the original path: move or rename it, then restore again.')
+  }
+  return null
 }
 
 export interface PurgeResult {

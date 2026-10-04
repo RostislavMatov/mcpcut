@@ -172,3 +172,30 @@ export async function checkNewEntry(target: ResolvedPath): Promise<IoFailure | n
     return failFromErrno(error, 'looking at the folder')
   }
 }
+
+/**
+ * Test-only seams of the I/O layer: `beforeCommit` runs right before the
+ * identity re-check that precedes every create and rename (where a racing
+ * process would act), `afterCommit` right after the create, before it is verified.
+ * Production code passes none.
+ */
+export interface IoHooks {
+  readonly beforeCommit?: () => Promise<void>
+  readonly afterCommit?: () => Promise<void>
+}
+
+/**
+ * Run IMMEDIATELY before a rename or a create (ADR-0020 §3.5): the parent
+ * folder still is the one that was checked and, when the target exists, it
+ * still is the entry that was checked. The window that remains is the few
+ * microseconds between this check and the system call; what follows the call
+ * (the verification in `io-relocate.ts`, `writeNewFile`) closes it as far as
+ * POSIX allows without `openat`.
+ */
+export async function stillAsChecked(target: ResolvedPath): Promise<IoFailure | null> {
+  const parent = await parentUnchanged(target)
+  if (parent !== null) return parent
+  if (!target.exists) return null
+  const entry = await lstatEntry(target)
+  return entry.ok ? null : entry
+}

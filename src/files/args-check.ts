@@ -1,8 +1,8 @@
 import type { ArgsCheck, ArgsRefusal } from '../proxy/gate-args-check.js'
 import { resolveWithinRoots, type ResolvedPath } from './paths.js'
-import { needsOf, WRITE_FILE_OPS, type PathNeed } from './tool-access.js'
-import { contextFor, rightsLacking, type ContextSource, type ToolContext } from './tool-context.js'
-import type { FileOp } from './constants.js'
+import { carriedMessage, carriedShortfall, INNER_GRANT_RULE, innerGrantMessage, innerGrantOf } from './access-checks.js'
+import { needsOf, opsOfNeed, type PathNeed } from './tool-access.js'
+import { contextFor, firstMissing, heldText, type ContextSource, type ToolContext } from './tool-context.js'
 
 /**
  * The gate's argument check for the built-in file server (ADR-0020 §2): the
@@ -28,11 +28,7 @@ interface Resolved {
   readonly target: ResolvedPath
 }
 
-function opOf(need: PathNeed, target: ResolvedPath): FileOp {
-  if (need.op !== 'create-or-replace') return need.op
-  return target.exists ? WRITE_FILE_OPS.replace : WRITE_FILE_OPS.create
-}
-
+/** Rights lacking on each path first, then what looks beyond one path: a moved or deleted folder's inner grants, a move's carried rights. */
 async function refusalFor(ctx: ToolContext, needs: readonly PathNeed[]): Promise<ArgsRefusal | null> {
   if (!ctx.prepared.ok) return { rule: `files: ${ctx.prepared.problem}`, reason: ctx.prepared.message }
   const resolved: Resolved[] = []
@@ -41,13 +37,37 @@ async function refusalFor(ctx: ToolContext, needs: readonly PathNeed[]): Promise
     if (!outcome.ok) return { rule: `files: ${outcome.refusal}`, reason: outcome.message }
     resolved.push({ need, target: outcome.path })
   }
+  return lackingRight(ctx, resolved) ?? (await beyondOnePath(ctx, resolved))
+}
+
+function lackingRight(ctx: ToolContext, resolved: readonly Resolved[]): ArgsRefusal | null {
   for (const { need, target } of resolved) {
-    const op = opOf(need, target)
-    const rights = rightsLacking(ctx, target, op)
-    if (rights !== null) {
-      const held = rights.length === 0 ? 'none' : rights.join(', ')
-      return { rule: `files: no right ${op} on ${shown(need.raw)}`, reason: `no right to ${op} ${shown(need.raw)}: the agent's rights there are ${held}` }
+    const missing = firstMissing(ctx, target, opsOfNeed(need, target.exists))
+    if (missing !== null) {
+      return {
+        rule: `files: no right ${missing.op} on ${shown(need.raw)}`,
+        reason: `no right to ${missing.op} ${shown(need.raw)}: the agent's rights there are ${heldText(missing.held)}`,
+      }
     }
+  }
+  return null
+}
+
+async function beyondOnePath(ctx: ToolContext, resolved: readonly Resolved[]): Promise<ArgsRefusal | null> {
+  const [source, destination] = resolved
+  if (source !== undefined && destination !== undefined) {
+    const carried = carriedShortfall(ctx, source.target, destination.target)
+    if (carried !== null) {
+      return {
+        rule: `files: no right ${carried.op} on ${shown(source.need.raw)}`,
+        reason: shown(carriedMessage(carried, source.need.raw, destination.need.raw)),
+      }
+    }
+  }
+  for (const { need, target } of resolved) {
+    if (!need.isRemoved) continue
+    const inner = await innerGrantOf(ctx, target)
+    if (inner !== null) return { rule: INNER_GRANT_RULE, reason: shown(innerGrantMessage(need.raw, inner)) }
   }
   return null
 }

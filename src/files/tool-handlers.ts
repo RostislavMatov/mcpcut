@@ -3,16 +3,16 @@ import { FILE_OPS, type FileOp } from './constants.js'
 import { fileInfo, listDirectory, readText } from './io-read.js'
 import { moveToTrash } from './io-trash.js'
 import { editFile, makeDirectory, moveEntry, replaceFile, writeNewFile } from './io-write.js'
-import { restoreCommandOf } from './restore-hint.js'
 import type { TrashManifest } from './trash-manifest.js'
 import { resolveWithinRoots, type ResolvedPath } from './paths.js'
-import { MOVE_FILE_OPS, PATH_TOOL_OPS, WRITE_FILE_OPS } from './tool-access.js'
+import { carriedMessage, carriedShortfall, innerGrantMessage, innerGrantOf } from './access-checks.js'
+import { MOVE_FILE_OPS, PATH_TOOL_OPS, writeFileOps } from './tool-access.js'
 import {
   authorize,
   errorOutput,
   fromIo,
   jsonOutput,
-  requireOp,
+  requireOps,
   resolveFor,
   textOutput,
   type ToolContext,
@@ -26,6 +26,17 @@ import {
   summarizeIssues,
   writeFileSchema,
 } from './tools.js'
+
+/*
+ * Known limits, accepted (security review):
+ *  - `write_file` answers "exists" (the right it needs differs), so an agent with write
+ *    but not read can learn that a name is taken.
+ *  - `list_directory` shows the names of children that a deeper rule carves out; only
+ *    their content and operations are refused.
+ *  - There is no quota: an agent with write can fill the disk (each write is capped at 10 MiB).
+ *  - A crash between the trash rename and the manifest write leaves an orphan payload
+ *    (see io-trash.ts).
+ */
 
 type Handler = (ctx: ToolContext, args: never) => Promise<ToolOutput>
 
@@ -47,15 +58,15 @@ async function listRoots(ctx: ToolContext): Promise<ToolOutput> {
   return folders.length === 0 ? textOutput(NO_FOLDERS_MESSAGE) : jsonOutput({ folders })
 }
 
-async function onPath(ctx: ToolContext, raw: string, op: FileOp, run: (target: ResolvedPath) => Promise<ToolOutput>): Promise<ToolOutput> {
-  const access = await authorize(ctx, raw, op)
+async function onPath(ctx: ToolContext, raw: string, ops: readonly FileOp[], run: (target: ResolvedPath) => Promise<ToolOutput>): Promise<ToolOutput> {
+  const access = await authorize(ctx, raw, ops)
   return access.ok ? run(access.value) : access.output
 }
 
 async function writeFileTool(ctx: ToolContext, args: z.output<typeof writeFileSchema>): Promise<ToolOutput> {
   const resolved = await resolveFor(ctx, args.path)
   if (!resolved.ok) return resolved.output
-  const refusal = requireOp(ctx, resolved.value, args.path, resolved.value.exists ? WRITE_FILE_OPS.replace : WRITE_FILE_OPS.create)
+  const refusal = requireOps(ctx, resolved.value, args.path, writeFileOps(resolved.value.exists, args.expectedSha256 !== undefined))
   if (refusal !== null) return refusal
   const written = resolved.value.exists
     ? await replaceFile(resolved.value, args.content, args.expectedSha256)
@@ -68,14 +79,27 @@ async function moveFileTool(ctx: ToolContext, args: z.output<typeof moveFileSche
   if (!source.ok) return source.output
   const destination = await resolveFor(ctx, args.destination)
   if (!destination.ok) return destination.output
-  const refusal = requireOp(ctx, source.value, args.source, MOVE_FILE_OPS.source) ??
-    requireOp(ctx, destination.value, args.destination, MOVE_FILE_OPS.destination)
+  const refusal = requireOps(ctx, source.value, args.source, [MOVE_FILE_OPS.source]) ??
+    requireOps(ctx, destination.value, args.destination, [MOVE_FILE_OPS.destination])
   if (refusal !== null) return refusal
+  const carried = carriedShortfall(ctx, source.value, destination.value)
+  if (carried !== null) return errorOutput(carriedMessage(carried, args.source, args.destination))
+  const inner = await innerGrantOf(ctx, source.value)
+  if (inner !== null) return errorOutput(innerGrantMessage(args.source, inner))
   return fromIo(await moveEntry(source.value, destination.value), () => textOutput(`Moved ${args.source} to ${args.destination}.`))
 }
 
+async function deleteFileTool(ctx: ToolContext, args: z.output<typeof pathArgsSchema>): Promise<ToolOutput> {
+  return onPath(ctx, args.path, PATH_TOOL_OPS.delete_file, async (target) => {
+    const inner = await innerGrantOf(ctx, target)
+    if (inner !== null) return errorOutput(innerGrantMessage(args.path, inner))
+    return fromIo(await moveToTrash(target, ctx.actor), (manifest) => textOutput(trashedText(args.path, manifest)))
+  })
+}
+
+// The text names no root: it could lie above the folder the agent was granted, and the restore command is shown to administrators in the CLI.
 const trashedText = (path: string, manifest: TrashManifest): string =>
-  `Moved ${path} to the trash (id ${manifest.id}). It is not deleted for good: an administrator can restore it with \`${restoreCommandOf(manifest.root, manifest.id)}\`.`
+  `Moved ${path} to the trash (id ${manifest.id}). It is not deleted for good: an administrator can restore it by that id.`
 
 const HANDLERS: Readonly<Record<string, Handler>> = {
   list_roots: listRoots,
@@ -95,10 +119,7 @@ const HANDLERS: Readonly<Record<string, Handler>> = {
       fromIo(await editFile(target, args.edits, args.expectedSha256), (info) => jsonOutput({ path: args.path, size: info.size, sha256: info.sha256 })),
     ),
   move_file: moveFileTool,
-  delete_file: (ctx: ToolContext, args: z.output<typeof pathArgsSchema>) =>
-    onPath(ctx, args.path, PATH_TOOL_OPS.delete_file, async (target) =>
-      fromIo(await moveToTrash(target, ctx.actor), (manifest) => textOutput(trashedText(args.path, manifest))),
-    ),
+  delete_file: deleteFileTool,
 }
 
 /** True when the file server has a tool of that name. */

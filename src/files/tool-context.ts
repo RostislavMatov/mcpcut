@@ -61,19 +61,36 @@ export function rightsLacking(ctx: ToolContext, target: ResolvedPath, op: FileOp
   return have.includes(op) ? null : FILE_OPS.filter((item) => have.includes(item))
 }
 
-/** `null` when the rules give `op` at the resolved path, else the one-line refusal. */
-export function requireOp(ctx: ToolContext, target: ResolvedPath, raw: string, op: FileOp): ToolOutput | null {
-  if (!ctx.prepared.ok) return errorOutput(ctx.prepared.message)
-  const have = rightsLacking(ctx, target, op)
-  if (have === null) return null
-  const rights = have.length === 0 ? 'none' : have.join(', ')
-  return errorOutput(`No right to ${op} ${raw}: your rights there are ${rights}. Call list_roots to see your folders.`)
+/** The first of `ops` the rules do not give at the target, with the rights that are held there; `null` when all are given. */
+export function firstMissing(ctx: ToolContext, target: ResolvedPath, ops: readonly FileOp[]): Shortfall | null {
+  for (const op of ops) {
+    const held = rightsLacking(ctx, target, op)
+    if (held !== null) return { op, held }
+  }
+  return null
 }
 
-/** Resolve a path and require one operation on it. */
-export async function authorize(ctx: ToolContext, raw: string, op: FileOp): Promise<Outcome<ResolvedPath>> {
+export interface Shortfall {
+  readonly op: FileOp
+  readonly held: readonly FileOp[]
+}
+
+export function heldText(held: readonly FileOp[]): string {
+  return held.length === 0 ? 'none' : held.join(', ')
+}
+
+/** `null` when the rules give every one of `ops` at the resolved path, else the one-line refusal. */
+export function requireOps(ctx: ToolContext, target: ResolvedPath, raw: string, ops: readonly FileOp[]): ToolOutput | null {
+  if (!ctx.prepared.ok) return errorOutput(ctx.prepared.message)
+  const missing = firstMissing(ctx, target, ops)
+  if (missing === null) return null
+  return errorOutput(`No right to ${missing.op} ${raw}: your rights there are ${heldText(missing.held)}. Call list_roots to see your folders.`)
+}
+
+/** Resolve a path and require operations on it. */
+export async function authorize(ctx: ToolContext, raw: string, ops: readonly FileOp[]): Promise<Outcome<ResolvedPath>> {
   const resolved = await resolveFor(ctx, raw)
   if (!resolved.ok) return resolved
-  const refusal = requireOp(ctx, resolved.value, raw, op)
+  const refusal = requireOps(ctx, resolved.value, raw, ops)
   return refusal === null ? resolved : { ok: false, output: refusal }
 }

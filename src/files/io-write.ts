@@ -1,10 +1,11 @@
 import type { BigIntStats } from 'node:fs'
 import { constants } from 'node:fs'
-import { lstat, open, rename, rm, unlink } from 'node:fs/promises'
+import { lstat, open, realpath, rename, rm, unlink } from 'node:fs/promises'
 import path from 'node:path'
 import { ulid } from 'ulid'
 import { MAX_WRITE_BYTES } from './constants.js'
 import { sameIdentity } from './identity.js'
+import { isWithinOn, lexicalKey } from './names.js'
 import {
   O_NOFOLLOW,
   changed,
@@ -17,6 +18,7 @@ import {
   requireSingleLink,
   sha256Of,
   succeed,
+  type IoHooks,
   type IoResult,
 } from './io-common.js'
 import { readBytes, readText } from './io-read.js'
@@ -51,10 +53,17 @@ function tooLarge(): IoResult<never> {
   return fail('too-large', `The content is larger than ${MAX_WRITE_BYTES / (1024 * 1024)} MiB and was not written: split it into smaller files.`)
 }
 
-/** Creates a file that does not exist yet; refuses an existing path and a missing parent. */
-export async function writeNewFile(target: ResolvedPath, content: string): Promise<IoResult<WriteInfo>> {
+/**
+ * Creates a file that does not exist yet; refuses an existing path and a
+ * missing parent. The parent is checked again right before the create, and
+ * the created file is verified afterwards (`verifyCreated`).
+ */
+export async function writeNewFile(target: ResolvedPath, content: string, hooks: IoHooks = {}): Promise<IoResult<WriteInfo>> {
   const bytes = Buffer.from(content, 'utf8')
   if (bytes.length > MAX_WRITE_BYTES) return tooLarge()
+  const early = await checkNewEntry(target)
+  if (early !== null) return early
+  await hooks.beforeCommit?.()
   const unfit = await checkNewEntry(target)
   if (unfit !== null) return unfit
   let handle
@@ -63,23 +72,44 @@ export async function writeNewFile(target: ResolvedPath, content: string): Promi
   } catch (error: unknown) {
     return failFromErrno(error, 'creating the file')
   }
-  let created: BigIntStats
+  let created: BigIntStats | undefined
   try {
     created = await handle.stat({ bigint: true })
     await handle.writeFile(bytes)
     await handle.sync()
   } catch (error: unknown) {
     await handle.close().catch(() => undefined)
-    await unlink(target.absolute).catch(() => undefined)
+    // Never a bare unlink: only the file whose identity we saw is removed. (If even `fstat` failed there is no identity to compare, and an empty file stays.)
+    if (created !== undefined) await removeIfSame(target.absolute, created)
     return failFromErrno(error, 'writing the file')
   }
   await handle.close()
-  const swapped = await parentUnchanged(target)
+  await hooks.afterCommit?.()
+  const swapped = await verifyCreated(target, created)
   if (swapped !== null) {
     await removeIfSame(target.absolute, created)
     return swapped
   }
   return succeed({ sha256: sha256Of(bytes), size: bytes.length })
+}
+
+/**
+ * After the create: the parent is still the checked folder, the path still
+ * leads to the very file just created (same identity as the open handle) and
+ * its real path still lies inside the root. Anything else is `changed`, and
+ * the caller removes the file only if it still is ours.
+ */
+async function verifyCreated(target: ResolvedPath, created: BigIntStats): Promise<IoResult<never> | null> {
+  const parent = await parentUnchanged(target)
+  if (parent !== null) return parent
+  try {
+    const now = await lstat(target.absolute, { bigint: true })
+    if (now.isSymbolicLink() || !sameIdentity(now, created)) return changed()
+    const real = await realpath(target.absolute)
+    return isWithinOn(lexicalKey(target.root), lexicalKey(real)) ? null : changed()
+  } catch {
+    return changed()
+  }
 }
 
 /** Removes `file` only when it still is the very file just created (a swapped parent must not cost someone else's file). */
