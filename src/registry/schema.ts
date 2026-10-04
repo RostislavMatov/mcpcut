@@ -159,11 +159,26 @@ const httpServerSchema = z.strictObject({
   protocol: z.enum(HTTP_PROTOCOL_VALUES).prefault(DEFAULT_HTTP_PROTOCOL),
 })
 
+/** The in-process servers mcpcut ships (ADR-0020); `files` is the only kind so far. */
+export const BUILTIN_KINDS = ['files'] as const
+
+/** No spawn, no env, no URL: the record only names which built-in server it is. */
+const builtinServerSchema = z.strictObject({
+  name: serverNameSchema,
+  transport: z.literal('builtin'),
+  kind: z.enum(BUILTIN_KINDS),
+})
+
 /** One registry entry, discriminated on `transport`. */
-export const serverRecordSchema = z.discriminatedUnion('transport', [stdioServerSchema, httpServerSchema])
+export const serverRecordSchema = z.discriminatedUnion('transport', [
+  stdioServerSchema,
+  httpServerSchema,
+  builtinServerSchema,
+])
 
 export type StdioServerRecord = z.infer<typeof stdioServerSchema>
 export type HttpServerRecord = z.infer<typeof httpServerSchema>
+export type BuiltinServerRecord = z.infer<typeof builtinServerSchema>
 export type ServerRecord = z.infer<typeof serverRecordSchema>
 
 /** Full `registry.json` document. */

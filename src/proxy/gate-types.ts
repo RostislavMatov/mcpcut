@@ -1,4 +1,5 @@
 import type { ApprovalWaiter } from '../policy/approvals/waiter.js'
+import type { ArgsCheck } from './gate-args-check.js'
 import type { GrantRegistry } from '../policy/approvals/grants.js'
 import type { PolicyProvider } from '../policy/reload.js'
 import type { Policy } from '../policy/schema.js'
@@ -85,6 +86,12 @@ export interface MessagePolicyGateDeps {
    * paths — such a call is refused: nobody can be asked.
    */
   readonly confirmInClient?: ConfirmInClientDeps
+  /**
+   * A tighten-only look at the call's arguments after `decide()` (ADR-0020
+   * §2): present only for a server whose arguments name resources the plane
+   * can check itself (the built-in file server). Absent: nothing changes.
+   */
+  readonly argsCheck?: ArgsCheck
 }
 
 /** What the gate needs for the confirmation in the client (see `gate-confirm.ts`). */

@@ -1,5 +1,7 @@
 import type { AgentRecord } from '../agents/schema.js'
 import { createRecordBuilder } from '../journal/record.js'
+import { createFilesArgsCheck } from '../files/args-check.js'
+import { createAgentFilesBackend, type FilesBackend } from '../files/upstream.js'
 import { createJournalSink, type JournalSink, type JournalSinkOptions } from '../journal/sink.js'
 import { createApprovalQueue } from '../policy/approvals/queue.js'
 import { createApprovalWaiter } from '../policy/approvals/waiter.js'
@@ -166,6 +168,12 @@ export function createChildSessionOpener(deps: ChildSessionDeps): ChildSessionOp
     }
   }
 
+  /** The agent's view of the built-in file server (ADR-0020); `undefined` for any other server. */
+  function filesBackendFor(target: ChildSessionTarget): FilesBackend | undefined {
+    if (target.record.transport !== 'builtin') return undefined
+    return createAgentFilesBackend({ agentName: target.agent.name, agents: deps.agents, journalDir: deps.journalDir })
+  }
+
   /** Opens the upstream and wires it to the caller through the memory pipe. */
   return async function openChildSession(
     ctx: SessionContext,
@@ -177,8 +185,11 @@ export function createChildSessionOpener(deps: ChildSessionDeps): ChildSessionOp
       void handle?.close('closed')
     })
 
+    const files = filesBackendFor(target)
     const opened = await openUpstream(target.record, {
       ...deps.upstream,
+      // The agent's folder rights for the built-in file server, read fresh on every call.
+      ...(files !== undefined ? { files } : {}),
       // The one place a decrypted vault value passes through on this path, so
       // the one place that can tell the journal what to redact. Registration
       // happens here rather than after `openUpstream` returns so that not even
@@ -211,6 +222,7 @@ export function createChildSessionOpener(deps: ChildSessionDeps): ChildSessionOp
         ...sessionDepsOf(ctx, target, journal),
         client: { source: pipe.session.source, sink: pipe.session.sink },
         server: { source: opened.upstream.source, sink: opened.upstream.sink },
+        ...(files !== undefined ? { argsCheck: createFilesArgsCheck(files) } : {}),
         onSessionEnd: (reason) => {
           // The session died on its own terms (revocation, upstream end):
           // tell whoever is driving it, whose teardown then calls `close()` —

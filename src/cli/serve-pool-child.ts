@@ -175,7 +175,7 @@ async function openOwnChild(
  * is taken at its word, everything else tries the handshake first.
  */
 export function revisionHintOf(record: ServerRecord): UpstreamRevisionHint {
-  if (record.transport === 'stdio') return 'legacy-first'
+  if (record.transport !== 'http') return 'legacy-first'
   if (record.protocol === 'sessionful') return 'sessionful-only'
   if (record.protocol === 'stateless') return 'stateless-only'
   return 'legacy-first'

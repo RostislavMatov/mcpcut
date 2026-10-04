@@ -4,6 +4,7 @@ import { fileInfo, listDirectory, readText } from './io-read.js'
 import { moveToTrash } from './io-trash.js'
 import { editFile, makeDirectory, moveEntry, replaceFile, writeNewFile } from './io-write.js'
 import { resolveWithinRoots, type ResolvedPath } from './paths.js'
+import { MOVE_FILE_OPS, PATH_TOOL_OPS, WRITE_FILE_OPS } from './tool-access.js'
 import {
   authorize,
   errorOutput,
@@ -52,7 +53,7 @@ async function onPath(ctx: ToolContext, raw: string, op: FileOp, run: (target: R
 async function writeFileTool(ctx: ToolContext, args: z.output<typeof writeFileSchema>): Promise<ToolOutput> {
   const resolved = await resolveFor(ctx, args.path)
   if (!resolved.ok) return resolved.output
-  const refusal = requireOp(ctx, resolved.value, args.path, resolved.value.exists ? 'edit' : 'write')
+  const refusal = requireOp(ctx, resolved.value, args.path, resolved.value.exists ? WRITE_FILE_OPS.replace : WRITE_FILE_OPS.create)
   if (refusal !== null) return refusal
   const written = resolved.value.exists
     ? await replaceFile(resolved.value, args.content, args.expectedSha256)
@@ -65,7 +66,8 @@ async function moveFileTool(ctx: ToolContext, args: z.output<typeof moveFileSche
   if (!source.ok) return source.output
   const destination = await resolveFor(ctx, args.destination)
   if (!destination.ok) return destination.output
-  const refusal = requireOp(ctx, source.value, args.source, 'delete') ?? requireOp(ctx, destination.value, args.destination, 'write')
+  const refusal = requireOp(ctx, source.value, args.source, MOVE_FILE_OPS.source) ??
+    requireOp(ctx, destination.value, args.destination, MOVE_FILE_OPS.destination)
   if (refusal !== null) return refusal
   return fromIo(await moveEntry(source.value, destination.value), () => textOutput(`Moved ${args.source} to ${args.destination}.`))
 }
@@ -76,23 +78,23 @@ const trashedText = (path: string, id: string): string =>
 const HANDLERS: Readonly<Record<string, Handler>> = {
   list_roots: listRoots,
   list_directory: (ctx: ToolContext, args: z.output<typeof pathArgsSchema>) =>
-    onPath(ctx, args.path, 'read', async (target) => fromIo(await listDirectory(target), jsonOutput)),
+    onPath(ctx, args.path, PATH_TOOL_OPS.list_directory, async (target) => fromIo(await listDirectory(target), jsonOutput)),
   get_file_info: (ctx: ToolContext, args: z.output<typeof pathArgsSchema>) =>
-    onPath(ctx, args.path, 'read', async (target) => fromIo(await fileInfo(target), jsonOutput)),
+    onPath(ctx, args.path, PATH_TOOL_OPS.get_file_info, async (target) => fromIo(await fileInfo(target), jsonOutput)),
   read_file: (ctx: ToolContext, args: z.output<typeof pathArgsSchema>) =>
-    onPath(ctx, args.path, 'read', async (target) => fromIo(await readText(target), jsonOutput)),
+    onPath(ctx, args.path, PATH_TOOL_OPS.read_file, async (target) => fromIo(await readText(target), jsonOutput)),
   write_file: writeFileTool,
   create_directory: (ctx: ToolContext, args: z.output<typeof pathArgsSchema>) =>
-    onPath(ctx, args.path, 'write', async (target) =>
+    onPath(ctx, args.path, PATH_TOOL_OPS.create_directory, async (target) =>
       fromIo(await makeDirectory(target), () => textOutput(`Created the folder ${args.path}.`)),
     ),
   edit_file: (ctx: ToolContext, args: z.output<typeof editFileSchema>) =>
-    onPath(ctx, args.path, 'edit', async (target) =>
+    onPath(ctx, args.path, PATH_TOOL_OPS.edit_file, async (target) =>
       fromIo(await editFile(target, args.edits, args.expectedSha256), (info) => jsonOutput({ path: args.path, size: info.size, sha256: info.sha256 })),
     ),
   move_file: moveFileTool,
   delete_file: (ctx: ToolContext, args: z.output<typeof pathArgsSchema>) =>
-    onPath(ctx, args.path, 'delete', async (target) =>
+    onPath(ctx, args.path, PATH_TOOL_OPS.delete_file, async (target) =>
       fromIo(await moveToTrash(target, ctx.actor), (manifest) => textOutput(trashedText(args.path, manifest.id))),
     ),
 }

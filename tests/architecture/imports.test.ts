@@ -68,6 +68,7 @@ const SEMANTIC_ALLOWLIST: ReadonlySet<string> = new Set([
   // How one `tools/call` is decided, extracted from `gate-core.ts` for the
   // line budget when the confirmation step arrived (ADR-0019).
   'src/proxy/gate-call.ts',
+  'src/proxy/gate-args-check.ts',
   'src/proxy/journal-failure.ts',
   'src/protocol/classify.ts',
   'src/protocol/mcp.ts',

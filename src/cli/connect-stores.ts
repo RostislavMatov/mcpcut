@@ -1,6 +1,9 @@
 import { createEffectiveAgentReader, type EffectiveAgentReader } from '../agents/effective-reader.js'
 import { createAgentsStore } from '../agents/store.js'
+import { createFilesArgsCheck } from '../files/args-check.js'
+import { createAgentFilesBackend, type FilesBackend } from '../files/upstream.js'
 import { createGroupsStore } from '../groups/store.js'
+import type { ArgsCheck } from '../proxy/gate-args-check.js'
 import type { ServerRecord } from '../registry/schema.js'
 import { createRegistryStore, type RegistryStore } from '../registry/store.js'
 import { resolveVaultRefs } from '../vault/resolve.js'
@@ -44,6 +47,28 @@ export function buildConnectStores(deps: ConnectDeps): ConnectStores {
   }
 }
 
+/** What the built-in file server needs from an agent: its backend and the gate's argument check (ADR-0020). */
+export interface BuiltinFiles {
+  readonly backend: FilesBackend
+  readonly argsCheck: ArgsCheck
+}
+
+/** `undefined` for every ordinary server; for the built-in file server, the agent's view of it. */
+export function builtinFilesOf(args: {
+  readonly record: ServerRecord
+  readonly agentName: string
+  readonly agents: ConnectStores['agentReader']
+  readonly journalDir: string | undefined
+}): BuiltinFiles | undefined {
+  if (args.record.transport !== 'builtin') return undefined
+  const backend = createAgentFilesBackend({
+    agentName: args.agentName,
+    agents: args.agents,
+    ...(args.journalDir !== undefined ? { journalDir: args.journalDir } : {}),
+  })
+  return { backend, argsCheck: createFilesArgsCheck(backend) }
+}
+
 /**
  * Assembles `prepareUpstream`'s arguments, forwarding only the overrides that
  * were actually given so each keeps its own default. The vault store is built
@@ -55,6 +80,7 @@ export function upstreamArgsOf(args: {
   readonly env: NodeJS.ProcessEnv
   readonly record: ServerRecord
   readonly onDiagnostic: (line: string) => void
+  readonly files?: FilesBackend
 }): PrepareUpstreamArgs {
   const { deps } = args
   const vault = createVaultStore(deps.journalDir !== undefined ? { journalDir: deps.journalDir } : {})
@@ -63,6 +89,7 @@ export function upstreamArgsOf(args: {
     processEnv: args.env,
     resolveRefs: (record) => resolveVaultRefs(record, vault.readSecretValues),
     onDiagnostic: args.onDiagnostic,
+    ...(args.files !== undefined ? { files: args.files } : {}),
     ...(deps.cwd !== undefined ? { cwd: deps.cwd } : {}),
     ...(deps.stderr !== undefined ? { stderr: deps.stderr } : {}),
     ...(deps.systemEnvAllowlist !== undefined ? { systemEnvAllowlist: deps.systemEnvAllowlist } : {}),

@@ -14,6 +14,7 @@ import {
   type SessionEndpoints,
   type SessionHandle,
 } from '../session/core.js'
+import type { ArgsCheck } from '../proxy/gate-args-check.js'
 import { DIAGNOSTIC_PREFIX } from './connect-constants.js'
 
 /**
@@ -66,6 +67,8 @@ export interface StartConnectSessionArgs {
   readonly revocationPollIntervalMs?: number
   /** One complete, newline-terminated diagnostic line. Always stderr-bound. */
   readonly onDiagnostic: (line: string) => void
+  /** Tighten-only look at call arguments (ADR-0020 §2); given only for the built-in file server. */
+  readonly argsCheck?: ArgsCheck
   /** @internal test-only seam for exercising fail-closed without an unwritable disk. */
   readonly journalCommitBatchImpl?: JournalSinkOptions['commitBatchImpl']
 }
@@ -187,6 +190,7 @@ export function startConnectSession(args: StartConnectSessionArgs): ConnectSessi
     // ADR-0019: a stdio client is there to ask about the tools the policy
     // lists in `confirmInClient` for this agent.
     confirmInClient: { onNotice: args.onDiagnostic },
+    ...(args.argsCheck !== undefined ? { argsCheck: args.argsCheck } : {}),
   })
 
   failure.arm(session)

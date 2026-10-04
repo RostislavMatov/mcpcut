@@ -6,6 +6,8 @@ import { reportServerAdd, requireServerOwner, type ServerChangeActor } from './s
 import { warnAboutExistingGrants } from './server-grant-refs.js'
 import { formatPolicyErrors } from '../policy/load.js'
 import { parseServerRecord, type ServerRecord } from '../registry/schema.js'
+import { targetOf } from '../registry/target.js'
+import { cliCommand } from './next-step.js'
 import { createRegistryStore, type RegistryStore } from '../registry/store.js'
 import {
   cascadeServerRemoval,
@@ -141,7 +143,7 @@ export async function runServerAdd(
 
 /** The command (stdio) or url (http) a record points at, shortened for the list table. */
 function listTarget(record: ServerRecord): string {
-  const target = record.transport === 'stdio' ? record.command : record.url
+  const target = targetOf(record)
   const shortened =
     target.length > MAX_LIST_TARGET_CHARS ? `${target.slice(0, MAX_LIST_TARGET_CHARS)}…` : target
   return formatReadableField(shortened)
@@ -215,6 +217,8 @@ function formatServerRecord(record: ServerRecord): string {
       lines.push(`args: ${record.args.map(formatReadableField).join(' ')}`)
     }
     lines.push(...formatValueMap('env', record.env))
+  } else if (record.transport === 'builtin') {
+    lines.push(`kind: ${record.kind}`, `runs inside mcpcut: nothing is spawned or connected, and there is nothing to edit`)
   } else {
     lines.push(`url: ${formatReadableField(record.url)}`, `protocol: ${record.protocol}`)
     lines.push(...formatValueMap('headers', record.headers))
@@ -260,6 +264,9 @@ export async function runServerShow(
     return 1
   }
   io.stdout.write(formatServerRecord(record))
+  if (record.transport === 'builtin') {
+    io.stderr.write(`Give an agent folders: ${cliCommand(opts.env)} files grant <agent> <folder> --ops read\n`)
+  }
   // A stale status is refreshed by one synchronous probe (bounded by the
   // probe timeout); a fresh one is printed straight from the store (O1/O2).
   await printProbedStatus(record.name, io, opts)

@@ -65,6 +65,12 @@ export const REFUSAL_VAULT_ERROR = 'vault-error'
  */
 export const REFUSAL_STDIO_REFUSED = 'stdio-refused'
 
+/** A built-in server (the file module) on an install that runs no local servers; detail on stderr only. */
+export const REFUSAL_BUILTIN_REFUSED = 'builtin-refused'
+
+/** A built-in server opened without an agent identity: a bug on this path, never agent-controlled. */
+export const REFUSAL_BUILTIN_NEEDS_AGENT = 'builtin-needs-agent'
+
 /**
  * Refusal used if the session factory is ever invoked without a preceding
  * `detectInitialize` call on the same synchronous chain (see the

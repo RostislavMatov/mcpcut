@@ -1,5 +1,5 @@
 import { createJsonStore, type JsonStore } from '../policy/store.js'
-import { StdioServerRefusedError } from '../tenant/errors.js'
+import { BuiltinServerRefusedError, StdioServerRefusedError } from '../tenant/errors.js'
 import { TENANT_SETTINGS, type TenantSettings } from '../tenant/settings.js'
 import { registryFilePath } from './constants.js'
 import { parseRegistry, parseServerRecord, type RegistryFile, type ServerRecord } from './schema.js'
@@ -127,6 +127,11 @@ function hasNonDefaultPort(record: ServerRecord): boolean {
  * nothing to gain from running them inside the CAS-retried callback.
  */
 function assertTenantAllowsServer(record: ServerRecord, tenant: TenantSettings): void {
+  if (record.transport === 'builtin') {
+    // Same lock as stdio: a tenant has no folders on the host (ADR-0017, ADR-0020 §1).
+    if (tenant.stdioServers === 'refused') throw new BuiltinServerRefusedError(record.name)
+    return
+  }
   if (record.transport === 'stdio') {
     if (tenant.stdioServers === 'refused') {
       throw new StdioServerRefusedError(record.name)
@@ -140,6 +145,15 @@ function assertTenantAllowsServer(record: ServerRecord, tenant: TenantSettings):
   if (hasNonDefaultPort(record)) {
     throw new InvalidServerRecordError('url: this install reaches only port 443 (tenant mode)')
   }
+}
+
+/** A built-in record is not edited in place, and nothing else becomes one: the kind names the in-process server. */
+function assertBuiltinUnchanged(existing: ServerRecord, next: ServerRecord): void {
+  if (existing.transport !== 'builtin' && next.transport !== 'builtin') return
+  if (existing.transport === 'builtin' && next.transport === 'builtin' && existing.kind === next.kind) return
+  throw new InvalidServerRecordError(
+    `server "${next.name}" is or would be a built-in server: it is not edited in place — remove it and add the other one`,
+  )
 }
 
 export interface RegistryStoreOptions {
@@ -214,9 +228,11 @@ export function createRegistryStore(journalDir?: string, opts?: RegistryStoreOpt
     let updated = false
     await store.update((current) => {
       updated = false
-      if (ownRecord(current.servers, validated.name) === undefined) {
+      const existing = ownRecord(current.servers, validated.name)
+      if (existing === undefined) {
         return current
       }
+      assertBuiltinUnchanged(existing, validated)
       updated = true
       return { ...current, servers: { ...current.servers, [validated.name]: validated } }
     })

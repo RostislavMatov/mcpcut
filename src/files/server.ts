@@ -1,6 +1,6 @@
 import { LATEST_SESSIONFUL_PROTOCOL_VERSION, SESSIONFUL_PROTOCOL_VERSIONS } from '../protocol/mcp.js'
-import { prepareRules, type FileRule } from './rights.js'
-import { errorOutput, type ToolContext, type ToolOutput } from './tool-context.js'
+import type { FileRule } from './rights.js'
+import { contextFor, errorOutput, type ToolOutput } from './tool-context.js'
 import { runTool } from './tool-handlers.js'
 import { listedTools } from './tools.js'
 
@@ -68,17 +68,12 @@ function negotiatedVersion(params: unknown): string {
 export function createFilesServer(deps: FilesServerDeps): FilesServer {
   const serverInfo = deps.serverInfo ?? DEFAULT_SERVER_INFO
 
-  async function contextForCall(): Promise<ToolContext> {
-    const [roots, rules] = await Promise.all([deps.roots(), deps.rules()])
-    return { roots, rules, prepared: await prepareRules(rules), actor: deps.actor }
-  }
-
   async function callTool(id: JsonRpcId, params: unknown): Promise<JsonRpcResponse> {
     const name = isRecord(params) ? params['name'] : undefined
     if (typeof name !== 'string' || name === '') return failure(id, INVALID_PARAMS, 'tools/call needs params.name, the tool to call.')
     const args = (params as Record<string, unknown>)['arguments']
     try {
-      return success(id, toolResult(await runTool(name, await contextForCall(), args)))
+      return success(id, toolResult(await runTool(name, await contextFor(deps), args)))
     } catch {
       return success(id, toolResult(errorOutput(UNEXPECTED_FAILURE_MESSAGE)))
     }

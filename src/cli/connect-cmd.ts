@@ -1,4 +1,5 @@
 import type { Readable, Writable } from 'node:stream'
+import type { ArgsCheck } from '../proxy/gate-args-check.js'
 import { parseArgs } from 'node:util'
 import { ulid } from 'ulid'
 import type { AgentRecord } from '../agents/schema.js'
@@ -19,7 +20,7 @@ import { CONNECT_USAGE, DIAGNOSTIC_PREFIX, EXIT_CODE_REFUSED } from './connect-c
 import { createMismatchGuard } from './connect-mismatch.js'
 import { resolveConnectPolicy } from './connect-policy.js'
 import { resolveConnectTarget } from './connect-resolve.js'
-import { buildConnectStores, sessionOptionsOf, upstreamArgsOf } from './connect-stores.js'
+import { buildConnectStores, builtinFilesOf, sessionOptionsOf, upstreamArgsOf } from './connect-stores.js'
 import {
   startConnectSession,
   type ConnectSessionHandle,
@@ -233,8 +234,14 @@ export async function runConnect(
     return policyOutcome.exitCode
   }
 
+  const builtin = builtinFilesOf({
+    record: target.record,
+    agentName: target.agent.name,
+    agents: agentReader,
+    journalDir: deps.journalDir,
+  })
   const prepared = await prepareUpstream(
-    upstreamArgsOf({ deps, env, record: target.record, onDiagnostic }),
+    upstreamArgsOf({ deps, env, record: target.record, onDiagnostic, ...(builtin !== undefined ? { files: builtin.backend } : {}) }),
   )
   if (prepared.status === 'refused') {
     io.stderr.write(prepared.message)
@@ -249,6 +256,7 @@ export async function runConnect(
     agent: target.agent,
     policy: policyOutcome.policy,
     prepared: prepared.upstream,
+    ...(builtin !== undefined ? { argsCheck: builtin.argsCheck } : {}),
   })
 }
 
@@ -282,6 +290,7 @@ interface RunSessionArgs {
   readonly agent: AgentRecord
   readonly policy: PolicyProvider
   readonly prepared: PreparedUpstream
+  readonly argsCheck?: ArgsCheck
 }
 
 /**
@@ -311,6 +320,7 @@ async function runSession(args: RunSessionArgs): Promise<number> {
     client: { source: clientSource, sink: client.sink },
     server: upstream.endpoints,
     policy: args.policy,
+    ...(args.argsCheck !== undefined ? { argsCheck: args.argsCheck } : {}),
     failClosed: flags.failClosed,
     onDiagnostic,
     ...sessionOptionsOf(deps),

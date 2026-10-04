@@ -304,6 +304,7 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     answerGuard,
     writeDecision,
     settleJournal,
+    ...(deps.argsCheck !== undefined ? { argsCheck: deps.argsCheck } : {}),
   })
 
   /**

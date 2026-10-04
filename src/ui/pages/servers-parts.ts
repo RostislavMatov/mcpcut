@@ -6,6 +6,7 @@ import {
   VAULT_REF_PREFIX,
 } from '../../registry/constants.js'
 import type { ServerRecord } from '../../registry/schema.js'
+import { isEditable, targetOf } from '../../registry/target.js'
 import { html, join, safeUrl, type Html } from '../html.js'
 import { csrfField } from './csrf-field.js'
 import { renderRefreshForm, renderStatusDot, type ServerStatusView } from './servers-status.js'
@@ -103,10 +104,19 @@ export function renderServerDetails(record: ServerRecord): Html {
       ${renderValueMap('env', record.env)}
     `
   }
+  if (record.transport === 'builtin') return renderBuiltinDetails()
   return html`
     <div class="srv-field"><span class="label">url</span><div class="srv-box">${record.url}</div></div>
     <div class="row"><span class="label">protocol</span>${renderProtocolPills(record.protocol)}</div>
     ${renderValueMap('headers', record.headers)}
+  `
+}
+
+/** The built-in file server has no command or url to show: say what it is and what to do next. */
+function renderBuiltinDetails(): Html {
+  return html`
+    <div class="srv-field"><span class="label">built-in</span><div class="srv-box">built-in file server: runs inside mcpcut, nothing to edit</div></div>
+    <div class="srv-field"><span class="label">next</span><div class="srv-box">mcpcut files grant &lt;agent&gt; &lt;folder&gt; --ops read</div></div>
   `
 }
 
@@ -129,8 +139,9 @@ function renderCardActions(options: ServerCardOptions): Html {
   const canRefresh = options.canRefresh === true
   if (!canManage && !canRefresh) return html``
   const editHref = `/servers?${new URLSearchParams({ edit: record.name }).toString()}#add-server`
+  const edit = isEditable(record) ? html`<a class="btn srv-edit" href="${safeUrl(editHref)}">Edit</a>` : html``
   const manage = canManage
-    ? html`<a class="btn srv-edit" href="${safeUrl(editHref)}">Edit</a>
+    ? html`${edit}
     ${renderRemoveForm(record.name, csrfToken)}`
     : html``
   return html`<div class="actions srv-actions">
@@ -148,10 +159,6 @@ function renderRemoveForm(name: string, csrfToken: string): Html {
     </form>`
 }
 
-function targetOf(record: ServerRecord): string {
-  return record.transport === 'stdio' ? record.command : record.url
-}
-
 /**
  * What the collapsed tile prints as the target. The design drops the scheme
  * from an http target (`mcp.github.example/sse`) — inside a tile the `https://`
@@ -159,15 +166,18 @@ function targetOf(record: ServerRecord): string {
  * says the shape. The full url stays in the expanded body.
  */
 function summaryTargetOf(record: ServerRecord): string {
-  return record.transport === 'stdio' ? record.command : record.url.replace(/^https?:\/\//, '')
+  return record.transport === 'http' ? record.url.replace(/^https?:\/\//, '') : targetOf(record)
+}
+
+function summaryBaseOf(record: ServerRecord): string {
+  if (record.transport === 'stdio') return `${(record.args ?? []).length} args · ${Object.keys(record.env ?? {}).length} env`
+  if (record.transport === 'builtin') return 'file module'
+  return `${record.protocol} · ${Object.keys(record.headers ?? {}).length} headers`
 }
 
 /** The collapsed tile's meta line, as the design writes it per transport. */
 function summaryMetaOf(record: ServerRecord, tools: ServerToolsView | undefined): string {
-  const base =
-    record.transport === 'stdio'
-      ? `${(record.args ?? []).length} args · ${Object.keys(record.env ?? {}).length} env`
-      : `${record.protocol} · ${Object.keys(record.headers ?? {}).length} headers`
+  const base = summaryBaseOf(record)
   if (tools === undefined) return base
   return `${base} · ${tools.tools.length} tools`
 }
@@ -192,7 +202,7 @@ function renderSummary(
     quarantined > 0
       ? html`<span class="pill pill-pixel pill-on shimmer">${String(quarantined)} quarantined</span>`
       : html``
-  const tpill = record.transport === 'stdio' ? 'tpill tpill-stdio' : 'tpill tpill-http'
+  const tpill = record.transport === 'http' ? 'tpill tpill-http' : 'tpill tpill-stdio'
   return html`<summary class="srv-sum">
     <span class="row srv-sum-top">${renderStatusDot(record.name, status)}<span class="name pixel ellipsis">${record.name}</span></span>
     <span class="srv-sum-badges"><span class="${tpill}">${record.transport}</span>${renderStateLabel(record.name, status)}${flag}</span>

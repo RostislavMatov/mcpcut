@@ -16,6 +16,7 @@ import {
 import type { AgentRecord } from '../agents/schema.js'
 import type { GateApprovalQueue } from '../proxy/gate-approvals.js'
 import { createMessagePolicyGate, type MessagePolicyGate } from '../proxy/gate-core.js'
+import type { ArgsCheck } from '../proxy/gate-args-check.js'
 import type { MessagePolicyGateDeps } from '../proxy/gate-types.js'
 import {
   createDecisionProvenance,
@@ -133,6 +134,8 @@ export interface CreateSessionDeps {
    * there a call that needs the confirmation is refused.
    */
   readonly confirmInClient?: MessagePolicyGateDeps['confirmInClient']
+  /** Tighten-only look at call arguments (ADR-0020 §2); given only for the built-in file server. */
+  readonly argsCheck?: ArgsCheck
   /** Fired exactly once, after the session has fully ended. */
   readonly onSessionEnd?: (reason: SessionEndReason) => void
 }
@@ -224,6 +227,7 @@ export function createSession(deps: CreateSessionDeps): SessionHandle {
     ...(watch !== null ? { agentScope: watch.scope } : {}),
     ...(deps.approvals.baseDir !== undefined ? { approvalsBaseDir: deps.approvals.baseDir } : {}),
     ...(deps.confirmInClient !== undefined ? { confirmInClient: deps.confirmInClient } : {}),
+    ...(deps.argsCheck !== undefined ? { argsCheck: deps.argsCheck } : {}),
     clock,
     onError,
   })

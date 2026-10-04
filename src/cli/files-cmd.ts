@@ -8,6 +8,7 @@ import { RuleRefusedError } from '../files/grant-admin.js'
 import { RootsLimitError, createRootsStore } from '../files/roots-store.js'
 import { createGroupsStore } from '../groups/store.js'
 import { formatReadableField } from '../journal/format.js'
+import { BuiltinServerRefusedError } from '../tenant/errors.js'
 import { StoreCorruptError, StoreLockError, StoreWriteRejectedError } from '../policy/store.js'
 import type { AccessWriteOptions } from './access-cmd-write.js'
 import type { AgentCliIo } from './agent-cmd.js'
@@ -34,6 +35,7 @@ const DEFAULT_IO: AgentCliIo = { stdout: process.stdout, stderr: process.stderr 
 
 const EXPECTED_ERRORS = [
   AgentNotFoundError,
+  BuiltinServerRefusedError,
   RootsLimitError,
   RuleRefusedError,
   StoreCorruptError,

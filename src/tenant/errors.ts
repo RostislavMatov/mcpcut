@@ -23,3 +23,16 @@ export class StdioServerRefusedError extends Error {
     this.name = 'StdioServerRefusedError'
   }
 }
+
+/**
+ * Raised wherever a built-in server (the file module, ADR-0020) would be
+ * registered or started on an install that runs no local servers: a tenant has
+ * no folders of its own on the host (ADR-0017). One line, no remedy beyond the
+ * mode itself.
+ */
+export class BuiltinServerRefusedError extends Error {
+  constructor(serverName: string) {
+    super(`server "${serverName}" is a built-in server: this install runs no local servers (tenant mode), so it is not available`)
+    this.name = 'BuiltinServerRefusedError'
+  }
+}

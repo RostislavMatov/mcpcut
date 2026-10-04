@@ -14,7 +14,8 @@ import { splice } from '../proxy/splice.js'
 import { createOrderedWriter } from '../proxy/writer.js'
 import type { ServerRecord } from '../registry/schema.js'
 import type { SessionEndpoints } from '../session/core.js'
-import { StdioServerRefusedError } from '../tenant/errors.js'
+import { createFilesEndpoints, noAgentMessage, type FilesBackend } from '../files/upstream.js'
+import { BuiltinServerRefusedError, StdioServerRefusedError } from '../tenant/errors.js'
 import { TENANT_SETTINGS, upstreamGuardFor, type TenantSettings } from '../tenant/settings.js'
 import { perMessageHeadersOptionOf } from '../session/per-message-headers.js'
 import {
@@ -95,9 +96,10 @@ export type PrepareUpstreamResult =
    * Refused before anything was spawned or connected; `message` is the
    * complete operator text. `reason` says who refused: the vault (env/header
    * resolution) or tenant mode (a stdio record on an install that runs none —
-   * ADR-0017 T3). The probe reports the two differently.
+   * ADR-0017 T3), or the caller (a built-in server asked for without an agent).
+   * The probe reports them differently.
    */
-  | { readonly status: 'refused'; readonly reason: 'vault' | 'tenant'; readonly message: string }
+  | { readonly status: 'refused'; readonly reason: 'vault' | 'tenant' | 'agent'; readonly message: string }
 
 export interface PrepareUpstreamArgs {
   readonly record: ServerRecord
@@ -125,6 +127,8 @@ export interface PrepareUpstreamArgs {
   readonly httpClient?: Pick<HttpUpstreamClientOptions, 'deliverErrorBodies'>
   /** Tenant mode (ADR-0017): stdio lock and upstream guard. Defaults to `TENANT_SETTINGS`. */
   readonly tenant?: TenantSettings
+  /** The agent's view of the file server (ADR-0020); a `builtin` record is refused without it. */
+  readonly files?: FilesBackend
 }
 
 /** One operator line per resolution failure shape; every referenced-but-absent name is listed. */
@@ -167,7 +171,47 @@ export async function prepareUpstream(args: PrepareUpstreamArgs): Promise<Prepar
     }
     return prepareStdio(args, record)
   }
+  if (record.transport === 'builtin') return prepareBuiltin(args, record, tenant)
   return prepareHttp(args, record, tenant)
+}
+
+/** The built-in branch: no spawn, no env, no URL — an in-process server that needs an agent (ADR-0020 §1). */
+function prepareBuiltin(
+  args: PrepareUpstreamArgs,
+  record: Extract<ServerRecord, { transport: 'builtin' }>,
+  tenant: TenantSettings,
+): PrepareUpstreamResult {
+  if (tenant.stdioServers === 'refused') {
+    return { status: 'refused', reason: 'tenant', message: `${new BuiltinServerRefusedError(record.name).message}\n` }
+  }
+  const backend = args.files
+  if (backend === undefined) {
+    return { status: 'refused', reason: 'agent', message: `${noAgentMessage(cliCommand(args.processEnv), record.name)}\n` }
+  }
+  return {
+    status: 'prepared',
+    upstream: {
+      // A blank client line has no JSON-RPC meaning here: it must not be answered as a parse error.
+      dropClientBlanks: true,
+      guardInitialize: false,
+      open: () => openBuiltinUpstream(backend, args.onDiagnostic),
+    },
+  }
+}
+
+function openBuiltinUpstream(backend: FilesBackend, onDiagnostic: (line: string) => void): ConnectUpstream {
+  const files = createFilesEndpoints(backend, (error) => onDiagnostic(`${DIAGNOSTIC_PREFIX} file server: ${describe(error)}\n`))
+  return {
+    endpoints: { source: files.source, sink: files.sink },
+    // In-process: there is no child whose death could go unnoticed.
+    gone: new Promise<void>(() => undefined),
+    attachStderr: () => undefined,
+    finish: async () => {
+      await files.close()
+      return 0
+    },
+    dispose: () => undefined,
+  }
 }
 
 async function prepareStdio(

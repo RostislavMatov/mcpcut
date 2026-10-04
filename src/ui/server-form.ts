@@ -141,6 +141,9 @@ export function serverRecordToForm(record: ServerRecord): ServerFormValues {
       headers: '',
     }
   }
+  if (record.transport === 'builtin') {
+    return { name: record.name, transport: record.transport, command: '', args: '', url: '', protocol: '', env: '', headers: '' }
+  }
   return {
     name: record.name,
     transport: record.transport,

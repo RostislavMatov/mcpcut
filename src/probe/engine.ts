@@ -15,6 +15,7 @@ import {
 import { withStatelessMeta } from '../protocol/mcp-stateless.js'
 import { UpstreamAddressRefusedError } from '../net/upstream-guard.js'
 import type { TenantSettings } from '../tenant/settings.js'
+import { PROBE_FILES_BACKEND } from '../files/upstream.js'
 import { prepareUpstream, type ConnectUpstream } from '../upstream/prepare.js'
 import { PROBE_TIMEOUT_MS } from './constants.js'
 
@@ -103,6 +104,8 @@ export async function probe(record: ServerRecord, deps: ProbeDeps): Promise<Prob
     ...(deps.childExitGraceMs !== undefined ? { childExitGraceMs: deps.childExitGraceMs } : {}),
     ...(deps.killEscalationMs !== undefined ? { killEscalationMs: deps.killEscalationMs } : {}),
     ...(deps.tenant !== undefined ? { tenant: deps.tenant } : {}),
+    // A built-in file server answers `initialize` and `tools/list` without roots or rights.
+    files: PROBE_FILES_BACKEND,
     // A 2026-07-28 server refuses the handshake with a 4xx STATUS and a
     // JSON-RPC body; that is an answer to fall back from, not a dead server.
     httpClient: { deliverErrorBodies: true },
@@ -111,7 +114,7 @@ export async function probe(record: ServerRecord, deps: ProbeDeps): Promise<Prob
     // A tenant-mode refusal is not a vault problem: it is reported as `error`
     // with its reason (ADR-0017 — no new probe status, so the journal's record
     // schema and `verify --report` stay as they are).
-    const status = prepared.reason === 'tenant' ? 'error' : 'vault-refused'
+    const status = prepared.reason === 'vault' ? 'vault-refused' : 'error'
     return { status, message: prepared.message.trim() }
   }
 

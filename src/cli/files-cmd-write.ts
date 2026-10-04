@@ -13,11 +13,13 @@ import {
 } from '../files/grant-admin.js'
 import { prepareRoot } from '../files/roots-admin.js'
 import { createRootsStore } from '../files/roots-store.js'
+import { createRegistryStore } from '../registry/store.js'
 import { formatReadableField, replaceControlChars } from '../journal/format.js'
 import type { AdminRefusalWording, RequiredAdmin } from './admin-token.js'
 import { pairTarget, recordAccessChange, requireAccessOwner, type AccessOp } from './access-cmd-write.js'
 import type { AgentCliIo } from './agent-cmd.js'
 import { formatRuleLines, grantNextStep, FILES_USAGE } from './files-cmd-format.js'
+import { conflictMessage, filesServerState, notRegisteredMessage, registerFilesServer } from './files-cmd-registry.js'
 import type { FilesCliOptions } from './files-cmd.js'
 import { cliCommand, shellArg } from './next-step.js'
 
@@ -43,6 +45,10 @@ function fail(io: AgentCliIo, line: string): number {
 
 function storesOf(opts: FilesCliOptions): { agents: AgentsStore } {
   return { agents: createAgentsStore({ ...(opts.journalDir !== undefined ? { journalDir: opts.journalDir } : {}) }) }
+}
+
+function registryOf(opts: FilesCliOptions) {
+  return createRegistryStore(opts.journalDir)
 }
 
 /** The agent, or the one-line refusal with the way to list agents. */
@@ -98,11 +104,15 @@ export async function runRootAdd(args: string[], io: AgentCliIo, opts: FilesCliO
   const actor = await requireOwner(io, opts)
   if (actor === undefined) return 1
 
+  // A server of another kind named `files` is a conflict: refuse before the folder is touched.
+  if ((await filesServerState(registryOf(opts))) === 'conflict') return fail(io, conflictMessage(opts.env))
   const roots = createRootsStore({ ...(opts.journalDir !== undefined ? { journalDir: opts.journalDir } : {}) })
   const prepared = await prepareRoot(raw, (await roots.list()).map((root) => root.path))
   if (!prepared.ok) return fail(io, replaceControlChars(prepared.message))
+  const registered = await registerFilesServer(registryOf(opts))
   const { added } = await roots.add(prepared.path)
   const folder = formatReadableField(prepared.path)
+  if (registered.added) io.stdout.write(`registered the built-in file server as "files" (agents connect to it like any server)\n`)
   const trash = `${folder}/.mcpcut-trash`
   io.stdout.write(added ? `root added: ${folder}\n` : `${folder} is already a root\n`)
   io.stdout.write(`trash: ${trash} (${prepared.trashCreated ? 'created' : 'already present'})\n`)
@@ -145,6 +155,9 @@ export async function runGrant(args: string[], io: AgentCliIo, opts: FilesCliOpt
   const actor = await requireOwner(io, opts)
   if (actor === undefined) return 1
   if ((await findAgent(io, opts, agentName)) === undefined) return 1
+  const state = await filesServerState(registryOf(opts))
+  if (state === 'conflict') return fail(io, conflictMessage(opts.env))
+  if (state === 'missing') return fail(io, notRegisteredMessage(opts.env, shellArg(rawPath)))
 
   const roots = await createRootsStore({ ...(opts.journalDir !== undefined ? { journalDir: opts.journalDir } : {}) }).list()
   const resolved = await resolveRulePath(roots.map((root) => root.path), rawPath, (folder) => `${cliCommand(opts.env)} files root add ${shellArg(folder)}`)

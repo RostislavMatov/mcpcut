@@ -3,6 +3,7 @@ import type { GrantKey, GrantRegistry } from '../policy/approvals/grants.js'
 import type { PolicyProvider } from '../policy/provider.js'
 import type { ParsedToolCall } from '../protocol/mcp.js'
 import type { ApprovalFlow } from './gate-approvals.js'
+import type { ArgsCheck } from './gate-args-check.js'
 import type { ConfirmStep } from './gate-confirm.js'
 import type { createDecideInputAssembler } from './gate-decide-input.js'
 import {
@@ -47,6 +48,8 @@ export interface CallDeciderDeps {
   readonly answerGuard: AnswerGuard
   readonly writeDecision: DecisionWriter
   readonly settleJournal: () => Promise<void>
+  /** Tighten-only look at the arguments after `decide()` (ADR-0020 §2); absent for every ordinary server. */
+  readonly argsCheck?: ArgsCheck
 }
 
 export interface CallDecider {
@@ -83,6 +86,23 @@ export function createCallDecider(deps: CallDeciderDeps): CallDecider {
     return { facts, grantKey, decision, captured: deps.provenance.snapshot() }
   }
 
+  /**
+   * `evaluate`, then the injected argument check. Without a check — every
+   * ordinary server — this IS `evaluate`, synchronous like before. A decision
+   * that is already `deny` is not looked at again; a refusal turns allow or
+   * require-approval into `deny` and nothing ever turns the other way.
+   */
+  function evaluateTightened(call: ParsedToolCall): Evaluation | Promise<Evaluation> {
+    const evaluation = evaluate(call)
+    const check = deps.argsCheck
+    if (check === undefined || evaluation.decision.outcome === 'deny') return evaluation
+    return check(call).then((refusal) =>
+      refusal === null
+        ? evaluation
+        : { ...evaluation, decision: { outcome: 'deny', rule: refusal.rule, reason: refusal.reason } },
+    )
+  }
+
   /** The admin's half: allow, deny, or the approval queue; `base` rides every record it writes. */
   function go(call: ParsedToolCall, evaluation: Evaluation, base: DecisionExtras): Verdict | Promise<Verdict> {
     const { facts, grantKey, decision, captured } = evaluation
@@ -116,7 +136,7 @@ export function createCallDecider(deps: CallDeciderDeps): CallDecider {
       const confirmed = await confirmStep.run(call, facts, thenAdmin)
       if (confirmed.kind === 'refused') return DROP
       const base: DecisionExtras = { confirmedBy: confirmed.by }
-      const evaluation = evaluate(call)
+      const evaluation = await evaluateTightened(call)
       // Exactly one outcome per id: an id answered meanwhile is never forwarded.
       if (waitKey !== null && deps.answerGuard.isAnswered(waitKey)) {
         deps.writeDecision(decisionInfoOf(evaluation.facts, 'deny', ALREADY_ANSWERED_RULE, base), call.args)
@@ -129,13 +149,24 @@ export function createCallDecider(deps: CallDeciderDeps): CallDecider {
     }
   }
 
-  return {
-    decideToolCall(call) {
-      const evaluation = evaluate(call)
+  /** The verdict for an evaluated call: deny, the confirmation in the client, or the admin's half. */
+  function decideEvaluated(call: ParsedToolCall): (evaluation: Evaluation) => Verdict | Promise<Verdict> {
+    return (evaluation) => {
       const { facts, decision } = evaluation
       if (decision.outcome === 'deny') return deps.applyDeny(call, facts, decision)
       if (confirmStep.isRequired(facts.toolName)) return confirmThenGo(call, facts, decision.outcome === 'require-approval')
       return go(call, evaluation, {})
+    }
+  }
+
+  return {
+    decideToolCall(call) {
+      const evaluation = evaluateTightened(call)
+      return isPromiseLike(evaluation) ? evaluation.then(decideEvaluated(call)) : decideEvaluated(call)(evaluation)
     },
   }
+}
+
+function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
+  return typeof (value as Partial<Promise<T>>).then === 'function'
 }

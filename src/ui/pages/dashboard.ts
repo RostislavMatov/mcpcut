@@ -1,4 +1,5 @@
 import type { ServerRecord } from '../../registry/schema.js'
+import { targetOf } from '../../registry/target.js'
 import type { JournalRecord } from '../../journal/record.js'
 import { html, join, safeUrl, type Html } from '../html.js'
 import {
@@ -152,7 +153,7 @@ function renderServerCell(
   const calls = decisions.filter((d) => d.serverName === record.name).length
   const flagged = quarantined.has(record.name)
   const dot = flagged ? 'dot dot-off dot-blink' : 'dot'
-  const target = record.transport === 'stdio' ? record.command : record.url
+  const target = targetOf(record)
   const width = `svw-${String(Math.min(calls, SERVER_BAR_MAX_BUCKET))}`
   return html`<a class="dash-server" href="${safeUrl('/servers')}">
     <span class="row"><span class="${dot}"></span><span class="name ellipsis">${record.name}</span></span>

@@ -6,7 +6,9 @@ import { buildServerEnv, type ResolveEnvRefsFn } from '../proxy/server-env.js'
 import { killWithEscalation, spawnServer, type ServerHandle } from '../proxy/spawn.js'
 import { createOrderedWriter } from '../proxy/writer.js'
 import type { ServerRecord } from '../registry/schema.js'
-import { StdioServerRefusedError } from '../tenant/errors.js'
+import { createFilesEndpoints, noAgentMessage, type FilesBackend } from '../files/upstream.js'
+import { BuiltinServerRefusedError, StdioServerRefusedError } from '../tenant/errors.js'
+import { cliCommand } from './next-step.js'
 import { TENANT_SETTINGS, upstreamGuardFor, type TenantSettings } from '../tenant/settings.js'
 import { createHttpUpstreamClient, type HttpUpstreamClientOptions } from '../transport/http/client.js'
 import { frameToMessage, createStdioMessageSink } from '../transport/stdio-adapter.js'
@@ -14,6 +16,8 @@ import type { McpMessage, MessageSink, MessageSource } from '../transport/messag
 import type { ResolveVaultRefsResult } from '../vault/resolve.js'
 import {
   protocolMismatchRefusal,
+  REFUSAL_BUILTIN_NEEDS_AGENT,
+  REFUSAL_BUILTIN_REFUSED,
   REFUSAL_INVALID_VAULT_REFS,
   REFUSAL_MISSING_SECRETS,
   REFUSAL_STDIO_REFUSED,
@@ -79,6 +83,8 @@ export interface OpenUpstreamDeps {
   readonly httpClient?: Pick<HttpUpstreamClientOptions, 'deliverErrorBodies'>
   /** Tenant mode (ADR-0017): stdio lock and upstream guard. Defaults to `TENANT_SETTINGS`. */
   readonly tenant?: TenantSettings
+  /** The agent's view of the file server (ADR-0020); a `builtin` record is refused without it. */
+  readonly files?: FilesBackend
 }
 
 /**
@@ -100,6 +106,9 @@ export function checkModelCompatibility(
       )
     }
     return null
+  }
+  if (record.transport === 'builtin') {
+    return protocolMismatchRefusal(model, record.name, 'a built-in server that expects the sessionful initialize handshake')
   }
   if (record.transport === 'stdio') {
     return protocolMismatchRefusal(
@@ -146,7 +155,29 @@ export async function openUpstream(
   if (record.transport === 'stdio') {
     return openStdioUpstream(record, deps)
   }
+  if (record.transport === 'builtin') {
+    return openBuiltinUpstream(record, deps)
+  }
   return openHttpUpstream(record, deps)
+}
+
+/** The in-process file server: no vault, no spawn; tenants refused, an agent required (ADR-0020 §1). */
+function openBuiltinUpstream(
+  record: Extract<ServerRecord, { transport: 'builtin' }>,
+  deps: OpenUpstreamDeps,
+): OpenUpstreamResult {
+  if ((deps.tenant ?? TENANT_SETTINGS).stdioServers === 'refused') {
+    return { status: 'refused', error: REFUSAL_BUILTIN_REFUSED, detail: new BuiltinServerRefusedError(record.name).message }
+  }
+  if (deps.files === undefined) {
+    return {
+      status: 'refused',
+      error: REFUSAL_BUILTIN_NEEDS_AGENT,
+      detail: noAgentMessage(cliCommand(deps.processEnv), record.name),
+    }
+  }
+  const files = createFilesEndpoints(deps.files, deps.onError)
+  return { status: 'opened', upstream: Object.freeze({ source: files.source, sink: files.sink, close: files.close }) }
 }
 
 async function openStdioUpstream(
