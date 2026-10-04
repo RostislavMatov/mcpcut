@@ -111,6 +111,7 @@ interface Collected {
 async function readCalls(query: FileAuditQuery, opts: FileAuditOptions): Promise<Collected> {
   const found = await searchAllSessions({
     kind: 'decision',
+    serverName: FILES_SERVER_NAME,
     limit: MAX_PAGE_LIMIT,
     ...(opts.dir !== undefined ? { dir: opts.dir } : {}),
     ...(query.agent !== undefined ? { agentName: query.agent } : {}),

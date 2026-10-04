@@ -15,6 +15,8 @@ export interface JournalFilters {
   readonly method?: string
   /** Tool name of a `decision` record. */
   readonly toolName?: string
+  /** Server name of a `decision` record; matched whole. */
+  readonly serverName?: string
   /** Policy outcome of a `decision` record. */
   readonly outcome?: string
   /** Agent name of a `decision` record; matched whole, never as a prefix. */
@@ -68,6 +70,9 @@ export function matchesWithNeedle(
     return false
   }
   if (filters.toolName !== undefined && record.decision?.toolName !== filters.toolName) {
+    return false
+  }
+  if (filters.serverName !== undefined && record.decision?.serverName !== filters.serverName) {
     return false
   }
   if (filters.outcome !== undefined && record.decision?.outcome !== filters.outcome) {

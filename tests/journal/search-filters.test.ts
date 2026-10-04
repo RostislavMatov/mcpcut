@@ -77,3 +77,15 @@ describe('matchesFilters — period', () => {
     expect(matchesFilters(d, { agentName: 'bot-1', from: '2026-08-12', outcome: 'allow' })).toBe(false)
   })
 })
+
+describe('matchesFilters — server', () => {
+  test('keeps only decisions of the named server, matched whole', () => {
+    expect(matchesFilters(decision('bot-1'), { serverName: 'github' })).toBe(true)
+    expect(matchesFilters(decision('bot-1'), { serverName: 'files' })).toBe(false)
+    expect(matchesFilters(decision('bot-1'), { serverName: 'git' })).toBe(false)
+  })
+
+  test('drops records with no decision — a traffic record has no server here', () => {
+    expect(matchesFilters(record(), { serverName: 'github' })).toBe(false)
+  })
+})

@@ -331,3 +331,18 @@ describe('queryFileAudit — limit, truncation, bad records', () => {
     })
   })
 })
+
+describe('queryFileAudit — other servers do not crowd out file calls', () => {
+  test('finds a file call behind more than a page of decisions of another server', async () => {
+    await write('s-files', [call({ ts: '2026-10-04T09:00:00.000Z', agent: 'bot', payload: { path: '/data/a.txt' } })])
+    const noise = Array.from({ length: 1100 }, (_, index) =>
+      call({ ts: `2026-10-04T10:${String(Math.floor(index / 60) % 60).padStart(2, '0')}:00.000Z`, server: 'github', tool: 'list_issues' }),
+    )
+    await write('s-github', noise)
+
+    const result = await audit()
+
+    expect(pathsOf(result.entries)).toEqual([['/data/a.txt']])
+    expect(result.truncated).toBe(false)
+  })
+})
