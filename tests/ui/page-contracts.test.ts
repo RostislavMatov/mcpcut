@@ -20,6 +20,8 @@ import {
 import { renderPruneDangling, renderRemoveWarning } from '../../src/ui/pages/servers-holders.js'
 import { serverToolsRegionKey } from '../../src/ui/pages/servers-tool-rule.js'
 import type { AgentRecord } from '../../src/agents/schema.js'
+import { renderFilesPage } from '../../src/ui/pages/files.js'
+import type { FilesView } from '../../src/ui/pages/files-view.js'
 import type { GroupRecord } from '../../src/groups/schema.js'
 import type { UiSession } from '../../src/ui/auth.js'
 import type { PolicyView } from '../../src/policy/edit/policy-view.js'
@@ -93,6 +95,37 @@ const POLICY_VIEW: PolicyView = {
 }
 
 /** One group with a grant and a member — enough to render every card region. */
+const FILES_VIEW: FilesView = {
+  session: SESSION,
+  canManage: true,
+  folders: [{ path: '/data', addedAt: '2026-10-04T10:00:00.000Z', trash: 'ok' }],
+  access: {
+    agents: [{ agent: 'bot', rules: [{ path: '/data', ops: ['read'] }], origin: 'personal' }],
+    groups: [],
+    firstAgent: 'bot',
+  },
+  trash: [
+    {
+      root: '/data',
+      entries: [
+        {
+          id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+          root: '/data',
+          relative: 'a.txt',
+          originalPath: '/data/a.txt',
+          kind: 'file',
+          size: 3,
+          deletedAt: '2026-10-04T10:00:00.000Z',
+          deletedBy: 'bot',
+        },
+      ],
+      more: 0,
+      skipped: 0,
+    },
+  ],
+  audit: { filters: { path: '', agent: '', since: '7d' }, agents: ['bot'], isUnfiltered: true },
+}
+
 const GROUP: GroupRecord = {
   name: 'analytics',
   createdAt: '2026-08-31T00:00:00.000Z',
@@ -220,6 +253,8 @@ function allPages(): ReadonlyArray<{ readonly name: string; readonly html: strin
       name: 'groups-remove-refusal',
       html: renderGroupRemoveRefusal({ group: GROUP, session: SESSION }),
     },
+    { name: 'files', html: renderFilesPage(FILES_VIEW) },
+    { name: 'files-empty', html: renderFilesPage({ ...FILES_VIEW, canManage: false, folders: [], trash: [] }) },
     { name: 'admins', html: renderAdminsPage({ admins: [], session: SESSION }) },
     { name: 'login', html: renderLoginPage() },
   ]

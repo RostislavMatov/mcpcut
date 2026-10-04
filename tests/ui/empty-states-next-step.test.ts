@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'vitest'
 import type { UiSession } from '../../src/ui/auth.js'
 import { renderAgentsPage } from '../../src/ui/pages/agents.js'
+import { renderFilesPage } from '../../src/ui/pages/files.js'
+import type { FilesView } from '../../src/ui/pages/files-view.js'
 import { renderApprovalsPage } from '../../src/ui/pages/approvals.js'
 import { renderServersPage } from '../../src/ui/pages/servers.js'
 
@@ -53,5 +55,32 @@ describe('empty screens name the next step', () => {
     expect(page).toContain('No pending approvals.')
     expect(page).toContain('require-approval')
     expect(page).toContain('href="/servers"')
+  })
+
+  function emptyFilesPage(role: UiSession['role']): string {
+    const view: FilesView = {
+      session: session(role),
+      canManage: role === 'owner',
+      folders: [],
+      access: { agents: [], groups: [] },
+      trash: [],
+      audit: { filters: { path: '', agent: '', since: '7d' }, agents: [], isUnfiltered: true },
+    }
+    return renderFilesPage(view)
+  }
+
+  test('no folders: an owner gets the ready declare command', () => {
+    const page = emptyFilesPage('owner')
+    expect(page).toMatch(/<p class="empty">No folders yet\. Declare one agents may reach:<\/p><pre class="ag-config"[^>]*>[^<]*files root add &lt;folder&gt;<\/pre>/)
+  })
+
+  test('no folders: a viewer is told an owner declares them', () => {
+    const page = emptyFilesPage('viewer')
+    expect(page).toContain('No folders yet. An owner declares them.')
+    expect(page).not.toContain('files root add')
+  })
+
+  test('empty trash says how long deletions stay', () => {
+    expect(emptyFilesPage('viewer')).toContain('Nothing in the trash. What agents delete stays here for 30 days.')
   })
 })

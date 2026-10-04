@@ -1,4 +1,5 @@
 import { BRAND_NAME, INSTANCE_LABEL } from '../constants.js'
+import { TENANT_SETTINGS } from '../../tenant/settings.js'
 import { html, type Html, join, render, safeUrl } from '../html.js'
 import { csrfField } from './csrf-field.js'
 
@@ -96,6 +97,12 @@ export interface LayoutOptions {
    * the shell at anything the asset allowlist does not serve.
    */
   readonly scripts?: readonly string[]
+  /**
+   * Whether this is a hosted install, which hides the entries of modules that
+   * run only on the owner's own machine (`localOnly`). Defaults to the
+   * resolved `TENANT_SETTINGS`; a test injects it.
+   */
+  readonly isHosted?: boolean
 }
 
 /** Primary nav entries: [href, key, label, minRole]. */
@@ -105,6 +112,8 @@ interface NavItem {
   readonly label: string
   /** Roles that see the entry; absent = everyone signed in. */
   readonly roles?: readonly string[]
+  /** Hidden on a hosted install: the module behind it runs on the owner's machine only. */
+  readonly localOnly?: true
 }
 
 /**
@@ -120,6 +129,7 @@ const NAV_ITEMS: readonly NavItem[] = [
   { href: '/servers', key: 'servers', label: 'Servers' },
   { href: '/groups', key: 'groups', label: 'Groups' },
   { href: '/agents', key: 'agents', label: 'Agents' },
+  { href: '/files', key: 'files', label: 'Files', localOnly: true },
   { href: '/vault', key: 'vault', label: 'Vault', roles: ['owner'] },
   { href: '/admins', key: 'admins', label: 'Admins', roles: ['owner'] },
 ]
@@ -145,7 +155,11 @@ function renderTab(item: NavItem, options: LayoutOptions): Html {
 
 function visibleNavItems(options: LayoutOptions): readonly NavItem[] {
   const role = options.currentAdmin?.role
-  return NAV_ITEMS.filter((item) => item.roles === undefined || (role !== undefined && item.roles.includes(role)))
+  const isHosted = options.isHosted ?? TENANT_SETTINGS.isTenant
+  return NAV_ITEMS.filter((item) => {
+    if (item.localOnly === true && isHosted) return false
+    return item.roles === undefined || (role !== undefined && item.roles.includes(role))
+  })
 }
 
 function renderTabs(options: LayoutOptions): Html {

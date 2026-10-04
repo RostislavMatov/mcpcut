@@ -64,6 +64,7 @@ export const ROUTE_TABLE: readonly RouteEntry[] = [
   { method: 'GET', pattern: '/servers', minRole: 'viewer', handler: 'serversPage' },
   { method: 'GET', pattern: '/groups', minRole: 'viewer', handler: 'groupsPage' },
   { method: 'GET', pattern: '/agents', minRole: 'viewer', handler: 'agentsPage' },
+  { method: 'GET', pattern: '/files', minRole: 'viewer', handler: 'filesPage' },
   { method: 'GET', pattern: '/journal', minRole: 'viewer', handler: 'journalPage' },
   { method: 'GET', pattern: '/api/approvals', minRole: 'viewer', handler: 'approvalsApi' },
   { method: 'GET', pattern: '/events', minRole: 'viewer', handler: 'events' },
@@ -127,6 +128,9 @@ export const ROUTE_TABLE: readonly RouteEntry[] = [
   { method: 'POST', pattern: '/groups/ungrant', minRole: 'owner', handler: 'groupsUngrant' },
   { method: 'POST', pattern: '/groups/join', minRole: 'owner', handler: 'groupsJoin' },
   { method: 'POST', pattern: '/groups/leave', minRole: 'owner', handler: 'groupsLeave' },
+  // The file module (ADR-0020 §4): `viewer` reads the page, only `owner` puts a
+  // trashed item back — the same rule as `mcpcut files trash restore`.
+  { method: 'POST', pattern: '/files/trash/restore', minRole: 'owner', handler: 'filesTrashRestore' },
   { method: 'GET', pattern: '/admins', minRole: 'owner', handler: 'adminsPage' },
   { method: 'POST', pattern: '/admins/add', minRole: 'owner', handler: 'adminsAdd' },
   { method: 'POST', pattern: '/admins/remove', minRole: 'owner', handler: 'adminsRemove' },

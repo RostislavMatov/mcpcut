@@ -86,4 +86,14 @@ details.gr-drawer:not([open]) { display: none; }
 .gr-grant-who { grid-template-columns: 1fr 1fr; }
 .gr-grant-dims { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 @media (max-width: 640px) { .gr-grant-who, .gr-grant-dims { grid-template-columns: 1fr; } }
+
+/* --- Files page (ADR-0020): four stacked panels; tables, pills, buttons and the
+   command block are the shared components. ---------------------------------- */
+.fl-page { display: flex; flex-direction: column; gap: 16px; }
+.fl-panel .panel-bd { display: flex; flex-direction: column; gap: 12px; }
+.fl-table td code { word-break: break-all; }
+.fl-rules { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.fl-root { display: flex; flex-direction: column; gap: 8px; }
+.fl-filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+.fl-filters label { flex: 1 1 180px; min-width: 0; }
 `

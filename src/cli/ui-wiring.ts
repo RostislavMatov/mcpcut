@@ -1,6 +1,7 @@
 import type { AgentsStore } from '../agents/store.js'
 import { setupCodePathFor } from '../admin/setup-code-file.js'
 import type { AdminRecord, AdminStore } from '../admin/store.js'
+import { createRootsStore } from '../files/roots-store.js'
 import { createGroupsStore } from '../groups/store.js'
 import { journalAccessEdit, type JournalAccessEditOutcome } from '../groups/journal-access-edit.js'
 import type { AccessEditInfo } from '../journal/record.js'
@@ -24,6 +25,7 @@ import { createAgentsHandlers, type UiAuditEvent } from '../ui/handlers/agents.j
 import { createApprovalsHandlers, DASHBOARD_RECENT_DECISIONS } from '../ui/handlers/approvals.js'
 import { createAssetsHandler } from '../ui/handlers/assets.js'
 import { createEventsHandler } from '../ui/handlers/events.js'
+import { createFilesHandlers } from '../ui/handlers/files.js'
 import { createGroupsHandlers } from '../ui/handlers/groups.js'
 import { createJournalHandler, type JournalReadPort } from '../ui/handlers/journal.js'
 import { createLoginPage } from '../ui/handlers/login.js'
@@ -361,6 +363,15 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
     audit,
     journalAccessEdit: writeAccessEdit,
   })
+  const filesHandlers = createFilesHandlers({
+    roots: createRootsStore({ journalDir: deps.journalDir }),
+    agents: { listAgents: () => deps.agents.listAgents() },
+    groups: { listGroups: () => groups.listGroups() },
+    journalDir: deps.journalDir,
+    ...(deps.clock !== undefined ? { clock: deps.clock } : {}),
+    audit,
+    journalAccessEdit: writeAccessEdit,
+  })
   const agents = createAgentsHandlers({
     agentsStore: deps.agents,
     serveAddress: deps.serveAddress,
@@ -400,6 +411,7 @@ export function composeUi(deps: UiCompositionDeps): UiComposition {
     ...quarantine,
     ...servers,
     ...groupHandlers,
+    ...filesHandlers,
     ...serversToolRule,
     ...serversConfirmRule,
     ...serversCreatePolicy,
