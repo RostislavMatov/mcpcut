@@ -323,7 +323,7 @@ describe('mcpcut status', () => {
     const EXPOSED_UI = statusOf('ui', 'running', {
       pid: 1,
       host: '0.0.0.0',
-      exposure: { level: 'warn', detail: 'ui binds 0.0.0.0: reachable from the network. — ADR-0004' },
+      exposure: { level: 'warn', detail: 'ui binds 0.0.0.0: reachable from the network.' },
     })
 
     function exposedManager(): FakeManager {
@@ -339,7 +339,7 @@ describe('mcpcut status', () => {
       expect(io.out()).toBe(
         'ui     running  pid 1  0.0.0.0:8091    —\n' + 'serve  running  pid 2  127.0.0.1:8090  —\n',
       )
-      expect(io.err()).toBe('ui:    warning: ui binds 0.0.0.0: reachable from the network. — ADR-0004\n')
+      expect(io.err()).toBe('ui:    warning: ui binds 0.0.0.0: reachable from the network.\n')
     })
 
     test('--json carries the field and writes nothing to stderr', async () => {

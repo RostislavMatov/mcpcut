@@ -63,7 +63,7 @@ const SHOW_USAGE = `Usage:
                                 Print the effective policy (defaults applied).
                                 --entry-point ${ENTRY_POINTS.join('|')}
                                 resolves the source the way that entry point does
-                                (see docs/adr/0005-policy-source-resolution.md)
+                                (see ${GUIDE_URL}/policies.md)
 `
 
 /**

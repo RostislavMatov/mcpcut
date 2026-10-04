@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { GUIDE_URL } from '../../src/brand.js'
 import { resolveConnectPolicy } from '../../src/cli/connect-policy.js'
 import { runPolicyShow, runPolicyValidate } from '../../src/cli/policy-cmd.js'
 import { defaultInstallConfig } from '../../src/setup/defaults.js'
@@ -336,6 +337,15 @@ describe('runPolicyShow --entry-point', () => {
 
     expect(exitCode).toBe(1)
     expect(io.err()).toContain('expected one of connect, wrap, serve, ui')
+  })
+
+  test('the usage text points at the published guide, not at an unpublished decision record', async () => {
+    const io = fakeIo()
+
+    await runPolicyShow(['--entry-point', 'typoo'], io, { cwd, journalDir, env: {} })
+
+    expect(io.err()).toContain(`${GUIDE_URL}/policies.md`)
+    expect(io.err()).not.toContain('docs/adr')
   })
 
   test('connect: prints the state-directory policy, ignoring env and project sources', async () => {

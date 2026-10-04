@@ -283,7 +283,8 @@ describe('updateWizard: the exposure confirmation', () => {
     expect(stage.kind).toBe('confirm-exposure')
     if (stage.kind !== 'confirm-exposure') throw new Error('expected the confirmation')
     expect(stage.warnings).toHaveLength(1)
-    expect(stage.warnings[0]).toContain('ADR-0004')
+    expect(stage.warnings[0]).toContain('reachable from the network')
+    expect(stage.warnings[0]).not.toContain('ADR')
   })
 
   test('no takes the operator back to the form, unwritten', () => {

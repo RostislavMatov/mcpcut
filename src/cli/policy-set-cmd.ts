@@ -81,7 +81,7 @@ const POLICY_SET_REFUSAL: AdminRefusalWording = {
 }
 
 /** Hot reload is wave 2 of the same plan (`src/policy/reload.ts`), so the reminder is unconditional. */
-const RELOAD_REMINDER = 'running proxies pick this up without restart (ADR-0009)\n'
+const RELOAD_REMINDER = 'running proxies pick this up without restart\n'
 
 /** Test seams; production uses the defaults. */
 export interface PolicySetDeps {
