@@ -1,10 +1,9 @@
-import path from 'node:path'
 import { parseArgs } from 'node:util'
 import { MAX_PURGE_DAYS, MS_PER_DAY, TRASH_RETENTION_DAYS } from '../files/constants.js'
-import { ruleKeysOf } from '../files/grant-admin.js'
-import { listTrash, purgeTrash, restoreFromTrash, type SkippedEntry } from '../files/io-trash-admin.js'
+import { listTrash, purgeTrash, type SkippedEntry } from '../files/io-trash-admin.js'
 import { createRootsStore } from '../files/roots-store.js'
 import type { TrashManifest } from '../files/trash-manifest.js'
+import { findDeclaredRoot, restoreInDeclaredRoot } from '../files/trash-restore.js'
 import { formatReadableField } from '../journal/format.js'
 import type { AdminRefusalWording, RequiredAdmin } from './admin-token.js'
 import { recordAccessChange, requireAccessOwner } from './access-cmd-write.js'
@@ -45,16 +44,18 @@ async function declaredRoots(opts: FilesCliOptions): Promise<readonly string[]> 
 /** The declared root the argument names, or the one-line refusal that lists the declared ones. */
 async function resolveRoot(io: AgentCliIo, opts: FilesCliOptions, raw: string): Promise<string | undefined> {
   const declared = await declaredRoots(opts)
-  const cli = cliCommand(opts.env)
-  const match = (await ruleKeysOf(raw)).find((key) => declared.includes(key))
+  const match = await findDeclaredRoot(declared, raw)
   if (match !== undefined) return match
+  fail(io, noRootMessage(declared, raw, opts))
+  return undefined
+}
+
+function noRootMessage(declared: readonly string[], raw: string, opts: FilesCliOptions): string {
   const label = formatReadableField(raw)
   if (declared.length === 0) {
-    fail(io, `no root "${label}": no roots are declared yet, add one with \`${cli} files root add <folder>\``)
-  } else {
-    fail(io, `no root "${label}": declared roots are ${declared.map(formatReadableField).join(', ')}`)
+    return `no root "${label}": no roots are declared yet, add one with \`${cliCommand(opts.env)} files root add <folder>\``
   }
-  return undefined
+  return `no root "${label}": declared roots are ${declared.map(formatReadableField).join(', ')}`
 }
 
 function parseTrashArgs(args: readonly string[], withDays: boolean) {
@@ -124,14 +125,15 @@ async function runRestore(args: string[], io: AgentCliIo, opts: FilesCliOptions)
   if (raw === undefined || id === undefined || positionals.length !== 2) return fail(io, FILES_TRASH_USAGE.trimEnd())
   const actor = await requireAccessOwner(io, opts, TRASH_REFUSAL)
   if (actor === undefined) return 1
-  const root = await resolveRoot(io, opts, raw)
-  if (root === undefined) return 1
-  const restored = await restoreFromTrash(root, id)
-  if (!restored.ok) {
+  const declared = await declaredRoots(opts)
+  const restored = await restoreInDeclaredRoot(declared, raw, id)
+  if (restored.status === 'no-root') return fail(io, noRootMessage(declared, raw, opts))
+  const { root } = restored
+  if (restored.status === 'failed') {
     const cli = cliCommand(opts.env)
     return fail(io, `${formatReadableField(restored.message)} (ids: ${cli} files trash list ${shellArg(root)})`)
   }
-  const target = path.join(root, restored.value.relative)
+  const { target } = restored
   io.stdout.write(`restored ${formatReadableField(target)} from the trash\n`)
   io.stderr.write(`See what is left in the trash: ${cliCommand(opts.env)} files trash list ${shellArg(root)}\n`)
   return record(io, opts, actor, 'restore', formatReadableField(target), { action: 'files.trash.restore', path: target, trashId: id })
