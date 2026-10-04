@@ -79,6 +79,9 @@ ${TUI_SYNOPSIS_LINES.join('\n')}
                                          Remove a folder rule / print the agent's folder rules
   mcpcut files grant|revoke --group <group> <folder> [--ops ...] | show --group <group>
                                          The same for a group: every member inherits its folder rules
+  mcpcut files audit [--path <path>] [--agent <name>] [--since <YYYY-MM-DD|Nd>] [--limit <n>] [--json]
+                                         Who touched what: every file operation and admin edit,
+                                         newest first (read-only, no token)
   mcpcut files trash list [<root>] | restore <root> <id> | purge <root> [--older-than-days N]
                                          List what agents deleted, put an item back, or delete old
                                          ones for good (owner token for restore/purge; serve purges

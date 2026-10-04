@@ -48,6 +48,7 @@ const NOT_YET_COVERED: readonly CommandPair[] = [
   // CLI-only for now; the Files console screen is a later phase of the plan.
   // `list` and `remove` are the parser's reading of `files root add|list|remove`;
   // `trash`, `restore` and `purge` are `files trash list|restore|purge` (ADR-0020 §4).
+  { command: 'files', subcommand: 'audit' },
   { command: 'files', subcommand: 'grant' },
   { command: 'files', subcommand: 'list' },
   { command: 'files', subcommand: 'purge' },

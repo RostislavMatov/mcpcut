@@ -18,6 +18,7 @@ import {
   formatRulesOrigin,
   grantNextStep,
 } from './files-cmd-format.js'
+import { runAudit } from './files-cmd-audit.js'
 import { isGroupForm, runGroupGrant, runGroupRevoke, runGroupShow } from './files-cmd-group.js'
 import { runTrash } from './files-cmd-trash.js'
 import { findAgent, runGrant, runRevoke, runRootAdd, runRootRemove } from './files-cmd-write.js'
@@ -62,6 +63,8 @@ export async function runFilesCommand(
         return await (isGroupForm(rest) ? runGroupRevoke : runRevoke)(rest, io, opts)
       case 'show':
         return await (isGroupForm(rest) ? runGroupShow : runShow)(rest, io, opts)
+      case 'audit':
+        return await runAudit(rest, io, opts)
       case 'trash':
         return await runTrash(rest, io, opts)
       default:
