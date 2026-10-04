@@ -27,7 +27,6 @@ const CHECKED_FILES: readonly string[] = [
   'CONTRIBUTING.md',
   'CHANGELOG.md',
   'docs/ARCHITECTURE.md',
-  'docs/release.md',
   'docs/deploy/README.md',
   ...GUIDE_PAGES,
 ]

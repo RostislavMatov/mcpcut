@@ -1,11 +1,10 @@
 # hub
 
-`hub` is the small process behind `mcpcut.com`'s "Sign in with GitHub" button
-(ADR-0017 phase 2, plan `.claude/PRPs/plans/hub-signin-accounts.plan.md`). It
+`hub` is the small process behind `mcpcut.com`'s "Sign in with GitHub" button. It
 is not an install of `mcpcut` itself — it never reads `~/.mcpcut/config.json`
 or anything an install writes (`tests/architecture/hub-imports.test.ts`
 enforces that) — it only turns a GitHub identity into an account, a
-subdomain, and (once the orchestrator in phase 3 exists) a call into it to
+subdomain, and a call into the provisioner to
 create that account's own `mcpcut` install.
 
 What it does today:
@@ -14,8 +13,8 @@ What it does today:
 - `GET /auth/github/callback` exchanges the code, reads the GitHub profile
   (`id`, `login`, account age), revokes the GitHub token immediately — it is
   never stored — and decides: too young an account, blocked, rate-limited, or
-  welcome. A welcome either creates the account or, while phase 3's
-  orchestrator is not wired up, puts the person on a waitlist with a number.
+  welcome. A welcome either creates the account or, while the
+  provisioner is not wired up, puts the person on a waitlist with a number.
 - `GET /account` and its `POST` actions: see the account's subdomain and
   status, issue a new owner token, get the client config, or delete the
   account (with the login typed back as confirmation).
@@ -102,7 +101,7 @@ environment as `serve`:
 
 ### Idle installs
 
-An install nobody uses is stopped, then removed (ADR-0017 phase 4, HA9). Its
+An install nobody uses is stopped, then removed. Its
 **activity** is the later of two things: its person's last sign-in to the hub,
 and the last time the install wrote its journal or state
 (`~/.mcpcut/data/{journal,state}.db` and their `-wal` files) — the journal
@@ -135,7 +134,7 @@ restart it reappears with the first sweep.
 
 ## Provisioner and tenant installs
 
-ADR-0017 phase 3: when the hub creates an account, it does not touch Docker
+When the hub creates an account, it does not touch Docker
 itself — it calls a second, small process, the **provisioner**
 (`hub/src/provisioner/*`, entry point `node hub/dist/hub/src/cli.js
 provision`), which is the only thing anywhere in this deployment holding the
@@ -272,8 +271,7 @@ tenant's volume (O9 — Docker's own volumes are not quota-limited without a
 filesystem like `xfs` with project quotas, which this deployment does not
 assume); watching `provision-status` across tenants, by hand or by a script
 an operator runs, is what stands in for one today. A host that needs a hard
-limit is a host that has outgrown sharing one Docker daemon among tenants —
-see ADR-0017's "when we reconsider" for that trigger.
+limit is a host that has outgrown sharing one Docker daemon among tenants.
 
 An install nobody uses is stopped after 60 days and removed after 90 (see
 [Idle installs](#idle-installs)); the provisioner's side of that is two more
@@ -284,7 +282,7 @@ section of its config — see `docs/guide/install.md`).
 
 ### Cloudflare, for `*.mcpcut.com`
 
-Beyond what phase 2 already needed (a proxied `mcpcut.com` and Origin Rule),
+Beyond what sign-in already needed (a proxied `mcpcut.com` and Origin Rule),
 tenant routing needs:
 
 - A proxied wildcard DNS record, `*` → this host, so every `<sub>.mcpcut.com`
@@ -348,7 +346,7 @@ create or find an account.
 `/signin`, `/auth/*`, `/account`, `/account/*`, `/signout`, `/terms`,
 `/privacy` and `/hub-assets/*` on `mcpcut.com` to the hub, routes
 `*.mcpcut.com` to whichever tenant's own container the subdomain names
-(ADR-0017 phase 3, see "Provisioner and tenant installs" above), and serves
+(see "Provisioner and tenant installs" above), and serves
 everything else as the static preview page; and `docker-compose.site.yml`,
 which builds this directory's `Dockerfile` for both `hub` and `provisioner`,
 gives each its own data volume and secret mount, and starts `hub` with no

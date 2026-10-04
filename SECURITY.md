@@ -19,11 +19,13 @@ The threat model is written down, not implied. Start with:
 
 - `README.md` → "Threat model summary" and "What the vault protects against, and
   what it does not" — the same-uid trust boundary is deliberate and documented.
-- `docs/adr/` — every accepted security decision and the conditions under which
-  it is revisited (ADR-0003 vault, ADR-0004 admin UI, ADR-0007 evidentiary
-  journal, ADR-0008 server probe, ADR-0009 policy editing, ADR-0010 groups).
-- `docs/security-audit-2026-09.md` — the whole-product internal audit that gates
-  this release: what was found, what was fixed, what was accepted and why.
+- `docs/ARCHITECTURE.md` — the processes, how a call flows through them, and
+  the invariants the code keeps.
+- `docs/guide/status.md` — what exists today and what backs each claim.
+
+The whole product went through an internal security audit in September 2026:
+0 critical and 4 high findings, all fixed. No independent audit has been done
+yet.
 
 Reports that restate an accepted, documented risk (for example, "a process
 running as the same OS user can rewrite the journal") are welcome only if they
@@ -40,9 +42,9 @@ introduces either phrase will be asked to remove it.
 
 Two features are **preview** (see [What preview means here](docs/guide/console.md#what-preview-means-here)):
 
-- the remote console (`mcpcut --remote`, `mcpcut --connect`, ADR-0014) — an
+- the remote console (`mcpcut --remote`, `mcpcut --connect`) — an
   admin token crosses the network on every request;
-- the `connect --url` bridge (ADR-0015) — an agent token crosses the network on
+- the `connect --url` bridge — an agent token crosses the network on
   every request.
 
 Both work and are covered by tests and live smokes over TLS, but their network
@@ -65,7 +67,7 @@ interface may change within 0.x. Reports about them are especially welcome.
    with 2FA; npm provenance is expected with it — this line will say so
    outright once the first such release has been checked.
 4. To check what you installed: `npm audit signatures` in a project that
-   depends on `mcpcut`. The release procedure is `docs/release.md`.
+   depends on `mcpcut`.
 
 ## Supported versions
 

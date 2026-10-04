@@ -36,8 +36,7 @@ file is only cleared. On Windows `start`/`stop` refuse: run `mcpcut ui` and
 When a service binds an address other hosts can reach (anything but
 loopback), `status` repeats the warning `setup` gives at install time — one
 line per such service on **stderr**, `<service>: warning: <service> binds
-<host>: reachable from the network. …`, with the same advice and ADR-0004
-pointer. Stdout and the exit code are unchanged, and a stopped service is
+<host>: reachable from the network. …`, with the same advice. Stdout and the exit code are unchanged, and a stopped service is
 warned about too: the configured bind becomes reachable the moment it starts.
 `status --json` writes nothing to stderr; instead the exposed service's object
 carries `"exposure": {"level": "warn", "detail": "…"}` (the field sits on each
@@ -104,12 +103,12 @@ localhost names, so reach the console at `http://localhost:8091`. **Do not set
 every command, `setup` refuses the run as a data-directory conflict, and under
 `set -eu` with `restart: unless-stopped` the container crash-loops. Do not
 bind-mount a checkout over `/app` either: a `.mcpcut-project/policy.json` in it
-would shadow the volume's policy (ADR-0005).
+would shadow the volume's policy.
 
 **TLS in front, on a VPS.** `docs/deploy/caddy/` holds a `Caddyfile` and a
 compose override that put Caddy with a Let's Encrypt certificate in front of
 `serve` and leave the UI on host loopback (reach it through an SSH tunnel) —
-exactly the stand the pool's live smoke ran (`docs/smoke-agent-pool.md`). Set
+exactly the stand the pool's live test ran on. Set
 `MCPCUT_SERVE_PUBLIC_URL` to the `https://` address in the override before the
 first start: it is the Host allow-list, the TLS flag, and the address every
 generated client config carries.

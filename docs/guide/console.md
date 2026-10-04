@@ -62,7 +62,7 @@ The remote console and the `connect --url` bridge are **preview**: they work,
 and they are covered by tests and by live smokes against a VPS over TLS, but
 the network surface they open — an admin token (console) or an agent token
 (bridge) crossing the network on every request — has had only this project's
-**internal** security audit, no independent one (`docs/adr/0011-open-source-release.md`).
+**internal** security audit, no independent one.
 Their interface may still change within 0.x. Report anything you find through
 [`SECURITY.md`](../../SECURITY.md).
 
@@ -108,7 +108,7 @@ What differs from a local console, because a network is not a shell:
   `export --report` (which writes a directory on the server) need `owner`;
   a streamed `export` and any `policy` form other than a bare `policy show`
   need `operator`. Locally these are host operations open to whoever has the
-  shell; over a network that reasoning does not hold (ADR-0014).
+  shell; over a network that reasoning does not hold.
 - **A hosted install (tenant mode) refuses more on top of that**: any command
   naming a path on the server, both here and locally — see
   [Tenant mode (hosted)](install.md#tenant-mode-hosted) in the install guide.

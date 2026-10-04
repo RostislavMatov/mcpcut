@@ -11,20 +11,20 @@ other text about the project may claim more than it does.
 | approvals via CLI | shipped | approval-flow tests |
 | fail-closed journaling | shipped, **off by default** | fault-injection tests; opt in with `--fail-closed` |
 | server registry (`server add/list/...`) | shipped | registry tests |
-| credential vault (AES-256-GCM) | shipped | vault tests, `docs/adr/0003-vault-crypto.md` |
+| credential vault (AES-256-GCM) | shipped | vault tests |
 | agent identities + grant matrix | shipped | grant/revoke tests |
-| streamable HTTP front (`serve`) | shipped, both session models | `docs/adr/0002-http-dual-version.md` |
-| tamper-evident journal storage (hash chain + signed head) | shipped, **with an external anchor** | chain/verify tests, `docs/adr/0007-evidentiary-journal.md` |
-| exportable audit report, offline-verifiable | shipped | `export --report` / `verify --report` tests, `docs/smoke-m5.md` |
+| streamable HTTP front (`serve`) | shipped, both session models | HTTP transport tests for both models |
+| tamper-evident journal storage (hash chain + signed head) | shipped, **with an external anchor** | chain/verify tests |
+| exportable audit report, offline-verifiable | shipped | `export --report` / `verify --report` tests, a manual end-to-end run |
 | explicit retention pruning (`prune`) | shipped, **no defaults** | prune + marker tests |
-| admin UI / approval queue | shipped | e2e + UI test suites, TS + security reviews, manual browser smoke (`docs/smoke-m4.md`), `docs/adr/0004-admin-ui-architecture.md` |
+| admin UI / approval queue | shipped | e2e + UI test suites, TS + security reviews, manual browser smoke |
 | named admin accounts (owner/operator/viewer) | shipped | admin CLI + role-enforcement tests |
-| one address per agent (the pool, `/mcp`) | shipped, tools and prompts, sessionful agents | pool unit + e2e tests, `docs/smoke-agent-pool.md` (live clients — official SDK v1/v2, Inspector CLI, Claude Code headless — against a VPS over TLS) |
-| `connect --url` bridge for agents on another machine | shipped, **[preview](console.md#what-preview-means-here)** | `docs/smoke-connect-bridge.md`, `docs/smoke-agent-pool.md` |
-| remote console (`--remote`, `--connect`) | shipped, **[preview](console.md#what-preview-means-here)** | `docs/smoke-remote-console.md`, `docs/adr/0014-remote-console.md` |
-| ready-made client config at `agent create` | shipped | `docs/smoke-agent-config.md`, `docs/smoke-agent-pool.md` |
-| npm package (`npm i -g mcpcut`, `npx mcpcut@0.3.0`) | shipped, 0.1.0 | `tests/release/*`, `docs/release.md`, `docs/smoke-npm-package.md` |
-| whole-product security audit | passed 2026-09-02, **internal** | `docs/security-audit-2026-09.md` — 0 CRITICAL, 4 HIGH fixed in the same wave; no independent pass has been done (ADR-0011), reports via `SECURITY.md` |
+| one address per agent (the pool, `/mcp`) | shipped, tools and prompts, sessionful agents | pool unit + e2e tests, a live run with real clients (official SDK v1/v2, Inspector CLI, Claude Code headless) against a VPS over TLS |
+| `connect --url` bridge for agents on another machine | shipped, **[preview](console.md#what-preview-means-here)** | bridge tests, a live run over TLS |
+| remote console (`--remote`, `--connect`) | shipped, **[preview](console.md#what-preview-means-here)** | remote-console tests, a live run over TLS |
+| ready-made client config at `agent create` | shipped | config tests, a live run with real clients |
+| npm package (`npm i -g mcpcut`, `npx mcpcut@0.3.0`) | shipped, 0.1.0 | `tests/release/*`, a CI smoke of the published package on Linux, macOS and Windows |
+| whole-product security audit | passed 2026-09-02, **internal** | 0 critical, 4 high findings, all fixed; no independent audit yet; reports via `SECURITY.md` |
 
 The journal is a persistent, append-oriented, secret-redacted SQLite database
 (`journal.db`; JSONL is the export format — `mcpcut export`). Every

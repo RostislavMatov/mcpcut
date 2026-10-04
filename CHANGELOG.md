@@ -255,8 +255,7 @@ All notable changes to this project are documented here. The format follows
   through), caps servers/agents/groups at 5/5/2 by default, and has the
   remote console refuse any command that names a path on the server. An
   install with no `tenant` section is unaffected, byte for byte. See
-  [Tenant mode (hosted)](docs/guide/install.md#tenant-mode-hosted) and
-  [ADR-0017](docs/adr/0017-hosted-install-per-tenant.md).
+  [Tenant mode (hosted)](docs/guide/install.md#tenant-mode-hosted).
 - **Request budget in tenant mode.** `serve` admits 10 agent requests a
   second (bursting to 20) and 10 000 per sliding day per install, then answers
   `429` with `Retry-After`; tune with `tenant.maxRequestsPerSecond` /
@@ -268,8 +267,7 @@ All notable changes to this project are documented here. The format follows
   fixed container templates: 256 MiB, 0.25 CPU, no capabilities, read-only
   root, its own network and volume), an install created in the background and
   its owner token shown once, idle installs stopped at 60 days and removed at
-  90, and host isolation for tenant networks. See `hub/README.md` and
-  [ADR-0017](docs/adr/0017-hosted-install-per-tenant.md).
+  90, and host isolation for tenant networks. See `hub/README.md`.
 - **`admin add`/`admin rotate --json`** prints one line
   `{"admin","role","token"}` on stdout for a script to parse, moving the
   human notices to stderr instead of interleaving them with it.
@@ -357,9 +355,7 @@ publication — several are security fixes, so they are kept.
   `export --report` and offline `verify --report`, explicit retention pruning
   with a signed marker. The journal is tamper-evident **with an external
   anchor**.
-- **Security audit** of the whole product before release
-  (`docs/security-audit-2026-09.md`): 0 critical, 4 high findings, all fixed
-  in the same wave.
+- **Security audit** of the whole product before release: 0 critical, 4 high findings, all fixed.
 - **Terminal console and services** (`mcpcut`): a first-run wizard, `ui` and
   `serve` as detached services (`start` / `stop` / `status` / `logs`), and the
   whole plane from a terminal, without a browser.
@@ -385,7 +381,7 @@ publication — several are security fixes, so they are kept.
   Up to 32 (agent, server) pairs; past that a server starts on demand and stays
   warm 10 minutes after its agent leaves, yielding its slot first when the
   service runs short. `serve.log` shows each start, restart and stop; pool
-  `attach` records carry `lifetime` (`pool`, `warm`, `resident`). ADR-0016.
+  `attach` records carry `lifetime` (`pool`, `warm`, `resident`).
 - **Servers of the stateless revision `2026-07-28` join a pool**, stdio and
   HTTP, next to older ones: the plane tries its handshake first and asks
   `server/discover` when it is refused, then stamps every frame to such a
@@ -505,8 +501,8 @@ publication — several are security fixes, so they are kept.
   one directory while the daemons serve another.
 - **`mcpcut status` warns about a network-reachable bind** — for every
   service bound to anything but loopback it writes
-  `<service>: warning: <detail>` to stderr, the same finding and ADR-0004
-  pointer `setup` prints; stdout and the exit code are unchanged, and a
+  `<service>: warning: <detail>` to stderr, the same finding
+  `setup` prints; stdout and the exit code are unchanged, and a
   stopped service is warned about too. `status --json` writes nothing to
   stderr and instead adds `"exposure": {"level": "warn", "detail": …}` to the
   exposed service's object; a loopback install's JSON is unchanged. In the
@@ -546,7 +542,7 @@ publication — several are security fixes, so they are kept.
   decisions are — it leaves out. `report.json` is unchanged (format v1),
   `verify --report` runs the same seven checks, and the binding stays
   re-derivable from the `kind:"pool"` records in `records.jsonl` (README gives
-  the `jq` line). ADR-0015 phase 5 amendment; ADR-0007 note on `summary.md`.
+  the `jq` line).
 - **The server card marks tools whose pool name is too long.** On `/servers`, a
   tool whose `<server>__<tool>` exceeds 64 characters is marked `not in pool ·
   <length>` (it is left out of every agent pool and stays reachable at the
@@ -554,8 +550,8 @@ publication — several are security fixes, so they are kept.
   marked `long pool name · <length>`. The thresholds are the pool's own.
 - **An example of TLS in front of `serve` on a VPS** (`docs/deploy/caddy/`): a
   `Caddyfile` and a compose override — Caddy with a Let's Encrypt certificate,
-  the UI left on host loopback — exactly the stand the pool's live smoke ran
-  (`docs/smoke-agent-pool.md`: official SDK v1/v2, Inspector CLI and Claude Code
+  the UI left on host loopback — exactly the stand the pool's live test ran
+  (official SDK v1/v2, Inspector CLI and Claude Code
   headless through `connect --url` against a VPS). README now advises
   registering pooled servers by an installed binary rather than `npx -y`: a
   pool starts them in parallel, and several cold `npx` launches on a small host
@@ -577,7 +573,7 @@ publication — several are security fixes, so they are kept.
   both forms and, if the `agent.create` journal record was lost, says so; every
   agent card on `/agents` has the `<token>` block in a drawer. The token still
   appears in exactly one place per surface: `agent create`'s stdout and the web
-  response to the create. ADR-0015, phase 4 amendment (C1–C6).
+  response to the create.
 - **One address per agent, and the service decides what is behind it: `POST|GET|DELETE /mcp`.**
   An agent that connects to this single address sees the tools of **every**
   server it was granted, named `<server>__<tool>`, and gets new ones without a
@@ -613,7 +609,7 @@ publication — several are security fixes, so they are kept.
   `-32602`; an upstream's unsolicited request to the agent is dropped, because
   the plane declares no client capabilities to any of them; a pool holds at
   most 32 children, and those children count against the process-wide session
-  ceiling. ADR-0015 and its 2026-09-22 amendment.
+  ceiling.
 - **An agent on another machine connects with one command: `mcpcut connect
   --url <address>`.** The remote form of `connect` is pure transport between
   this machine's stdio and a `serve` front on another host — it reads no
@@ -630,7 +626,7 @@ publication — several are security fixes, so they are kept.
   instead of a session (401, 403, 404 included), 4 when the session itself was
   lost, which tells a client to start a fresh bridge. A network blip is none of
   those — the request it hit gets a JSON-RPC `-32004` back and the bridge keeps
-  running. ADR-0015; [the guide](docs/guide/serve-and-pool.md#from-another-machine-mcpcut-connect---url-preview).
+  running. See [the guide](docs/guide/serve-and-pool.md#from-another-machine-mcpcut-connect---url-preview).
 - **A runtime below Node 24 gets one line instead of a missing builtin.** Every
   command now prints `mcpcut needs Node 24 or newer (this is vX)` and exits 1,
   ahead of the import that used to fail with `ERR_UNKNOWN_BUILTIN_MODULE:
@@ -663,7 +659,7 @@ publication — several are security fixes, so they are kept.
   vault writes are refused unless `ui` is behind TLS or the caller is on
   loopback; the first owner is created with the setup code, as on `/setup`.
   Plain `http` to a non-loopback host is a loud warning, not a refusal.
-  ADR-0014; [the guide](docs/guide/console.md#a-console-for-a-service-on-another-host---remote-preview).
+  See [the guide](docs/guide/console.md#a-console-for-a-service-on-another-host---remote-preview).
 
 - **`setup --serve-public-url` now remembers the address** as `serve.publicUrl`
   in `~/.mcpcut/config.json` (an origin: scheme, host, optional port — no
@@ -694,10 +690,10 @@ publication — several are security fixes, so they are kept.
   is gone, and so is the console's sign-in line that named it. Installs made with `setup` or the
   wizard already have an owner and never see the page.
   The creation is journalled as `access-edit` `admin.add` via `ui` with an
-  empty actor (ADR-0004, amendment of 2026-09-19).
+  empty actor.
 
 - **One name: `mcpcut`.** The working name `mcp-journal` is gone from the
-  product (ADR-0013). The package and its only `bin` entry are `mcpcut`; the
+  product. The package and its only `bin` entry are `mcpcut`; the
   default data directory is `~/.mcpcut/data`, next to the install config in
   `~/.mcpcut/`; the environment overrides are `MCPCUT_DATA_DIR` and
   `MCPCUT_POLICY`; the project-level policy file is
@@ -779,8 +775,8 @@ publication — several are security fixes, so they are kept.
   the vault refusals — those are statements about the request, this one was
   about the caller.
 - **A denied `resources/*` / `prompts/*` call says what is actually wrong.**
-  The refusal read `agent: method not grantable in M3`, which stopped being
-  true in M4 when `agent grant --resources/--prompts` arrived. Two rules now
+  The old refusal said the method was not grantable at all, which stopped
+  being true once `agent grant --resources/--prompts` arrived. Two rules now
   replace it: `agent: no resources/prompts grant: <method>` when a grant would
   open it, and `agent: method not grantable: <method>` for the methods no grant
   can describe. The JSON-RPC error talks about a *method* instead of opening
@@ -830,7 +826,7 @@ publication — several are security fixes, so they are kept.
   anything new — is not passed on. The pool journals each such kind once per
   server (`dropped`, reason `unscoped-notification` or `unsupported-method`,
   at most 256 kinds per session); every notification stays in that server's own
-  session traffic. ADR-0015 phase 5 amendment (N1–N4).
+  session traffic.
 
 - **`server add` and `server remove` are owner-only** (breaking for scripts).
   Both now need `MCP_ADMIN_TOKEN` set to an owner's personal token — the role
@@ -840,7 +836,7 @@ publication — several are security fixes, so they are kept.
   journaled the change as `unattributed`, although registering a server
   decides which process the plane may launch and the registration probe runs
   it once. `--prune-grants` is gated the same way; `server list|show` still
-  need no token (ADR-0010, owner decision 2026-09-18).
+  need no token.
 - **Registering or editing a server in the admin UI is journaled.**
   `POST /servers/add` and `POST /servers/edit` now write an `access-edit`
   record (`server.add`, and the new action `server.update`) under the
@@ -855,8 +851,7 @@ publication — several are security fixes, so they are kept.
   and adopts the first valid file that appears, on the very next call
   (`policy adopted: <path> (<hash>)` in its log). A broken file is never
   adopted and is reported; after adoption the source is pinned as if it had
-  been there from the start. `wrap` without a policy is unchanged (ADR-0009,
-  amendment 2026-09-18).
+  been there from the start. `wrap` without a policy is unchanged.
 - **Skipping `tools/list` no longer lowers a tool's class.** A call was
   classified from the descriptor its own session had seen listed, and from the
   tool's name alone when the agent never asked for the catalog — so
@@ -896,7 +891,7 @@ publication — several are security fixes, so they are kept.
   leaves as a hostname rather than folding into an address — counted as
   "unreachable from the network". Every caller that asks the question about an
   address arriving from outside was affected: `connect --url` (agent token,
-  where owner decision PE8 turns the answer into a refusal), `--remote` (admin
+  where the answer turns into a refusal), `--remote` (admin
   token) and the `--*-public-url` flags all sent a bearer token over plain
   `http` to such a host with no warning and no flag. The block is now matched
   against a real IPv4 literal; the decimal, octal and hex spellings of the

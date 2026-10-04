@@ -83,7 +83,7 @@ Step by step:
    admin exists) and `vault list` need no token — hence the order of a first
    setup: `admin add <name> --role owner` → `vault init` → `vault set`. The
    token is attribution, not protection: the same-uid trust boundary below is
-   unchanged (`docs/adr/0003-vault-crypto.md`, amendment 2026-09-03).
+   unchanged.
 4. **`agent create`** mints a 32-byte token and prints it exactly once; only
    its SHA-256 hash is stored. Stealing `agents.json` yields no usable token.
 5. **`agent grant`** is the grant matrix: this agent, this server, these tool
@@ -214,8 +214,7 @@ to be typed out as `--tools '*'`.
 
 **A group is not a login.** There is no group key and no shared token: the
 agent still authenticates with its own token, and journal records still name
-the agent. A group hands out *permissions* in bulk, nothing else — see
-[ADR-0010](../adr/0010-server-groups.md).
+the agent. A group hands out *permissions* in bulk, nothing else.
 
 **How grants merge.** Per server, not per field:
 
@@ -290,5 +289,4 @@ ciphertext, readable by the same user, is exactly as strong as that user
 account: anything running as you can decrypt the vault. This is the same
 trust boundary as [the wrapped-process limitation](wrap-and-journal.md#known-limitation-trust-boundary-of-the-wrapped-process), and it is
 stated here rather than glossed over. Rotate with `mcpcut vault rekey`
-(re-encrypts every secret under a fresh key). Full threat model and the
-reasoning behind the choice: `docs/adr/0003-vault-crypto.md`.
+(re-encrypts every secret under a fresh key).
