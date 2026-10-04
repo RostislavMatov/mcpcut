@@ -37,6 +37,7 @@ import {
 import { renderNotice } from '../pages/notice.js'
 import type { UiHandler, UiRequestContext, UiResult } from '../routes.js'
 import type { AccessEditJournalOutcome, AccessEditJournalPort, UiAuditSink } from './agents.js'
+import { journalAccessEditGuarded } from './access-edit-journal.js'
 import { methodGrantsFrom, parseGrantValue } from './grant-fields.js'
 import { GROUPS_LIST, refusalNotice, UNKNOWN_GROUP_MESSAGE } from './refusal-notice.js'
 import { fieldsOf, redirect } from './request-helpers.js'
@@ -144,34 +145,9 @@ export function createGroupsHandlers(deps: GroupsHandlersDeps): GroupsHandlers {
     deps.audit?.({ actor: 'ui', adminName: session.adminName, action, target })
   }
 
-  /**
-   * Records one access change in the journal and says whether the record
-   * landed. The write has already happened when this runs, so a journal that
-   * cannot be reached must not turn it into a 500: the injected writer never
-   * throws by contract (`groups/journal-access-edit.ts` returns a drop
-   * indicator instead), and this guard keeps that true for ANY injected port —
-   * a port that threw has not written either, so it answers as a drop. No
-   * port at all is the composition root's choice (a plane assembled without a
-   * journal), not a record that was lost, and earns no warning.
-   */
-  async function journal(
-    session: UiSession,
-    info: Omit<AccessEditInfo, 'actor'>,
-  ): Promise<AccessEditJournalOutcome> {
-    const write = deps.journalAccessEdit
-    if (write === undefined) return { written: true }
-    try {
-      const { written } = await write({
-        actor: { adminName: session.adminName, role: session.role, via: 'ui' },
-        ...info,
-      })
-      return { written }
-    } catch {
-      // Contained, not swallowed: the audit sink above already recorded the
-      // attributed edit, the writer's own diagnostics report the fault, and
-      // the verdict below puts it on the admin's success page.
-      return { written: false }
-    }
+  /** The shared guarded writer: a dropped record is a verdict, never a 500. */
+  function journal(session: UiSession, info: Omit<AccessEditInfo, 'actor'>): Promise<AccessEditJournalOutcome> {
+    return journalAccessEditGuarded(deps.journalAccessEdit, session, info)
   }
 
   /**
