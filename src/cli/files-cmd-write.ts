@@ -34,11 +34,11 @@ const FILES_REFUSAL: AdminRefusalWording = {
 
 const OPS_EXAMPLE = 'read,write,edit,delete'
 
-function requireOwner(io: AgentCliIo, opts: FilesCliOptions): Promise<RequiredAdmin | undefined> {
+export function requireOwner(io: AgentCliIo, opts: FilesCliOptions): Promise<RequiredAdmin | undefined> {
   return requireAccessOwner(io, opts, FILES_REFUSAL)
 }
 
-function fail(io: AgentCliIo, line: string): number {
+export function fail(io: AgentCliIo, line: string): number {
   io.stderr.write(`${line}\n`)
   return 1
 }
@@ -47,7 +47,7 @@ function storesOf(opts: FilesCliOptions): { agents: AgentsStore } {
   return { agents: createAgentsStore({ ...(opts.journalDir !== undefined ? { journalDir: opts.journalDir } : {}) }) }
 }
 
-function registryOf(opts: FilesCliOptions) {
+export function registryOf(opts: FilesCliOptions) {
   return createRegistryStore(opts.journalDir)
 }
 
@@ -86,7 +86,7 @@ function parsePositionals(args: readonly string[], count: number, withOps: boole
   }
 }
 
-async function record(
+export async function record(
   io: AgentCliIo,
   opts: FilesCliOptions,
   actor: RequiredAdmin,

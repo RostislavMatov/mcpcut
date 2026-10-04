@@ -6,7 +6,7 @@ import { createAgentsStore } from '../agents/store.js'
 import { TRASH_DIR_NAME, FILES_SERVER_NAME } from '../files/constants.js'
 import { RuleRefusedError } from '../files/grant-admin.js'
 import { RootsLimitError, createRootsStore } from '../files/roots-store.js'
-import { createGroupsStore } from '../groups/store.js'
+import { GroupNotFoundError, createGroupsStore } from '../groups/store.js'
 import { formatReadableField } from '../journal/format.js'
 import { BuiltinServerRefusedError } from '../tenant/errors.js'
 import { StoreCorruptError, StoreLockError, StoreWriteRejectedError } from '../policy/store.js'
@@ -18,6 +18,7 @@ import {
   formatRulesOrigin,
   grantNextStep,
 } from './files-cmd-format.js'
+import { isGroupForm, runGroupGrant, runGroupRevoke, runGroupShow } from './files-cmd-group.js'
 import { runTrash } from './files-cmd-trash.js'
 import { findAgent, runGrant, runRevoke, runRootAdd, runRootRemove } from './files-cmd-write.js'
 import { cliCommand, shellArg } from './next-step.js'
@@ -36,6 +37,7 @@ const DEFAULT_IO: AgentCliIo = { stdout: process.stdout, stderr: process.stderr 
 
 const EXPECTED_ERRORS = [
   AgentNotFoundError,
+  GroupNotFoundError,
   BuiltinServerRefusedError,
   RootsLimitError,
   RuleRefusedError,
@@ -55,11 +57,11 @@ export async function runFilesCommand(
       case 'root':
         return await runRoot(rest, io, opts)
       case 'grant':
-        return await runGrant(rest, io, opts)
+        return await (isGroupForm(rest) ? runGroupGrant : runGrant)(rest, io, opts)
       case 'revoke':
-        return await runRevoke(rest, io, opts)
+        return await (isGroupForm(rest) ? runGroupRevoke : runRevoke)(rest, io, opts)
       case 'show':
-        return await runShow(rest, io, opts)
+        return await (isGroupForm(rest) ? runGroupShow : runShow)(rest, io, opts)
       case 'trash':
         return await runTrash(rest, io, opts)
       default:

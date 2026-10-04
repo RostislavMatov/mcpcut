@@ -320,6 +320,16 @@ describe('POST /groups/grant', () => {
     })
   })
 
+  test('a re-grant keeps the group\'s folder rules', async () => {
+    const paths = [{ path: '/data', ops: ['read' as const] }]
+    await groups.setServerGrant('analytics', 'notes', { tools: ['read_note'], paths })
+
+    await handlers.groupsGrant(postCtx({ group: 'analytics', server: 'notes', tools: 'list_*' }, session('owner')))
+
+    expect((await groups.getGroup('analytics'))?.grants.notes).toEqual({ tools: ['list_*'], paths })
+    expect(edits[0]).toMatchObject({ grant: { tools: ['list_*'], paths } })
+  })
+
   test('an empty tools field grants no tools rather than everything', async () => {
     await handlers.groupsGrant(postCtx({ group: 'analytics', server: 'notes' }, session('owner')))
     expect((await groups.getGroup('analytics'))?.grants.notes).toEqual({ tools: [] })

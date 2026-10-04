@@ -52,6 +52,9 @@ export const FILES_USAGE = `Usage:
                                          Give an agent operations on a folder (none cuts a subfolder out)
   mcpcut files revoke <agent> <folder>   Remove the agent's rule for a folder
   mcpcut files show <agent>              Print the agent's folder rules
+  mcpcut files grant --group <group> <folder> --ops read,write,edit,delete|none
+  mcpcut files revoke --group <group> <folder>
+  mcpcut files show --group <group>      The same three for a group: its members inherit the rules
   mcpcut files trash list [<root>] | restore <root> <id> | purge <root> [--older-than-days N]
                                          List what agents deleted, put an item back, or delete
                                          old ones for good (default 30 days; serve does it daily)

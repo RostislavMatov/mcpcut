@@ -4,6 +4,7 @@ import type { MethodGrantsInput } from '../agents/grant-input.js'
 import { RESERVED_OBJECT_KEYS } from '../policy/constants.js'
 import { createJsonStore, type JsonStore } from '../policy/store.js'
 import { TENANT_SETTINGS, type TenantSettings } from '../tenant/settings.js'
+import type { AgentGrant } from '../agents/schema.js'
 import { assertValidAgentName, assertValidServerName, buildGrant } from '../agents/grant-input.js'
 import { GROUP_NAME_PATTERN, groupsFilePath } from './constants.js'
 import { parseGroupsFile, type GroupRecord, type GroupsFile } from './schema.js'
@@ -115,13 +116,26 @@ export interface GroupsStore {
    * Replaces the group's grant for `server` wholesale (no merging), exactly
    * like `AgentsStore.grantServer`: same input, same validation, same errors.
    * Omitted `methods` fields stay absent in the stored grant, which keeps the
-   * fail-closed denial of the corresponding methods.
+   * fail-closed denial of the corresponding methods. The one thing it carries
+   * over is the folder rules (`paths`, ADR-0020): they are not part of this
+   * input, so rewriting the tools of a grant must not silently drop them.
    */
   grantServer(
     group: string,
     server: string,
     tools: readonly string[] | '*',
     methods?: MethodGrantsInput,
+  ): Promise<GroupRecord>
+  /**
+   * Writes a whole, schema-validated grant for `server`, or the result of an
+   * updater that sees the current grant (`undefined` when there is none) —
+   * atomic through one CAS cycle, like `AgentsStore.setServerGrant`. The entry
+   * point of `files grant|revoke --group`, which edits folder rules.
+   */
+  setServerGrant(
+    group: string,
+    server: string,
+    grant: AgentGrant | ((current: AgentGrant | undefined) => AgentGrant),
   ): Promise<GroupRecord>
   /**
    * Removes the grant for `server`. Validates the name exactly like
@@ -276,9 +290,25 @@ export function createGroupsStore(opts: GroupsStoreOptions = {}): GroupsStore {
     assertValidServerName(server)
     const grant = buildGrant(tools, methods)
 
+    return setServerGrant(group, server, (existing) =>
+      existing?.paths !== undefined ? { ...grant, paths: existing.paths } : grant,
+    )
+  }
+
+  async function setServerGrant(
+    group: string,
+    server: string,
+    grant: AgentGrant | ((current: AgentGrant | undefined) => AgentGrant),
+  ): Promise<GroupRecord> {
+    assertValidServerName(server)
     const next = await store.update((current) => {
       const record = requireGroup(current, group)
-      return withGroup(current, { ...record, grants: { ...record.grants, [server]: grant } })
+      const existing = Object.hasOwn(record.grants, server) ? record.grants[server] : undefined
+      const value = typeof grant === 'function' ? grant(existing) : grant
+      return withGroup(current, {
+        ...record,
+        grants: { ...record.grants, [server]: structuredClone(value) },
+      })
     })
     return requireGroup(next, group)
   }
@@ -371,6 +401,7 @@ export function createGroupsStore(opts: GroupsStoreOptions = {}): GroupsStore {
     createGroup,
     removeGroup,
     grantServer,
+    setServerGrant,
     ungrantServer,
     addMember,
     removeMember,

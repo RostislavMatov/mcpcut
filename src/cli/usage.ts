@@ -77,6 +77,8 @@ ${TUI_SYNOPSIS_LINES.join('\n')}
                                          none cuts a subfolder out of a wider rule
   mcpcut files revoke <agent> <folder> | show <agent>
                                          Remove a folder rule / print the agent's folder rules
+  mcpcut files grant|revoke --group <group> <folder> [--ops ...] | show --group <group>
+                                         The same for a group: every member inherits its folder rules
   mcpcut files trash list [<root>] | restore <root> <id> | purge <root> [--older-than-days N]
                                          List what agents deleted, put an item back, or delete old
                                          ones for good (owner token for restore/purge; serve purges
