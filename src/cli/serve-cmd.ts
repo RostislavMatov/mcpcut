@@ -38,6 +38,8 @@ import { requestBudgetFor } from './serve-budget.js'
 import { createServeHooks } from './serve-hooks.js'
 import { createPoolWiring } from './serve-pool-wiring.js'
 import { createServeSessionFactory } from './serve-runtime.js'
+import { createRootsStore } from '../files/roots-store.js'
+import { startTrashSweep } from './serve-trash-sweep.js'
 import { waitForShutdown, type ServeRuntime } from './serve-shutdown.js'
 import { AGENT_REVOCATION_POLL_INTERVAL_MS } from '../session/constants.js'
 import { MAX_POOL_RESIDENTS } from '../pool/constants.js'
@@ -342,6 +344,16 @@ export async function runServe(
   // Only once the port is ours: residents are processes, and a run that could
   // not bind must not leave any behind.
   runtime.residents.start()
-  await waitForShutdown(runtime, io, opts, { port: bound.port, host: flags.host })
+  const sweep = startTrashSweep({
+    listRoots: async () => (await createRootsStore({ journalDir }).list()).map((root) => root.path),
+    stderr: io.stderr,
+    now: opts.clock ?? Date.now,
+    ...(opts.trashSweepTimer !== undefined ? { timer: opts.trashSweepTimer } : {}),
+  })
+  try {
+    await waitForShutdown(runtime, io, opts, { port: bound.port, host: flags.host })
+  } finally {
+    sweep.stop()
+  }
   return 0
 }

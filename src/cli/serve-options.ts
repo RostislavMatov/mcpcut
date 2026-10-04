@@ -6,6 +6,7 @@ import type { RegistryStore } from '../registry/store.js'
 import type { ServeServiceDefaults } from '../setup/bind.js'
 import type { TenantSettings } from '../tenant/settings.js'
 import type { VaultStore } from '../vault/store.js'
+import type { TrashSweepTimer } from './serve-trash-sweep.js'
 
 /**
  * What `runServe` can be handed (`serve-cmd.ts`): the stores, the policy
@@ -42,6 +43,8 @@ export interface ServeCommandOptions {
   /** Journal session id factory. Defaults to `ulid()`. */
   readonly newSessionId?: () => string
   readonly clock?: () => number
+  /** Timer of the daily trash purge; tests inject one that ticks on demand. */
+  readonly trashSweepTimer?: TrashSweepTimer
   /** Agent revocation poll interval per session; defaults to the ≤5 s constant. */
   readonly revocationPollIntervalMs?: number
   /**

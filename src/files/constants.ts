@@ -31,3 +31,12 @@ export const MAX_WRITE_BYTES = 10 * 1024 * 1024
 
 /** The most entries one directory listing returns; the rest is `truncated`. */
 export const MAX_LIST_ENTRIES = 1000
+
+/** One day in milliseconds. */
+export const MS_PER_DAY = 24 * 60 * 60 * 1000
+
+/** How long a trashed item is kept before the automatic purge in `serve` (and the default of `files trash purge`). */
+export const TRASH_RETENTION_DAYS = 30
+
+/** The largest `--older-than-days` a purge accepts (about ten years). */
+export const MAX_PURGE_DAYS = 3650

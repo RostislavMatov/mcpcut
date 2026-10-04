@@ -46,13 +46,17 @@ const EXCLUDED_FROM_CATALOGUE: readonly CommandPair[] = [
 const NOT_YET_COVERED: readonly CommandPair[] = [
   // `mcpcut files` (ADR-0020, 2026-10-04): admin commands of the file module,
   // CLI-only for now; the Files console screen is a later phase of the plan.
-  // `list` and `remove` are the parser's reading of `files root add|list|remove`.
+  // `list` and `remove` are the parser's reading of `files root add|list|remove`;
+  // `trash`, `restore` and `purge` are `files trash list|restore|purge` (ADR-0020 §4).
   { command: 'files', subcommand: 'grant' },
   { command: 'files', subcommand: 'list' },
+  { command: 'files', subcommand: 'purge' },
   { command: 'files', subcommand: 'remove' },
+  { command: 'files', subcommand: 'restore' },
   { command: 'files', subcommand: 'revoke' },
   { command: 'files', subcommand: 'root' },
   { command: 'files', subcommand: 'show' },
+  { command: 'files', subcommand: 'trash' },
 ]
 
 /**

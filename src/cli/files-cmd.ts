@@ -18,11 +18,12 @@ import {
   formatRulesOrigin,
   grantNextStep,
 } from './files-cmd-format.js'
+import { runTrash } from './files-cmd-trash.js'
 import { findAgent, runGrant, runRevoke, runRootAdd, runRootRemove } from './files-cmd-write.js'
 import { cliCommand, shellArg } from './next-step.js'
 
 /**
- * `mcpcut files root|grant|revoke|show` — the admin side of the file module
+ * `mcpcut files root|grant|revoke|show|trash` — the admin side of the file module
  * (ADR-0020 §2). Same shape as `agent-cmd.ts`: injectable io and options,
  * exit code returned, expected errors become one stderr line. Changes need an
  * owner token and leave an audit line plus an `access-edit` record
@@ -59,6 +60,8 @@ export async function runFilesCommand(
         return await runRevoke(rest, io, opts)
       case 'show':
         return await runShow(rest, io, opts)
+      case 'trash':
+        return await runTrash(rest, io, opts)
       default:
         io.stderr.write(FILES_USAGE)
         return 1

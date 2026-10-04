@@ -3,6 +3,8 @@ import { FILE_OPS, type FileOp } from './constants.js'
 import { fileInfo, listDirectory, readText } from './io-read.js'
 import { moveToTrash } from './io-trash.js'
 import { editFile, makeDirectory, moveEntry, replaceFile, writeNewFile } from './io-write.js'
+import { restoreCommandOf } from './restore-hint.js'
+import type { TrashManifest } from './trash-manifest.js'
 import { resolveWithinRoots, type ResolvedPath } from './paths.js'
 import { MOVE_FILE_OPS, PATH_TOOL_OPS, WRITE_FILE_OPS } from './tool-access.js'
 import {
@@ -72,8 +74,8 @@ async function moveFileTool(ctx: ToolContext, args: z.output<typeof moveFileSche
   return fromIo(await moveEntry(source.value, destination.value), () => textOutput(`Moved ${args.source} to ${args.destination}.`))
 }
 
-const trashedText = (path: string, id: string): string =>
-  `Moved ${path} to the trash (id ${id}). It is not deleted for good: an administrator can restore it with \`mcpcut files trash\`.`
+const trashedText = (path: string, manifest: TrashManifest): string =>
+  `Moved ${path} to the trash (id ${manifest.id}). It is not deleted for good: an administrator can restore it with \`${restoreCommandOf(manifest.root, manifest.id)}\`.`
 
 const HANDLERS: Readonly<Record<string, Handler>> = {
   list_roots: listRoots,
@@ -95,7 +97,7 @@ const HANDLERS: Readonly<Record<string, Handler>> = {
   move_file: moveFileTool,
   delete_file: (ctx: ToolContext, args: z.output<typeof pathArgsSchema>) =>
     onPath(ctx, args.path, PATH_TOOL_OPS.delete_file, async (target) =>
-      fromIo(await moveToTrash(target, ctx.actor), (manifest) => textOutput(trashedText(args.path, manifest.id))),
+      fromIo(await moveToTrash(target, ctx.actor), (manifest) => textOutput(trashedText(args.path, manifest))),
     ),
 }
 

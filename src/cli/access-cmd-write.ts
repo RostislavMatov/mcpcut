@@ -54,6 +54,8 @@ export type AccessOp =
   | 'approve'
   | 'reject'
   | 'prune'
+  | 'restore'
+  | 'purge'
   | 'keygen'
   | 'backup'
   | 'migrate'

@@ -80,6 +80,10 @@ export type AccessEditAction =
   | 'files.revoke'
   | 'files.root.add'
   | 'files.root.remove'
+  // The trash (ADR-0020 §4): an administrator putting an item back, or
+  // deleting old ones for good. The path names the restored item or the root.
+  | 'files.trash.restore'
+  | 'files.trash.purge'
   // Vault mutations (owner decision S2, 2026-09-03): replacing a secret
   // replaces the identity a server uses against an external system, so the
   // journal must show WHO swapped it — by the secret's name, never its value.
@@ -159,8 +163,10 @@ export interface AccessEditInfo {
    * runs it through `formatReadableField` first.
    */
   readonly tool?: string
-  /** `files.root.add|remove`, `files.revoke`: the canonical folder the change is about. */
+  /** `files.root.add|remove`, `files.revoke`, `files.trash.purge`: the canonical folder; `files.trash.restore`: the restored item. */
   readonly path?: string
+  /** `files.trash.restore`: the id of the trash entry that was put back. */
+  readonly trashId?: string
   /** `prune` (Q17): the retention window as the operator typed it, e.g. `90d`. */
   readonly olderThan?: string
   /** `prune` (Q17): how many records the delete actually removed. */
@@ -288,6 +294,7 @@ function flatInfoOf(info: AccessEditInfo): Record<string, unknown> {
     ...(info.prunedThroughSeq !== undefined ? { prunedThroughSeq: info.prunedThroughSeq } : {}),
     ...(info.dest !== undefined ? { dest: info.dest } : {}),
     ...(info.path !== undefined ? { path: info.path } : {}),
+    ...(info.trashId !== undefined ? { trashId: info.trashId } : {}),
     ...(info.keyFingerprint !== undefined ? { keyFingerprint: info.keyFingerprint } : {}),
     ...(info.vaultEntry !== undefined ? { vaultEntry: info.vaultEntry } : {}),
     ...(info.admin !== undefined ? { admin: info.admin } : {}),

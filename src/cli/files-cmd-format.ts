@@ -52,5 +52,15 @@ export const FILES_USAGE = `Usage:
                                          Give an agent operations on a folder (none cuts a subfolder out)
   mcpcut files revoke <agent> <folder>   Remove the agent's rule for a folder
   mcpcut files show <agent>              Print the agent's folder rules
+  mcpcut files trash list [<root>] | restore <root> <id> | purge <root> [--older-than-days N]
+                                         List what agents deleted, put an item back, or delete
+                                         old ones for good (default 30 days; serve does it daily)
 Changes need an owner token in MCP_ADMIN_TOKEN; list and show do not.
+`
+
+export const FILES_TRASH_USAGE = `Usage:
+  mcpcut files trash list [<root>]
+  mcpcut files trash restore <root> <id>
+  mcpcut files trash purge <root> [--older-than-days N]   (N: 1 to 3650, default 30)
+Restore and purge need an owner token in MCP_ADMIN_TOKEN; list does not.
 `
