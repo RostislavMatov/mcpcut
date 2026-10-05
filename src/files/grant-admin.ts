@@ -44,7 +44,7 @@ export function normalizeOps(ops: readonly FileOp[]): readonly FileOp[] {
 }
 
 /** Why a resolver refusal reads differently to an admin than to an agent. */
-function adminMessage(refusal: PathRefusal, raw: string, roots: readonly string[], addRootCommand: string): string {
+export function adminMessage(refusal: PathRefusal, raw: string, roots: readonly string[], addRootCommand: string): string {
   const addRoot = `declare a root with \`${addRootCommand}\``
   switch (refusal) {
     case 'outside-roots':
@@ -77,7 +77,7 @@ function adminMessage(refusal: PathRefusal, raw: string, roots: readonly string[
  * path through a symlinked ancestor of a root. Only on that refusal, and only
  * for an absolute path, the canonical form is tried.
  */
-async function resolveAsAdmin(raw: string, roots: readonly string[]): ReturnType<typeof resolveWithinRoots> {
+export async function resolveAsAdmin(raw: string, roots: readonly string[]): ReturnType<typeof resolveWithinRoots> {
   const first = await resolveWithinRoots(raw, roots)
   if (first.ok || first.refusal !== 'outside-roots' || !path.isAbsolute(raw)) return first
   const canonical = await canonicalPath(raw)

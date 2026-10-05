@@ -9,6 +9,7 @@ import { installedPgVersion } from './files-cmd-setup.js'
 import { writeSearchStatus } from './files-cmd-db-status-search.js'
 import { journalDirOf, loadClient, schemaOf } from './files-cmd-db-shared.js'
 import type { FilesCliOptions } from './files-cmd.js'
+import { reportSearchCounts } from './files-cmd-db-status-index.js'
 import { cliCommand } from './next-step.js'
 
 /**
@@ -70,6 +71,7 @@ async function reportServer(io: AgentCliIo, opts: FilesCliOptions, target: Param
   io.stdout.write(`server: reachable, schema ${target.schema}, version ${status.schemaVersion}\n`)
   io.stdout.write(`catalog: ${status.catalogRows} rows\n`)
   io.stdout.write(`file events: ${status.eventRows} rows, synced through record ${status.lastSeq} of ${maxSeq}\n`)
+  await reportSearchCounts(io, target)
   io.stderr.write(
     status.lastSeq < maxSeq || status.catalogRows === 0
       ? `Next: ${target.cli} files db sync\n`

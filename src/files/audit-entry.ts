@@ -49,6 +49,8 @@ export const TREE_ACTIONS: ReadonlySet<string> = new Set([
   'files.root.add',
   'files.root.remove',
   'files.trash.restore',
+  'files.index.on',
+  'files.index.off',
 ])
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

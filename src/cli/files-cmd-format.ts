@@ -57,6 +57,8 @@ export const FILES_USAGE = `Usage:
   mcpcut files show --group <group>      The same three for a group: its members inherit the rules
   mcpcut files audit [--path <path>] [--agent <name>] [--since <YYYY-MM-DD|Nd>] [--limit <n>] [--json]
                                          Who touched what: file operations and admin edits, newest first
+  mcpcut files index on <folder> | off <folder> | list
+                                         Turn search by meaning on or off for a folder and its subfolders (off on a subfolder cuts it out)
   mcpcut files trash list [<root>] | restore <root> <id> | purge <root> [--older-than-days N]
                                          List what agents deleted, put an item back, or delete
                                          old ones for good (default 30 days; serve does it daily)

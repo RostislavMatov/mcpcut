@@ -34,4 +34,8 @@ export interface FilesDbCliSeams {
   readonly arch?: string
   /** The model files to download and check instead of the pinned ones (tests cannot forge the pinned hashes). */
   readonly modelFiles?: readonly PinnedModelFile[]
+  /** Search index (phase 5 B): makes the embedder `files db sync` indexes with; the local model by default. */
+  readonly indexEmbedder?: (modulesDir: string) => Promise<Embedder>
+  /** Search index (phase 5 B): `null` when the search runtime and model are in place, else the one line saying what is missing. */
+  readonly searchProblem?: (modulesDir: string, cli: string) => Promise<string | null>
 }

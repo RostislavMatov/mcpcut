@@ -84,6 +84,9 @@ export type AccessEditAction =
   // deleting old ones for good. The path names the restored item or the root.
   | 'files.trash.restore'
   | 'files.trash.purge'
+  // Search by meaning (ADR-0020 §6): a folder switched on or off for indexing; the path is the folder.
+  | 'files.index.on'
+  | 'files.index.off'
   // Vault mutations (owner decision S2, 2026-09-03): replacing a secret
   // replaces the identity a server uses against an external system, so the
   // journal must show WHO swapped it — by the secret's name, never its value.
@@ -163,7 +166,7 @@ export interface AccessEditInfo {
    * runs it through `formatReadableField` first.
    */
   readonly tool?: string
-  /** `files.root.add|remove`, `files.revoke`, `files.trash.purge`: the canonical folder; `files.trash.restore`: the restored item. */
+  /** `files.root.add|remove`, `files.revoke`, `files.trash.purge`, `files.index.on|off`: the canonical folder; `files.trash.restore`: the restored item. */
   readonly path?: string
   /** `files.trash.restore`: the id of the trash entry that was put back. */
   readonly trashId?: string

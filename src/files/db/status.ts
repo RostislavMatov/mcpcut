@@ -1,3 +1,4 @@
+import { SEARCH_MIGRATION_BASE } from '../search/constants.js'
 import { createPool } from './connection.js'
 import { mapPgError } from './errors.js'
 import type { PgModule } from './pg-types.js'
@@ -26,7 +27,7 @@ interface CountRow {
 }
 
 const SELECT_HAS_MIGRATIONS = "SELECT to_regclass('schema_migrations') IS NOT NULL AS present"
-const SELECT_VERSION = 'SELECT max(version) AS version FROM schema_migrations'
+const SELECT_VERSION = `SELECT max(version) AS version FROM schema_migrations WHERE version < ${SEARCH_MIGRATION_BASE}`
 const SELECT_COUNTS =
   'SELECT (SELECT count(*) FROM catalog) AS catalog, (SELECT count(*) FROM file_events) AS events, ' +
   '(SELECT last_seq FROM ingest_state WHERE id = 1) AS last_seq'
