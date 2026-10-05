@@ -1,11 +1,11 @@
-import type { BigIntStats } from 'node:fs'
 import { lstat, readdir } from 'node:fs/promises'
 import path from 'node:path'
 import { hasTrashSegment, isWithinOn, pathModuleOf } from '../names.js'
 import { hashCatalogFile, type HashFile } from './catalog-hash.js'
+import { isTooLong, rowOf, type HashBudget, type RowSettings } from './catalog-row.js'
 import { deleteRows, deleteSubtree, loadKnownRow, loadKnownRows, upsertRows, type CatalogRow, type KnownRows } from './catalog-store.js'
 import type { FilesDb } from './connection.js'
-import { CATALOG_HASH_MAX_BYTES, CATALOG_MAX_ENTRIES } from './constants.js'
+import { CATALOG_HASH_BUDGET_BYTES, CATALOG_HASH_MAX_BYTES, CATALOG_MAX_ENTRIES } from './constants.js'
 
 /**
  * The catalog of every declared root (ADR-0020 §6): files and folders, size,
@@ -21,6 +21,8 @@ export interface WalkOptions {
   readonly now: Date
   readonly maxEntries?: number
   readonly hashMaxBytes?: number
+  /** Bytes one call may read for hashing (all roots together); the rest of the changed files wait for a later walk. */
+  readonly hashBudgetBytes?: number
   /** @internal test seam. */
   readonly hash?: HashFile
 }
@@ -33,6 +35,10 @@ export interface RootWalk {
   readonly changed: number
   readonly removed: number
   readonly truncated: boolean
+  /** Entries (or the root itself) left out because their path passes 600 code points. */
+  readonly skipped: number
+  /** Changed files recorded without a hash because the hashing budget was spent. */
+  readonly hashDeferred: number
   /** Folders that could not be read: their rows are kept. */
   readonly unreadable: number
   /** The root itself could not be walked; its rows are untouched. */
@@ -43,26 +49,16 @@ interface Seen {
   readonly rows: readonly CatalogRow[]
   readonly truncated: boolean
   readonly unreadable: number
+  readonly skipped: number
+}
+
+interface WalkSettings extends RowSettings {
+  readonly now: Date
+  readonly maxEntries: number
 }
 
 function toRelPath(parts: readonly string[]): string {
   return parts.join('/')
-}
-
-async function rowOf(
-  file: string,
-  relPath: string,
-  info: BigIntStats,
-  known: CatalogRow | undefined,
-  opts: { hashMaxBytes: number; hash: HashFile },
-): Promise<CatalogRow> {
-  const size = Number(info.size)
-  const mtime = Math.floor(Number(info.mtimeMs))
-  if (info.isDirectory()) return { rel_path: relPath, kind: 'dir', size: 0, mtime_ms: mtime, sha256: null }
-  const isUnchanged = known?.kind === 'file' && known.size === size && known.mtime_ms === mtime
-  if (isUnchanged) return known
-  const sha256 = size > opts.hashMaxBytes ? null : await opts.hash(file, info)
-  return { rel_path: relPath, kind: 'file', size, mtime_ms: mtime, sha256 }
 }
 
 async function readDirectory(dir: string): Promise<string[] | undefined> {
@@ -73,9 +69,10 @@ async function readDirectory(dir: string): Promise<string[] | undefined> {
   }
 }
 
-async function collect(root: string, known: KnownRows, opts: { maxEntries: number; hashMaxBytes: number; hash: HashFile }): Promise<Seen> {
+async function collect(root: string, known: KnownRows, opts: WalkSettings): Promise<Seen> {
   const rows: CatalogRow[] = []
   let unreadable = 0
+  let skipped = 0
   const pending: Array<{ dir: string; parts: readonly string[] }> = [{ dir: root, parts: [] }]
   for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
     const names = await readDirectory(next.dir)
@@ -85,17 +82,21 @@ async function collect(root: string, known: KnownRows, opts: { maxEntries: numbe
     }
     for (const name of names) {
       if (next.parts.length === 0 && hasTrashSegment(name)) continue
-      if (rows.length >= opts.maxEntries) return { rows, truncated: true, unreadable }
+      if (rows.length >= opts.maxEntries) return { rows, truncated: true, unreadable, skipped }
       const file = path.join(next.dir, name)
       const info = await lstat(file, { bigint: true }).catch(() => undefined)
       if (info === undefined || (!info.isDirectory() && !info.isFile())) continue
       const parts = [...next.parts, name]
       const relPath = toRelPath(parts)
+      if (isTooLong(relPath)) {
+        skipped += 1
+        continue
+      }
       rows.push(await rowOf(file, relPath, info, known.get(relPath), opts))
       if (info.isDirectory()) pending.push({ dir: file, parts })
     }
   }
-  return { rows, truncated: false, unreadable }
+  return { rows, truncated: false, unreadable, skipped }
 }
 
 function countChanges(rows: readonly CatalogRow[], known: KnownRows): { added: number; changed: number } {
@@ -107,10 +108,12 @@ function countChanges(rows: readonly CatalogRow[], known: KnownRows): { added: n
   return { added, changed }
 }
 
-async function walkRoot(db: FilesDb, root: string, opts: { now: Date; maxEntries: number; hashMaxBytes: number; hash: HashFile }): Promise<RootWalk> {
-  const empty = { root, files: 0, dirs: 0, added: 0, changed: 0, removed: 0, truncated: false, unreadable: 0 }
+async function walkRoot(db: FilesDb, root: string, opts: WalkSettings): Promise<RootWalk> {
+  const empty = { root, files: 0, dirs: 0, added: 0, changed: 0, removed: 0, truncated: false, unreadable: 0, skipped: 0, hashDeferred: 0 }
+  if (isTooLong(root)) return { ...empty, skipped: 1 }
   const isReadable = await readDirectory(root)
   if (isReadable === undefined) return { ...empty, error: 'the folder is gone or cannot be read' }
+  const deferredBefore = opts.budget.deferred
   const known = await loadKnownRows(db, root)
   const seen = await collect(root, known, opts)
   await upsertRows(db, root, opts.now, seen.rows)
@@ -118,33 +121,37 @@ async function walkRoot(db: FilesDb, root: string, opts: { now: Date; maxEntries
   const isComplete = !seen.truncated && seen.unreadable === 0
   const present = new Set(seen.rows.map((row) => row.rel_path))
   const gone = isComplete ? [...known.keys()].filter((relPath) => !present.has(relPath)) : []
-  await deleteRows(db, root, gone)
+  const removed = await deleteRows(db, root, gone, opts.now)
   return {
     root,
     files: seen.rows.filter((row) => row.kind === 'file').length,
     dirs: seen.rows.filter((row) => row.kind === 'dir').length,
     added,
     changed,
-    removed: gone.length,
+    removed,
     truncated: seen.truncated,
     unreadable: seen.unreadable,
+    skipped: seen.skipped,
+    hashDeferred: opts.budget.deferred - deferredBefore,
   }
 }
 
 export async function walkRoots(db: FilesDb, opts: WalkOptions): Promise<readonly RootWalk[]> {
-  const settings = {
+  const budget: HashBudget = { left: opts.hashBudgetBytes ?? CATALOG_HASH_BUDGET_BYTES, deferred: 0 }
+  const settings: WalkSettings = {
     now: opts.now,
     maxEntries: opts.maxEntries ?? CATALOG_MAX_ENTRIES,
     hashMaxBytes: opts.hashMaxBytes ?? CATALOG_HASH_MAX_BYTES,
     hash: opts.hash ?? hashCatalogFile,
+    budget,
   }
   const results: RootWalk[] = []
   for (const root of opts.roots) results.push(await walkRoot(db, root, settings))
   return results
 }
 
-function rootOf(roots: readonly string[], target: string, platform: NodeJS.Platform): string | undefined {
-  return roots.find((root) => isWithinOn(root, target, platform))
+function rootsOf(roots: readonly string[], target: string, platform: NodeJS.Platform): string[] {
+  return roots.filter((root) => isWithinOn(root, target, platform))
 }
 
 /** Re-stats just these paths after file writes: present → upsert, absent → delete (a folder with its subtree). */
@@ -154,19 +161,23 @@ export async function refreshCatalogPaths(
 ): Promise<void> {
   const platform = opts.platform ?? process.platform
   const pathModule = pathModuleOf(platform)
-  const settings = { hashMaxBytes: opts.hashMaxBytes ?? CATALOG_HASH_MAX_BYTES, hash: opts.hash ?? hashCatalogFile }
+  const settings: RowSettings = {
+    hashMaxBytes: opts.hashMaxBytes ?? CATALOG_HASH_MAX_BYTES,
+    hash: opts.hash ?? hashCatalogFile,
+    budget: { left: Number.POSITIVE_INFINITY, deferred: 0 },
+  }
   for (const target of new Set(opts.paths.filter((value) => pathModule.isAbsolute(value)))) {
-    const root = rootOf(opts.roots, target, platform)
-    if (root === undefined) continue
-    const relPath = pathModule.relative(root, target).split(pathModule.sep).join('/')
-    if (relPath === '' || hasTrashSegment(relPath)) continue
-    await refreshOne(db, { root, relPath, target, now: opts.now, settings })
+    for (const root of rootsOf(opts.roots, target, platform)) {
+      const relPath = pathModule.relative(root, target).split(pathModule.sep).join('/')
+      if (relPath === '' || hasTrashSegment(relPath) || isTooLong(relPath) || isTooLong(root)) continue
+      await refreshOne(db, { root, relPath, target, now: opts.now, settings })
+    }
   }
 }
 
 async function refreshOne(
   db: FilesDb,
-  one: { root: string; relPath: string; target: string; now: Date; settings: { hashMaxBytes: number; hash: HashFile } },
+  one: { root: string; relPath: string; target: string; now: Date; settings: RowSettings },
 ): Promise<void> {
   const info = await lstat(one.target, { bigint: true }).catch(() => undefined)
   if (info === undefined || (!info.isDirectory() && !info.isFile())) {

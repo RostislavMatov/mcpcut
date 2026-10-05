@@ -49,10 +49,18 @@ export async function upsertRows(db: PgQueryable, root: string, now: Date, rows:
   for (const chunk of chunksOf(rows)) await db.query(UPSERT, [root, now.toISOString(), JSON.stringify(chunk)])
 }
 
-export async function deleteRows(db: PgQueryable, root: string, relPaths: readonly string[]): Promise<void> {
+/** Deletes the named rows that were last seen before `seenBefore`; a row refreshed since survives. Returns how many went. */
+export async function deleteRows(db: PgQueryable, root: string, relPaths: readonly string[], seenBefore: Date): Promise<number> {
+  let removed = 0
   for (const chunk of chunksOf(relPaths)) {
-    await db.query('DELETE FROM catalog WHERE root = $1 AND rel_path = ANY($2::text[])', [root, chunk])
+    const found = await db.query('DELETE FROM catalog WHERE root = $1 AND rel_path = ANY($2::text[]) AND seen_at < $3::timestamptz', [
+      root,
+      chunk,
+      seenBefore.toISOString(),
+    ])
+    removed += found.rowCount ?? 0
   }
+  return removed
 }
 
 /** A folder's own row and everything under it. */

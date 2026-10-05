@@ -22,6 +22,8 @@ function walkLine(walk: RootWalk): string {
   if (walk.error !== undefined) return `${root}  error: ${formatReadableField(walk.error)}`
   const notes = [
     ...(walk.truncated ? ['stopped at the entry limit, nothing deleted'] : []),
+    ...(walk.skipped > 0 ? [`${walk.skipped} path(s) longer than 600 characters skipped`] : []),
+    ...(walk.hashDeferred > 0 ? [`${walk.hashDeferred} file(s) hashed by the next sync`] : []),
     ...(walk.unreadable > 0 ? [`${walk.unreadable} folder(s) unreadable, nothing deleted`] : []),
   ]
   const counts = `${countOf(walk.files, 'file')}, ${countOf(walk.dirs, 'folder')}  +${walk.added} ~${walk.changed} -${walk.removed}`

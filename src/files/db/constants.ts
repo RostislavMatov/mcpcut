@@ -39,3 +39,7 @@ export const POSTGRES_ENV_FILE_NAME = 'postgres.env'
 export const CATALOG_MAX_ENTRIES = 200_000
 export const CATALOG_HASH_MAX_BYTES = 32 * 1024 * 1024
 export const CATALOG_BATCH_SIZE = 500
+/** Paths longer than this (code points, root or relative) are not catalogued: they would not fit an index row. */
+export const CATALOG_MAX_PATH_CODE_POINTS = 600
+/** Bytes one walk may read for hashing; changed files past it are recorded without a hash and hashed by a later walk. */
+export const CATALOG_HASH_BUDGET_BYTES = 1024 * 1024 * 1024

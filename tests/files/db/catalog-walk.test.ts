@@ -63,7 +63,7 @@ describePg('walkRoots on a real Postgres', () => {
     await rm(join(root, 'gone.txt'))
     await writeFile(join(root, 'new.txt'), 'n')
 
-    const [result] = await walk()
+    const [result] = await walk({ now: new Date('2026-10-05T12:01:00.000Z') })
 
     expect(result).toMatchObject({ added: 1, changed: 1, removed: 1 })
     expect((await rows()).map((row) => row.rel_path)).toEqual(['edit.txt', 'keep.txt', 'new.txt'])
@@ -122,6 +122,75 @@ describePg('walkRoots on a real Postgres', () => {
   })
 })
 
+describePg('walk limits', () => {
+  const LONG_NAME = 'n'.repeat(200)
+
+  test('an entry whose path passes 600 code points is skipped and not descended into', async () => {
+    const deep = join(root, LONG_NAME, LONG_NAME, LONG_NAME)
+    await mkdir(deep, { recursive: true })
+    await writeFile(join(deep, 'inside.txt'), 'x')
+
+    const [result] = await walk()
+
+    expect(result).toMatchObject({ dirs: 2, files: 0, skipped: 1 })
+    expect((await rows()).map((row) => row.rel_path)).toEqual([LONG_NAME, `${LONG_NAME}/${LONG_NAME}`])
+  })
+
+  test('a root whose own path passes 600 code points records nothing and counts as skipped', async () => {
+    const longRoot = join(root, LONG_NAME, LONG_NAME, LONG_NAME, 'r')
+    await mkdir(longRoot, { recursive: true })
+    await writeFile(join(longRoot, 'a.txt'), 'a')
+
+    const [result] = await walkRoots(db, { roots: [longRoot], now: NOW })
+
+    expect(result).toMatchObject({ root: longRoot, files: 0, dirs: 0, skipped: 1 })
+    expect(result?.error).toBeUndefined()
+    expect(await rows()).toEqual([])
+  })
+
+  test('over the hashing budget changed files are recorded without a hash and a later walk hashes them', async () => {
+    await writeFile(join(root, 'a.txt'), 'a'.repeat(100))
+    await writeFile(join(root, 'b.txt'), 'b'.repeat(100))
+    const hash = vi.fn(hashCatalogFile)
+
+    const [first] = await walk({ hash, hashBudgetBytes: 150 })
+
+    expect(first).toMatchObject({ hashDeferred: 1 })
+    expect(hash).toHaveBeenCalledTimes(1)
+    expect((await rows()).filter((row) => row.sha256 === null)).toHaveLength(1)
+
+    const [second] = await walk({ hash })
+
+    expect(second).toMatchObject({ hashDeferred: 0, changed: 1 })
+    expect(hash).toHaveBeenCalledTimes(2)
+    expect((await rows()).every((row) => row.sha256 !== null)).toBe(true)
+  })
+
+  test('the hashing budget is shared by the roots of one walk', async () => {
+    const other = await realpath(await mkdtemp(join(tmpdir(), 'mcpcut-catalog-b-')))
+    try {
+      await writeFile(join(root, 'a.txt'), 'a'.repeat(100))
+      await writeFile(join(other, 'b.txt'), 'b'.repeat(100))
+      const results = await walkRoots(db, { roots: [root, other], now: NOW, hashBudgetBytes: 100 })
+      expect(results.map((one) => one.hashDeferred)).toEqual([0, 1])
+    } finally {
+      await rm(other, { recursive: true, force: true })
+    }
+  })
+
+  test('a row refreshed after the walk started survives the walk deleting what it did not see', async () => {
+    await db.query(
+      "INSERT INTO catalog (root, rel_path, kind, size, mtime_ms, sha256, seen_at) VALUES ($1, 'older', 'file', 1, 1, NULL, $2), ($1, 'newer', 'file', 1, 1, NULL, $3)",
+      [root, '2026-10-05T11:00:00.000Z', '2026-10-05T12:00:01.000Z'],
+    )
+
+    const [result] = await walk()
+
+    expect(result).toMatchObject({ removed: 1 })
+    expect((await rows()).map((row) => row.rel_path)).toEqual(['newer'])
+  })
+})
+
 describePg('refreshCatalogPaths on a real Postgres', () => {
   test('a present path is upserted; an absent one is deleted, a folder with its subtree', async () => {
     await mkdir(join(root, 'dir'), { recursive: true })
@@ -148,5 +217,19 @@ describePg('refreshCatalogPaths on a real Postgres', () => {
     await refreshCatalogPaths(db, { roots: [root], paths: [join(root, 'a')], now: NOW })
 
     expect((await rows()).map((row) => row.rel_path)).toEqual(['a_b', 'a_b/x'])
+  })
+
+  test('every declared root that holds the path gets the row, nested roots included', async () => {
+    await mkdir(join(root, 'sub'))
+    await writeFile(join(root, 'sub', 'f.txt'), 'f')
+    const inner = join(root, 'sub')
+
+    await refreshCatalogPaths(db, { roots: [root, inner], paths: [join(inner, 'f.txt')], now: NOW })
+
+    const found = await db.query<{ root: string; rel_path: string }>('SELECT root, rel_path FROM catalog ORDER BY root')
+    expect(found.rows).toEqual([
+      { root, rel_path: 'sub/f.txt' },
+      { root: inner, rel_path: 'f.txt' },
+    ])
   })
 })
