@@ -97,7 +97,8 @@ describePg('files db sync on a real Postgres', () => {
 
     expect(result.code).toBe(0)
     const lines = result.out.trimEnd().split('\n')
-    expect(lines[0]).toMatch(/^events: \+2 \(synced through record \d+\)$/  \/\/ the call and the root.add edit)
+    // the call and the root.add edit
+    expect(lines[0]).toMatch(/^events: \+2 \(synced through record \d+\)$/)
     expect(lines[1]).toBe(`${folder}  1 files, 1 folders  +2 ~0 -0`)
     expect(result.err).toBe(`Next: mcpcut files audit --path ${folder}\n`)
     expect(result.out + result.err).not.toContain('mcpcut-test@')
