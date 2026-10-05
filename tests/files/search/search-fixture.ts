@@ -9,7 +9,7 @@ import { indexOnce } from '../../../src/files/search/indexer.js'
 import { ensureSearchSchema, type SearchDb } from '../../../src/files/search/search-schema.js'
 import { createVaultStore } from '../../../src/vault/store.js'
 import { createFakeEmbedder, type FakeEmbedder } from './fake-embedder.js'
-import { NOW, ruleOn } from './index-fixture.js'
+import { NOW, ruleOn, usingEmbedder } from './index-fixture.js'
 import { PG_URL, withTestSchema } from '../db/pg-helpers.js'
 
 /**
@@ -63,7 +63,7 @@ export async function createSearchFixture(): Promise<SearchFixture> {
       await indexOnce(sdb, {
         roots,
         rules: roots.map((root) => ruleOn(root)),
-        embedder,
+        ...usingEmbedder(embedder),
         now: NOW,
         budgetMs: Number.POSITIVE_INFINITY,
         platform: process.platform,

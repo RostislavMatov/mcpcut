@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, expect, test } from 'vitest'
 import { loadPg } from '../../../src/files/db/pg-loader.js'
+import { SEARCH_MODEL_ID } from '../../../src/files/search/constants.js'
 import { createLocalEmbedder } from '../../../src/files/search/embedder.js'
 import { indexOnce } from '../../../src/files/search/indexer.js'
 import { createSearchBackend } from '../../../src/files/search/search-backend.js'
@@ -54,9 +55,10 @@ describe.skipIf(modulesDir === undefined || PG_URL === '')('search with the real
     await fx.put(files)
     const docs = fx.dir('docs')
     await walkRoots(fx.db, { roots: [docs], now: new Date() })
-    const embedder = await createLocalEmbedder({ modulesDir: modulesDir as string })
+    // The indexer closes the embedder it asked for at the end of the round; the search makes its own.
+    const embedderFor = () => createLocalEmbedder({ modulesDir: modulesDir as string })
     const started = Date.now()
-    const result = await indexOnce(fx.sdb, { roots: [docs], rules: [ruleOn(docs)], embedder, now: NOW, budgetMs: Number.POSITIVE_INFINITY, platform: process.platform })
+    const result = await indexOnce(fx.sdb, { roots: [docs], rules: [ruleOn(docs)], modelId: SEARCH_MODEL_ID, createEmbedder: embedderFor, now: NOW, budgetMs: Number.POSITIVE_INFINITY, platform: process.platform })
     const indexMs = Date.now() - started
     console.info(`indexed ${result.indexed} files in ${(indexMs / 1000).toFixed(1)} s`)
     expect(result.indexed).toBe(FILE_COUNT + 1)
@@ -66,7 +68,7 @@ describe.skipIf(modulesDir === undefined || PG_URL === '')('search with the real
       cli: 'mcpcut',
       schema: fx.schema,
       loadPg: () => loadPg(process.cwd()),
-      createEmbedder: async () => embedder,
+      createEmbedder: embedderFor,
     })
     const server = createFilesServer({ roots: async () => [docs], rules: async () => [{ path: docs, ops: ['read'] }], actor: 'a', searchListed: async () => true, search })
     const ask = async (query: string) =>

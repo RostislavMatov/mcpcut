@@ -20,7 +20,7 @@ import { requestLine, waitUntil } from '../proxy/harness.js'
 import { createCliCapture, createConnectStdio } from '../cli/connect-harness.js'
 import { readJournalRecords } from '../support/journal-rows.js'
 import { createFakeEmbedder } from './search/fake-embedder.js'
-import { NOW, ruleOn } from './search/index-fixture.js'
+import { NOW, ruleOn, usingEmbedder } from './search/index-fixture.js'
 import { describePg, PG_URL, withTestSchema } from './db/pg-helpers.js'
 
 /**
@@ -65,7 +65,7 @@ beforeEach(async () => {
   const sdb = await ensureSearchSchema(db)
   const roots = [join(base, 'data')]
   await walkRoots(db, { roots, now: new Date() })
-  await indexOnce(sdb, { roots, rules: roots.map((root) => ruleOn(root)), embedder, now: NOW, budgetMs: Number.POSITIVE_INFINITY, platform: process.platform })
+  await indexOnce(sdb, { roots, rules: roots.map((root) => ruleOn(root)), ...usingEmbedder(embedder), now: NOW, budgetMs: Number.POSITIVE_INFINITY, platform: process.platform })
 })
 
 afterEach(async () => {
