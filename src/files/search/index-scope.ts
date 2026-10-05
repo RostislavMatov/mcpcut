@@ -1,5 +1,5 @@
 import { pathMatchKey } from '../db/path-key.js'
-import { isWithinOn, segmentCount } from '../names.js'
+import { hasTrashSegment, isWithinOn, segmentCount } from '../names.js'
 import { INDEX_SKIP_DIR_NAMES } from './constants.js'
 import type { IndexRule } from './index-rules-store.js'
 
@@ -48,6 +48,11 @@ const SECRET_EXACT: ReadonlySet<string> = new Set([
   '.git-credentials',
   'credentials',
   'kubeconfig',
+  '.envrc',
+  '.yarnrc.yml',
+  '.s3cfg',
+  '.vault-token',
+  'application_default_credentials.json',
 ])
 const SECRET_PREFIXES: readonly string[] = ['.env.', 'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519', 'credentials.', 'secrets.']
 const SECRET_SUFFIXES: readonly string[] = [
@@ -70,6 +75,7 @@ const SECRET_SUFFIXES: readonly string[] = [
   '.p8',
   '.gpg',
   '.asc',
+  '.ppk',
 ]
 
 function isSecretBasename(lower: string): boolean {
@@ -91,7 +97,7 @@ export function skippedSegmentOf(value: string): string | null {
 export function skipReasonOfName(relPath: string, root = ''): SkipReason | null {
   if (skippedSegmentOf(root) !== null) return 'skipped folder'
   const segments = splitSegments(relPath)
-  if (skippedSegmentOf(relPath) !== null) return 'skipped folder'
+  if (skippedSegmentOf(relPath) !== null || hasTrashSegment(relPath)) return 'skipped folder'
   const base = (segments[segments.length - 1] ?? '').toLowerCase()
   return isSecretBasename(base) ? 'secret-like name' : null
 }

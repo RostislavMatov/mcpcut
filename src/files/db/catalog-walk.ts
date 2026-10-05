@@ -81,7 +81,8 @@ async function collect(root: string, known: KnownRows, opts: WalkSettings): Prom
       continue
     }
     for (const name of names) {
-      if (next.parts.length === 0 && hasTrashSegment(name)) continue
+      // The trash of this root and of any root nested inside it: never part of the tree.
+      if (hasTrashSegment(name)) continue
       if (rows.length >= opts.maxEntries) return { rows, truncated: true, unreadable, skipped }
       const file = path.join(next.dir, name)
       const info = await lstat(file, { bigint: true }).catch(() => undefined)

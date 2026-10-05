@@ -77,6 +77,13 @@ describe('skipReasonOfName', () => {
     'AuthKey_ABC.p8',
     'secret.gpg',
     'pub.asc',
+    '.envrc',
+    'DIR/.ENVRC',
+    'putty.ppk',
+    'application_default_credentials.json',
+    '.yarnrc.yml',
+    '.s3cfg',
+    '.vault-token',
   ])('%s is a secret-like name', (name) => {
     expect(skipReasonOfName(name)).toBe('secret-like name')
   })
