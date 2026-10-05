@@ -34,3 +34,8 @@ export const APPLICATION_NAME = 'mcpcut'
 /** The data-dir folder that holds the pinned client tree and `postgres.env`. */
 export const MODULES_DIR_NAME = 'modules'
 export const POSTGRES_ENV_FILE_NAME = 'postgres.env'
+
+/** The catalog walk: entries per root before it stops without deleting, and the largest file it hashes. */
+export const CATALOG_MAX_ENTRIES = 200_000
+export const CATALOG_HASH_MAX_BYTES = 32 * 1024 * 1024
+export const CATALOG_BATCH_SIZE = 500
