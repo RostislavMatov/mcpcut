@@ -28,6 +28,9 @@ export function writeFileOps(exists: boolean, isGuarded: boolean): readonly File
   return isGuarded ? ['read', 'edit'] : ['edit']
 }
 
+/** `search_files` under a `path` needs the same right as reading that folder. */
+export const SEARCH_FILES_OPS = ['read'] as const satisfies readonly FileOp[]
+
 /** `move_file` takes the entry away from one place and puts it in another. */
 export const MOVE_FILE_OPS = { source: 'delete', destination: 'write' } as const satisfies Readonly<Record<string, FileOp>>
 
@@ -60,6 +63,11 @@ function needsOfParsed(name: string, args: Record<string, unknown>): readonly Pa
   }
   if (name === 'write_file') {
     return [{ kind: 'write', raw: String(args['path']), isGuarded: args['expectedSha256'] !== undefined, isRemoved: false }]
+  }
+  if (name === 'search_files') {
+    // Without a path the search reaches only what the rights filter lets through: no single path to refuse.
+    const searched = args['path']
+    return typeof searched === 'string' ? [{ kind: 'fixed', raw: searched, ops: SEARCH_FILES_OPS, isRemoved: false }] : []
   }
   if (name === 'move_file') {
     return [

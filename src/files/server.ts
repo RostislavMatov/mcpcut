@@ -1,5 +1,6 @@
 import { LATEST_SESSIONFUL_PROTOCOL_VERSION, SESSIONFUL_PROTOCOL_VERSIONS } from '../protocol/mcp.js'
 import type { FileRule } from './rights.js'
+import type { SearchBackend } from './search/search-backend.js'
 import { contextFor, errorOutput, type ToolOutput } from './tool-context.js'
 import { runTool } from './tool-handlers.js'
 import { listedTools } from './tools.js'
@@ -22,6 +23,10 @@ export interface FilesServerDeps {
   readonly rules: () => Promise<readonly FileRule[]>
   readonly actor: string
   readonly serverInfo?: FilesServerInfo
+  /** True when `search_files` is to be listed (an index rule is on); absent means not listed. Never rejects the listing. */
+  readonly searchListed?: () => Promise<boolean>
+  /** The search by meaning behind `search_files`; absent means the tool answers that search is not available. */
+  readonly search?: SearchBackend
 }
 
 export interface FilesServer {
@@ -68,6 +73,14 @@ function negotiatedVersion(params: unknown): string {
 export function createFilesServer(deps: FilesServerDeps): FilesServer {
   const serverInfo = deps.serverInfo ?? DEFAULT_SERVER_INFO
 
+  async function isSearchListed(): Promise<boolean> {
+    try {
+      return (await deps.searchListed?.()) === true
+    } catch {
+      return false
+    }
+  }
+
   async function callTool(id: JsonRpcId, params: unknown): Promise<JsonRpcResponse> {
     const name = isRecord(params) ? params['name'] : undefined
     if (typeof name !== 'string' || name === '') return failure(id, INVALID_PARAMS, 'tools/call needs params.name, the tool to call.')
@@ -86,7 +99,7 @@ export function createFilesServer(deps: FilesServerDeps): FilesServer {
       case 'ping':
         return success(id, {})
       case 'tools/list':
-        return success(id, { tools: listedTools() })
+        return success(id, { tools: listedTools({ isSearchListed: await isSearchListed() }) })
       case 'tools/call':
         return callTool(id, params)
       default:

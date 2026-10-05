@@ -1,6 +1,7 @@
 import { createEffectiveAgentReader, type EffectiveAgentReader } from '../agents/effective-reader.js'
 import { createAgentsStore } from '../agents/store.js'
 import { createFilesArgsCheck } from '../files/args-check.js'
+import type { SearchSeams } from '../files/search/search-backend.js'
 import { createAgentFilesBackend, type FilesBackend } from '../files/upstream.js'
 import { createGroupsStore } from '../groups/store.js'
 import type { ArgsCheck } from '../proxy/gate-args-check.js'
@@ -11,6 +12,7 @@ import { createVaultStore } from '../vault/store.js'
 import type { ConnectDeps } from './connect-cmd.js'
 import type { StartConnectSessionArgs } from './connect-session.js'
 import type { PrepareUpstreamArgs } from './connect-upstream.js'
+import { cliCommand } from './next-step.js'
 
 /**
  * Everything `connect` needs to BUILD before it can decide anything: the
@@ -59,12 +61,17 @@ export function builtinFilesOf(args: {
   readonly agentName: string
   readonly agents: ConnectStores['agentReader']
   readonly journalDir: string | undefined
+  readonly env: NodeJS.ProcessEnv
+  readonly searchSeams: SearchSeams | undefined
 }): BuiltinFiles | undefined {
   if (args.record.transport !== 'builtin') return undefined
   const backend = createAgentFilesBackend({
     agentName: args.agentName,
     agents: args.agents,
+    cli: cliCommand(args.env),
+    env: args.env,
     ...(args.journalDir !== undefined ? { journalDir: args.journalDir } : {}),
+    ...(args.searchSeams !== undefined ? { searchSeams: args.searchSeams } : {}),
   })
   return { backend, argsCheck: createFilesArgsCheck(backend) }
 }

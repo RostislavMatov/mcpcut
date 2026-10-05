@@ -5,6 +5,8 @@ import { FILES_SERVER_NAME } from './constants.js'
 import { JOURNAL_DIR } from '../config.js'
 import { rootsOutsideDataDir } from './data-overlap.js'
 import { createRootsStore } from './roots-store.js'
+import { createIndexRulesStore } from './search/index-rules-store.js'
+import { createSearchBackend, type SearchBackend, type SearchSeams } from './search/search-backend.js'
 import type { FileRule } from './rights.js'
 import { createFilesServer, type FilesServer, type JsonRpcResponse } from './server.js'
 
@@ -22,6 +24,12 @@ export interface FilesBackend {
   readonly roots: () => Promise<readonly string[]>
   readonly rules: () => Promise<readonly FileRule[]>
   readonly actor: string
+  /** True when an index rule is on, so `search_files` is listed; absent means not listed. */
+  readonly searchListed?: () => Promise<boolean>
+  /** The search by meaning behind `search_files`. */
+  readonly search?: SearchBackend
+  /** Releases what the backend holds (the search pool and model) when the file server closes. */
+  readonly dispose?: () => Promise<void>
 }
 
 export interface FilesEndpoints {
@@ -96,7 +104,17 @@ export function createFilesEndpoints(backend: FilesBackend, onError: (error: unk
     },
   })
 
-  return { source, sink, close: async () => { isClosed = true; await queue } }
+  async function close(): Promise<void> {
+    isClosed = true
+    await queue
+    try {
+      await backend.dispose?.()
+    } catch (error: unknown) {
+      onError(error)
+    }
+  }
+
+  return { source, sink, close }
 }
 
 /** Where the rules of one agent come from: its effective grant for `files`, read fresh each call. */
@@ -104,11 +122,44 @@ export interface AgentFilesBackendArgs {
   readonly agentName: string
   readonly agents: Pick<EffectiveAgentReader, 'getAgent'>
   readonly journalDir?: string
+  /** The CLI prefix for the commands inside search problems; `mcpcut` by default. */
+  readonly cli?: string
+  readonly env?: NodeJS.ProcessEnv
+  /** A search backend shared by many sessions (`serve`): its owner closes it, not this backend. */
+  readonly search?: SearchBackend
+  /** Test seams for the search backend this one builds when none is shared. */
+  readonly searchSeams?: SearchSeams
+}
+
+/** True when at least one index rule is on; a store that cannot be read means not listed. */
+async function hasEnabledIndexRule(journalDir: string | undefined): Promise<boolean> {
+  try {
+    const rules = await createIndexRulesStore(journalDir !== undefined ? { journalDir } : {}).list()
+    return rules.some((rule) => rule.enabled)
+  } catch {
+    return false
+  }
+}
+
+/** The shared search backend, or one of its own (closed with the file server). */
+function searchOf(args: AgentFilesBackendArgs): { readonly search: SearchBackend; readonly dispose?: () => Promise<void> } {
+  if (args.search !== undefined) return { search: args.search }
+  const own = createSearchBackend({
+    journalDir: args.journalDir ?? JOURNAL_DIR,
+    cli: args.cli ?? 'mcpcut',
+    ...(args.env !== undefined ? { env: args.env } : {}),
+    ...args.searchSeams,
+  })
+  return { search: own, dispose: () => own.close() }
 }
 
 export function createAgentFilesBackend(args: AgentFilesBackendArgs): FilesBackend {
   const roots = createRootsStore(args.journalDir !== undefined ? { journalDir: args.journalDir } : {})
+  const { search, dispose } = searchOf(args)
   return {
+    search,
+    searchListed: () => hasEnabledIndexRule(args.journalDir),
+    ...(dispose !== undefined ? { dispose } : {}),
     actor: args.agentName,
     roots: async () => rootsOutsideDataDir((await roots.list()).map((root) => root.path), args.journalDir ?? JOURNAL_DIR),
     rules: async () => {
@@ -123,6 +174,8 @@ export function createAgentFilesBackend(args: AgentFilesBackendArgs): FilesBacke
 /** The probe only sends `initialize` and `tools/list`: it needs no roots and gives no rights. */
 export const PROBE_FILES_BACKEND: FilesBackend = {
   actor: 'probe',
+  // The probe lists every tool, so that "Create policy" sees `search_files` too.
+  searchListed: async () => true,
   roots: async () => [],
   rules: async () => [],
 }
