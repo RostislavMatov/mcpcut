@@ -4,6 +4,7 @@ import { EMBED_DIMS, EMBED_MAX_THREADS, EMBED_MAX_TOKENS, PASSAGE_PREFIX, QUERY_
 import { checkModelFiles, modelDirOf, modelFilePath } from './model-files.js'
 import type { OrtSession, SearchRuntime } from './ort-types.js'
 import { loadSearchRuntime, searchModulesDirOf, searchPlatformProblem } from './runtime-loader.js'
+import { formatReadableField } from '../../journal/format.js'
 import type { Embedder } from './types.js'
 
 /**
@@ -57,6 +58,16 @@ export function defaultThreads(cores: number = availableParallelism()): number {
   return Math.max(1, Math.min(EMBED_MAX_THREADS, Math.floor(cores / 2)))
 }
 
+/** A model file that does not parse, or a tokenizer that does not build, is a broken download: one fix. */
+async function buildTokenizer(runtime: SearchRuntime, tokenizerFile: string, configFile: string, cli: string): Promise<InstanceType<SearchRuntime['Tokenizer']>> {
+  try {
+    return new runtime.Tokenizer(await readJson(tokenizerFile), await readJson(configFile))
+  } catch (error: unknown) {
+    const cause = error instanceof Error ? error.message : String(error)
+    throw new Error(`the search model's tokenizer could not be loaded (${formatReadableField(cause)}): run \`${cli} files setup --search\` again`)
+  }
+}
+
 async function readJson(path: string): Promise<unknown> {
   return JSON.parse(await readFile(path, 'utf8')) as unknown
 }
@@ -97,7 +108,8 @@ export async function createLocalEmbedder(opts: LocalEmbedderOptions): Promise<E
     if (file === undefined) throw new Error(`pinned model file ${path} is not declared`)
     return modelFilePath(modelDir, file)
   }) as [string, string, string]
-  const tokenizer = new runtime.Tokenizer(await readJson(tokenizerFile), await readJson(configFile))
+  const cli = opts.cli ?? 'mcpcut'
+  const tokenizer = await buildTokenizer(runtime, tokenizerFile, configFile, cli)
   const session = await runtime.ort.InferenceSession.create(modelFile, {
     intraOpNumThreads: opts.threads ?? defaultThreads(),
     interOpNumThreads: 1,

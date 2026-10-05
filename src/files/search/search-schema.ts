@@ -1,6 +1,7 @@
 import type { FilesDb } from '../db/connection.js'
 import { DB_SCHEMA_PATTERN } from '../db/constants.js'
 import { FilesDbError } from '../db/errors.js'
+import { formatReadableField } from '../../journal/format.js'
 import { appliedVersion, migrateWith, underMigrationLock } from '../db/migrate.js'
 import type { Migration } from '../db/migrations.js'
 import type { PgQueryable } from '../db/pg-types.js'
@@ -17,10 +18,11 @@ import { EMBED_DIMS, SEARCH_MIGRATION_BASE } from './constants.js'
  */
 
 export class FilesSearchPgvectorError extends FilesDbError {
-  constructor(cli: string) {
+  constructor(cli: string, cause?: string) {
     super(
       `this Postgres has no pgvector extension: use the container \`${cli} files db init\` prints, ` +
-        'or install pgvector and run the command again',
+        'or install pgvector and run the command again' +
+        (cause === undefined ? '' : ` (${formatReadableField(cause)})`),
     )
     this.name = 'FilesSearchPgvectorError'
   }
@@ -80,7 +82,7 @@ async function ensureExtension(client: PgQueryable, cli: string): Promise<string
     await client.query('CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public')
   } catch (error: unknown) {
     if (error instanceof FilesDbError && error.kind === 'unreachable') throw error
-    throw new FilesSearchPgvectorError(cli)
+    throw new FilesSearchPgvectorError(cli, error instanceof Error ? error.message : String(error))
   }
   const created = await vectorSchemaOf(client)
   if (created === undefined) throw new FilesSearchPgvectorError(cli)
@@ -88,7 +90,12 @@ async function ensureExtension(client: PgQueryable, cli: string): Promise<string
 }
 
 function checkedVectorSchema(name: string, cli: string): string {
-  if (!DB_SCHEMA_PATTERN.test(name)) throw new FilesSearchPgvectorError(cli)
+  if (!DB_SCHEMA_PATTERN.test(name)) {
+    throw new FilesDbError(
+      `pgvector lives in the schema "${formatReadableField(name)}", whose name mcpcut does not accept (lowercase letters, digits and _): ` +
+        `move the extension to a schema with such a name (\`ALTER EXTENSION vector SET SCHEMA public\`), then run \`${cli} files db sync\` again`,
+    )
+  }
   return name
 }
 

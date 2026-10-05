@@ -164,4 +164,29 @@ describe('createLocalEmbedder', () => {
     await expect(failure).rejects.toBeInstanceOf(SearchModelMissingError)
     await expect(failure).rejects.toThrow('run `npx mcpcut files setup --search`')
   })
+
+  test('a model JSON that does not parse says to run setup again', async () => {
+    const tokenizer = SEARCH_MODEL_FILES.find((file) => file.path === 'tokenizer.json')!
+    await writeFile(modelFilePath(modelDirOf(join(modulesDir, 'search')), tokenizer), 'x'.repeat(tokenizer.size))
+
+    await expect(createLocalEmbedder({ modulesDir, cli: 'mcpcut', load: async () => fakeRuntime(seen) })).rejects.toThrow(
+      /run `mcpcut files setup --search` again$/,
+    )
+  })
+
+  test('a tokenizer that fails to build says to run setup again', async () => {
+    const runtime = fakeRuntime(seen)
+    const broken = {
+      ...runtime,
+      Tokenizer: class {
+        constructor() {
+          throw new Error('bad vocabulary')
+        }
+      } as unknown as SearchRuntime['Tokenizer'],
+    }
+
+    await expect(createLocalEmbedder({ modulesDir, cli: 'mcpcut', load: async () => broken })).rejects.toThrow(
+      /bad vocabulary.*run `mcpcut files setup --search` again$/,
+    )
+  })
 })

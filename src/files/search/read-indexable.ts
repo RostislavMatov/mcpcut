@@ -31,6 +31,22 @@ function decodeText(bytes: Buffer): IndexableRead {
   return { kind: 'text', text: text.startsWith(BOM) ? text.slice(1) : text }
 }
 
+export interface ReadHandle {
+  read(buffer: Buffer, offset: number, length: number): Promise<{ readonly bytesRead: number }>
+}
+
+/** At most `limit + 1` bytes: one over is enough to know the file is too large, and a file that grew after `stat` costs no more. */
+export async function readCapped(handle: ReadHandle, limit: number): Promise<Buffer> {
+  const buffer = Buffer.alloc(limit + 1)
+  let total = 0
+  while (total < buffer.length) {
+    const { bytesRead } = await handle.read(buffer, total, buffer.length - total)
+    if (bytesRead === 0) break
+    total += bytesRead
+  }
+  return buffer.subarray(0, total)
+}
+
 export async function readIndexable(file: string, expectedSha256: string): Promise<IndexableRead> {
   let handle
   try {
@@ -42,7 +58,7 @@ export async function readIndexable(file: string, expectedSha256: string): Promi
     const info = await handle.stat()
     if (!info.isFile()) return CHANGED
     if (info.size > INDEX_MAX_FILE_BYTES) return { kind: 'skip', reason: 'too large' }
-    const bytes = await handle.readFile()
+    const bytes = await readCapped(handle, INDEX_MAX_FILE_BYTES)
     if (bytes.length > INDEX_MAX_FILE_BYTES) return { kind: 'skip', reason: 'too large' }
     if (createHash('sha256').update(bytes).digest('hex') !== expectedSha256) return CHANGED
     return decodeText(bytes)

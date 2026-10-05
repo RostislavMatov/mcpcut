@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { INDEX_MAX_FILE_BYTES } from '../../../src/files/search/constants.js'
-import { readIndexable } from '../../../src/files/search/read-indexable.js'
+import { readCapped, readIndexable } from '../../../src/files/search/read-indexable.js'
 
 let dir: string
 const sha = (data: string | Buffer): string => createHash('sha256').update(data).digest('hex')
@@ -76,5 +76,37 @@ describe('readIndexable', () => {
     const outcome = await Promise.race([readIndexable(fifo, 'x'), new Promise((resolve) => setTimeout(() => resolve('blocked'), 2000))])
 
     expect(outcome).toEqual({ kind: 'changed' })
+  })
+})
+
+describe('readCapped', () => {
+  test('never asks for more than the limit plus one byte, however much the file has grown', async () => {
+    const asked: number[] = []
+    const handle = {
+      read: async (buffer: Buffer, offset: number, length: number) => {
+        asked.push(length)
+        buffer.fill(97, offset, offset + length)
+        return { bytesRead: length }
+      },
+    }
+
+    const bytes = await readCapped(handle, 10)
+
+    expect(bytes.length).toBe(11)
+    expect(asked.reduce((sum, n) => sum + n, 0)).toBe(11)
+  })
+
+  test('stops at the end of a file that is shorter than the limit', async () => {
+    let left = 4
+    const handle = {
+      read: async (buffer: Buffer, offset: number) => {
+        const bytesRead = Math.min(left, 2)
+        left -= bytesRead
+        buffer.fill(98, offset, offset + bytesRead)
+        return { bytesRead }
+      },
+    }
+
+    expect((await readCapped(handle, 10)).toString()).toBe('bbbb')
   })
 })

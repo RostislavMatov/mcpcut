@@ -105,3 +105,36 @@ describePg('ensureSearchSchema on a real Postgres', () => {
     await expect(ensureSearchSchema(db)).rejects.toBeInstanceOf(FilesDbSchemaTooNewError)
   })
 })
+
+describe('ensureSearchSchema failure messages (no server needed)', () => {
+  function fakeDb(extensionError: Error | undefined, vectorSchema?: string): FilesDb {
+    const query = async (text: string): Promise<{ rows: unknown[] }> => {
+      if (text.includes('CREATE EXTENSION')) throw extensionError
+      if (text.includes('pg_extension')) return { rows: vectorSchema === undefined ? [] : [{ schema: vectorSchema }] }
+      return { rows: [] }
+    }
+    return {
+      schema: 's',
+      schemaVersion: 1,
+      query,
+      transaction: async () => undefined as never,
+      close: async () => undefined,
+      withClient: async (fn) => fn({ query } as never),
+    } as unknown as FilesDb
+  }
+
+  test('a failing CREATE EXTENSION keeps its cause after the pgvector line', async () => {
+    const db = fakeDb(new Error('permission denied to create extension "vector"'))
+
+    await expect(ensureSearchSchema(db)).rejects.toThrow(/no pgvector extension.*\(permission denied to create extension "vector"\)$/s)
+  })
+
+  test('a vector schema whose name is not allowed gets its own line, not the no-pgvector one', async () => {
+    const db = fakeDb(undefined, 'Bad-Schema')
+
+    const failure = await ensureSearchSchema(db).catch((error: Error) => error)
+
+    expect((failure as Error).message).toContain('Bad-Schema')
+    expect((failure as Error).message).not.toContain('no pgvector extension')
+  })
+})

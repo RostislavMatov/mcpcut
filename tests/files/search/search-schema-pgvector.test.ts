@@ -26,7 +26,7 @@ describe('ensureSearchSchema without pgvector', () => {
 
     expect(failure).toBeInstanceOf(FilesSearchPgvectorError)
     expect((failure as Error).message).toBe(
-      'this Postgres has no pgvector extension: use the container `mcpcut files db init` prints, or install pgvector and run the command again',
+      'this Postgres has no pgvector extension: use the container `mcpcut files db init` prints, or install pgvector and run the command again (could not open extension control file)',
     )
   })
 })
