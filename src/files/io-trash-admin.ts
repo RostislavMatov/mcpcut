@@ -49,8 +49,21 @@ export async function listTrash(root: string): Promise<IoResult<TrashListing>> {
   return succeed({ entries, skipped })
 }
 
-function notFoundId(): IoResult<never> {
+function notFoundId(): IoFailure {
   return fail('not-found', 'There is no trash entry with that id: list the trash to see the ids.')
+}
+
+/**
+ * A manifest that cannot be opened: an unknown id reads as one; a stored
+ * entry without its manifest is the orphan an interrupted delete leaves
+ * (ADR-0020 §4) and is named, with where it lies, for the admin to sort by hand.
+ */
+async function manifestMissing(trashDir: string, id: string, failure: IoFailure): Promise<IoFailure> {
+  if (failure.problem !== 'not-found') return failure
+  const stored = path.join(trashDir, id)
+  const orphan = await lstat(stored).then((info) => info.isDirectory(), () => false)
+  if (!orphan) return notFoundId()
+  return fail('not-found', `The trash entry ${stored} has no manifest (its delete was interrupted), so it cannot be restored: move what is inside back by hand, then remove it.`)
 }
 
 /** The relative path from a manifest is data: no `..`, no absolute path, no trash name, no empty segment. */
@@ -96,7 +109,7 @@ export async function restoreFromTrash(root: string, id: string, hooks: IoHooks 
   const trash = await requireTrashDir(root)
   if (!trash.ok) return trash
   const read = await readManifest(trash.value, id)
-  if (!read.ok) return read
+  if (!read.ok) return manifestMissing(trash.value, id, read)
   const manifest = read.value
   const destination = await destinationOf(root, manifest.relative)
   if (!destination.ok) return destination.failure

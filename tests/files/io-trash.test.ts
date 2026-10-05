@@ -217,8 +217,24 @@ describe('restoreFromTrash', () => {
     },
   )
 
-  test('refuses a valid id with no entry', async () => {
-    expect(problemOf(await restoreFromTrash(sandbox.root, ulid()))).toBe('not-found')
+  test('refuses a valid id with no entry, saying there is no such entry', async () => {
+    expect(await restoreFromTrash(sandbox.root, ulid())).toEqual({
+      ok: false,
+      problem: 'not-found',
+      message: 'There is no trash entry with that id: list the trash to see the ids.',
+    })
+  })
+
+  test('an entry left without its manifest (an interrupted delete) is named as such, with what to do', async () => {
+    const id = ulid()
+    await mkdir(join(sandbox.trash, id))
+    await writeFile(join(sandbox.trash, id, 'left.txt'), 'x')
+    const result = await restoreFromTrash(sandbox.root, id)
+    expect(result).toMatchObject({ ok: false, problem: 'not-found' })
+    const message = result.ok ? '' : result.message
+    expect(message).toContain('has no manifest')
+    expect(message).toContain(join(sandbox.trash, id))
+    expect(await readFile(join(sandbox.trash, id, 'left.txt'), 'utf8')).toBe('x')
   })
 
   test('refuses a tampered manifest whose relative path escapes the root', async () => {
