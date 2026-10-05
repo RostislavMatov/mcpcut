@@ -31,6 +31,7 @@ describe('createFilesArgsCheck: refusals', () => {
     expect(await checkCall('delete_file', { path: target })).toEqual({
       rule: `files: no right delete on ${target}`,
       reason: expect.stringContaining('delete'),
+      clientMessage: `No right to delete ${target}: your rights there are read, write. Call list_roots to see your folders.`,
     })
   })
 
@@ -43,6 +44,7 @@ describe('createFilesArgsCheck: refusals', () => {
     const { checkCall } = await setup(['read'])
     const refusal = await checkCall('read_file', { path: '/etc/hosts' })
     expect(refusal?.rule).toBe('files: outside-roots')
+    expect(refusal?.clientMessage).toBe('The path is outside your folders — call list_roots to see your folders.')
   })
 
   test('a relative path is refused with the resolver refusal', async () => {
@@ -87,6 +89,8 @@ describe('createFilesArgsCheck: refusals', () => {
     const refusal = await check({ toolName: 'read_file', args: { path: join(harness.sandbox.root, 'a') }, id: 1 })
     expect(refusal?.rule).toBe('files: check-failed')
     expect(refusal?.reason).not.toContain('disk gone')
+    expect(refusal?.clientMessage).toMatch(/^The file access check failed unexpectedly: try again/)
+    expect(refusal?.clientMessage).not.toContain('disk gone')
   })
 
   test('rules are read afresh: a revoked right refuses the very next call', async () => {
@@ -137,6 +141,7 @@ describe('parity with the server: the gate refuses exactly when the server would
       const result = await harness.call(name, args)
       const serverRefusedForRights = result.isError && result.text.startsWith('No right to ')
       expect(refusal !== null, `${name} with ${ops.join('+') || 'none'}`).toBe(serverRefusedForRights)
+      if (refusal !== null) expect(refusal.clientMessage, `${name}: the client hears what the server would say`).toBe(result.text)
     }
   })
 })

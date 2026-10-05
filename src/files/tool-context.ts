@@ -79,12 +79,16 @@ export function heldText(held: readonly FileOp[]): string {
   return held.length === 0 ? 'none' : held.join(', ')
 }
 
+/** The agent-facing refusal for a right it lacks — the server's answer and the gate's, word for word. */
+export function noRightMessage(missing: Shortfall, raw: string): string {
+  return `No right to ${missing.op} ${raw}: your rights there are ${heldText(missing.held)}. Call list_roots to see your folders.`
+}
+
 /** `null` when the rules give every one of `ops` at the resolved path, else the one-line refusal. */
 export function requireOps(ctx: ToolContext, target: ResolvedPath, raw: string, ops: readonly FileOp[]): ToolOutput | null {
   if (!ctx.prepared.ok) return errorOutput(ctx.prepared.message)
   const missing = firstMissing(ctx, target, ops)
-  if (missing === null) return null
-  return errorOutput(`No right to ${missing.op} ${raw}: your rights there are ${heldText(missing.held)}. Call list_roots to see your folders.`)
+  return missing === null ? null : errorOutput(noRightMessage(missing, raw))
 }
 
 /** Resolve a path and require operations on it. */

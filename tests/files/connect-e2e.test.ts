@@ -110,7 +110,10 @@ describe('mcpcut connect files: the built-in server through the real session pat
     expect(written['error']).toBeUndefined()
     expect(await readFile(target, 'utf8')).toBe('hi there')
     expect(textOf(read)).toContain('hi there')
-    expect(denied['error']).toMatchObject({ data: { rule: `files: no right delete on ${target}` } })
+    expect(denied['error']).toMatchObject({
+      data: { rule: `files: no right delete on ${target}` },
+      message: `Call to tool "delete_file" was refused: No right to delete ${target}: your rights there are read, write. Call list_roots to see your folders.`,
+    })
     expect(await readFile(target, 'utf8')).toBe('hi there')
     expect(code).toBe(0)
 

@@ -378,10 +378,10 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
  */
 export function denialBytesFor(
   id: SynthesizableId,
-  info: { readonly toolName: string; readonly serverName: string; readonly rule: string },
+  info: { readonly toolName: string; readonly serverName: string; readonly rule: string; readonly detail?: string },
 ): Buffer {
   if (info.rule === QUARANTINE_RULE) {
     return quarantinedError(id, { toolName: info.toolName, serverName: info.serverName })
   }
-  return denialError(id, { toolName: info.toolName, rule: info.rule })
+  return denialError(id, { toolName: info.toolName, rule: info.rule, ...(info.detail !== undefined ? { detail: info.detail } : {}) })
 }

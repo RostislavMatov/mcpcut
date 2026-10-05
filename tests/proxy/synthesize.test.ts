@@ -110,6 +110,16 @@ describe('denialError', () => {
       rule: 'no-destructive-writes',
     })
   })
+
+  test('with a detail (an argument check), the message is that detail, not the policy line', () => {
+    const detail = 'The path is outside your folders — call list_roots to see your folders.'
+    const bytes = denialError('req-1', { toolName: 'read_file', rule: 'files: outside-roots', detail })
+    const message = errorOf(bytes)['message'] as string
+
+    expect(message).toBe(`Call to tool "read_file" was refused: ${detail}`)
+    expect(message).not.toContain('change the policy')
+    expect(errorOf(bytes)['data']).toEqual({ reason: 'policy_denied', toolName: 'read_file', rule: 'files: outside-roots' })
+  })
 })
 
 describe('approvalTimeoutError', () => {

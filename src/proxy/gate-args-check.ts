@@ -14,6 +14,8 @@ import type { ParsedToolCall } from '../protocol/mcp.js'
 export interface ArgsRefusal {
   readonly rule: string
   readonly reason: string
+  /** What the client is told instead of the generic policy denial: the same words the server would answer with. */
+  readonly clientMessage: string
 }
 
 export type ArgsCheck = (call: ParsedToolCall) => Promise<ArgsRefusal | null>

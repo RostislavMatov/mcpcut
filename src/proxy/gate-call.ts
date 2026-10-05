@@ -42,7 +42,7 @@ export interface CallDeciderDeps {
   readonly applyAllow: (
     call: ParsedToolCall, facts: CallFacts, decision: PolicyDecision, extras?: DecisionExtras,
   ) => Verdict | Promise<Verdict>
-  readonly applyDeny: (call: ParsedToolCall, facts: CallFacts, decision: PolicyDecision) => Promise<Verdict>
+  readonly applyDeny: (call: ParsedToolCall, facts: CallFacts, decision: PolicyDecision, clientMessage?: string) => Promise<Verdict>
   readonly requestApproval: ApprovalFlow['requestApproval']
   readonly confirmStep: ConfirmStep
   readonly answerGuard: AnswerGuard
@@ -62,6 +62,8 @@ interface Evaluation {
   readonly grantKey: GrantKey
   readonly decision: PolicyDecision
   readonly captured: ProvenanceSnapshot
+  /** Set only by an argument check's refusal: the words the client is answered with. */
+  readonly clientMessage?: string
 }
 
 export function createCallDecider(deps: CallDeciderDeps): CallDecider {
@@ -99,7 +101,11 @@ export function createCallDecider(deps: CallDeciderDeps): CallDecider {
     return check(call).then((refusal) =>
       refusal === null
         ? evaluation
-        : { ...evaluation, decision: { outcome: 'deny', rule: refusal.rule, reason: refusal.reason } },
+        : {
+            ...evaluation,
+            decision: { outcome: 'deny', rule: refusal.rule, reason: refusal.reason },
+            clientMessage: refusal.clientMessage,
+          },
     )
   }
 
@@ -107,7 +113,7 @@ export function createCallDecider(deps: CallDeciderDeps): CallDecider {
   function go(call: ParsedToolCall, evaluation: Evaluation, base: DecisionExtras): Verdict | Promise<Verdict> {
     const { facts, grantKey, decision, captured } = evaluation
     if (decision.outcome === 'allow') return deps.applyAllow(call, facts, decision, base)
-    if (decision.outcome === 'deny') return deps.applyDeny(call, facts, decision)
+    if (decision.outcome === 'deny') return deps.applyDeny(call, facts, decision, evaluation.clientMessage)
     // An id-less call has no return address: an approval could never deliver
     // it, yet its grant would still be minted and consumable by a later
     // id-bearing call — pure operator-fatigue cost with zero upside, so it
@@ -153,7 +159,7 @@ export function createCallDecider(deps: CallDeciderDeps): CallDecider {
   function decideEvaluated(call: ParsedToolCall): (evaluation: Evaluation) => Verdict | Promise<Verdict> {
     return (evaluation) => {
       const { facts, decision } = evaluation
-      if (decision.outcome === 'deny') return deps.applyDeny(call, facts, decision)
+      if (decision.outcome === 'deny') return deps.applyDeny(call, facts, decision, evaluation.clientMessage)
       if (confirmStep.isRequired(facts.toolName)) return confirmThenGo(call, facts, decision.outcome === 'require-approval')
       return go(call, evaluation, {})
     }

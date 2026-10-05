@@ -105,7 +105,8 @@ async function decisions(): Promise<NonNullable<JournalRecord['decision']>[]> {
   return records.filter((record) => record.kind === 'decision').flatMap((record) => (record.decision ? [record.decision] : []))
 }
 
-const refuse = (rule = RULE): ArgsCheck => async () => ({ rule, reason: 'no right to delete /w/a.txt' })
+const CLIENT_MESSAGE = 'No right to delete /w/a.txt: your rights there are read. Call list_roots to see your folders.'
+const refuse = (rule = RULE): ArgsCheck => async () => ({ rule, reason: 'no right to delete /w/a.txt', clientMessage: CLIENT_MESSAGE })
 const accept: ArgsCheck = async () => null
 
 describe('argsCheck: refusal becomes a deny with its rule string', () => {
@@ -118,6 +119,16 @@ describe('argsCheck: refusal becomes a deny with its rule string', () => {
     expect(await decisions()).toEqual([expect.objectContaining({ outcome: 'deny', rule: RULE, toolName: 'delete_file', serverName: SERVER_NAME })])
     expect(toClient[0]).toMatchObject({ id: 1, error: { data: { rule: RULE } } })
     expect(errors).toEqual([])
+  })
+
+  test('the client is told what the check found, not the generic policy line', async () => {
+    const gate = createGate(policyOf(undefined), refuse())
+
+    await gate.gateClientMessage(call(1, 'delete_file'))
+
+    const error = toClient[0]?.['error'] as Record<string, unknown>
+    expect(error['message']).toBe(`Call to tool "delete_file" was refused: ${CLIENT_MESSAGE}`)
+    expect(error['message']).not.toContain('change the policy')
   })
 
   test('hands the parsed call (tool name and arguments) to the check', async () => {
@@ -181,6 +192,7 @@ describe('argsCheck: never loosens', () => {
     const [record] = await decisions()
     expect(record).toMatchObject({ outcome: 'deny' })
     expect(record?.rule).not.toBe(RULE)
+    expect((toClient[0]?.['error'] as Record<string, unknown>)['message']).toContain('A human operator can change the policy')
   })
 
   test('a default deny with a check that accepts is still a deny', async () => {

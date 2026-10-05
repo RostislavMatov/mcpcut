@@ -60,15 +60,23 @@ export function synthesizeError(id: SynthesizableId, info: SynthesizedErrorInfo)
 export interface DenialErrorInfo {
   readonly toolName: string
   readonly rule: string
+  /**
+   * What an argument check found, written for the agent (ADR-0020 §2: "the
+   * path is outside your folders — call list_roots"). It replaces the policy
+   * line, which would send the agent to a policy that is not what refused it.
+   */
+  readonly detail?: string
 }
 
-/** A `tools/call` blocked by an allow/deny policy rule. */
+/** A `tools/call` blocked by an allow/deny policy rule, or by an argument check when `detail` is given. */
 export function denialError(id: SynthesizableId, info: DenialErrorInfo): Buffer {
   return synthesizeError(id, {
     code: ERROR_CODE_POLICY_DENIED,
     message:
-      `Call to tool "${info.toolName}" was blocked by policy rule "${info.rule}". ` +
-      'A human operator can change the policy to allow it.',
+      info.detail !== undefined
+        ? `Call to tool "${info.toolName}" was refused: ${info.detail}`
+        : `Call to tool "${info.toolName}" was blocked by policy rule "${info.rule}". ` +
+          'A human operator can change the policy to allow it.',
     data: { reason: 'policy_denied', toolName: info.toolName, rule: info.rule },
   })
 }

@@ -211,7 +211,7 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     return failClosed ? deps.sink.flush().then(() => FORWARD) : FORWARD
   }
 
-  async function applyDeny(call: ParsedToolCall, facts: CallFacts, decision: PolicyDecision): Promise<Verdict> {
+  async function applyDeny(call: ParsedToolCall, facts: CallFacts, decision: PolicyDecision, detail?: string): Promise<Verdict> {
     const isQuarantined = decision.rule === QUARANTINE_RULE
     writeDecision(
       decisionInfoOf(facts, isQuarantined ? 'quarantined' : 'deny', decision.rule),
@@ -219,7 +219,7 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     )
     await settleJournal()
     await answerLocally(call.id, (id) =>
-      denialBytesFor(id, { toolName: facts.toolName, serverName, rule: decision.rule }),
+      denialBytesFor(id, { toolName: facts.toolName, serverName, rule: decision.rule, ...(detail !== undefined ? { detail } : {}) }),
     )
     return DROP
   }
