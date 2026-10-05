@@ -1,5 +1,6 @@
 import { openConfiguredDb, type OpenConfiguredOptions } from '../files/db/open-configured.js'
 import type { FilesDb } from '../files/db/connection.js'
+import { walkRoots } from '../files/db/catalog-walk.js'
 import { syncOnce } from '../files/db/sync.js'
 import { formatReadableField } from '../journal/format.js'
 import type { TrashSweepTimer } from './serve-trash-sweep.js'
@@ -11,7 +12,8 @@ import type { TrashSweepTimer } from './serve-trash-sweep.js'
  * does nothing and says nothing. Like the trash sweep it is housekeeping, not
  * a request: a failure is one stderr line per distinct reason and never stops
  * `serve`. One database handle lives as long as `serve`; a failed open is
- * retried on the next tick.
+ * retried on the next tick. The ingest and the walk are two guarded steps, so
+ * the minute ingest keeps running during a long walk (the pool has two clients).
  */
 
 export const FILES_SYNC_INTERVAL_MS = 60_000
@@ -27,14 +29,16 @@ export interface FilesSyncDeps extends Omit<OpenConfiguredOptions, 'journalDir'>
   readonly now: () => number
   readonly platform?: NodeJS.Platform
   readonly timer?: FilesSyncTimer
+  /** @internal test seam: the catalog walk. */
+  readonly walk?: typeof walkRoots
 }
 
 export interface FilesSync {
-  /** The startup run; never rejects. */
+  /** The startup run (ingest and walk); never rejects. */
   readonly done: Promise<void>
-  /** The most recent run (startup or tick); never rejects. */
+  /** Resolves when no run is in flight, however many started meanwhile; never rejects. */
   idle(): Promise<void>
-  /** Stops the schedule, lets a run in flight finish, then closes the database. */
+  /** Stops the schedule, lets the runs in flight finish, then closes the database. */
   stop(): Promise<void>
 }
 
@@ -49,14 +53,20 @@ function describe(error: unknown): string {
 
 export function startFilesSync(deps: FilesSyncDeps): FilesSync {
   const timer = deps.timer ?? REAL_TIMER
+  const walk = deps.walk ?? walkRoots
+  const platform = deps.platform ?? process.platform
   let db: FilesDb | undefined
+  let opening: Promise<FilesDb | undefined> | undefined
   let lastWalkAt: number | undefined
-  let lastReported: string | undefined
-  let isRunning = false
+  let isStopped = false
+  /** The last line printed per source (`open`, `ingest`, `walk`): a repeat is not printed again. */
+  const lastReported = new Map<string, string>()
+  const busy = new Set<string>()
+  const inFlight = new Set<Promise<void>>()
 
-  const report = (line: string): void => {
-    if (line === lastReported) return
-    lastReported = line
+  const report = (source: string, line: string): void => {
+    if (line === lastReported.get(source)) return
+    lastReported.set(source, line)
     try {
       deps.stderr.write(`[serve] files sync: ${line}\n`)
     } catch {
@@ -64,50 +74,83 @@ export function startFilesSync(deps: FilesSyncDeps): FilesSync {
     }
   }
 
-  async function ensureDb(): Promise<FilesDb | undefined> {
-    if (db !== undefined) return db
+  async function open(): Promise<FilesDb | undefined> {
     const configured = await openConfiguredDb(deps)
-    if (configured.kind === 'unavailable') report(configured.reason)
-    if (configured.kind === 'ready') db = configured.db
+    if (configured.kind === 'unavailable') report('open', configured.reason)
+    if (configured.kind !== 'ready') return undefined
+    lastReported.delete('open')
+    if (isStopped) {
+      // A late open: `stop` has already passed, nobody will close this handle but us.
+      await configured.db.close().catch(() => undefined)
+      return undefined
+    }
+    db = configured.db
     return db
   }
 
-  async function runOnce(): Promise<void> {
-    if (isRunning) return
-    isRunning = true
-    try {
-      const open = await ensureDb()
-      if (open === undefined) return
-      const at = deps.now()
-      const isWalkDue = lastWalkAt === undefined || at - lastWalkAt >= FILES_WALK_INTERVAL_MS
-      await syncOnce(open, {
-        journalDir: deps.journalDir,
-        roots: await deps.listRoots(),
-        platform: deps.platform ?? process.platform,
-        now: new Date(at),
-        withWalk: isWalkDue,
-      })
-      if (isWalkDue) lastWalkAt = at
-      lastReported = undefined
-    } catch (error: unknown) {
-      report(describe(error))
-    } finally {
-      isRunning = false
-    }
+  /** One open at a time; a failed one is forgotten so the next tick tries again. */
+  async function ensureDb(): Promise<FilesDb | undefined> {
+    if (db !== undefined) return db
+    opening ??= open().finally(() => {
+      opening = undefined
+    })
+    return opening
   }
 
-  const done = runOnce()
-  let latest = done
-  const handle = timer.setInterval(() => {
-    latest = runOnce()
-  }, FILES_SYNC_INTERVAL_MS)
+  async function ingestStep(): Promise<void> {
+    const handle = await ensureDb()
+    if (handle === undefined) return
+    await syncOnce(handle, {
+      journalDir: deps.journalDir,
+      roots: await deps.listRoots(),
+      platform,
+      now: new Date(deps.now()),
+      withWalk: false,
+    })
+  }
+
+  async function walkStep(): Promise<void> {
+    const at = deps.now()
+    const isDue = lastWalkAt === undefined || at - lastWalkAt >= FILES_WALK_INTERVAL_MS
+    if (!isDue) return
+    const handle = await ensureDb()
+    if (handle === undefined) return
+    await walk(handle, { roots: await deps.listRoots(), now: new Date(at) })
+    lastWalkAt = at
+  }
+
+  /** Runs a step unless it is already running or `serve` is stopping; a failure is reported, never thrown. */
+  function launch(name: string, step: () => Promise<void>): Promise<void> {
+    if (isStopped || busy.has(name)) return Promise.resolve()
+    busy.add(name)
+    const run: Promise<void> = step()
+      .then(() => void lastReported.delete(name))
+      .catch((error: unknown) => report(name, describe(error)))
+      .finally(() => {
+        busy.delete(name)
+        inFlight.delete(run)
+      })
+    inFlight.add(run)
+    return run
+  }
+
+  const runAll = (): Promise<void> => Promise.all([launch('ingest', ingestStep), launch('walk', walkStep)]).then(() => undefined)
+
+  const idle = async (): Promise<void> => {
+    while (inFlight.size > 0) await Promise.all([...inFlight])
+  }
+
+  const done = runAll()
+  const handle = timer.setInterval(() => void runAll(), FILES_SYNC_INTERVAL_MS)
   handle.unref?.()
   return {
     done,
-    idle: () => latest,
+    idle,
     stop: async () => {
+      isStopped = true
       timer.clearInterval(handle)
-      await latest
+      await idle()
+      await opening
       await db?.close().catch(() => undefined)
       db = undefined
     },
