@@ -26,6 +26,8 @@ describe('redaction stays linear on crafted input', () => {
     ['a JWT-like run of word boundaries (every `-` starts a candidate)', 'eyJ-'],
     ['JWT-like candidates with one dot each', 'eyJ-a.'],
     ['JWT-like candidates with two dots and a trailing run', 'eyJ-a.b-'],
+    ['JWT-like starts glued to each other', 'eyJeyJ-'],
+    ['JWT-like starts behind a word', 'a-eyJ-'],
     ['private key headers with no footer', '-----BEGIN PRIVATE KEY-----'],
     ['private key headers with bodies and no footer', '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n'],
     ['scheme and user info without an @', 'a://x:'],
@@ -72,6 +74,13 @@ describe('JWTs stay redacted', () => {
     expect(redactText(jwt)).toBe(REDACTED_PLACEHOLDER)
     expect(redactText(`Authorization token was ${jwt}, then`)).toContain(`${REDACTED_PLACEHOLDER}, then`)
     expect(redactText(`a-${jwt}`)).toBe(`a-${REDACTED_PLACEHOLDER}`)
+  })
+
+  test('a header with a nested object (jwk, epk) is redacted whole, inner `eyJ` and all', () => {
+    // {"alg":"ES256","jwk":{"kty":"EC"}}: the inner `{"` encodes as `eyJ` right after a letter.
+    const nested = 'eyJhbGciOiJFUzI1NiIsImp3ayI6eyJrdHkiOiJFQyJ9.eyJzdWIiOiIxIn0.c2ln'
+    expect(redactText(nested)).toBe(REDACTED_PLACEHOLDER)
+    expect(redactText('eyJhbGciOiJIUzI1NiJ9eyJzdWIiOjF9.pppppppppp.ssssssssss')).toBe(REDACTED_PLACEHOLDER)
   })
 
   test('a token right after a run of lookalike starts loses its payload and signature', () => {

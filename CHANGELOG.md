@@ -16,9 +16,9 @@ All notable changes to this project are documented here. The format follows
   argument or a server answer of a few hundred kilobytes shaped for it could
   hold the proxy for minutes. All three now scan linearly. What they redact
   is unchanged with two narrow exceptions: a URL scheme is matched up to 32
-  characters, and a JWT whose header segment itself contains `eyJ` keeps the
-  part of the header before it (the payload and the signature are still
-  redacted).
+  characters, and in a JWT whose header contains `-eyJ` the part of the
+  header before it may stay visible (the rest of the token, payload and
+  signature included, is still redacted).
 
 ## [0.3.0] — 2026-10-04
 
