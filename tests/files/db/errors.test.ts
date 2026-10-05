@@ -14,6 +14,25 @@ describe('mapPgError', () => {
     expect(mapPgError(pgError(code), ctx).message).toContain('Postgres at db.example.com:5432 is not reachable')
   })
 
+  test('another server, unreachable, is not sent to docker', () => {
+    const error = mapPgError(pgError('ECONNREFUSED'), ctx)
+    expect(error.message).toBe(
+      'Postgres at db.example.com:5432 is not reachable: check that it is running and accepts connections from this machine, then `mcpcut files db status`',
+    )
+    expect(error.kind).toBe('unreachable')
+  })
+
+  test('the bundled container, unreachable, is told how to start it', () => {
+    const bundled = `postgres://mcpcut:${encodeURIComponent(PASSWORD)}@127.0.0.1:55432/mcpcut`
+    expect(mapPgError(pgError('ECONNREFUSED'), { ...ctx, url: bundled }).message).toBe(
+      'Postgres at 127.0.0.1:55432 is not reachable: start it with `docker start mcpcut-postgres` (never created? `mcpcut files db init` prints the command)',
+    )
+  })
+
+  test('anything but an unreachable server has the kind other', () => {
+    expect(mapPgError(pgError('28000'), ctx).kind).toBe('other')
+  })
+
   test('a pool timeout without a code is not-reachable', () => {
     expect(mapPgError(new Error('timeout exceeded when trying to connect'), ctx).message).toContain('is not reachable')
   })

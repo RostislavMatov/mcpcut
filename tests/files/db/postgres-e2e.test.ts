@@ -106,7 +106,7 @@ describePg('files audit from Postgres equals files audit from the journal', () =
     const sync = await files(['db', 'sync'], false)
     expect(sync.code).toBe(0)
     expect(sync.out).toMatch(/^events: \+\d+ \(synced through record \d+\)\n/)
-    expect(sync.out).toContain(`${root}  1 files, 1 folders`)
+    expect(sync.out).toContain(`${root}  1 file, 1 folder`)
     expect(sync.err).toBe(`Next: mcpcut files audit --path ${root}\n`)
 
     const fromPg = await files(['audit', '--path', target], false)

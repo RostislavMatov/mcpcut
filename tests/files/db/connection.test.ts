@@ -128,7 +128,7 @@ describe('openFilesDb without a server', () => {
     const error = await openFilesDb({ pg, url: 'postgres://mcpcut:secret-pw@127.0.0.1:1/mcpcut', cli: 'mcpcut' }).catch((e: unknown) => e)
     expect(error).toBeInstanceOf(FilesDbError)
     expect((error as Error).message).toBe(
-      'Postgres at 127.0.0.1:1 is not reachable: start it with `docker start mcpcut-postgres`, then `mcpcut files db status`',
+      'Postgres at 127.0.0.1:1 is not reachable: check that it is running and accepts connections from this machine, then `mcpcut files db status`',
     )
     expect(Date.now() - started).toBeLessThan(5000)
   })

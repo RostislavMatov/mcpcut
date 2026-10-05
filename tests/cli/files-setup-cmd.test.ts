@@ -59,7 +59,7 @@ describe('files setup', () => {
     expect(JSON.parse(await readFile(join(modulesDir, 'package-lock.json'), 'utf8'))).toEqual(MODULES_PACKAGE_LOCK)
     expect((await stat(modulesDir)).mode & 0o777).toBe(0o700)
     expect(calls).toEqual([
-      { command: 'npm', args: ['ci', '--omit=dev', '--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund'], cwd: modulesDir, shell: false },
+      { command: 'npm', args: ['ci', '--omit=dev', '--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund', '--no-update-notifier'], cwd: modulesDir, shell: false },
     ])
     expect(result.out).toContain(`installed pg ${PG_PACKAGE_VERSION}`)
     expect(result.err.trimEnd().split('\n').at(-1)).toBe('Next: mcpcut files db init')

@@ -1,7 +1,8 @@
 import { FILES_PG_URL_SECRET, DB_NAME, DB_USER, DOCKER_CONTAINER_NAME, DOCKER_DATA_MOUNT, DOCKER_HOST_PORT, DOCKER_IMAGE, DOCKER_VOLUME_NAME } from '../files/db/constants.js'
 import { describeDbUrl } from '../files/db/db-url.js'
 import { modulesDirOf } from '../files/db/pg-loader.js'
-import { ensurePostgresEnv } from '../files/db/postgres-env.js'
+import { FilesDbError, isBundledUrl } from '../files/db/errors.js'
+import { ensurePostgresEnv, postgresEnvPathOf } from '../files/db/postgres-env.js'
 import { formatReadableField } from '../journal/format.js'
 import { createVaultStore } from '../vault/store.js'
 import type { AgentCliIo } from './agent-cmd.js'
@@ -10,9 +11,8 @@ import { runDbStatus } from './files-cmd-db-status.js'
 import { runDbSync } from './files-cmd-db-sync.js'
 import { FILES_DB_USAGE } from './files-cmd-format.js'
 import type { FilesCliOptions } from './files-cmd.js'
-import { requireOwner } from './files-cmd-write.js'
 import { cliCommand, shellArg } from './next-step.js'
-import { recordChange } from './vault-cmd-write.js'
+import { recordChange, requireOwner } from './vault-cmd-write.js'
 import type { VaultCmdDeps } from './vault-cmd.js'
 
 /**
@@ -51,8 +51,23 @@ async function runDbInit(io: AgentCliIo, opts: FilesCliOptions): Promise<number>
   return prepareContainer(io, opts)
 }
 
+/** The bundled container is not up: both ways to start it, then the step after. Anything else is thrown on. */
+function reportBundledDown(error: unknown, target: DbTarget, io: AgentCliIo, opts: FilesCliOptions): number {
+  if (!(error instanceof FilesDbError) || error.kind !== 'unreachable' || !isBundledUrl(target.url)) throw error
+  const envFile = postgresEnvPathOf(modulesDirOf(journalDirOf(opts)))
+  io.stderr.write(`Postgres at 127.0.0.1:${DOCKER_HOST_PORT} is not reachable. Start it: docker start ${DOCKER_CONTAINER_NAME}\n`)
+  io.stderr.write(`Never created? ${dockerRunCommand(envFile)}\n`)
+  io.stderr.write(`Then: ${target.cli} files db init\n`)
+  return 1
+}
+
 async function connectAndReport(target: DbTarget, io: AgentCliIo, opts: FilesCliOptions): Promise<number> {
-  const db = await openTarget(target, opts)
+  let db
+  try {
+    db = await openTarget(target, opts)
+  } catch (error: unknown) {
+    return reportBundledDown(error, target, io, opts)
+  }
   try {
     io.stdout.write(`Postgres ready: ${formatReadableField(describeDbUrl(target.url))} (schema ${db.schema}, version ${db.schemaVersion})\n`)
   } finally {
@@ -65,7 +80,8 @@ async function connectAndReport(target: DbTarget, io: AgentCliIo, opts: FilesCli
 /** The secret is absent: write the URL into the vault and print the command that starts the container. */
 async function prepareContainer(io: AgentCliIo, opts: FilesCliOptions): Promise<number> {
   const cli = cliCommand(opts.env)
-  const actor = await requireOwner(io, opts)
+  // It writes a vault secret, so it is refused and recorded in the vault's words, like `vault set`.
+  const actor = await requireOwner(io, vaultDepsOf(opts))
   if (actor === undefined) return 1
   const env = await ensurePostgresEnv(modulesDirOf(journalDirOf(opts)))
   if (!env.ok) {

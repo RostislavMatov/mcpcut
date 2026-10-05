@@ -8,6 +8,7 @@ import { dispatch } from '../../src/cli.js'
 import type { FilesDb } from '../../src/files/db/connection.js'
 import { FILES_PG_URL_SECRET, PG_PACKAGE_VERSION } from '../../src/files/db/constants.js'
 import { FilesDbModuleMissingError, loadPg } from '../../src/files/db/pg-loader.js'
+import type { PgModule } from '../../src/files/db/pg-types.js'
 import { createVaultStore } from '../../src/vault/store.js'
 import { describePg, PG_URL, withTestSchema } from '../files/db/pg-helpers.js'
 
@@ -38,7 +39,20 @@ interface RunOptions {
   readonly withToken?: boolean
   readonly clientInstalled?: boolean
   readonly schema?: string
+  /** A client whose every connection is refused, as when nothing listens on the port. */
+  readonly refusingClient?: boolean
 }
+
+/** A pg stand-in that cannot reach anything: the bundled URL's port may be in use on a developer machine. */
+const REFUSING_PG = {
+  Pool: class {
+    private readonly refusal = () => Promise.reject(Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }))
+    connect = this.refusal
+    query = this.refusal
+    end = () => Promise.resolve()
+    on = () => this
+  },
+} as unknown as PgModule
 
 async function db(args: string[], run: RunOptions = {}): Promise<Run> {
   const out: string[] = []
@@ -50,9 +64,11 @@ async function db(args: string[], run: RunOptions = {}): Promise<Run> {
       journalDir,
       env: run.withToken === false ? {} : { [ADMIN_TOKEN_ENV_VAR]: token },
       db: {
-        loadPg: installed
-          ? () => loadPg(process.cwd())
-          : () => Promise.reject(new FilesDbModuleMissingError()),
+        loadPg: !installed
+          ? () => Promise.reject(new FilesDbModuleMissingError())
+          : run.refusingClient === true
+            ? () => Promise.resolve(REFUSING_PG)
+            : () => loadPg(process.cwd()),
         ...(run.schema !== undefined ? { schema: run.schema } : {}),
         onOpen: (opened_) => opened.push(opened_),
       },
@@ -141,6 +157,7 @@ describe('files db init: first run', () => {
     const result = await db(['init'], { withToken: false })
     expect(result.code).toBe(1)
     expect(result.err).toContain('MCP_ADMIN_TOKEN')
+    expect(result.err).toMatch(/^Refusing to change the vault/)
     await expect(stat(join(journalDir, 'modules', 'postgres.env'))).rejects.toThrow()
     expect(await createVaultStore({ journalDir }).readSecretValues([FILES_PG_URL_SECRET])).toEqual({ status: 'read', values: {} })
   })
@@ -170,8 +187,26 @@ describe('files db init: with the secret set', () => {
     await setUrl('postgres://mcpcut:hunter2-secret@127.0.0.1:1/mcpcut')
     const result = await db(['init'], { withToken: false })
     expect(result.code).toBe(1)
-    expect(result.err).toBe('Postgres at 127.0.0.1:1 is not reachable: start it with `docker start mcpcut-postgres`, then `mcpcut files db status`\n')
+    expect(result.err).toBe('Postgres at 127.0.0.1:1 is not reachable: check that it is running and accepts connections from this machine, then `mcpcut files db status`\n')
     expect(result.out + result.err).not.toContain('hunter2')
+  })
+
+  test('the bundled container, unreachable, gets both ways to start it and the step after', async () => {
+    await initVaultAndOwner()
+    const first = await db(['init'], { refusingClient: true })
+    expect(first.code).toBe(0)
+    const result = await db(['init'], { withToken: false, refusingClient: true })
+    const envFile = join(journalDir, 'modules', 'postgres.env')
+    expect(result.code).toBe(1)
+    expect(result.err.split('\n')).toEqual([
+      'Postgres at 127.0.0.1:55432 is not reachable. Start it: docker start mcpcut-postgres',
+      `Never created? ${first.out.trim()}`,
+      'Then: mcpcut files db init',
+      '',
+    ])
+    expect(first.out).toContain(envFile)
+    const password = (await readFile(envFile, 'utf8')).match(/POSTGRES_PASSWORD=(.+)/)?.[1] ?? 'missing'
+    expect(result.out + result.err).not.toContain(password)
   })
 
   test('a value that is not a postgres URL says how to replace it', async () => {
@@ -229,7 +264,7 @@ describe('files db status', () => {
     const result = await db(['status'])
     expect(result.code).toBe(1)
     expect(result.out).toContain('url: postgres://mcpcut@127.0.0.1:1/mcpcut\nserver: unavailable\n')
-    expect(result.err).toContain('docker start mcpcut-postgres')
+    expect(result.err).toContain('check that it is running')
     expect(result.out + result.err).not.toContain('hunter2')
   })
 

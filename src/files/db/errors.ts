@@ -1,4 +1,4 @@
-import { DOCKER_CONTAINER_NAME, FILES_PG_URL_SECRET } from './constants.js'
+import { DOCKER_CONTAINER_NAME, DOCKER_HOST_PORT, FILES_PG_URL_SECRET } from './constants.js'
 import { hostPortOf, parseDbUrl } from './db-url.js'
 
 /**
@@ -7,10 +7,16 @@ import { hostPortOf, parseDbUrl } from './db-url.js'
  * `error.message` as is.
  */
 
+/** `unreachable`: nothing answered at the URL's host and port — a caller may say how to start it. */
+export type FilesDbErrorKind = 'unreachable' | 'other'
+
 export class FilesDbError extends Error {
-  constructor(message: string) {
+  readonly kind: FilesDbErrorKind
+
+  constructor(message: string, kind: FilesDbErrorKind = 'other') {
     super(message)
     this.name = 'FilesDbError'
+    this.kind = kind
   }
 }
 
@@ -59,6 +65,20 @@ export function scrubPassword(text: string, url: string): string {
   return [raw, decoded].reduce((out, secret) => (secret === '' ? out : out.replaceAll(secret, '***')), text)
 }
 
+/** The URL `files db init` writes: the container it prints the command for, on the loopback port. */
+export function isBundledUrl(url: string): boolean {
+  const parsed = parseDbUrl(url)
+  return parsed.ok && parsed.url.hostname === '127.0.0.1' && parsed.url.port === String(DOCKER_HOST_PORT)
+}
+
+function unreachableError(ctx: DbErrorContext): FilesDbError {
+  const where = `Postgres at ${hostPortOf(ctx.url)} is not reachable`
+  const step = isBundledUrl(ctx.url)
+    ? `start it with \`docker start ${DOCKER_CONTAINER_NAME}\` (never created? \`${ctx.cli} files db init\` prints the command)`
+    : `check that it is running and accepts connections from this machine, then \`${ctx.cli} files db status\``
+  return new FilesDbError(`${where}: ${step}`, 'unreachable')
+}
+
 function setUrlStep(cli: string): string {
   return `printf '%s' '<url>' | ${cli} vault set ${FILES_PG_URL_SECRET}`
 }
@@ -70,11 +90,7 @@ export function mapPgError(error: unknown, ctx: DbErrorContext): FilesDbError {
   const parsed = parseDbUrl(ctx.url)
   const user = parsed.ok ? parsed.url.username : ''
   const database = parsed.ok ? parsed.url.pathname.replace(/^\//, '') : ''
-  if (isUnreachable(error, code)) {
-    return new FilesDbError(
-      `Postgres at ${hostPortOf(ctx.url)} is not reachable: start it with \`docker start ${DOCKER_CONTAINER_NAME}\`, then \`${ctx.cli} files db status\``,
-    )
-  }
+  if (isUnreachable(error, code)) return unreachableError(ctx)
   if (code !== undefined && LOGIN_CODES.includes(code)) {
     return new FilesDbError(`Postgres refused the login for ${user}: put the right URL with \`${setUrlStep(ctx.cli)}\``)
   }

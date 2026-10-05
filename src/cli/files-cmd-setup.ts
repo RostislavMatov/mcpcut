@@ -19,7 +19,7 @@ import { cliCommand } from './next-step.js'
  */
 
 const MODULES_DIR_MODE = 0o700
-const NPM_ARGS = ['ci', '--omit=dev', '--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund'] as const
+const NPM_ARGS = ['ci', '--omit=dev', '--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund', '--no-update-notifier'] as const
 
 /** `npm` on POSIX; `npm.cmd` through a shell on Windows, where it is a batch file. */
 export function npmInvocationOf(cwd: string, platform: NodeJS.Platform): NpmInvocation {

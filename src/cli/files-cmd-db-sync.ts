@@ -13,6 +13,10 @@ import { cliCommand, shellArg } from './next-step.js'
  * every declared root. Read-only for mcpcut's own state, so no token.
  */
 
+function countOf(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? '' : 's'}`
+}
+
 function walkLine(walk: RootWalk): string {
   const root = formatReadableField(walk.root)
   if (walk.error !== undefined) return `${root}  error: ${formatReadableField(walk.error)}`
@@ -20,7 +24,7 @@ function walkLine(walk: RootWalk): string {
     ...(walk.truncated ? ['stopped at the entry limit, nothing deleted'] : []),
     ...(walk.unreadable > 0 ? [`${walk.unreadable} folder(s) unreadable, nothing deleted`] : []),
   ]
-  const counts = `${walk.files} files, ${walk.dirs} folders  +${walk.added} ~${walk.changed} -${walk.removed}`
+  const counts = `${countOf(walk.files, 'file')}, ${countOf(walk.dirs, 'folder')}  +${walk.added} ~${walk.changed} -${walk.removed}`
   return [`${root}  ${counts}`, ...notes].join('  ')
 }
 
