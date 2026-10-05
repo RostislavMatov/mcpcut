@@ -14,11 +14,10 @@ import { journalPolicyEdit } from '../policy/edit/journal-edit.js'
 import { defaultPolicyFileDeps, readPolicyFileForEdit, writePolicyFile } from '../policy/edit/policy-file.js'
 import { readPolicyView, readQuarantineHolding } from '../policy/edit/policy-view.js'
 import { resolvePolicyEditTarget } from '../policy/edit/write-target.js'
-import type { ServerStatusChange } from '../probe/orchestrator.js'
 import { createApprovalQueue, type ApprovalQueue } from '../policy/approvals/queue.js'
 import type { RegistryStore } from '../registry/store.js'
 import type { VaultStore } from '../vault/store.js'
-import type { EventHub, UiEvent } from '../ui/events.js'
+import type { EventHub } from '../ui/events.js'
 import { createAdminsHandlers } from '../ui/handlers/admins.js'
 import type { ServeAddress } from '../setup/serve-address.js'
 import { createAgentsHandlers, type UiAuditEvent } from '../ui/handlers/agents.js'
@@ -38,13 +37,10 @@ import type { PolicyEditPorts } from '../ui/handlers/policy-edit-common.js'
 import { createServersConfirmRuleHandlers } from '../ui/handlers/servers-confirm-rule.js'
 import { createServersCreatePolicyHandlers } from '../ui/handlers/servers-create-policy.js'
 import { createServersToolRuleHandlers } from '../ui/handlers/servers-tool-rule.js'
-import {
-  createServersStatusHandlers,
-  type ServerStatusPort,
-} from '../ui/handlers/servers-status.js'
+import { createServersStatusHandlers } from '../ui/handlers/servers-status.js'
 import type { UiHandlers } from '../ui/routes.js'
 import { removeCodeFile } from './ui-first-run.js'
-import { composeProbeChain } from './probe-wiring.js'
+import { composeProbes } from './ui-probes.js'
 import type { UiCliWritable } from './ui-constants.js'
 
 /**
@@ -154,60 +150,6 @@ function journalReadPort(): JournalReadPort {
     listSessions: (dir) => cache.listSessions(dir),
     searchSession: (sessionId, options) => searchSession(sessionId, options),
     searchAllSessions: (options) => searchAllSessions(options),
-  }
-}
-
-/** The SSE event one settled probe publishes (shape mirrored by `assets/app-js.ts`). */
-function statusEventOf(change: ServerStatusChange): UiEvent {
-  const { entry } = change
-  return {
-    event: 'server-status-changed',
-    data: {
-      server: change.serverName,
-      status: entry.status,
-      probedAt: entry.probedAt,
-      ...(entry.status === 'alive'
-        ? { probedVia: entry.probedVia, latencyMs: entry.initializeLatencyMs }
-        : { error: entry.error, ...(entry.probedVia !== undefined ? { probedVia: entry.probedVia } : {}) }),
-    },
-  }
-}
-
-interface ProbeComposition {
-  readonly port: ServerStatusPort
-  close(): Promise<void>
-}
-
-/**
- * Composes the probe chain for the UI (M5.5 п.1, ADR-0008): the shared
- * `composeProbeChain` (status store + passive activity + engine + inventory
- * observe + journal fact — one definition for UI and CLI alike, see
- * `probe-wiring.ts`) plus the UI's own SSE event. This is the ONLY place the
- * vault's value-resolution is bound for the UI — the handlers see nothing
- * but `ServerStatusPort`.
- */
-function composeProbes(deps: UiCompositionDeps): ProbeComposition {
-  const chain = composeProbeChain({
-    journalDir: deps.journalDir,
-    inventoryStorePath: deps.inventoryStorePath,
-    registry: deps.registry,
-    readSecretValues: deps.vault.readSecretValues,
-    onDiagnostic: (line) => deps.stderr.write(line),
-    onStatusChanged: (change) => deps.hub.publish(statusEventOf(change)),
-    onError: (error) =>
-      deps.stderr.write(`[probe] ${error instanceof Error ? error.message : String(error)}\n`),
-    // The one injected clock drives the probe chain too (staleness, probing
-    // markers, blink windows) — same discipline as every other subsystem here.
-    ...(deps.clock !== undefined ? { now: deps.clock } : {}),
-  })
-  return {
-    port: {
-      ensureFresh: (names, initiator) => chain.orchestrator.ensureFresh(names, initiator),
-      probeNow: (name, initiator) => chain.orchestrator.probeNow(name, initiator),
-      listStatuses: () => chain.statusStore.listStatuses(),
-      lastSuccessfulActivity: (name) => chain.activity.lastSuccessfulActivity(name),
-    },
-    close: () => chain.orchestrator.close(),
   }
 }
 

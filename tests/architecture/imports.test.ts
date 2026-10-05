@@ -291,7 +291,8 @@ function uiFiles(): string[] {
 
 /**
  * The ONLY modules outside `src/ui/**` allowed to import it. `ui-cmd.ts` is the
- * process entry point, `ui-wiring.ts` its composition root, and `ui-constants.ts`
+ * process entry point, `ui-wiring.ts` its composition root (with `ui-probes.ts`,
+ * the probe half of it, split out for the line budget), and `ui-constants.ts`
  * re-exports the two bind defaults so the CLI's flag parsing does not fork them.
  * Everything else must reach the UI through none of its internals: a second
  * importer is how an operator surface quietly becomes a library.
@@ -299,6 +300,7 @@ function uiFiles(): string[] {
 const UI_IMPORTER_ALLOWLIST: ReadonlySet<string> = new Set([
   'src/cli/ui-cmd.ts',
   'src/cli/ui-wiring.ts',
+  'src/cli/ui-probes.ts',
   'src/cli/ui-constants.ts',
 ])
 
