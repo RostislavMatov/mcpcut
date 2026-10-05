@@ -28,7 +28,8 @@ export const DOCKER_DATA_MOUNT = '/var/lib/postgresql'
 
 export const CONNECT_TIMEOUT_MS = 3000
 export const STATEMENT_TIMEOUT_MS = 30_000
-export const POOL_MAX = 2
+/** Three: in `serve` the index round holds one client for its lock and one for a query, while the hourly walk runs beside it. */
+export const POOL_MAX = 3
 export const APPLICATION_NAME = 'mcpcut'
 
 /** The data-dir folder that holds the pinned client tree and `postgres.env`. */

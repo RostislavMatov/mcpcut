@@ -18,7 +18,7 @@ import type { TrashSweepTimer } from './serve-trash-sweep.js'
  * a request: a failure is one stderr line per distinct reason and never stops
  * `serve`. One database handle lives as long as `serve`; a failed open is
  * retried on the next tick. The ingest and the walk are two guarded steps, so
- * the minute ingest keeps running during a long walk (the pool has two clients).
+ * the minute ingest keeps running during a long walk (the pool has room for both, and for the index lock).
  */
 
 export const FILES_SYNC_INTERVAL_MS = 60_000
