@@ -13,6 +13,8 @@ const FILE_EVENTS_SQL = `
 CREATE TABLE ingest_state (
   id smallint PRIMARY KEY CHECK (id = 1),
   last_seq bigint NOT NULL,
+  -- the journal row at last_seq: tells a replaced journal from the one the cursor was taken in
+  last_record_id text,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 INSERT INTO ingest_state (id, last_seq) VALUES (1, 0);

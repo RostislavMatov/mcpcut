@@ -1,4 +1,4 @@
-import { journalBounds, journalRecordsAfter } from '../../journal/db-read-after.js'
+import { journalBoundsIfPresent, journalRecordIdAt, journalRecordsAfter, type JournalBounds } from '../../journal/db-read-after.js'
 import type { FilesDb } from './connection.js'
 import { INGEST_LOCK_KEY } from './constants.js'
 import { insertMapped } from './ingest-insert.js'
@@ -41,42 +41,67 @@ interface BatchResult {
   readonly touched: readonly string[]
 }
 
-async function readCursor(tx: PgQueryable): Promise<number> {
-  const state = await tx.query<{ last_seq: string }>('SELECT last_seq FROM ingest_state WHERE id = 1')
-  return Number(state.rows[0]?.last_seq ?? 0)
+interface CursorState {
+  readonly lastSeq: number
+  readonly lastRecordId: string | null
+}
+
+async function readState(tx: PgQueryable): Promise<CursorState> {
+  const state = await tx.query<{ last_seq: string; last_record_id: string | null }>('SELECT last_seq, last_record_id FROM ingest_state WHERE id = 1')
+  const row = state.rows[0]
+  return { lastSeq: Number(row?.last_seq ?? 0), lastRecordId: row?.last_record_id ?? null }
 }
 
 async function runBatch(db: FilesDb, opts: IngestOptions, batchSize: number): Promise<BatchResult> {
   return db.transaction(async (tx) => {
     await tx.query('SELECT pg_advisory_xact_lock($1)', [INGEST_LOCK_KEY])
-    const cursor = await readCursor(tx)
+    const { lastSeq: cursor } = await readState(tx)
     const after = await journalRecordsAfter(opts.journalDir, cursor, batchSize)
     const mapped = after.rows.flatMap((row) => mapRecord(row, opts.platform) ?? [])
     const { added, skipped } = await insertMapped(tx, mapped)
-    await tx.query('UPDATE ingest_state SET last_seq = $1, updated_at = now() WHERE id = 1', [after.throughSeq])
+    await tx.query('UPDATE ingest_state SET last_seq = $1, last_record_id = COALESCE($2, last_record_id), updated_at = now() WHERE id = 1', [
+      after.throughSeq,
+      after.throughRecordId,
+    ])
     return { added, skipped, lastSeq: after.throughSeq, touched: touchedOf(mapped) }
   })
 }
 
-/** A replaced journal (newest seq below the cursor) empties the index; a pruned one loses the rows it no longer holds. */
-async function reconcile(db: FilesDb, journalDir: string): Promise<{ maxSeq: number }> {
-  const bounds = await journalBounds(journalDir)
+/**
+ * Is the journal the cursor was taken in gone? Its newest seq is below the
+ * cursor, or the row at the cursor is another record — unless that part has
+ * been pruned and cannot be compared.
+ */
+async function isReplaced(state: CursorState, bounds: JournalBounds, journalDir: string): Promise<boolean> {
+  if (bounds.maxSeq < state.lastSeq) return true
+  if (state.lastSeq === 0 || state.lastSeq <= bounds.prunedThroughSeq) return false
+  return (await journalRecordIdAt(journalDir, state.lastSeq)) !== state.lastRecordId
+}
+
+/** A replaced journal empties the index; a pruned one loses the rows it no longer holds. No `journal.db`: nothing is touched. */
+async function reconcile(db: FilesDb, journalDir: string): Promise<{ maxSeq: number; present: boolean }> {
+  const bounds = await journalBoundsIfPresent(journalDir)
+  if (bounds === null) return { maxSeq: 0, present: false }
   await db.transaction(async (tx) => {
     await tx.query('SELECT pg_advisory_xact_lock($1)', [INGEST_LOCK_KEY])
-    if (bounds.maxSeq < (await readCursor(tx))) {
+    if (await isReplaced(await readState(tx), bounds, journalDir)) {
       await tx.query('DELETE FROM file_events')
-      await tx.query('UPDATE ingest_state SET last_seq = 0, updated_at = now() WHERE id = 1')
+      await tx.query('UPDATE ingest_state SET last_seq = 0, last_record_id = NULL, updated_at = now() WHERE id = 1')
     }
     if (bounds.prunedThroughSeq > 0) await tx.query('DELETE FROM file_events WHERE journal_seq <= $1', [bounds.prunedThroughSeq])
   })
-  return { maxSeq: bounds.maxSeq }
+  return { maxSeq: bounds.maxSeq, present: true }
 }
 
 export async function ingestJournal(db: FilesDb, opts: IngestOptions): Promise<IngestResult> {
   const now = opts.now ?? Date.now
   const batchSize = opts.batchSize ?? DEFAULT_BATCH_SIZE
   const startedAt = now()
-  const { maxSeq } = await reconcile(db, opts.journalDir)
+  const { maxSeq, present } = await reconcile(db, opts.journalDir)
+  if (!present) {
+    const { lastSeq: cursor } = await readState(db)
+    return { added: 0, skipped: 0, lastSeq: cursor, journalMaxSeq: cursor, caughtUp: true, touched: [] }
+  }
   let added = 0
   let skipped = 0
   let lastSeq = 0

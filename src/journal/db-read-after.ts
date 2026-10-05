@@ -32,8 +32,27 @@ export function dbJournalBounds(handle: SqliteHandle): JournalBounds {
 
 /** The bounds of the journal in `dir`; a missing `journal.db` reads as empty. */
 export async function journalBounds(dir: string = JOURNAL_DIR): Promise<JournalBounds> {
+  return (await journalBoundsIfPresent(dir)) ?? EMPTY_BOUNDS
+}
+
+/** The bounds of the journal in `dir`, or null when there is no `journal.db` (nothing is created). */
+export async function journalBoundsIfPresent(dir: string): Promise<JournalBounds | null> {
   const handle = await openJournalDbIfPresent(dir)
-  return handle === null ? EMPTY_BOUNDS : dbJournalBounds(handle)
+  return handle === null ? null : dbJournalBounds(handle)
+}
+
+const SELECT_RECORD_ID_AT = 'SELECT record_id AS recordId FROM journal_records WHERE seq = ?'
+
+/** The `record_id` of the row at `seq`, null when no row has it (pruned, or a different journal). */
+export function dbRecordIdAt(handle: SqliteHandle, seq: number): string | null {
+  const row = handle.db.prepare(SELECT_RECORD_ID_AT).get(seq)
+  return row === undefined ? null : textOf(row['recordId'])
+}
+
+/** `dbRecordIdAt` over the journal in `dir`; a missing `journal.db` has no rows. */
+export async function journalRecordIdAt(dir: string, seq: number): Promise<string | null> {
+  const handle = await openJournalDbIfPresent(dir)
+  return handle === null ? null : dbRecordIdAt(handle, seq)
 }
 
 export interface RecordAfterSeq {
@@ -46,9 +65,11 @@ export interface RecordsAfter {
   readonly rows: readonly RecordAfterSeq[]
   /** Every record up to this `seq` has been looked at: the cursor to resume from. */
   readonly throughSeq: number
+  /** The `record_id` of the journal row at `throughSeq`; null when the cursor did not move. */
+  readonly throughRecordId: string | null
 }
 
-const EMPTY_AFTER = (afterSeq: number): RecordsAfter => ({ rows: [], throughSeq: afterSeq })
+const EMPTY_AFTER = (afterSeq: number): RecordsAfter => ({ rows: [], throughSeq: afterSeq, throughRecordId: null })
 
 /** Calls and admin edits only: the file module reads nothing else. */
 const SELECT_AFTER =
@@ -69,7 +90,7 @@ export function dbRecordsAfterSeq(handle: SqliteHandle, afterSeq: number, limit:
     return record === null ? [] : [{ seq: numberOf(row['seq']), sessionId: textOf(row['sessionId']), record }]
   })
   const lastRead = found.length === limit ? numberOf(found[found.length - 1]?.['seq']) : maxSeq
-  return { rows, throughSeq: lastRead }
+  return { rows, throughSeq: lastRead, throughRecordId: dbRecordIdAt(handle, lastRead) }
 }
 
 /** `dbRecordsAfterSeq` over the journal in `dir`; a missing `journal.db` reads as empty. */

@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
-import { journalBounds, journalRecordsAfter } from '../../src/journal/db-read-after.js'
+import { journalBounds, journalRecordIdAt, journalRecordsAfter } from '../../src/journal/db-read-after.js'
 import { createJournalSink } from '../../src/journal/sink.js'
 import type { JournalRecord } from '../../src/journal/record.js'
 
@@ -46,7 +46,7 @@ describe('journalRecordsAfter', () => {
   }
 
   test('a directory without journal.db reads as empty, keeps the cursor and gets none', async () => {
-    expect(await journalRecordsAfter(dir, 7, 10)).toEqual({ rows: [], throughSeq: 7 })
+    expect(await journalRecordsAfter(dir, 7, 10)).toEqual({ rows: [], throughSeq: 7, throughRecordId: null })
     const { readdir } = await import('node:fs/promises')
     expect(await readdir(dir)).toEqual([])
   })
@@ -71,10 +71,11 @@ describe('journalRecordsAfter', () => {
     const rest = await journalRecordsAfter(dir, first.throughSeq, 2)
     expect(rest.rows.map((row) => row.seq)).toEqual([5])
     expect(rest.throughSeq).toBe(5)
+    expect(rest.throughRecordId).toBe(await journalRecordIdAt(dir, 5))
   })
 
   test('a cursor at the end changes nothing', async () => {
     await seed()
-    expect(await journalRecordsAfter(dir, 5, 10)).toEqual({ rows: [], throughSeq: 5 })
+    expect(await journalRecordsAfter(dir, 5, 10)).toEqual({ rows: [], throughSeq: 5, throughRecordId: null })
   })
 })
