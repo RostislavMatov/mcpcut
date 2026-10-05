@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { isIndexed, skipReasonOfName } from '../../../src/files/search/index-scope.js'
+import { isIndexed, prepareIndexRules, skipReasonOfName, skippedSegmentOf } from '../../../src/files/search/index-scope.js'
 
 const on = (path: string) => ({ path, enabled: true, setAt: '2026-10-05T10:00:00.000Z' })
 const off = (path: string) => ({ ...on(path), enabled: false })
@@ -72,11 +72,16 @@ describe('skipReasonOfName', () => {
     'service-account-prod.json',
     'DIR/.ENV',
     'Id_RSA',
+    'terraform.tfstate.backup',
+    'prod.tfstate.1234.backup',
+    'AuthKey_ABC.p8',
+    'secret.gpg',
+    'pub.asc',
   ])('%s is a secret-like name', (name) => {
     expect(skipReasonOfName(name)).toBe('secret-like name')
   })
 
-  test.each(['.git/config', 'a/node_modules/x.js', '.ssh/notes.md', 'x/.aws/y.txt', '.gnupg/z', '.hg/a', '.svn/b'])('%s is in a skipped folder', (name) => {
+  test.each(['.git/config', 'a/node_modules/x.js', '.ssh/notes.md', 'x/.aws/y.txt', '.gnupg/z', '.hg/a', '.svn/b', '.kube/config', 'x/.docker/config.json'])('%s is in a skipped folder', (name) => {
     expect(skipReasonOfName(name)).toBe('skipped folder')
   })
 
@@ -92,4 +97,35 @@ describe('skipReasonOfName', () => {
       expect(reason).toBe(name === 'notes/id_rsa_help.md' ? 'secret-like name' : null)
     },
   )
+})
+
+describe('skipReasonOfName with the root', () => {
+  test('a root that is itself a secret folder skips everything under it', () => {
+    expect(skipReasonOfName('config', '/home/u/.ssh')).toBe('skipped folder')
+    expect(skipReasonOfName('known_hosts', '/home/u/.aws')).toBe('skipped folder')
+    expect(skipReasonOfName('a/b.md', '/work/node_modules/pkg')).toBe('skipped folder')
+  })
+
+  test('a root with ordinary folders changes nothing', () => {
+    expect(skipReasonOfName('config', '/home/u/notes')).toBeNull()
+    expect(skipReasonOfName('.env', '/home/u/notes')).toBe('secret-like name')
+  })
+})
+
+describe('skippedSegmentOf', () => {
+  test('names the first never-indexed folder of a path, or null', () => {
+    expect(skippedSegmentOf('/home/u/.ssh')).toBe('.ssh')
+    expect(skippedSegmentOf('/home/u/.aws/sub')).toBe('.aws')
+    expect(skippedSegmentOf('/home/u/notes')).toBeNull()
+  })
+})
+
+describe('prepareIndexRules', () => {
+  test('answers like isIndexed', () => {
+    const rules = [on('/data/a'), off('/data/a/private'), on('/data/a/private/open')]
+    const matcher = prepareIndexRules(rules, 'linux')
+    for (const path of ['/data/a/x.md', '/data/a/private/x.md', '/data/a/private/open/x.md', '/data/b/x.md', '/data/ab/x.md']) {
+      expect(matcher(path)).toBe(isIndexed(path, rules, 'linux'))
+    }
+  })
 })

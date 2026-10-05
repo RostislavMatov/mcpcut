@@ -3,7 +3,7 @@ import { pathMatchKey } from '../db/path-key.js'
 import { pathModuleOf } from '../names.js'
 import { INDEX_MAX_FILE_BYTES } from './constants.js'
 import type { IndexRule } from './index-rules-store.js'
-import { isIndexed, skipReasonOfName } from './index-scope.js'
+import { prepareIndexRules, skipReasonOfName } from './index-scope.js'
 
 /**
  * What one indexing round has to do, decided from the catalog, the rows the
@@ -70,7 +70,7 @@ function isDone(row: IndexRow | undefined, expected: { sha256: string | null; mo
 function workOf(file: CatalogFile, row: IndexRow | undefined, input: PlanInput): PlannedWork | 'waiting' | undefined {
   const abs = absoluteOf(file.root, file.relPath, input.platform)
   const pathKey = pathMatchKey(abs, input.platform)
-  if (skipReasonOfName(file.relPath) === 'secret-like name') {
+  if (skipReasonOfName(file.relPath, file.root) === 'secret-like name') {
     const done = isDone(row, { sha256: file.sha256, model: input.model, reason: 'secret-like name' })
     return done ? undefined : { kind: 'skip', reason: 'secret-like name', file, abs, pathKey }
   }
@@ -85,9 +85,9 @@ function workOf(file: CatalogFile, row: IndexRow | undefined, input: PlanInput):
 
 export function planIndex(input: PlanInput): IndexPlan {
   const rowsByKey = new Map(input.rows.map((row) => [keyOf(row.root, row.relPath), row]))
+  const isCovered = prepareIndexRules(input.rules, input.platform)
   const inScope = input.files.filter(
-    (file) =>
-      skipReasonOfName(file.relPath) !== 'skipped folder' && isIndexed(absoluteOf(file.root, file.relPath, input.platform), input.rules, input.platform),
+    (file) => skipReasonOfName(file.relPath, file.root) !== 'skipped folder' && isCovered(absoluteOf(file.root, file.relPath, input.platform)),
   )
   const keep = new Set(inScope.map((file) => keyOf(file.root, file.relPath)))
   const remove = input.rows.filter((row) => !keep.has(keyOf(row.root, row.relPath))).map((row) => ({ root: row.root, relPath: row.relPath }))

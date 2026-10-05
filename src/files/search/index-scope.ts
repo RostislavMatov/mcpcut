@@ -11,17 +11,31 @@ import type { IndexRule } from './index-rules-store.js'
 
 export type SkipReason = 'secret-like name' | 'skipped folder'
 
-/** The deepest rule containing the path decides; no rule means not indexed. */
-export function isIndexed(absPath: string, rules: readonly Pick<IndexRule, 'path' | 'enabled'>[], platform: NodeJS.Platform): boolean {
-  const key = pathMatchKey(absPath, platform)
-  let best: { depth: number; enabled: boolean } | undefined
-  for (const rule of rules) {
-    const ruleKey = pathMatchKey(rule.path, platform)
-    if (!isWithinOn(ruleKey, key, platform)) continue
-    const depth = segmentCount(ruleKey)
-    if (best === undefined || depth > best.depth) best = { depth, enabled: rule.enabled }
+export type PathMatcher = (absPath: string) => boolean
+
+/**
+ * The rules' keys are worked out once; the matcher then answers per path. The
+ * deepest rule containing the path decides; no rule means not indexed.
+ */
+export function prepareIndexRules(rules: readonly Pick<IndexRule, 'path' | 'enabled'>[], platform: NodeJS.Platform): PathMatcher {
+  const prepared = rules.map((rule) => {
+    const key = pathMatchKey(rule.path, platform)
+    return { key, depth: segmentCount(key), enabled: rule.enabled }
+  })
+  return (absPath) => {
+    const key = pathMatchKey(absPath, platform)
+    let best: { depth: number; enabled: boolean } | undefined
+    for (const rule of prepared) {
+      if (!isWithinOn(rule.key, key, platform)) continue
+      if (best === undefined || rule.depth > best.depth) best = rule
+    }
+    return best?.enabled === true
   }
-  return best?.enabled === true
+}
+
+/** One-off form of {@link prepareIndexRules}. */
+export function isIndexed(absPath: string, rules: readonly Pick<IndexRule, 'path' | 'enabled'>[], platform: NodeJS.Platform): boolean {
+  return prepareIndexRules(rules, platform)(absPath)
 }
 
 const SECRET_EXACT: ReadonlySet<string> = new Set([
@@ -51,22 +65,33 @@ const SECRET_SUFFIXES: readonly string[] = [
   '.csr',
   '.secret',
   '.secrets',
-  '.tfstate',
   '.tfvars',
   '.ovpn',
+  '.p8',
+  '.gpg',
+  '.asc',
 ]
 
 function isSecretBasename(lower: string): boolean {
   if (SECRET_EXACT.has(lower)) return true
   if (SECRET_PREFIXES.some((prefix) => lower.startsWith(prefix))) return true
+  if (lower.includes('.tfstate')) return true
   if (SECRET_SUFFIXES.some((suffix) => lower.endsWith(suffix))) return true
   return lower.startsWith('service-account') && lower.endsWith('.json')
 }
 
-/** Why a path relative to its root is never indexed, or `null`. */
-export function skipReasonOfName(relPath: string): SkipReason | null {
-  const segments = relPath.split(/[\\/]/).filter((segment) => segment !== '')
-  if (segments.some((segment) => INDEX_SKIP_DIR_NAMES.includes(segment.toLowerCase()))) return 'skipped folder'
+const splitSegments = (value: string): string[] => value.split(/[\\/]/).filter((segment) => segment !== '')
+
+/** The first folder of `value` that is never indexed (its own name counts), or `null`. */
+export function skippedSegmentOf(value: string): string | null {
+  return splitSegments(value).find((segment) => INDEX_SKIP_DIR_NAMES.includes(segment.toLowerCase())) ?? null
+}
+
+/** Why a path relative to its root is never indexed, or `null`. A skipped folder in the root's own path counts too. */
+export function skipReasonOfName(relPath: string, root = ''): SkipReason | null {
+  if (skippedSegmentOf(root) !== null) return 'skipped folder'
+  const segments = splitSegments(relPath)
+  if (skippedSegmentOf(relPath) !== null) return 'skipped folder'
   const base = (segments[segments.length - 1] ?? '').toLowerCase()
   return isSecretBasename(base) ? 'secret-like name' : null
 }

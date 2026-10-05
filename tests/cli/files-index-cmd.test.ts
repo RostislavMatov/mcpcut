@@ -69,6 +69,20 @@ async function run(args: string[], extra: RunOptions = {}) {
 const rulesOf = async () => (await createIndexRulesStore({ journalDir }).list()).map((rule) => [rule.path, rule.enabled])
 
 describe('files index on', () => {
+  test('refuses a folder that is, or lies in, a never-indexed folder', async () => {
+    await mkdir(join(folder, '.ssh', 'deep'), { recursive: true })
+
+    const direct = await run(['index', 'on', join(folder, '.ssh')], { token })
+    const nested = await run(['index', 'on', join(folder, '.ssh', 'deep')], { token })
+
+    for (const result of [direct, nested]) {
+      expect(result.code).toBe(1)
+      expect(result.err).toContain('lies in .ssh, which is never indexed: choose another folder')
+      expect(result.err).toContain('files index on')
+    }
+    expect(await rulesOf()).toEqual([])
+  })
+
   test('stores the rule, says so, and points at Postgres when it is off', async () => {
     const result = await run(['index', 'on', folder], { token })
 

@@ -7,7 +7,7 @@ import { readDbUrl } from '../files/db/db-url.js'
 import { modulesDirOf } from '../files/db/pg-loader.js'
 import { createRootsStore } from '../files/roots-store.js'
 import { createIndexRulesStore, type IndexRule } from '../files/search/index-rules-store.js'
-import { isIndexed } from '../files/search/index-scope.js'
+import { isIndexed, skippedSegmentOf } from '../files/search/index-scope.js'
 import { searchRuntimeProblem } from '../files/search/readiness.js'
 import { formatReadableField, replaceControlChars } from '../journal/format.js'
 import type { AgentCliIo } from './agent-cmd.js'
@@ -71,6 +71,10 @@ async function resolveFolder(raw: string, roots: readonly string[], opts: FilesC
   }
   const dataDir = await canonicalDataDir(journalDirOf(opts))
   if (overlapsDataDir(folder, dataDir)) return { ok: false, line: overlapMessage(formatReadableField(folder), formatReadableField(dataDir)) }
+  const skipped = skippedSegmentOf(folder)
+  if (skipped !== null) {
+    return { ok: false, line: `${formatReadableField(folder)} lies in ${formatReadableField(skipped)}, which is never indexed: choose another folder (${cli} files index on <folder>)` }
+  }
   return { ok: true, path: folder }
 }
 

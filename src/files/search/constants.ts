@@ -46,7 +46,7 @@ export const CHUNK_MAX_PER_FILE = 600
 export const INDEX_RULES_MAX = 200
 export const INDEX_RULES_FILE_NAME = 'files-index.json'
 /** Folder names whose whole subtree is never indexed. */
-export const INDEX_SKIP_DIR_NAMES: readonly string[] = ['.git', '.hg', '.svn', 'node_modules', '.ssh', '.gnupg', '.aws']
+export const INDEX_SKIP_DIR_NAMES: readonly string[] = ['.git', '.hg', '.svn', 'node_modules', '.ssh', '.gnupg', '.aws', '.kube', '.docker']
 /** Time one `serve` round may spend embedding; the rest waits for the next minute. */
 export const INDEX_SERVE_BUDGET_MS = 20_000
 
