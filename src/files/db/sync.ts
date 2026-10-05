@@ -26,7 +26,9 @@ export interface SyncOptions {
 
 export interface SyncIndexOptions {
   readonly rules: readonly IndexRule[]
-  /** Called only when a rule is on; `serve` hands in a memoized one. */
+  /** The model the index is planned against (`SEARCH_MODEL_ID`); planning never loads it. */
+  readonly modelId: string
+  /** Called only when a file has to be embedded; the embedder is closed when the round ends. */
   readonly embedder: () => Promise<Embedder>
   readonly budgetMs: number
   readonly cli?: string
@@ -68,11 +70,11 @@ async function indexStep(db: FilesDb, opts: SyncOptions, index: SyncIndexOptions
       return cleared === undefined ? undefined : { result: cleared }
     }
     const sdb = await ensureSearchSchema(db, index.cli === undefined ? {} : { cli: index.cli })
-    const embedder = await index.embedder()
     const result = await indexOnce(sdb, {
       roots: opts.roots,
       rules: index.rules,
-      embedder,
+      modelId: index.modelId,
+      createEmbedder: index.embedder,
       now: opts.now,
       budgetMs: index.budgetMs,
       platform: opts.platform,

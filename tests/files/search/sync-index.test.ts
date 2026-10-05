@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, test } from 'vitest'
 import { openFilesDb } from '../../../src/files/db/connection.js'
 import { loadPg } from '../../../src/files/db/pg-loader.js'
 import { syncOnce, type SyncOptions } from '../../../src/files/db/sync.js'
+import { FAKE_MODEL_ID } from './fake-embedder.js'
 import { createIndexFixture, NOW, ruleOn, type IndexFixture } from './index-fixture.js'
 import { describePg, PG_URL, withTestSchema } from '../db/pg-helpers.js'
 
@@ -27,7 +28,7 @@ describePg('syncOnce with the index', () => {
   test('walks the catalog, then indexes the files of an enabled rule', async () => {
     await fx.put({ 'a.md': 'alpha', 'b.md': 'beta' })
 
-    const synced = await syncOnce(fx.db, base({ index: { rules: [ruleOn(fx.root)], embedder: async () => fx.embedder, budgetMs: 10_000 } }))
+    const synced = await syncOnce(fx.db, base({ index: { modelId: FAKE_MODEL_ID, rules: [ruleOn(fx.root)], embedder: async () => fx.embedder, budgetMs: 10_000 } }))
 
     expect(synced.index?.result).toMatchObject({ indexed: 2, failed: 0 })
     expect(synced.index?.problem).toBeUndefined()
@@ -39,7 +40,7 @@ describePg('syncOnce with the index', () => {
 
     const synced = await syncOnce(
       fx.db,
-      base({ index: { rules: [ruleOn(fx.root)], embedder: () => Promise.reject(new Error(missing)), budgetMs: 10_000 } }),
+      base({ index: { modelId: FAKE_MODEL_ID, rules: [ruleOn(fx.root)], embedder: () => Promise.reject(new Error(missing)), budgetMs: 10_000 } }),
     )
 
     expect(synced.index).toEqual({ problem: missing })
@@ -53,7 +54,7 @@ describePg('syncOnce with the index', () => {
 
     const synced = await syncOnce(
       fx.db,
-      base({ index: { rules: [ruleOn(fx.root, false)], embedder: async () => (created += 1, fx.embedder), budgetMs: 10_000 } }),
+      base({ index: { modelId: FAKE_MODEL_ID, rules: [ruleOn(fx.root, false)], embedder: async () => (created += 1, fx.embedder), budgetMs: 10_000 } }),
     )
 
     expect(created).toBe(0)
@@ -62,7 +63,7 @@ describePg('syncOnce with the index', () => {
 
   test('turning the rule off clears the index on the next sync', async () => {
     await fx.put({ 'a.md': 'alpha' })
-    const on = { rules: [ruleOn(fx.root)], embedder: async () => fx.embedder, budgetMs: 10_000 }
+    const on = { modelId: FAKE_MODEL_ID, rules: [ruleOn(fx.root)], embedder: async () => fx.embedder, budgetMs: 10_000 }
     await syncOnce(fx.db, base({ index: on }))
 
     const synced = await syncOnce(fx.db, base({ index: { ...on, rules: [ruleOn(fx.root, false)] } }))
@@ -75,7 +76,7 @@ describePg('syncOnce with the index', () => {
     const schema = withTestSchema()
     const db = await openFilesDb({ pg: await loadPg(process.cwd()), url: PG_URL, schema: schema.schema })
     try {
-      const synced = await syncOnce(db, base({ withWalk: false, index: { rules: [], embedder: async () => fx.embedder, budgetMs: 1000 } }))
+      const synced = await syncOnce(db, base({ withWalk: false, index: { modelId: FAKE_MODEL_ID, rules: [], embedder: async () => fx.embedder, budgetMs: 1000 } }))
 
       expect(synced.index).toBeUndefined()
       const tables = await db.query("SELECT to_regclass('search_files') IS NOT NULL AS present")

@@ -6,11 +6,11 @@ import { ADMIN_TOKEN_ENV_VAR } from '../../src/admin/constants.js'
 import { createAdminStore } from '../../src/admin/store.js'
 import { dispatch } from '../../src/cli.js'
 import { FILES_PG_URL_SECRET } from '../../src/files/db/constants.js'
-import type { FilesDb } from '../../src/files/db/connection.js'
+import { openFilesDb, type FilesDb } from '../../src/files/db/connection.js'
 import { loadPg } from '../../src/files/db/pg-loader.js'
 import { createIndexRulesStore } from '../../src/files/search/index-rules-store.js'
 import { createVaultStore } from '../../src/vault/store.js'
-import { createFakeEmbedder, type FakeEmbedder } from '../files/search/fake-embedder.js'
+import { createFakeEmbedder, FAKE_MODEL_ID, type FakeEmbedder } from '../files/search/fake-embedder.js'
 import { describePg, PG_URL, withTestSchema } from '../files/db/pg-helpers.js'
 
 /** `files db sync` with an index rule: the summary, the progress lines, the problem line. */
@@ -34,12 +34,12 @@ afterEach(async () => {
   await rm(base, { recursive: true, force: true })
 })
 
-async function sync(schema: string, indexEmbedder: () => Promise<FakeEmbedder>) {
+async function sync(schema: string, indexEmbedder: () => Promise<FakeEmbedder>, indexRules?: () => Promise<never>) {
   const out: string[] = []
   const err: string[] = []
   const io = { stdout: { write: (chunk: string) => out.push(chunk) }, stderr: { write: (chunk: string) => err.push(chunk) } }
   const code = await dispatch(['files', 'db', 'sync'], io, {
-    files: { journalDir, env: {}, db: { loadPg: () => loadPg(process.cwd()), schema, onOpen: (db) => opened.push(db), indexEmbedder } },
+    files: { journalDir, env: {}, db: { loadPg: () => loadPg(process.cwd()), schema, onOpen: (db) => opened.push(db), indexEmbedder, indexModelId: FAKE_MODEL_ID, ...(indexRules === undefined ? {} : { indexRules }) } },
   })
   return { code, out: out.join(''), err: err.join('') }
 }
@@ -102,5 +102,20 @@ describePg('files db sync with an index rule', () => {
     await sync(schema, async () => fake)
 
     expect(fake.isClosed()).toBe(true)
+  })
+
+  test('rules that cannot be read: one line with a next step, exit 1, and the index is not cleared', async () => {
+    const schema = await setUp()
+    await writeFile(join(folder, 'a.md'), 'alpha beta')
+    expect((await sync(schema, async () => createFakeEmbedder())).code).toBe(0)
+
+    const result = await sync(schema, async () => createFakeEmbedder(), () => Promise.reject(new Error('state.db is locked')))
+
+    expect(result.code).toBe(1)
+    expect(result.err).toContain('search index: not updated: could not read the index rules: state.db is locked')
+    expect(result.err).toContain('Fix that, then run it again: mcpcut files db sync')
+    const db = await openFilesDb({ pg: await loadPg(process.cwd()), url: PG_URL, schema })
+    opened.push(db)
+    expect((await db.query<{ n: string }>('SELECT count(*) AS n FROM search_files')).rows[0]?.n).toBe('1')
   })
 })

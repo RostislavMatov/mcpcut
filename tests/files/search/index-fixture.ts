@@ -4,9 +4,11 @@ import { dirname, join } from 'node:path'
 import { walkRoots } from '../../../src/files/db/catalog-walk.js'
 import { openFilesDb, type FilesDb } from '../../../src/files/db/connection.js'
 import { loadPg } from '../../../src/files/db/pg-loader.js'
+import type { PgModule } from '../../../src/files/db/pg-types.js'
 import type { IndexOptions } from '../../../src/files/search/indexer.js'
 import type { IndexRule } from '../../../src/files/search/index-rules-store.js'
 import { ensureSearchSchema, type SearchDb } from '../../../src/files/search/search-schema.js'
+import type { Embedder } from '../../../src/files/search/types.js'
 import { createFakeEmbedder, type FakeEmbedder } from './fake-embedder.js'
 import { PG_URL, withTestSchema } from '../db/pg-helpers.js'
 
@@ -32,10 +34,15 @@ export function ruleOn(path: string, enabled = true): IndexRule {
   return { path, enabled, setAt: NOW.toISOString() }
 }
 
-export async function createIndexFixture(): Promise<IndexFixture> {
+/** Index options that plan with the embedder's model and hand it out when the round needs it. */
+export function usingEmbedder(embedder: Embedder): Pick<IndexOptions, 'modelId' | 'createEmbedder'> {
+  return { modelId: embedder.model, createEmbedder: async () => embedder }
+}
+
+export async function createIndexFixture(wrapPg: (pg: PgModule) => PgModule = (pg) => pg): Promise<IndexFixture> {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'mcpcut-index-')))
   const schema = withTestSchema()
-  const db = await openFilesDb({ pg: await loadPg(process.cwd()), url: PG_URL, schema: schema.schema })
+  const db = await openFilesDb({ pg: wrapPg(await loadPg(process.cwd())), url: PG_URL, schema: schema.schema })
   const sdb = await ensureSearchSchema(db)
   const embedder = createFakeEmbedder()
   return {
@@ -54,7 +61,7 @@ export async function createIndexFixture(): Promise<IndexFixture> {
     options: (extra = {}) => ({
       roots: [root],
       rules: [ruleOn(root)],
-      embedder,
+      ...usingEmbedder(embedder),
       now: NOW,
       budgetMs: Number.POSITIVE_INFINITY,
       platform: process.platform,

@@ -10,7 +10,7 @@ import { walkRoots } from '../../src/files/db/catalog-walk.js'
 import type { IndexRule } from '../../src/files/search/index-rules-store.js'
 import type { Embedder } from '../../src/files/search/types.js'
 import { createVaultStore } from '../../src/vault/store.js'
-import { createFakeEmbedder } from '../files/search/fake-embedder.js'
+import { createFakeEmbedder, FAKE_MODEL_ID } from '../files/search/fake-embedder.js'
 import { describePg, PG_URL, withTestSchema } from '../files/db/pg-helpers.js'
 
 /** The index step of the `serve` sync: lazy embedder, one line per distinct problem, closed on stop. */
@@ -57,7 +57,7 @@ interface Wiring {
   readonly createEmbedder: () => Promise<Embedder>
 }
 
-async function startWith(schema: string, wiring: Wiring) {
+async function startWith(schema: string, wiring: Wiring, listIndexRules: () => Promise<readonly IndexRule[]> = async () => wiring.rules) {
   await createVaultStore({ journalDir }).init()
   await createVaultStore({ journalDir }).setSecret(FILES_PG_URL_SECRET, PG_URL)
   const lines: string[] = []
@@ -73,8 +73,9 @@ async function startWith(schema: string, wiring: Wiring) {
     loadPg: () => loadPg(process.cwd()),
     schema,
     onOpen: (db) => opened.push(db),
-    listIndexRules: async () => wiring.rules,
+    listIndexRules,
     createEmbedder: wiring.createEmbedder,
+    modelId: FAKE_MODEL_ID,
   })
   stops.push(sync)
   const tick = async () => {
@@ -99,7 +100,7 @@ describePg('serve sync: the index step', () => {
     expect(created).toBe(0)
   })
 
-  test('with a rule the embedder is made once, kept across ticks, indexes the catalog and is closed on stop', async () => {
+  test('with a rule the embedder is made only in a round with a file to embed and closed when that round ends', async () => {
     const { schema, cleanup } = withTestSchema()
     cleanups.push(cleanup)
     await writeFile(join(folder, 'a.md'), 'alpha beta')
@@ -116,14 +117,13 @@ describePg('serve sync: the index step', () => {
     expect(created).toBe(1)
     const rows = await opened[0]?.query<{ n: string }>('SELECT count(*) AS n FROM search_files')
     expect(rows?.rows[0]?.n).toBe('1')
-    expect(fake.isClosed()).toBe(false)
-    await sync.stop()
     expect(fake.isClosed()).toBe(true)
   })
 
   test('a missing runtime is one line, repeated rounds do not repeat it, installing it later adds none', async () => {
     const { schema, cleanup } = withTestSchema()
     cleanups.push(cleanup)
+    await writeFile(join(folder, 'a.md'), 'alpha beta')
     let isInstalled = false
     const missing = 'search by meaning is not installed: run `mcpcut files setup --search`'
     const wiring: Wiring = {
@@ -132,6 +132,7 @@ describePg('serve sync: the index step', () => {
     }
     const { sync, lines, tick } = await startWith(schema, wiring)
     await sync.done
+    await walkRoots(opened[0] as FilesDb, { roots: [folder], now: new Date(clock) })
 
     await tick()
     await tick()
@@ -139,5 +140,28 @@ describePg('serve sync: the index step', () => {
     await tick()
 
     expect(lines).toEqual([`[serve] files sync: search index: ${missing}\n`])
+  })
+
+  test('rules that cannot be read skip the index step, never clear the index, and are reported once', async () => {
+    const { schema, cleanup } = withTestSchema()
+    cleanups.push(cleanup)
+    await writeFile(join(folder, 'a.md'), 'alpha beta')
+    let isReadable = true
+    const wiring: Wiring = { rules: [ruleFor(folder)], createEmbedder: async () => createFakeEmbedder() }
+    const { sync, lines, tick } = await startWith(schema, wiring, async () => {
+      if (isReadable) return wiring.rules
+      throw new Error('files-index.json is corrupt')
+    })
+    await sync.done
+    await walkRoots(opened[0] as FilesDb, { roots: [folder], now: new Date(clock) })
+    await tick()
+    const count = async () => (await opened[0]?.query<{ n: string }>('SELECT count(*) AS n FROM search_files'))?.rows[0]?.n
+
+    isReadable = false
+    await tick()
+    await tick()
+
+    expect(await count()).toBe('1')
+    expect(lines).toEqual(['[serve] files sync: could not read the index rules: files-index.json is corrupt\n'])
   })
 })

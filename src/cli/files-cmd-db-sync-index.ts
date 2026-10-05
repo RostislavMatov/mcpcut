@@ -1,7 +1,7 @@
 import type { SyncIndexOptions, SyncIndexOutcome } from '../files/db/sync.js'
+import { SEARCH_MODEL_ID } from '../files/search/constants.js'
 import { createLocalEmbedder } from '../files/search/embedder.js'
 import { createIndexRulesStore } from '../files/search/index-rules-store.js'
-import type { Embedder } from '../files/search/types.js'
 import { formatReadableField } from '../journal/format.js'
 import type { FilesCliOptions } from './files-cmd.js'
 import { cliCommand } from './next-step.js'
@@ -12,27 +12,31 @@ import { modulesDirOf } from '../files/db/pg-loader.js'
 const PROGRESS_EVERY = 50
 
 export interface IndexSyncHandle {
-  /** Always present: with no rule on, the sync only clears what an earlier rule left (nothing, and no output, if search was never used). */
-  readonly options: SyncIndexOptions
-  /** Closes the embedder if one was made. */
-  close(): Promise<void>
+  /** Present unless the rules could not be read: with no rule on it only clears what an earlier rule left (nothing, and no output, if search was never used). */
+  readonly options: SyncIndexOptions | undefined
+  /** Set when the rules could not be read: the index is left alone and this is the problem to print. */
+  readonly rulesProblem?: string
 }
 
 export async function openIndexSync(opts: FilesCliOptions, journalDir: string, write: (line: string) => void): Promise<IndexSyncHandle> {
-  const rules = await createIndexRulesStore({ journalDir }).list()
+  let rules
+  try {
+    rules = await (opts.db?.indexRules ?? (() => createIndexRulesStore({ journalDir }).list()))()
+  } catch (error: unknown) {
+    return { options: undefined, rulesProblem: formatReadableField(`could not read the index rules: ${error instanceof Error ? error.message : String(error)}`) }
+  }
   const make = opts.db?.indexEmbedder ?? ((modulesDir: string) => createLocalEmbedder({ modulesDir }))
-  let embedder: Embedder | undefined
   return {
     options: {
       rules,
-      embedder: async () => (embedder ??= await make(modulesDirOf(journalDir))),
+      modelId: opts.db?.indexModelId ?? SEARCH_MODEL_ID,
+      embedder: () => make(modulesDirOf(journalDir)),
       budgetMs: Number.POSITIVE_INFINITY,
       cli: cliCommand(opts.env),
       onProgress: (done, total) => {
         if (done % PROGRESS_EVERY === 0 && done < total) write(`indexing: ${done} of ${total} files\n`)
       },
     },
-    close: async () => void (await embedder?.close().catch(() => undefined)),
   }
 }
 

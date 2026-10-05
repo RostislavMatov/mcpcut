@@ -32,7 +32,10 @@ import type { Embedder } from './types.js'
 export interface IndexOptions {
   readonly roots: readonly string[]
   readonly rules: readonly IndexRule[]
-  readonly embedder: Embedder
+  /** The model the rows are stamped with and planned against; the model itself is not loaded to plan. */
+  readonly modelId: string
+  /** Called at most once per round, only when a file has to be embedded; the embedder is closed when the round ends. */
+  readonly createEmbedder: () => Promise<Embedder>
   readonly now: Date
   /** Time the embedding may take; the rest is counted as pending. `Infinity` for no limit. */
   readonly budgetMs: number
@@ -92,7 +95,7 @@ function writeOf(work: PlannedWork, opts: IndexOptions, sha256: string | null): 
     pathKey: pathMatchKey(work.abs, opts.platform),
     sha256,
     size: work.file.size,
-    model: opts.embedder.model,
+    model: opts.modelId,
     indexedAt: opts.now,
   }
 }
@@ -102,7 +105,32 @@ function noteSkip(tally: Tally, reason: string): void {
   tally.skippedByReason[reason] = (tally.skippedByReason[reason] ?? 0) + 1
 }
 
-async function processOne(sdb: SearchDb, work: PlannedWork, opts: IndexOptions, tally: Tally): Promise<void> {
+/** The round's embedder: made on first use, closed by `close` whether or not the round succeeded. */
+interface RoundEmbedder {
+  get(): Promise<Embedder>
+  /** The embedder could not be made (no runtime, no model): every file would fail the same way. */
+  isUnavailable(): boolean
+  close(): Promise<void>
+}
+
+function lazyEmbedder(create: () => Promise<Embedder>): RoundEmbedder {
+  let made: Promise<Embedder> | undefined
+  let isUnavailable = false
+  return {
+    get: () => (made ??= create().catch((error: unknown) => {
+      isUnavailable = true
+      throw error
+    })),
+    isUnavailable: () => isUnavailable,
+    close: async () => {
+      if (made === undefined) return
+      const embedder = await made.catch(() => undefined)
+      await embedder?.close().catch(() => undefined)
+    },
+  }
+}
+
+async function processOne(sdb: SearchDb, work: PlannedWork, opts: IndexOptions, embedder: RoundEmbedder, tally: Tally): Promise<void> {
   const write = writeOf(work, opts, work.file.sha256)
   if (work.kind === 'skip') {
     await sdb.db.transaction((tx) => writeSkipped(tx, write, work.reason))
@@ -119,12 +147,12 @@ async function processOne(sdb: SearchDb, work: PlannedWork, opts: IndexOptions, 
     noteSkip(tally, read.reason)
     return
   }
-  const chunks = await embedChunks(read.text, work.file.relPath, opts.embedder)
+  const chunks = await embedChunks(read.text, work.file.relPath, await embedder.get())
   await sdb.db.transaction((tx) => writeIndexed(tx, sdb.vectorSchema, write, chunks))
   tally.indexed += 1
 }
 
-async function processAll(sdb: SearchDb, work: readonly PlannedWork[], opts: IndexOptions, tally: Tally): Promise<void> {
+async function processAll(sdb: SearchDb, work: readonly PlannedWork[], opts: IndexOptions, embedder: RoundEmbedder, tally: Tally): Promise<void> {
   const clock = opts.monotonicMs ?? (() => performance.now())
   const startedAt = clock()
   for (const [index, item] of work.entries()) {
@@ -133,10 +161,10 @@ async function processAll(sdb: SearchDb, work: readonly PlannedWork[], opts: Ind
       return
     }
     try {
-      await processOne(sdb, item, opts, tally)
+      await processOne(sdb, item, opts, embedder, tally)
     } catch (error: unknown) {
-      // A dead server fails every file the same way: stop instead of grinding through them.
-      if (error instanceof FilesDbError && error.kind === 'unreachable') throw error
+      // A dead server or a missing model fails every file the same way: stop instead of grinding through them.
+      if (embedder.isUnavailable() || (error instanceof FilesDbError && error.kind === 'unreachable')) throw error
       tally.failed += 1
       tally.firstFailure ??= `${item.file.relPath}: ${describe(error)}`
     }
@@ -146,11 +174,18 @@ async function processAll(sdb: SearchDb, work: readonly PlannedWork[], opts: Ind
 
 async function runRound(sdb: SearchDb, opts: IndexOptions): Promise<IndexResult> {
   if (!opts.rules.some((rule) => rule.enabled)) return { ...EMPTY, removed: await deleteAllIndexRows(sdb.db) }
-  const [files, rows] = await Promise.all([loadCatalogFiles(sdb.db, opts.roots), loadIndexRows(sdb.db)])
-  const plan = planIndex({ files, rows, rules: opts.rules, platform: opts.platform, model: opts.embedder.model })
+  // One after the other: the lock holds one pooled client and the pool has two.
+  const files = await loadCatalogFiles(sdb.db, opts.roots)
+  const rows = await loadIndexRows(sdb.db)
+  const plan = planIndex({ files, rows, rules: opts.rules, platform: opts.platform, model: opts.modelId })
   const removed = await deleteIndexRows(sdb.db, plan.remove)
   const tally: Tally = { indexed: 0, skipped: 0, skippedByReason: {}, pending: plan.waiting.length, failed: 0, firstFailure: undefined }
-  await processAll(sdb, plan.work, opts, tally)
+  const embedder = lazyEmbedder(opts.createEmbedder)
+  try {
+    await processAll(sdb, plan.work, opts, embedder, tally)
+  } finally {
+    await embedder.close()
+  }
   return {
     indexed: tally.indexed,
     skipped: tally.skipped,

@@ -3,7 +3,7 @@ import type { FilesDb } from '../files/db/connection.js'
 import { walkRoots } from '../files/db/catalog-walk.js'
 import { syncOnce } from '../files/db/sync.js'
 import { modulesDirOf } from '../files/db/pg-loader.js'
-import { INDEX_SERVE_BUDGET_MS } from '../files/search/constants.js'
+import { INDEX_SERVE_BUDGET_MS, SEARCH_MODEL_ID } from '../files/search/constants.js'
 import { createLocalEmbedder } from '../files/search/embedder.js'
 import { createIndexRulesStore, type IndexRule } from '../files/search/index-rules-store.js'
 import type { Embedder } from '../files/search/types.js'
@@ -38,8 +38,10 @@ export interface FilesSyncDeps extends Omit<OpenConfiguredOptions, 'journalDir'>
   readonly walk?: typeof walkRoots
   /** The index rules, read fresh on every run; the store in `journalDir` by default. */
   readonly listIndexRules?: () => Promise<readonly IndexRule[]>
-  /** @internal test seam: the embedder, created lazily on the first round that has a rule on. */
+  /** @internal test seam: the embedder, made only in a round that has a file to embed and closed when that round ends. */
   readonly createEmbedder?: (modulesDir: string) => Promise<Embedder>
+  /** @internal test seam: the model id rounds are planned against (the fake's id in tests). */
+  readonly modelId?: string
 }
 
 export interface FilesSync {
@@ -66,7 +68,6 @@ export function startFilesSync(deps: FilesSyncDeps): FilesSync {
   const platform = deps.platform ?? process.platform
   let db: FilesDb | undefined
   let opening: Promise<FilesDb | undefined> | undefined
-  let embedder: Embedder | undefined
   let lastWalkAt: number | undefined
   let isStopped = false
   /** The last line printed per source (`open`, `ingest`, `walk`): a repeat is not printed again. */
@@ -107,39 +108,39 @@ export function startFilesSync(deps: FilesSyncDeps): FilesSync {
     return opening
   }
 
-  /** One embedder for the life of `serve`, made on the first round that needs it; a failed creation is retried next round. */
-  async function ensureEmbedder(): Promise<Embedder> {
-    if (embedder !== undefined) return embedder
-    const created = await (deps.createEmbedder ?? ((modulesDir) => createLocalEmbedder({ modulesDir })))(modulesDirOf(deps.journalDir))
-    if (isStopped) {
-      await created.close().catch(() => undefined)
-      throw new Error('serve is stopping')
-    }
-    embedder = created
-    return created
-  }
-
-  async function indexRules(): Promise<readonly IndexRule[]> {
+  /** `undefined` when the rules cannot be read: the index step is skipped (never read as «no rule on», which would clear the index). */
+  async function indexRules(): Promise<readonly IndexRule[] | undefined> {
     try {
       return await (deps.listIndexRules ?? (() => createIndexRulesStore({ journalDir: deps.journalDir }).list()))()
     } catch (error: unknown) {
       report('index', `could not read the index rules: ${describe(error)}`)
-      return []
+      return undefined
     }
   }
 
   async function ingestStep(): Promise<void> {
     const handle = await ensureDb()
     if (handle === undefined) return
+    const rules = await indexRules()
     const synced = await syncOnce(handle, {
       journalDir: deps.journalDir,
       roots: await deps.listRoots(),
       platform,
       now: new Date(deps.now()),
       withWalk: false,
-      index: { rules: await indexRules(), embedder: ensureEmbedder, budgetMs: INDEX_SERVE_BUDGET_MS, cli: deps.cli },
+      ...(rules === undefined
+        ? {}
+        : {
+            index: {
+              rules,
+              modelId: deps.modelId ?? SEARCH_MODEL_ID,
+              embedder: () => (deps.createEmbedder ?? ((modulesDir) => createLocalEmbedder({ modulesDir })))(modulesDirOf(deps.journalDir)),
+              budgetMs: INDEX_SERVE_BUDGET_MS,
+              cli: deps.cli,
+            },
+          }),
     })
-    reportIndex(synced.index)
+    if (rules !== undefined) reportIndex(synced.index)
   }
 
   /** A problem is printed once per change (the next successful round forgets it); a failed file is named once. */
@@ -192,8 +193,6 @@ export function startFilesSync(deps: FilesSyncDeps): FilesSync {
       timer.clearInterval(handle)
       await idle()
       await opening
-      await embedder?.close().catch(() => undefined)
-      embedder = undefined
       await db?.close().catch(() => undefined)
       db = undefined
     },

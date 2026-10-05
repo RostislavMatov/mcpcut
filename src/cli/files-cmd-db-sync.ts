@@ -65,14 +65,17 @@ export async function runDbSync(io: AgentCliIo, opts: FilesCliOptions): Promise<
       platform: process.platform,
       now: (opts.clock ?? (() => new Date()))(),
       withWalk: true,
-      index: indexSync.options,
+      ...(indexSync.options === undefined ? {} : { index: indexSync.options }),
     })
     io.stdout.write(`events: +${ingest.added} (synced through record ${ingest.lastSeq})\n`)
     if (ingest.skipped > 0) {
       io.stdout.write(`${countOf(ingest.skipped, 'record')} could not be indexed; they are still in the journal: ${cli} files audit\n`)
     }
     walks.forEach((walk) => io.stdout.write(`${walkLine(walk)}\n`))
-    const report = reportIndexOutcome(index, cli)
+    const report: IndexSyncReport =
+      indexSync.rulesProblem === undefined
+        ? reportIndexOutcome(index, cli)
+        : { lines: [], problem: `search index: not updated: ${indexSync.rulesProblem}`, next: undefined }
     report.lines.forEach((line) => io.stdout.write(`${line}\n`))
     const hasWalkError = walks.some((walk) => walk.error !== undefined)
     if (report.problem !== undefined) io.stderr.write(`${report.problem}\n`)
@@ -80,7 +83,6 @@ export async function runDbSync(io: AgentCliIo, opts: FilesCliOptions): Promise<
     io.stderr.write(`${next}\n`)
     return hasWalkError || report.problem !== undefined ? 1 : 0
   } finally {
-    await indexSync.close()
     await db.close()
   }
 }

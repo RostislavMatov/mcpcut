@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test } from 'vitest'
 import { indexOnce } from '../../../src/files/search/indexer.js'
 import { createFakeEmbedder } from './fake-embedder.js'
-import { createIndexFixture, ruleOn, type IndexFixture } from './index-fixture.js'
+import { createIndexFixture, ruleOn, usingEmbedder, type IndexFixture } from './index-fixture.js'
 import { describePg } from '../db/pg-helpers.js'
 
 let fx: IndexFixture
@@ -165,7 +165,7 @@ describePg('indexOnce', () => {
     await indexOnce(fx.sdb, fx.options())
     const other = createFakeEmbedder('fake-embedder@2')
 
-    const result = await indexOnce(fx.sdb, fx.options({ embedder: other }))
+    const result = await indexOnce(fx.sdb, fx.options(usingEmbedder(other)))
 
     expect(result.indexed).toBe(1)
     expect(other.calls).toHaveLength(1)
@@ -223,9 +223,9 @@ describePg('indexOnce', () => {
       },
     }
 
-    const first = await indexOnce(fx.sdb, fx.options({ embedder }))
+    const first = await indexOnce(fx.sdb, fx.options(usingEmbedder(embedder)))
     isPoisoned = false
-    const second = await indexOnce(fx.sdb, fx.options({ embedder }))
+    const second = await indexOnce(fx.sdb, fx.options(usingEmbedder(embedder)))
 
     expect(first).toMatchObject({ indexed: 2, failed: 1, firstFailure: 'b.md: model exploded' })
     expect(second).toMatchObject({ indexed: 1, failed: 0 })
@@ -247,7 +247,7 @@ describePg('indexOnce', () => {
     let release: () => void = () => undefined
     const gate = new Promise<void>((resolve) => (release = resolve))
     const slow = { ...fx.embedder, embedPassage: async (text: string) => (await gate, fx.embedder.embedPassage(text)) }
-    const first = indexOnce(fx.sdb, fx.options({ embedder: slow }))
+    const first = indexOnce(fx.sdb, fx.options(usingEmbedder(slow)))
     await new Promise((resolve) => setTimeout(resolve, 200))
 
     const second = await indexOnce(fx.sdb, fx.options())
