@@ -19,6 +19,19 @@ jobs:
   ci:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # A real Postgres for the file module's index tests (they skip without it).
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: mcpcut
+          POSTGRES_PASSWORD: mcpcut-test
+          POSTGRES_DB: mcpcut_test
+        ports:
+          - 127.0.0.1:55439:5432
+        options: >-
+          --health-cmd "pg_isready -U mcpcut -d mcpcut_test"
+          --health-interval 2s --health-timeout 5s --health-retries 30
     strategy:
       fail-fast: false
       matrix:
@@ -49,3 +62,5 @@ jobs:
 
       - name: Test
         run: npm test
+        env:
+          MCPCUT_TEST_PG_URL: postgres://mcpcut:mcpcut-test@127.0.0.1:55439/mcpcut_test

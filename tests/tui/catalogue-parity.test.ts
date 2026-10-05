@@ -48,7 +48,10 @@ const NOT_YET_COVERED: readonly CommandPair[] = [
   // CLI-only for now; the Files console screen is a later phase of the plan.
   // `list` and `remove` are the parser's reading of `files root add|list|remove`;
   // `trash`, `restore` and `purge` are `files trash list|restore|purge` (ADR-0020 §4).
+  // `files setup` and `files db init|status` (ADR-0020 §6, §7: the optional Postgres index) are CLI-only too;
+  // the parser reads `files db init|status` as the pair `files db`.
   { command: 'files', subcommand: 'audit' },
+  { command: 'files', subcommand: 'db' },
   { command: 'files', subcommand: 'grant' },
   { command: 'files', subcommand: 'list' },
   { command: 'files', subcommand: 'purge' },
@@ -56,6 +59,7 @@ const NOT_YET_COVERED: readonly CommandPair[] = [
   { command: 'files', subcommand: 'restore' },
   { command: 'files', subcommand: 'revoke' },
   { command: 'files', subcommand: 'root' },
+  { command: 'files', subcommand: 'setup' },
   { command: 'files', subcommand: 'show' },
   { command: 'files', subcommand: 'trash' },
 ]

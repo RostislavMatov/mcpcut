@@ -86,6 +86,12 @@ ${TUI_SYNOPSIS_LINES.join('\n')}
                                          List what agents deleted, put an item back, or delete old
                                          ones for good (owner token for restore/purge; serve purges
                                          items older than 30 days daily)
+  mcpcut files setup
+                                         Install the optional Postgres client (once, no token):
+                                         a faster, complete files audit and a folder catalog
+  mcpcut files db init|status
+                                         Turn Postgres on (first run: owner token; prints the docker
+                                         command) or show where it stands (no token)
   mcpcut group create <name>|remove <name>|list|show <name>
                                          Manage server groups: a group carries per-server grants
                                          and the agents that inherit them (owner token via
