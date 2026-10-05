@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
@@ -6,6 +6,7 @@ import { createEffectiveAgentReader } from '../../src/agents/effective-reader.js
 import { createAgentsStore } from '../../src/agents/store.js'
 import type { GroupRecord } from '../../src/groups/schema.js'
 import { createGroupsStore } from '../../src/groups/store.js'
+import { INDEX_RULES_FILE_NAME } from '../../src/files/search/constants.js'
 import { createFilesEndpoints, createAgentFilesBackend, type FilesBackend } from '../../src/files/upstream.js'
 import { clientMessage, type McpMessage } from '../../src/transport/message.js'
 
@@ -132,6 +133,20 @@ describe('createAgentFilesBackend', () => {
     expect(await backend.rules()).toHaveLength(1)
     await agents.setServerGrant('me', 'files', { tools: '*' })
     expect(await backend.rules()).toEqual([])
+  })
+
+  test('unreadable index rules keep search_files unlisted and the administrator hears of it once', async () => {
+    const { reader, dir } = await fixture()
+    await writeFile(path.join(dir, INDEX_RULES_FILE_NAME), '{ not json')
+    const problems: string[] = []
+    const search = { open: async () => ({ kind: 'empty' as const }), close: async () => undefined, isClosed: () => false, cli: 'mcpcut', report: (problem: string) => problems.push(problem) }
+    const backend = createAgentFilesBackend({ agentName: 'me', agents: reader, journalDir: dir, search })
+
+    const listed = [await backend.searchListed?.(), await backend.searchListed?.()]
+
+    expect(listed).toEqual([false, false])
+    expect(problems.length).toBeGreaterThanOrEqual(1)
+    expect(problems[0]).toContain('search_files is not listed')
   })
 
   test('a revoked agent has no rules', async () => {

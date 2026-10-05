@@ -63,6 +63,8 @@ export function builtinFilesOf(args: {
   readonly journalDir: string | undefined
   readonly env: NodeJS.ProcessEnv
   readonly searchSeams: SearchSeams | undefined
+  /** Where the administrator hears of a search problem (the diagnostics on stderr). */
+  readonly onProblem?: (problem: string) => void
 }): BuiltinFiles | undefined {
   if (args.record.transport !== 'builtin') return undefined
   const backend = createAgentFilesBackend({
@@ -70,6 +72,7 @@ export function builtinFilesOf(args: {
     agents: args.agents,
     cli: cliCommand(args.env),
     env: args.env,
+    ...(args.onProblem !== undefined ? { onProblem: args.onProblem } : {}),
     ...(args.journalDir !== undefined ? { journalDir: args.journalDir } : {}),
     ...(args.searchSeams !== undefined ? { searchSeams: args.searchSeams } : {}),
   })

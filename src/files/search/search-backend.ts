@@ -1,3 +1,4 @@
+import { redactString } from '../../redact/redact.js'
 import { formatReadableField } from '../../journal/format.js'
 import type { FilesDb } from '../db/connection.js'
 import { DB_SCHEMA_PATTERN } from '../db/constants.js'
@@ -18,22 +19,36 @@ import type { Embedder } from './types.js'
  * one-line problem for the administrator and is NOT remembered: the next call
  * tries again, so installing the runtime or starting Postgres needs no restart.
  *
- * An agent's call never creates anything: it reads the search tables when they
- * exist and answers `empty` when they do not. Only the administrator's paths
- * (`files index on`, `db sync`, `serve`) create the extension and the tables.
+ * An agent's call opens the database through `openFilesDb`, which runs the
+ * core migrations (the catalog and audit tables of the schema, when missing or
+ * behind). It never creates the search tables or the pgvector extension: it
+ * reads them when they exist and answers `empty` when they do not. Only the
+ * administrator's paths (`files index on`, `db sync`, `serve`) create those.
+ *
+ * What the agent is told is a fixed line (`tool-search.ts`); the detailed
+ * problem goes to the administrator through `onProblem`, once per distinct text.
  */
 
 export type SearchOpen =
   | { readonly kind: 'ready'; readonly sdb: SearchDb; readonly embedder: Embedder }
   /** Postgres is up but nothing was ever indexed: no search tables yet. */
   | { readonly kind: 'empty' }
-  /** `problem` is one line for the administrator; it names the command that fixes it. */
-  | { readonly kind: 'unavailable'; readonly problem: string }
+  /** `problem` is one line for the administrator, never shown to the agent; it names the command that fixes it. `isClosing`: the backend was closed. */
+  | { readonly kind: 'unavailable'; readonly problem: string; readonly isClosing?: true }
+
+/** What the agent is told when the file server shuts down under its call. */
+export const CLOSING_PROBLEM = 'the file server is closing: connect again'
 
 export interface SearchBackend {
   open(): Promise<SearchOpen>
   /** Closes the embedder and the connection pool; idempotent. */
   close(): Promise<void>
+  /** True once `close` has been called: an error that arrives after that is the shutdown, not a fault. */
+  isClosed(): boolean
+  /** The CLI prefix for the commands in the lines the agent sees. */
+  readonly cli: string
+  /** Tells the administrator about a problem the agent was not told in detail; the same text is passed on once. */
+  report(problem: string): void
 }
 
 export interface SearchBackendOptions {
@@ -45,6 +60,11 @@ export interface SearchBackendOptions {
   readonly loadPg?: (modulesDir: string) => Promise<PgModule>
   readonly schema?: string
   readonly createEmbedder?: (modulesDir: string) => Promise<Embedder>
+  /** Where the administrator hears of a problem (stderr of `serve` or `connect`); called once per distinct text. */
+  readonly onProblem?: (problem: string) => void
+  /** @internal test seams. */
+  readonly now?: () => number
+  readonly probe?: typeof probeSearchDb
 }
 
 /** What a caller (connect, serve, a test) may replace; production code leaves them out. */
@@ -103,9 +123,34 @@ function lazy<T>(make: () => Promise<T>): { get(): Promise<T>; peek(): Promise<T
 
 class ProblemError extends Error {}
 
+/** A value was made after `close`: it is closed again at once and the call says the server is closing. */
+class ClosingError extends Error {}
+
+/** A good probe is trusted this long: an agent searching in a loop does not repeat the 2-4 catalog queries. */
+const PROBE_CACHE_MS = 30_000
+/** The administrator is told of this many distinct problems per process; beyond that, silence beats a flood. */
+const REPORTED_PROBLEMS_MAX = 50
+
+const closingOpen = (): SearchOpen => ({ kind: 'unavailable', problem: CLOSING_PROBLEM, isClosing: true })
+
 export function createSearchBackend(opts: SearchBackendOptions): SearchBackend {
   let isClosed = false
+  let goodProbe: { readonly sdb: SearchDb; readonly at: number } | undefined
+  const reported = new Set<string>()
+  const clock = opts.now ?? Date.now
+  const probe = opts.probe ?? probeSearchDb
   const modulesDir = modulesDirOf(opts.journalDir)
+
+  function report(raw: string): void {
+    const problem = redactString(formatReadableField(raw))
+    if (opts.onProblem === undefined || reported.has(problem) || reported.size >= REPORTED_PROBLEMS_MAX) return
+    reported.add(problem)
+    try {
+      opts.onProblem(problem)
+    } catch {
+      // The administrator's channel failing must not fail the agent's call.
+    }
+  }
 
   const database = lazy(async (): Promise<FilesDb> => {
     const configured = await openConfiguredDb({
@@ -117,29 +162,59 @@ export function createSearchBackend(opts: SearchBackendOptions): SearchBackend {
     })
     if (configured.kind === 'off') throw new ProblemError(`Postgres is not set up: an administrator runs \`${opts.cli} files db init\``)
     if (configured.kind === 'unavailable') throw new ProblemError(configured.reason)
-    return configured.db
+    return closedIfLate(configured.db)
   })
 
   const embedder = lazy(async (): Promise<Embedder> => {
-    if (opts.createEmbedder !== undefined) return opts.createEmbedder(modulesDir)
+    if (opts.createEmbedder !== undefined) return closedIfLate(await opts.createEmbedder(modulesDir))
     const problem = await searchRuntimeProblem(modulesDir, opts.cli)
     if (problem !== null) throw new ProblemError(runtimeProblemText(problem))
-    return createLocalEmbedder({ modulesDir, cli: opts.cli })
+    return closedIfLate(await createLocalEmbedder({ modulesDir, cli: opts.cli }))
   })
 
+  /** Whatever finishes being made after `close` has nobody to close it: it is closed here. */
+  async function closedIfLate<T extends { close(): Promise<void> }>(made: T): Promise<T> {
+    if (!isClosed) return made
+    await made.close().catch(() => undefined)
+    throw new ClosingError()
+  }
+
+  async function readyState(): Promise<SearchOpen> {
+    const db = await database.get()
+    if (isClosed) return closingOpen()
+    const found = await probeOf(db)
+    if (found.kind !== 'ready') return found
+    if (isClosed) return closingOpen()
+    const made = await embedder.get()
+    return isClosed ? closingOpen() : { kind: 'ready', sdb: found.sdb, embedder: made }
+  }
+
+  /** The cached good probe, or a fresh one (cached only when it is ready: empty and failed answers are asked again). */
+  async function probeOf(db: FilesDb): Promise<Probe> {
+    if (goodProbe !== undefined && clock() - goodProbe.at < PROBE_CACHE_MS) return { kind: 'ready', sdb: goodProbe.sdb }
+    const found = await probe(db, opts.cli)
+    if (found.kind !== 'ready') return found
+    goodProbe = { sdb: found.sdb, at: clock() }
+    return found
+  }
+
   async function open(): Promise<SearchOpen> {
-    if (isClosed) return { kind: 'unavailable', problem: 'the file server is closing: connect again' }
+    if (isClosed) return closingOpen()
     try {
-      const probe = await probeSearchDb(await database.get(), opts.cli)
-      if (probe.kind !== 'ready') return probe
-      return { kind: 'ready', sdb: probe.sdb, embedder: await embedder.get() }
+      const opened = await readyState()
+      if (opened.kind === 'unavailable' && opened.isClosing !== true) report(opened.problem)
+      return opened
     } catch (error: unknown) {
-      return { kind: 'unavailable', problem: describeError(error) }
+      if (isClosed || error instanceof ClosingError) return closingOpen()
+      const problem = describeError(error)
+      report(problem)
+      return { kind: 'unavailable', problem }
     }
   }
 
   async function close(): Promise<void> {
     isClosed = true
+    goodProbe = undefined
     const [opened, model] = [database.peek(), embedder.peek()]
     database.reset()
     embedder.reset()
@@ -149,5 +224,5 @@ export function createSearchBackend(opts: SearchBackendOptions): SearchBackend {
     ])
   }
 
-  return { open, close }
+  return { open, close, isClosed: () => isClosed, cli: opts.cli, report }
 }

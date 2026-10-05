@@ -125,18 +125,21 @@ export interface AgentFilesBackendArgs {
   /** The CLI prefix for the commands inside search problems; `mcpcut` by default. */
   readonly cli?: string
   readonly env?: NodeJS.ProcessEnv
+  /** Where the administrator hears of a search problem when this backend builds its own search (`connect`'s stderr). */
+  readonly onProblem?: (problem: string) => void
   /** A search backend shared by many sessions (`serve`): its owner closes it, not this backend. */
   readonly search?: SearchBackend
   /** Test seams for the search backend this one builds when none is shared. */
   readonly searchSeams?: SearchSeams
 }
 
-/** True when at least one index rule is on; a store that cannot be read means not listed. */
-async function hasEnabledIndexRule(journalDir: string | undefined): Promise<boolean> {
+/** True when at least one index rule is on; a store that cannot be read means not listed, and the administrator hears of it once. */
+async function hasEnabledIndexRule(journalDir: string | undefined, report: (problem: string) => void): Promise<boolean> {
   try {
     const rules = await createIndexRulesStore(journalDir !== undefined ? { journalDir } : {}).list()
     return rules.some((rule) => rule.enabled)
-  } catch {
+  } catch (error: unknown) {
+    report(`search_files is not listed because the index rules cannot be read: ${error instanceof Error ? error.message : String(error)}`)
     return false
   }
 }
@@ -148,6 +151,7 @@ function searchOf(args: AgentFilesBackendArgs): { readonly search: SearchBackend
     journalDir: args.journalDir ?? JOURNAL_DIR,
     cli: args.cli ?? 'mcpcut',
     ...(args.env !== undefined ? { env: args.env } : {}),
+    ...(args.onProblem !== undefined ? { onProblem: args.onProblem } : {}),
     ...args.searchSeams,
   })
   return { search: own, dispose: () => own.close() }
@@ -158,7 +162,7 @@ export function createAgentFilesBackend(args: AgentFilesBackendArgs): FilesBacke
   const { search, dispose } = searchOf(args)
   return {
     search,
-    searchListed: () => hasEnabledIndexRule(args.journalDir),
+    searchListed: () => hasEnabledIndexRule(args.journalDir, (problem) => search.report(problem)),
     ...(dispose !== undefined ? { dispose } : {}),
     actor: args.agentName,
     roots: async () => rootsOutsideDataDir((await roots.list()).map((root) => root.path), args.journalDir ?? JOURNAL_DIR),

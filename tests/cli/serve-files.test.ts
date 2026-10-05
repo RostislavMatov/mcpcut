@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
+import { createIndexRulesStore } from '../../src/files/search/index-rules-store.js'
 import { createRootsStore } from '../../src/files/roots-store.js'
 import { AGENT, INITIALIZE_BODY, disposeServeFixtures, startServe, waitUntil, type ServeFixture } from './serve-harness.js'
 
@@ -56,6 +57,26 @@ describe('runServe: the built-in file server', () => {
     expect(read.result.content[0]?.text).toContain('over http')
     await waitUntil(async () => (await decisionRules(fixture)).length >= 2, 'the tool decisions in the journal')
     expect((await decisionRules(fixture)).map(([tool]) => tool)).toEqual(expect.arrayContaining(['write_file', 'read_file']))
+  })
+
+  test('search_files with no Postgres tells the agent a fixed line and the administrator the detail once', async () => {
+    const { fixture, folder, sessionId } = await setup(['read'])
+    await createIndexRulesStore({ journalDir: fixture.journalDir }).set(folder, true)
+    const headers = { 'mcp-session-id': sessionId }
+    const search = async (id: number): Promise<string> => {
+      const answer = (await (await fixture.post(rpc(id, 'tools/call', { name: 'search_files', arguments: { query: 'anything' } }), headers, FILES_PATH)).json()) as {
+        result: { content: Array<{ text: string }> }
+      }
+      return answer.result.content[0]?.text ?? ''
+    }
+
+    const first = await search(2)
+    const second = await search(3)
+
+    const line = 'Search by meaning is not available right now: ask an administrator to run `mcpcut files db status`.'
+    expect([first, second]).toEqual([line, line])
+    const heard = fixture.io.errText().split('\n').filter((entry) => entry.includes('search by meaning is not available to agents'))
+    expect(heard).toEqual(['serve: search by meaning is not available to agents: Postgres is not set up: an administrator runs `mcpcut files db init`. Next: mcpcut files db status'])
   })
 
   test('a delete without the right is denied in the gate with the files rule in the journal', async () => {

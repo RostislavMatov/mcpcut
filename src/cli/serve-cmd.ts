@@ -43,7 +43,7 @@ import { cliCommand } from './next-step.js'
 import { createSearchBackend, type SearchBackend } from '../files/search/search-backend.js'
 import { startFilesSync } from './serve-files-sync.js'
 import { startTrashSweep } from './serve-trash-sweep.js'
-import { waitForShutdown, type ServeRuntime } from './serve-shutdown.js'
+import { stopAll, waitForShutdown, type ServeRuntime } from './serve-shutdown.js'
 import { AGENT_REVOCATION_POLL_INTERVAL_MS } from '../session/constants.js'
 import { MAX_POOL_RESIDENTS } from '../pool/constants.js'
 
@@ -333,10 +333,12 @@ export async function runServe(
   }
 
   // One search backend for the process: lazy, so it costs nothing until an agent searches; closed with `serve`.
+  const filesCli = cliCommand(opts.processEnv ?? process.env)
   const filesSearch = createSearchBackend({
     journalDir,
-    cli: cliCommand(opts.processEnv ?? process.env),
+    cli: filesCli,
     env: opts.processEnv ?? process.env,
+    onProblem: (problem) => io.stderr.write(`serve: search by meaning is not available to agents: ${problem}. Next: ${filesCli} files db status\n`),
     ...(opts.filesDb?.loadPg !== undefined ? { loadPg: opts.filesDb.loadPg } : {}),
     ...(opts.filesDb?.schema !== undefined ? { schema: opts.filesDb.schema } : {}),
     ...(opts.filesDb?.indexEmbedder !== undefined ? { createEmbedder: opts.filesDb.indexEmbedder } : {}),
@@ -381,8 +383,7 @@ export async function runServe(
     await waitForShutdown(runtime, io, opts, { port: bound.port, host: flags.host })
   } finally {
     sweep.stop()
-    await filesSync.stop()
-    await filesSearch.close()
+    await stopAll([() => filesSync.stop(), () => filesSearch.close()])
   }
   return 0
 }

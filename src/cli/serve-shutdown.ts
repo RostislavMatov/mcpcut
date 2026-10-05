@@ -90,3 +90,13 @@ export async function waitForShutdown(
   }
 }
 
+
+/**
+ * Stops the parts of `serve` that outlive a request (the Postgres sync, the search pool and model). Each runs
+ * even when another throws; the first failure is then thrown, so nothing is swallowed and nothing stays open.
+ */
+export async function stopAll(steps: ReadonlyArray<() => Promise<void>>): Promise<void> {
+  const settled = await Promise.allSettled(steps.map((step) => step()))
+  const failure = settled.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+  if (failure !== undefined) throw failure.reason
+}

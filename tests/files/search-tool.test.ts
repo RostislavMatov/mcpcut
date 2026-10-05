@@ -113,7 +113,7 @@ describe('search_files without a search backend', () => {
     const result = await harness.call('search_files', { query: 'a' })
 
     expect(result.isError).toBe(true)
-    expect(result.text).toBe('search by meaning is not available: this file server has no search set up: ask an administrator to run `mcpcut files setup --search`')
+    expect(result.text).toBe('Search by meaning is not available right now: ask an administrator to run `mcpcut files setup --search`.')
   })
 
   test('closed rules answer with their own message', async () => {

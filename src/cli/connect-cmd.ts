@@ -21,6 +21,7 @@ import { createMismatchGuard } from './connect-mismatch.js'
 import { resolveConnectPolicy } from './connect-policy.js'
 import { resolveConnectTarget } from './connect-resolve.js'
 import type { SearchSeams } from '../files/search/search-backend.js'
+import { cliCommand } from './next-step.js'
 import { buildConnectStores, builtinFilesOf, sessionOptionsOf, upstreamArgsOf } from './connect-stores.js'
 import {
   startConnectSession,
@@ -244,6 +245,7 @@ export async function runConnect(
     journalDir: deps.journalDir,
     env,
     searchSeams: deps.filesSearch,
+    onProblem: (problem) => onDiagnostic(`${DIAGNOSTIC_PREFIX} search by meaning: ${problem}. Next: ${cliCommand(env)} files db status\n`),
   })
   const prepared = await prepareUpstream(
     upstreamArgsOf({ deps, env, record: target.record, onDiagnostic, ...(builtin !== undefined ? { files: builtin.backend } : {}) }),
