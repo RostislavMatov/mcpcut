@@ -25,7 +25,7 @@ const WINDOWS_DEVICE_PREFIX = /^[\\/]{2}[.?][\\/]/
 /** Case and normalization folding only where the volumes usually ignore both. */
 const FOLDING_PLATFORMS: ReadonlySet<NodeJS.Platform> = new Set(['darwin', 'win32'])
 
-function pathModuleOf(platform: NodeJS.Platform): path.PlatformPath {
+export function pathModuleOf(platform: NodeJS.Platform): path.PlatformPath {
   return platform === 'win32' ? path.win32 : path.posix
 }
 
