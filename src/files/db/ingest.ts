@@ -58,12 +58,13 @@ async function runBatch(db: FilesDb, opts: IngestOptions, batchSize: number): Pr
     const { lastSeq: cursor } = await readState(tx)
     const after = await journalRecordsAfter(opts.journalDir, cursor, batchSize)
     const mapped = after.rows.flatMap((row) => mapRecord(row, opts.platform) ?? [])
-    const { added, skipped } = await insertMapped(tx, mapped)
-    await tx.query('UPDATE ingest_state SET last_seq = $1, last_record_id = COALESCE($2, last_record_id), updated_at = now() WHERE id = 1', [
-      after.throughSeq,
-      after.throughRecordId,
-    ])
-    return { added, skipped, lastSeq: after.throughSeq, touched: touchedOf(mapped) }
+    const { added, skippedSeqs } = await insertMapped(tx, mapped)
+    await tx.query(
+      'UPDATE ingest_state SET last_seq = $1, last_record_id = COALESCE($2, last_record_id), ' +
+        'skipped_seqs = skipped_seqs || $3::bigint[], updated_at = now() WHERE id = 1',
+      [after.throughSeq, after.throughRecordId, skippedSeqs],
+    )
+    return { added, skipped: skippedSeqs.length, lastSeq: after.throughSeq, touched: touchedOf(mapped) }
   })
 }
 
@@ -78,6 +79,20 @@ async function isReplaced(state: CursorState, bounds: JournalBounds, journalDir:
   return (await journalRecordIdAt(journalDir, state.lastSeq)) !== state.lastRecordId
 }
 
+/** Rows and skipped records the journal no longer holds. */
+async function forgetPruned(tx: PgQueryable, prunedThroughSeq: number): Promise<void> {
+  await tx.query('DELETE FROM file_events WHERE journal_seq <= $1', [prunedThroughSeq])
+  await tx.query('UPDATE ingest_state SET skipped_seqs = ARRAY(SELECT s FROM unnest(skipped_seqs) AS s WHERE s > $1) WHERE id = 1', [
+    prunedThroughSeq,
+  ])
+}
+
+/** How many records still in the journal the index refused; while any is, an audit reads the journal instead. */
+export async function skippedRecordCount(db: FilesDb): Promise<number> {
+  const result = await db.query<{ n: number | string }>('SELECT cardinality(skipped_seqs) AS n FROM ingest_state WHERE id = 1')
+  return Number(result.rows[0]?.n ?? 0)
+}
+
 /** A replaced journal empties the index; a pruned one loses the rows it no longer holds. No `journal.db`: nothing is touched. */
 async function reconcile(db: FilesDb, journalDir: string): Promise<{ maxSeq: number; present: boolean }> {
   const bounds = await journalBoundsIfPresent(journalDir)
@@ -86,9 +101,9 @@ async function reconcile(db: FilesDb, journalDir: string): Promise<{ maxSeq: num
     await tx.query('SELECT pg_advisory_xact_lock($1)', [INGEST_LOCK_KEY])
     if (await isReplaced(await readState(tx), bounds, journalDir)) {
       await tx.query('DELETE FROM file_events')
-      await tx.query('UPDATE ingest_state SET last_seq = 0, last_record_id = NULL, updated_at = now() WHERE id = 1')
+      await tx.query("UPDATE ingest_state SET last_seq = 0, last_record_id = NULL, skipped_seqs = '{}', updated_at = now() WHERE id = 1")
     }
-    if (bounds.prunedThroughSeq > 0) await tx.query('DELETE FROM file_events WHERE journal_seq <= $1', [bounds.prunedThroughSeq])
+    if (bounds.prunedThroughSeq > 0) await forgetPruned(tx, bounds.prunedThroughSeq)
   })
   return { maxSeq: bounds.maxSeq, present: true }
 }

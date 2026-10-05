@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, expect, test } from 'vitest'
 import { queryFileAuditDb } from '../../../src/files/db/audit-db.js'
 import { openFilesDb, type FilesDb } from '../../../src/files/db/connection.js'
-import { ingestJournal } from '../../../src/files/db/ingest.js'
+import { ingestJournal, skippedRecordCount } from '../../../src/files/db/ingest.js'
 import { loadPg } from '../../../src/files/db/pg-loader.js'
 import { call, incompressible, writeJournal } from './journal-fixtures.js'
 import { describePg, PG_URL, withTestSchema } from './pg-helpers.js'
@@ -65,5 +65,17 @@ describePg('poison records do not wedge the ingest', () => {
     const rows = await db.query<{ paths: string[] }>('SELECT paths FROM file_events ORDER BY journal_seq')
     expect(rows.rows.map((row) => row.paths[0])).toEqual(['/data/a', '/data/c'])
     expect(await run()).toMatchObject({ added: 0, skipped: 0 })
+    expect(await skippedRecordCount(db)).toBe(1)
+  })
+
+  test('a path far over the path limit is kept to the limit, so no record can outgrow a batch', async () => {
+    const huge = `/data/${incompressible(20_000)}`
+    await writeJournal(dir, 's1', [call({ payload: { path: huge } })])
+    expect(await run()).toMatchObject({ added: 1, skipped: 0 })
+    const rows = await db.query<{ paths: string[] }>('SELECT paths FROM file_events')
+    const stored = rows.rows[0]?.paths[0] ?? ''
+    expect(Array.from(stored)).toHaveLength(4097)
+    expect(stored.endsWith('…')).toBe(true)
+    expect(huge.startsWith(stored.slice(0, -1))).toBe(true)
   })
 })

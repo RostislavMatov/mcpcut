@@ -12,7 +12,8 @@ import type { PgQueryable } from './pg-types.js'
 
 export interface InsertOutcome {
   readonly added: number
-  readonly skipped: number
+  /** Journal seqs of the records the database refused even one by one. */
+  readonly skippedSeqs: readonly number[]
 }
 
 const INSERT_EVENTS =
@@ -45,7 +46,7 @@ async function insertAll(tx: PgQueryable, mapped: readonly Mapped[]): Promise<nu
 
 async function insertEach(tx: PgQueryable, mapped: readonly Mapped[]): Promise<InsertOutcome> {
   let added = 0
-  let skipped = 0
+  const skippedSeqs: number[] = []
   for (const one of mapped) {
     await tx.query(`SAVEPOINT ${RECORD_SAVEPOINT}`)
     try {
@@ -54,19 +55,19 @@ async function insertEach(tx: PgQueryable, mapped: readonly Mapped[]): Promise<I
     } catch (error: unknown) {
       if (!isDataError(error)) throw error
       await tx.query(`ROLLBACK TO SAVEPOINT ${RECORD_SAVEPOINT}`)
-      skipped += 1
+      skippedSeqs.push(one.event.journal_seq)
     }
   }
-  return { added, skipped }
+  return { added, skippedSeqs }
 }
 
 export async function insertMapped(tx: PgQueryable, mapped: readonly Mapped[]): Promise<InsertOutcome> {
-  if (mapped.length === 0) return { added: 0, skipped: 0 }
+  if (mapped.length === 0) return { added: 0, skippedSeqs: [] }
   await tx.query(`SAVEPOINT ${BATCH_SAVEPOINT}`)
   try {
     const added = await insertAll(tx, mapped)
     await tx.query(`RELEASE SAVEPOINT ${BATCH_SAVEPOINT}`)
-    return { added, skipped: 0 }
+    return { added, skippedSeqs: [] }
   } catch (error: unknown) {
     if (!isDataError(error)) throw error
     await tx.query(`ROLLBACK TO SAVEPOINT ${BATCH_SAVEPOINT}`)

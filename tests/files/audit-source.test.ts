@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { queryFileAudit } from '../../src/files/audit.js'
 import { fileAudit } from '../../src/files/audit-source.js'
+import { openFilesDb } from '../../src/files/db/connection.js'
 import { FILES_PG_URL_SECRET } from '../../src/files/db/constants.js'
 import { FilesDbModuleMissingError, loadPg } from '../../src/files/db/pg-loader.js'
 import { createVaultStore } from '../../src/vault/store.js'
@@ -88,6 +89,21 @@ describePg('fileAudit on a real Postgres', () => {
     expect(answer.notice).toBeUndefined()
     const journal = await queryFileAudit({ limit: 10, agent: 'bot' }, { dir, platform: 'linux' })
     expect(answer.entries).toEqual(journal.entries)
+  })
+
+  test('a record the index could not take: the journal answers, so nothing is missing from the answer', async () => {
+    const schema = await turnOnTestDb()
+    const db = await openFilesDb({ pg: await loadPg(process.cwd()), url: PG_URL, schema })
+    await db.query(
+      "CREATE FUNCTION refuse_b() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.paths = ARRAY['/data/b'] THEN " +
+        "RAISE EXCEPTION 'refused' USING ERRCODE = '22023'; END IF; RETURN NEW; END $$",
+    )
+    await db.query('CREATE TRIGGER refuse_b BEFORE INSERT ON file_events FOR EACH ROW EXECUTE FUNCTION refuse_b()')
+    await db.close()
+    const answer = await fileAudit({ limit: 10, agent: 'bot' }, { ...base, journalDir: dir, schema, loadPg: () => loadPg(process.cwd()) })
+    expect(answer.source).toBe('journal')
+    expect(answer.notice).toContain('1 journal record(s) could not be put in the Postgres index')
+    expect(answer.entries.map((entry) => entry.paths[0])).toEqual(['/data/b', '/data/a'])
   })
 
   test('not caught up within the budget: the journal answers and the notice says how to finish', async () => {

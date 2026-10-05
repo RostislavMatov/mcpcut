@@ -2,7 +2,7 @@ import { JOURNAL_DIR } from '../config.js'
 import { formatReadableField } from '../journal/format.js'
 import { queryFileAudit, type FileAuditQuery, type FileAuditResult } from './audit.js'
 import { queryFileAuditDb } from './db/audit-db.js'
-import { ingestJournal, type IngestResult } from './db/ingest.js'
+import { ingestJournal, skippedRecordCount, type IngestResult } from './db/ingest.js'
 import { openConfiguredDb, type OpenConfiguredOptions } from './db/open-configured.js'
 
 /**
@@ -44,6 +44,8 @@ export async function fileAudit(query: FileAuditQuery, opts: AuditSourceOptions)
   try {
     const ingest = await ingestJournal(db, { journalDir, platform, budgetMs: opts.budgetMs, ...(opts.batchSize !== undefined ? { batchSize: opts.batchSize } : {}) })
     if (!ingest.caughtUp) return withNotice(await walk(), behindNotice(ingest, opts.cli))
+    const skipped = await skippedRecordCount(db)
+    if (skipped > 0) return withNotice(await walk(), `${skipped} journal record(s) could not be put in the Postgres index`)
     return { ...(await queryFileAuditDb(db, query, platform)), source: 'postgres' }
   } catch (error: unknown) {
     const reason = formatReadableField(error instanceof Error ? error.message : String(error))
