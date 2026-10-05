@@ -1,5 +1,8 @@
 import type { FilesDb } from '../files/db/connection.js'
 import type { PgModule } from '../files/db/pg-types.js'
+import type { PinnedModelFile } from '../files/search/constants.js'
+import type { ModelFetch } from '../files/search/model-files.js'
+import type { Embedder } from '../files/search/types.js'
 
 /** What `files setup` hands the runner: constant arguments, never user input. */
 export interface NpmInvocation {
@@ -23,4 +26,12 @@ export interface FilesDbCliSeams {
   readonly schema?: string
   /** Receives the opened database, for a test that needs to see the schema it ran against. */
   readonly onOpen?: (db: FilesDb) => void
+  /** `files setup --search`: the HTTP client for the model download. */
+  readonly fetch?: ModelFetch
+  /** `files setup --search`: builds the embedder for the smoke test. */
+  readonly createEmbedder?: (opts: { readonly modulesDir: string; readonly cli: string }) => Promise<Embedder>
+  /** The CPU architecture the search platform check sees. */
+  readonly arch?: string
+  /** The model files to download and check instead of the pinned ones (tests cannot forge the pinned hashes). */
+  readonly modelFiles?: readonly PinnedModelFile[]
 }

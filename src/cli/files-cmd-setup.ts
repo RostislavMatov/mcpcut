@@ -1,4 +1,3 @@
-import { spawn } from 'node:child_process'
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { JOURNAL_DIR } from '../config.js'
@@ -8,7 +7,8 @@ import { loadPg, modulesDirOf } from '../files/db/pg-loader.js'
 import { formatReadableField } from '../journal/format.js'
 import type { AgentCliIo } from './agent-cmd.js'
 import type { FilesCliOptions } from './files-cmd.js'
-import type { NpmInvocation } from './files-db-seams.js'
+import { MODULES_DIR_MODE, npmInvocationOf, spawnNpm } from './files-npm.js'
+import { runSetupSearch } from './files-cmd-setup-search.js'
 import { cliCommand } from './next-step.js'
 
 /**
@@ -17,27 +17,6 @@ import { cliCommand } from './next-step.js'
  * writes nothing of mcpcut's own state, so no token. The npm arguments are
  * constants — nothing the user typed reaches the command line.
  */
-
-const MODULES_DIR_MODE = 0o700
-const NPM_ARGS = ['ci', '--omit=dev', '--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund', '--no-update-notifier'] as const
-
-/** `npm` on POSIX; `npm.cmd` through a shell on Windows, where it is a batch file. */
-export function npmInvocationOf(cwd: string, platform: NodeJS.Platform): NpmInvocation {
-  const isWindows = platform === 'win32'
-  return { command: isWindows ? 'npm.cmd' : 'npm', args: NPM_ARGS, cwd, shell: isWindows }
-}
-
-function spawnNpm(invocation: NpmInvocation): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(invocation.command, [...invocation.args], {
-      cwd: invocation.cwd,
-      stdio: 'inherit',
-      shell: invocation.shell,
-    })
-    child.on('error', reject)
-    child.on('close', (code) => resolve(code ?? 1))
-  })
-}
 
 /** The pg version installed in the modules folder, or undefined. */
 export async function installedPgVersion(modulesDir: string): Promise<string | undefined> {
@@ -56,17 +35,14 @@ async function writePinnedFiles(modulesDir: string): Promise<void> {
   await writeFile(join(modulesDir, 'package-lock.json'), `${JSON.stringify(MODULES_PACKAGE_LOCK, null, 2)}\n`)
 }
 
-export async function runSetup(args: string[], io: AgentCliIo, opts: FilesCliOptions): Promise<number> {
-  const cli = cliCommand(opts.env)
-  if (args.length > 0) {
-    io.stderr.write(`usage: ${cli} files setup\n`)
-    return 1
-  }
-  const modulesDir = modulesDirOf(opts.journalDir ?? JOURNAL_DIR)
+const SETUP_USAGE = 'files setup [--search]'
+const SEARCH_OPTIONAL_LINE = (cli: string): string => `Optional: \`${cli} files setup --search\` adds search by meaning (downloads ≈ 430 MB)\n`
+
+/** The Postgres client part: 0 when pg is in place (already or just installed), else the exit code to return. */
+async function ensurePgClient(io: AgentCliIo, opts: FilesCliOptions, cli: string, modulesDir: string): Promise<number> {
   const where = formatReadableField(modulesDir)
   if ((await installedPgVersion(modulesDir)) === PG_PACKAGE_VERSION) {
     io.stdout.write(`Postgres client pg ${PG_PACKAGE_VERSION} is already installed in ${where}\n`)
-    io.stderr.write(`Next: ${cli} files db init\n`)
     return 0
   }
   const platform = opts.db?.platform ?? process.platform
@@ -90,6 +66,21 @@ export async function runSetup(args: string[], io: AgentCliIo, opts: FilesCliOpt
     return 1
   }
   io.stdout.write(`installed pg ${PG_PACKAGE_VERSION} in ${where}\n`)
+  return 0
+}
+
+export async function runSetup(args: string[], io: AgentCliIo, opts: FilesCliOptions): Promise<number> {
+  const cli = cliCommand(opts.env)
+  const isSearch = args.length === 1 && args[0] === '--search'
+  if (args.length > 0 && !isSearch) {
+    io.stderr.write(`usage: ${cli} ${SETUP_USAGE}\n`)
+    return 1
+  }
+  const modulesDir = modulesDirOf(opts.journalDir ?? JOURNAL_DIR)
+  const pgCode = await ensurePgClient(io, opts, cli, modulesDir)
+  if (pgCode !== 0) return pgCode
+  if (isSearch) return runSetupSearch(io, opts, { cli, modulesDir })
+  io.stdout.write(SEARCH_OPTIONAL_LINE(cli))
   io.stderr.write(`Next: ${cli} files db init\n`)
   return 0
 }

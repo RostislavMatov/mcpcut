@@ -62,6 +62,7 @@ describe('files setup', () => {
       { command: 'npm', args: ['ci', '--omit=dev', '--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund', '--no-update-notifier'], cwd: modulesDir, shell: false },
     ])
     expect(result.out).toContain(`installed pg ${PG_PACKAGE_VERSION}`)
+    expect(result.out.trimEnd().split('\n').at(-1)).toBe('Optional: `mcpcut files setup --search` adds search by meaning (downloads ≈ 430 MB)')
     expect(result.err.trimEnd().split('\n').at(-1)).toBe('Next: mcpcut files db init')
   })
 
@@ -110,6 +111,6 @@ describe('files setup', () => {
   test('rejects stray arguments', async () => {
     const result = await setup(async () => 0, { args: ['--force'] })
     expect(result.code).toBe(1)
-    expect(result.err).toBe('usage: mcpcut files setup\n')
+    expect(result.err).toBe('usage: mcpcut files setup [--search]\n')
   })
 })
