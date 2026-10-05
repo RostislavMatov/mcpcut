@@ -2,6 +2,11 @@ import { openConfiguredDb, type OpenConfiguredOptions } from '../files/db/open-c
 import type { FilesDb } from '../files/db/connection.js'
 import { walkRoots } from '../files/db/catalog-walk.js'
 import { syncOnce } from '../files/db/sync.js'
+import { modulesDirOf } from '../files/db/pg-loader.js'
+import { INDEX_SERVE_BUDGET_MS } from '../files/search/constants.js'
+import { createLocalEmbedder } from '../files/search/embedder.js'
+import { createIndexRulesStore, type IndexRule } from '../files/search/index-rules-store.js'
+import type { Embedder } from '../files/search/types.js'
 import { formatReadableField } from '../journal/format.js'
 import type { TrashSweepTimer } from './serve-trash-sweep.js'
 
@@ -31,6 +36,10 @@ export interface FilesSyncDeps extends Omit<OpenConfiguredOptions, 'journalDir'>
   readonly timer?: FilesSyncTimer
   /** @internal test seam: the catalog walk. */
   readonly walk?: typeof walkRoots
+  /** The index rules, read fresh on every run; the store in `journalDir` by default. */
+  readonly listIndexRules?: () => Promise<readonly IndexRule[]>
+  /** @internal test seam: the embedder, created lazily on the first round that has a rule on. */
+  readonly createEmbedder?: (modulesDir: string) => Promise<Embedder>
 }
 
 export interface FilesSync {
@@ -57,6 +66,7 @@ export function startFilesSync(deps: FilesSyncDeps): FilesSync {
   const platform = deps.platform ?? process.platform
   let db: FilesDb | undefined
   let opening: Promise<FilesDb | undefined> | undefined
+  let embedder: Embedder | undefined
   let lastWalkAt: number | undefined
   let isStopped = false
   /** The last line printed per source (`open`, `ingest`, `walk`): a repeat is not printed again. */
@@ -97,16 +107,47 @@ export function startFilesSync(deps: FilesSyncDeps): FilesSync {
     return opening
   }
 
+  /** One embedder for the life of `serve`, made on the first round that needs it; a failed creation is retried next round. */
+  async function ensureEmbedder(): Promise<Embedder> {
+    if (embedder !== undefined) return embedder
+    const created = await (deps.createEmbedder ?? ((modulesDir) => createLocalEmbedder({ modulesDir })))(modulesDirOf(deps.journalDir))
+    if (isStopped) {
+      await created.close().catch(() => undefined)
+      throw new Error('serve is stopping')
+    }
+    embedder = created
+    return created
+  }
+
+  async function indexRules(): Promise<readonly IndexRule[]> {
+    try {
+      return await (deps.listIndexRules ?? (() => createIndexRulesStore({ journalDir: deps.journalDir }).list()))()
+    } catch (error: unknown) {
+      report('index', `could not read the index rules: ${describe(error)}`)
+      return []
+    }
+  }
+
   async function ingestStep(): Promise<void> {
     const handle = await ensureDb()
     if (handle === undefined) return
-    await syncOnce(handle, {
+    const synced = await syncOnce(handle, {
       journalDir: deps.journalDir,
       roots: await deps.listRoots(),
       platform,
       now: new Date(deps.now()),
       withWalk: false,
+      index: { rules: await indexRules(), embedder: ensureEmbedder, budgetMs: INDEX_SERVE_BUDGET_MS, cli: deps.cli },
     })
+    reportIndex(synced.index)
+  }
+
+  /** A problem is printed once per change (the next successful round forgets it); a failed file is named once. */
+  function reportIndex(outcome: Awaited<ReturnType<typeof syncOnce>>['index']): void {
+    if (outcome?.problem !== undefined) return report('index', `search index: ${formatReadableField(outcome.problem)}`)
+    const failure = outcome?.result?.firstFailure
+    if (failure !== undefined) return report('index', `search index: ${formatReadableField(failure)} (will retry)`)
+    lastReported.delete('index')
   }
 
   async function walkStep(): Promise<void> {
@@ -151,6 +192,8 @@ export function startFilesSync(deps: FilesSyncDeps): FilesSync {
       timer.clearInterval(handle)
       await idle()
       await opening
+      await embedder?.close().catch(() => undefined)
+      embedder = undefined
       await db?.close().catch(() => undefined)
       db = undefined
     },

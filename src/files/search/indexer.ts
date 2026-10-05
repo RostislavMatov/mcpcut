@@ -1,4 +1,5 @@
 import { redactString } from '../../redact/redact.js'
+import type { FilesDb } from '../db/connection.js'
 import { FilesDbError } from '../db/errors.js'
 import type { PgQueryable } from '../db/pg-types.js'
 import { pathMatchKey } from '../db/path-key.js'
@@ -166,17 +167,13 @@ async function tryLock(client: PgQueryable): Promise<boolean> {
   return locked.rows[0]?.locked === true
 }
 
-/**
- * Brings the index to what the catalog and the rules say, within the time
- * budget. Only one process indexes at a time (an advisory lock held on a
- * dedicated connection); the other gets `{ busy: true }` and does nothing.
- */
-export async function indexOnce(sdb: SearchDb, opts: IndexOptions): Promise<IndexResult> {
-  return sdb.db.withClient(async (client) => {
-    if (!(await tryLock(client))) return { ...EMPTY, busy: true as const }
-    let result: IndexResult
+/** Runs `fn` holding the indexing lock on a dedicated connection; `undefined` when another process holds it. */
+async function underIndexLock<T>(db: FilesDb, fn: () => Promise<T>): Promise<T | undefined> {
+  return db.withClient(async (client) => {
+    if (!(await tryLock(client))) return undefined
+    let result: T
     try {
-      result = await runRound(sdb, opts)
+      result = await fn()
     } catch (error: unknown) {
       await client.query('SELECT pg_advisory_unlock($1)', [INDEX_LOCK_KEY]).catch(() => undefined)
       throw error
@@ -185,4 +182,24 @@ export async function indexOnce(sdb: SearchDb, opts: IndexOptions): Promise<Inde
     await client.query('SELECT pg_advisory_unlock($1)', [INDEX_LOCK_KEY])
     return result
   })
+}
+
+/**
+ * Brings the index to what the catalog and the rules say, within the time
+ * budget. Only one process indexes at a time (an advisory lock held on a
+ * dedicated connection); the other gets `{ busy: true }` and does nothing.
+ */
+export async function indexOnce(sdb: SearchDb, opts: IndexOptions): Promise<IndexResult> {
+  return (await underIndexLock(sdb.db, () => runRound(sdb, opts))) ?? { ...EMPTY, busy: true as const }
+}
+
+/**
+ * No rule is on: whatever an earlier round indexed goes. A database that never
+ * had search tables has nothing to clear and is not touched (`undefined`).
+ */
+export async function clearIndexIfPresent(db: FilesDb): Promise<IndexResult | undefined> {
+  const present = await db.query<{ present: boolean }>("SELECT to_regclass('search_files') IS NOT NULL AS present")
+  if (present.rows[0]?.present !== true) return undefined
+  const removed = await underIndexLock(db, () => deleteAllIndexRows(db))
+  return removed === undefined ? { ...EMPTY, busy: true as const } : { ...EMPTY, removed }
 }
