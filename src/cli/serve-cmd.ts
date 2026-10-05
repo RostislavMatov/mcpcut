@@ -39,6 +39,8 @@ import { createServeHooks } from './serve-hooks.js'
 import { createPoolWiring } from './serve-pool-wiring.js'
 import { createServeSessionFactory } from './serve-runtime.js'
 import { createRootsStore } from '../files/roots-store.js'
+import { cliCommand } from './next-step.js'
+import { startFilesSync } from './serve-files-sync.js'
 import { startTrashSweep } from './serve-trash-sweep.js'
 import { waitForShutdown, type ServeRuntime } from './serve-shutdown.js'
 import { AGENT_REVOCATION_POLL_INTERVAL_MS } from '../session/constants.js'
@@ -350,10 +352,23 @@ export async function runServe(
     now: opts.clock ?? Date.now,
     ...(opts.trashSweepTimer !== undefined ? { timer: opts.trashSweepTimer } : {}),
   })
+  const filesSync = startFilesSync({
+    journalDir,
+    cli: cliCommand(opts.processEnv ?? process.env),
+    env: opts.processEnv ?? process.env,
+    listRoots: async () => (await createRootsStore({ journalDir }).list()).map((root) => root.path),
+    stderr: io.stderr,
+    now: opts.clock ?? Date.now,
+    ...(opts.filesSyncTimer !== undefined ? { timer: opts.filesSyncTimer } : {}),
+    ...(opts.filesDb?.loadPg !== undefined ? { loadPg: opts.filesDb.loadPg } : {}),
+    ...(opts.filesDb?.schema !== undefined ? { schema: opts.filesDb.schema } : {}),
+    ...(opts.filesDb?.onOpen !== undefined ? { onOpen: opts.filesDb.onOpen } : {}),
+  })
   try {
     await waitForShutdown(runtime, io, opts, { port: bound.port, host: flags.host })
   } finally {
     sweep.stop()
+    await filesSync.stop()
   }
   return 0
 }

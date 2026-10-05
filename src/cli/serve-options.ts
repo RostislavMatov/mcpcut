@@ -6,6 +6,8 @@ import type { RegistryStore } from '../registry/store.js'
 import type { ServeServiceDefaults } from '../setup/bind.js'
 import type { TenantSettings } from '../tenant/settings.js'
 import type { VaultStore } from '../vault/store.js'
+import type { FilesDbCliSeams } from './files-db-seams.js'
+import type { FilesSyncTimer } from './serve-files-sync.js'
 import type { TrashSweepTimer } from './serve-trash-sweep.js'
 
 /**
@@ -45,6 +47,10 @@ export interface ServeCommandOptions {
   readonly clock?: () => number
   /** Timer of the daily trash purge; tests inject one that ticks on demand. */
   readonly trashSweepTimer?: TrashSweepTimer
+  /** Timer of the Postgres index sync (every minute, a full walk every hour); tests inject one that ticks on demand. */
+  readonly filesSyncTimer?: FilesSyncTimer
+  /** @internal test seams of the Postgres client and schema for the index sync. */
+  readonly filesDb?: FilesDbCliSeams
   /** Agent revocation poll interval per session; defaults to the ≤5 s constant. */
   readonly revocationPollIntervalMs?: number
   /**
