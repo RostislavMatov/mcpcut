@@ -135,6 +135,8 @@ describe('parity with the server: the gate refuses exactly when the server would
       ['write_file', { path: join(root, 'fresh.txt'), content: 'x' }],
       ['write_file', { path: existing, content: 'y' }],
       ['move_file', { source: join(root, 'nothing.txt'), destination: join(root, 'moved.txt') }],
+      ['search_files', { query: 'content', path: join(root, 'dir') }],
+      ['search_files', { query: 'content' }],
     ]
     for (const [name, args] of cases) {
       const refusal = await checkCall(name, args)

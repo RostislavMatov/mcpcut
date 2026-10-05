@@ -1,6 +1,7 @@
 import type { AgentRecord } from '../agents/schema.js'
 import { createRecordBuilder } from '../journal/record.js'
 import { createFilesArgsCheck } from '../files/args-check.js'
+import type { SearchBackend } from '../files/search/search-backend.js'
 import { createAgentFilesBackend, type FilesBackend } from '../files/upstream.js'
 import { createJournalSink, type JournalSink, type JournalSinkOptions } from '../journal/sink.js'
 import { createApprovalQueue } from '../policy/approvals/queue.js'
@@ -62,6 +63,8 @@ export interface ChildSessionDeps {
   readonly revocationPollIntervalMs?: number
   /** When true, a journal write failure ends the session it belongs to. */
   readonly failClosed: boolean
+  /** One search backend for the whole process, shared by every file session; its owner closes it. */
+  readonly filesSearch?: SearchBackend
   /** @internal test-only seam mirroring `wrap`'s, for fail-closed tests. */
   readonly journalCommitBatchImpl?: JournalSinkOptions['commitBatchImpl']
 }
@@ -171,7 +174,12 @@ export function createChildSessionOpener(deps: ChildSessionDeps): ChildSessionOp
   /** The agent's view of the built-in file server (ADR-0020); `undefined` for any other server. */
   function filesBackendFor(target: ChildSessionTarget): FilesBackend | undefined {
     if (target.record.transport !== 'builtin') return undefined
-    return createAgentFilesBackend({ agentName: target.agent.name, agents: deps.agents, journalDir: deps.journalDir })
+    return createAgentFilesBackend({
+      agentName: target.agent.name,
+      agents: deps.agents,
+      journalDir: deps.journalDir,
+      ...(deps.filesSearch !== undefined ? { search: deps.filesSearch } : {}),
+    })
   }
 
   /** Opens the upstream and wires it to the caller through the memory pipe. */

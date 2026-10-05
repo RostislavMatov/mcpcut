@@ -46,6 +46,23 @@ describe('createFilesEndpoints', () => {
     expect(result.tools).toHaveLength(9)
   })
 
+  test('closing the endpoints releases what the backend holds, once its call in flight is done', async () => {
+    let disposed = 0
+    const { endpoints } = open({ ...BACKEND, dispose: async () => void (disposed += 1) })
+
+    await endpoints.close()
+
+    expect(disposed).toBe(1)
+  })
+
+  test('a backend that fails to release is reported, not thrown', async () => {
+    const { endpoints, errors } = open({ ...BACKEND, dispose: async () => { throw new Error('pool stuck') } })
+
+    await expect(endpoints.close()).resolves.toBeUndefined()
+
+    expect(errors).toHaveLength(1)
+  })
+
   test('server messages carry origin server and no terminator key', async () => {
     const { send, rawMessages } = open()
     await send({ jsonrpc: '2.0', id: 1, method: 'ping' })

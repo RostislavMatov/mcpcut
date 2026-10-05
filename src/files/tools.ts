@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import type { ToolDescriptor } from '../protocol/mcp.js'
 import { MAX_PATH_LENGTH, MAX_WRITE_BYTES } from './constants.js'
+import { SEARCH_MAX_LIMIT, SEARCH_QUERY_MAX_CHARS } from './search/constants.js'
 
 /**
  * The file server's tool definitions (ADR-0020 §1): name, description, input
@@ -29,6 +30,11 @@ export const editFileSchema = z.strictObject({
   path: pathField,
   edits: z.array(z.strictObject({ oldText: z.string().min(1), newText: contentField })).min(1).max(MAX_EDITS),
   expectedSha256: sha256Field.optional(),
+})
+export const searchFilesSchema = z.strictObject({
+  query: z.string().min(1).max(SEARCH_QUERY_MAX_CHARS),
+  path: pathField.optional(),
+  limit: z.number().int().min(1).max(SEARCH_MAX_LIMIT).optional(),
 })
 export const moveFileSchema = z.strictObject({ source: pathField, destination: pathField })
 
@@ -107,11 +113,21 @@ export const TOOL_SPECS: readonly ToolSpec[] = [
     annotations: DESTROY,
     schema: pathArgsSchema,
   },
+  {
+    name: 'search_files',
+    description:
+      'Search by meaning in the indexed folders you can read. Returns the best matching passages with their file path and line numbers. Secrets in the text are masked and files such as .env or keys are not indexed. The index can lag a minute behind recent changes: read_file shows the current text.',
+    annotations: READ,
+    schema: searchFilesSchema,
+  },
 ]
 
+/** The tool the server lists only when an index rule is on (`FilesBackend.searchListed`). */
+export const SEARCH_TOOL_NAME = 'search_files'
+
 /** The `tools/list` entries: each schema published as plain JSON Schema (no `$schema` key). */
-export function listedTools(): readonly ToolDescriptor[] {
-  return TOOL_SPECS.map((spec) => {
+export function listedTools(options: { readonly isSearchListed?: boolean } = {}): readonly ToolDescriptor[] {
+  return TOOL_SPECS.filter((spec) => spec.name !== SEARCH_TOOL_NAME || options.isSearchListed === true).map((spec) => {
     const { $schema: _ignored, ...inputSchema } = z.toJSONSchema(spec.schema, { io: 'input' }) as Record<string, unknown>
     return { name: spec.name, description: spec.description, inputSchema, annotations: spec.annotations }
   })

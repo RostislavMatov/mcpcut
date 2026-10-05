@@ -5,6 +5,7 @@ import { moveToTrash } from './io-trash.js'
 import { editFile, makeDirectory, moveEntry, replaceFile, writeNewFile } from './io-write.js'
 import type { TrashManifest } from './trash-manifest.js'
 import { resolveWithinRoots, type ResolvedPath } from './paths.js'
+import { searchFilesTool } from './tool-search.js'
 import { carriedMessage, carriedShortfall, innerGrantMessage, innerGrantOf } from './access-checks.js'
 import { MOVE_FILE_OPS, PATH_TOOL_OPS, writeFileOps } from './tool-access.js'
 import {
@@ -120,6 +121,7 @@ const HANDLERS: Readonly<Record<string, Handler>> = {
     ),
   move_file: moveFileTool,
   delete_file: deleteFileTool,
+  search_files: searchFilesTool,
 }
 
 /** True when the file server has a tool of that name. */

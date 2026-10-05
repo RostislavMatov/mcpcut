@@ -40,6 +40,7 @@ import { createPoolWiring } from './serve-pool-wiring.js'
 import { createServeSessionFactory } from './serve-runtime.js'
 import { createRootsStore } from '../files/roots-store.js'
 import { cliCommand } from './next-step.js'
+import { createSearchBackend, type SearchBackend } from '../files/search/search-backend.js'
 import { startFilesSync } from './serve-files-sync.js'
 import { startTrashSweep } from './serve-trash-sweep.js'
 import { waitForShutdown, type ServeRuntime } from './serve-shutdown.js'
@@ -191,6 +192,7 @@ function buildFront(
   opts: ServeCommandOptions,
   policy: PolicyProvider,
   journalDir: string,
+  filesSearch: SearchBackend,
 ): ServeRuntime {
   // Only the vault still holds a cross-process file lock (its forced-removal
   // warning belongs on THIS run's stderr); the state stores moved to SQLite
@@ -229,6 +231,7 @@ function buildFront(
       : {}),
     // Wiring-time configuration: read once, does not hot-reload.
     failClosed: policy.current().journal.failClosed,
+    filesSearch,
     ...(opts.journalCommitBatchImpl !== undefined
       ? { journalCommitBatchImpl: opts.journalCommitBatchImpl }
       : {}),
@@ -329,7 +332,16 @@ export async function runServe(
     return policyOutcome.exitCode
   }
 
-  const runtime = buildFront(flags, io, opts, policyOutcome.policy, journalDir)
+  // One search backend for the process: lazy, so it costs nothing until an agent searches; closed with `serve`.
+  const filesSearch = createSearchBackend({
+    journalDir,
+    cli: cliCommand(opts.processEnv ?? process.env),
+    env: opts.processEnv ?? process.env,
+    ...(opts.filesDb?.loadPg !== undefined ? { loadPg: opts.filesDb.loadPg } : {}),
+    ...(opts.filesDb?.schema !== undefined ? { schema: opts.filesDb.schema } : {}),
+    ...(opts.filesDb?.indexEmbedder !== undefined ? { createEmbedder: opts.filesDb.indexEmbedder } : {}),
+  })
+  const runtime = buildFront(flags, io, opts, policyOutcome.policy, journalDir, filesSearch)
   const { front } = runtime
 
   let bound: { port: number }
@@ -339,6 +351,7 @@ export async function runServe(
     io.stderr.write(describeBindFailure('serve', `${flags.host}:${flags.port}`, error))
     await front.close().catch(() => undefined)
     await runtime.residents.close().catch(() => undefined)
+    await filesSearch.close()
     return EXIT_STARTUP_FAILURE
   }
 
@@ -369,6 +382,7 @@ export async function runServe(
   } finally {
     sweep.stop()
     await filesSync.stop()
+    await filesSearch.close()
   }
   return 0
 }

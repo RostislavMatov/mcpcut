@@ -2,6 +2,7 @@ import { FILE_OPS, type FileOp } from './constants.js'
 import type { IoResult } from './io-common.js'
 import { resolveWithinRoots, type ResolvedPath } from './paths.js'
 import { opsAt, prepareRules, type FileRule, type PreparedRules } from './rights.js'
+import type { SearchBackend } from './search/search-backend.js'
 
 /** What one tools/call sees: roots and rules fetched fresh for this call only. */
 export interface ToolContext {
@@ -9,6 +10,7 @@ export interface ToolContext {
   readonly rules: readonly FileRule[]
   readonly prepared: PreparedRules
   readonly actor: string
+  readonly search?: SearchBackend
 }
 
 /** What one call needs from outside, fetched fresh each time (the server's and the gate's alike). */
@@ -16,11 +18,18 @@ export interface ContextSource {
   readonly roots: () => Promise<readonly string[]>
   readonly rules: () => Promise<readonly FileRule[]>
   readonly actor: string
+  readonly search?: SearchBackend
 }
 
 export async function contextFor(source: ContextSource): Promise<ToolContext> {
   const [roots, rules] = await Promise.all([source.roots(), source.rules()])
-  return { roots, rules, prepared: await prepareRules(rules), actor: source.actor }
+  return {
+    roots,
+    rules,
+    prepared: await prepareRules(rules),
+    actor: source.actor,
+    ...(source.search !== undefined ? { search: source.search } : {}),
+  }
 }
 
 export interface ToolOutput {

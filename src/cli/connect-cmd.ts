@@ -20,6 +20,7 @@ import { CONNECT_USAGE, DIAGNOSTIC_PREFIX, EXIT_CODE_REFUSED } from './connect-c
 import { createMismatchGuard } from './connect-mismatch.js'
 import { resolveConnectPolicy } from './connect-policy.js'
 import { resolveConnectTarget } from './connect-resolve.js'
+import type { SearchSeams } from '../files/search/search-backend.js'
 import { buildConnectStores, builtinFilesOf, sessionOptionsOf, upstreamArgsOf } from './connect-stores.js'
 import {
   startConnectSession,
@@ -97,6 +98,8 @@ export interface ConnectDeps {
   readonly childExitGraceMs?: number
   /** Grace period between SIGTERM and SIGKILL. */
   readonly killEscalationMs?: number
+  /** Test seams for `search_files` (the Postgres client, its schema, the embedder); the real ones by default. */
+  readonly filesSearch?: SearchSeams
   /** Store overrides, for tests that need a fake rather than a temp directory. */
   readonly agentsStore?: Pick<AgentsStore, 'findAgentByToken' | 'getAgent'>
   /** Group source for effective grants (M5.5 п.2); defaults to `<journalDir>/state.db`. */
@@ -239,6 +242,8 @@ export async function runConnect(
     agentName: target.agent.name,
     agents: agentReader,
     journalDir: deps.journalDir,
+    env,
+    searchSeams: deps.filesSearch,
   })
   const prepared = await prepareUpstream(
     upstreamArgsOf({ deps, env, record: target.record, onDiagnostic, ...(builtin !== undefined ? { files: builtin.backend } : {}) }),
