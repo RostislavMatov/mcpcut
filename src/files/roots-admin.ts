@@ -2,6 +2,7 @@ import { lstat, mkdir, readdir, realpath, rmdir, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { MAX_PATH_LENGTH, TRASH_DIR_NAME } from './constants.js'
 import { identitiesCollapse, statIdentity, type StatFn } from './identity.js'
+import { canonicalDataDir, overlapMessage, overlapsDataDir } from './data-overlap.js'
 import { hasTrashSegment } from './names.js'
 import { resolveWithinRoots } from './paths.js'
 
@@ -108,17 +109,21 @@ async function ensureTrash(root: string): Promise<TrashOutcome> {
 /**
  * Canonicalises and checks `raw`, then creates the root's trash. `existing`
  * are the roots already declared: a candidate inside one of their trashes is
- * refused by identity, not by spelling. Nested roots are allowed.
+ * refused by identity, not by spelling. Nested roots are allowed. A folder
+ * that is, lies in or holds `dataDir` (mcpcut's own data) is refused.
  */
 export async function prepareRoot(
   raw: string,
   existing: readonly string[] = [],
   identityOf: StatFn = statIdentity,
+  dataDir?: string,
 ): Promise<PrepareRootResult> {
   const problem = syntaxProblem(raw)
   if (problem !== null) return refuse(problem)
   const folder = await existingFolder(raw)
   if ('message' in folder) return refuse(folder.message)
+  const data = dataDir === undefined ? undefined : await canonicalDataDir(dataDir)
+  if (data !== undefined && overlapsDataDir(folder.real, data)) return refuse(overlapMessage(folder.real, data))
   const trashNote = 'a root cannot be (or lie inside) a trash folder: declare the folder that holds the files'
   if (hasTrashSegment(folder.real)) return refuse(`${folder.real} is a trash folder: ${trashNote}`)
   const within = await resolveWithinRoots(folder.real, existing)

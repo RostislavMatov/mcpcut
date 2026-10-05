@@ -1,4 +1,4 @@
-import { mkdtemp, realpath, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
@@ -150,7 +150,22 @@ describe('createAgentFilesBackend', () => {
     const store = createRootsStore({ journalDir: dir })
     const backend = createAgentFilesBackend({ agentName: 'me', agents: reader, journalDir: dir })
     expect(await backend.roots()).toEqual([])
+    const other = path.join(dir, '..', `${path.basename(dir)}-files`)
+    await mkdir(other)
+    cleanups.push(() => rm(other, { recursive: true, force: true }))
+    await store.add(other)
+    expect(await backend.roots()).toEqual([other])
+  })
+
+  test('a root that holds or lies in mcpcut data is dropped, so an agent never reaches the modules folder', async () => {
+    const { dir, reader } = await fixture()
+    const { createRootsStore } = await import('../../src/files/roots-store.js')
+    const store = createRootsStore({ journalDir: dir })
+    await mkdir(path.join(dir, 'inside'))
     await store.add(dir)
-    expect(await backend.roots()).toEqual([dir])
+    await store.add(path.join(dir, 'inside'))
+    await store.add(path.dirname(dir))
+    const backend = createAgentFilesBackend({ agentName: 'me', agents: reader, journalDir: dir })
+    expect(await backend.roots()).toEqual([])
   })
 })

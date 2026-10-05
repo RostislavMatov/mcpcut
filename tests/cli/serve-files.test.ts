@@ -1,4 +1,5 @@
-import { mkdir, readFile, realpath } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
 import { createRootsStore } from '../../src/files/roots-store.js'
@@ -6,8 +7,12 @@ import { AGENT, INITIALIZE_BODY, disposeServeFixtures, startServe, waitUntil, ty
 
 /** The built-in file server behind `serve` (ADR-0020 §1): the HTTP path opens it in process and checks rights in the gate. */
 
+/** Roots live beside mcpcut's data folder, never inside it. */
+const rootParents: string[] = []
+
 afterEach(async () => {
   await disposeServeFixtures()
+  await Promise.all(rootParents.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
 })
 
 const FILES_PATH = `/agents/${AGENT}/servers/files`
@@ -18,7 +23,8 @@ function rpc(id: number, method: string, params: unknown): string {
 
 async function setup(ops: readonly ('read' | 'write' | 'edit' | 'delete')[]): Promise<{ fixture: ServeFixture; folder: string; sessionId: string }> {
   const fixture = await startServe()
-  const root = await realpath(fixture.journalDir)
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'mcpcut-serve-root-')))
+  rootParents.push(root)
   const folder = join(root, 'data', 'work')
   await mkdir(folder, { recursive: true })
   await createRootsStore({ journalDir: fixture.journalDir }).add(join(root, 'data'))

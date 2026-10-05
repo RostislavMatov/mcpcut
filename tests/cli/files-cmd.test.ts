@@ -130,6 +130,28 @@ describe('files root', () => {
     expect(await createRootsStore({ journalDir }).list()).toEqual([])
   })
 
+  test('add refuses the data folder, a folder inside it and one that holds it', async () => {
+    await mkdir(join(journalDir, 'inside'))
+    for (const folder of [journalDir, join(journalDir, 'inside'), base]) {
+      const result = await files(['root', 'add', folder])
+
+      expect(result.code).toBe(1)
+      expect(result.err).toContain(`overlaps mcpcut's own data folder ${journalDir}: choose a folder outside it`)
+    }
+    expect(await createRootsStore({ journalDir }).list()).toEqual([])
+  })
+
+  test('list marks a declared root that holds mcpcut data and says how to remove it', async () => {
+    await createRootsStore({ journalDir }).add(base)
+
+    const result = await files(['root', 'list'])
+
+    expect(result.code).toBe(0)
+    expect(result.out).toContain(`${base}  trash missing`)
+    expect(result.out).toContain(`unsafe: holds mcpcut data — remove it: mcpcut files root remove ${base}`)
+    expect(result.err).toContain(`mcpcut files root remove ${base}`)
+  })
+
   test('list shows each root and whether its trash is present', async () => {
     await declareRoot()
     await rm(join(root, TRASH_DIR_NAME), { recursive: true })

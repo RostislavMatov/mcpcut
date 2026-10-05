@@ -2,6 +2,8 @@ import type { EffectiveAgentReader } from '../agents/effective-reader.js'
 import type { MessageSink, MessageSource, McpMessage } from '../transport/message.js'
 import { serverMessage } from '../transport/message.js'
 import { FILES_SERVER_NAME } from './constants.js'
+import { JOURNAL_DIR } from '../config.js'
+import { rootsOutsideDataDir } from './data-overlap.js'
 import { createRootsStore } from './roots-store.js'
 import type { FileRule } from './rights.js'
 import { createFilesServer, type FilesServer, type JsonRpcResponse } from './server.js'
@@ -108,7 +110,7 @@ export function createAgentFilesBackend(args: AgentFilesBackendArgs): FilesBacke
   const roots = createRootsStore(args.journalDir !== undefined ? { journalDir: args.journalDir } : {})
   return {
     actor: args.agentName,
-    roots: async () => (await roots.list()).map((root) => root.path),
+    roots: async () => rootsOutsideDataDir((await roots.list()).map((root) => root.path), args.journalDir ?? JOURNAL_DIR),
     rules: async () => {
       const agent = await args.agents.getAgent(args.agentName)
       // A revoked or vanished agent has no rights, whatever its grants say.

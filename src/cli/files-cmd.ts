@@ -3,6 +3,8 @@ import path from 'node:path'
 import { effectiveGrantsOf } from '../agents/effective.js'
 import { AgentNotFoundError } from '../agents/store.js'
 import { createAgentsStore } from '../agents/store.js'
+import { JOURNAL_DIR } from '../config.js'
+import { rootsOutsideDataDir } from '../files/data-overlap.js'
 import { TRASH_DIR_NAME, FILES_SERVER_NAME } from '../files/constants.js'
 import { FilesDbError } from '../files/db/errors.js'
 import { RuleRefusedError } from '../files/grant-admin.js'
@@ -117,9 +119,16 @@ async function runRootList(io: AgentCliIo, opts: FilesCliOptions): Promise<numbe
     return 0
   }
   const states = await Promise.all(roots.map((root) => trashState(root.path)))
+  const safe = new Set(await rootsOutsideDataDir(roots.map((root) => root.path), opts.journalDir ?? JOURNAL_DIR))
+  const unsafe = roots.find((root) => !safe.has(root.path))
   roots.forEach((root, index) => {
-    io.stdout.write(`${formatReadableField(root.path)}  trash ${states[index]}  added ${formatReadableField(root.addedAt)}\n`)
+    const note = safe.has(root.path) ? '' : `  unsafe: holds mcpcut data — remove it: ${cli} files root remove ${shellArg(root.path)}`
+    io.stdout.write(`${formatReadableField(root.path)}  trash ${states[index]}  added ${formatReadableField(root.addedAt)}${note}\n`)
   })
+  if (unsafe !== undefined) {
+    io.stderr.write(`Agents cannot reach ${formatReadableField(unsafe.path)} while it overlaps mcpcut data: ${cli} files root remove ${shellArg(unsafe.path)}\n`)
+    return 0
+  }
   const missing = roots.find((_root, index) => states[index] === 'missing')
   if (missing !== undefined) {
     io.stderr.write(`A trash is missing. Recreate it: ${cli} files root add ${shellArg(missing.path)}\n`)

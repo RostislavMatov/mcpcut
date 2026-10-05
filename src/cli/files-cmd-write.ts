@@ -12,6 +12,7 @@ import {
   ruleKeysOf,
 } from '../files/grant-admin.js'
 import { prepareRoot } from '../files/roots-admin.js'
+import { JOURNAL_DIR } from '../config.js'
 import { createRootsStore } from '../files/roots-store.js'
 import { createRegistryStore } from '../registry/store.js'
 import { formatReadableField, replaceControlChars } from '../journal/format.js'
@@ -107,7 +108,12 @@ export async function runRootAdd(args: string[], io: AgentCliIo, opts: FilesCliO
   // A server of another kind named `files` is a conflict: refuse before the folder is touched.
   if ((await filesServerState(registryOf(opts))) === 'conflict') return fail(io, conflictMessage(opts.env))
   const roots = createRootsStore({ ...(opts.journalDir !== undefined ? { journalDir: opts.journalDir } : {}) })
-  const prepared = await prepareRoot(raw, (await roots.list()).map((root) => root.path))
+  const prepared = await prepareRoot(
+    raw,
+    (await roots.list()).map((root) => root.path),
+    undefined,
+    opts.journalDir ?? JOURNAL_DIR,
+  )
   if (!prepared.ok) return fail(io, replaceControlChars(prepared.message))
   const registered = await registerFilesServer(registryOf(opts))
   const { added } = await roots.add(prepared.path)
