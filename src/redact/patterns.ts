@@ -1,9 +1,11 @@
 import {
+  PRIVATE_KEY_FOOTER_PATTERN,
+  PRIVATE_KEY_HEADER_PATTERN,
   REDACTED_PLACEHOLDER,
   REDACT_KEY_PATTERNS,
   REDACT_KEY_TOKENS,
   REDACT_PARTIAL_VALUE_PATTERNS,
-  REDACT_VALUE_PATTERNS,
+  REDACT_TOKEN_PATTERNS,
 } from '../config.js'
 
 /**
@@ -55,11 +57,41 @@ export function redactText(value: string): string {
     (current, rule) => current.replace(clonePattern(rule.pattern), rule.replacement),
     value,
   )
-  const withValues = REDACT_VALUE_PATTERNS.reduce(
+  const withValues = REDACT_TOKEN_PATTERNS.reduce(
     (current, pattern) => current.replace(clonePattern(pattern), REDACTED_PLACEHOLDER),
-    withPartials,
+    redactKeyBlocks(withPartials),
   )
   return scrubKeyedValues(withValues)
+}
+
+/** The first match of `pattern` at or after `from`, or null. */
+function matchFrom(pattern: RegExp, text: string, from: number): RegExpExecArray | null {
+  pattern.lastIndex = from
+  return pattern.exec(text)
+}
+
+/**
+ * Replaces each complete PEM private key block — a header, then everything up
+ * to the first footer after it — with the placeholder: what the lazy regex
+ * `BEGIN…[\s\S]*?…END` matches, in one linear pass. The regex rescans to the
+ * end of the text from every header that has no footer, which a crafted input
+ * of repeated headers turns into minutes.
+ */
+export function redactKeyBlocks(text: string): string {
+  const headers = clonePattern(PRIVATE_KEY_HEADER_PATTERN)
+  const footers = clonePattern(PRIVATE_KEY_FOOTER_PATTERN)
+  const parts: string[] = []
+  let cursor = 0
+  for (let header = matchFrom(headers, text, cursor); header !== null; header = matchFrom(headers, text, cursor)) {
+    // The first footer that starts after this header, found afresh: a footer list built up front skips the
+    // real footer when a lookalike overlaps it.
+    const footer = matchFrom(footers, text, header.index + header[0].length)
+    // No footer after this header means none after any later header either.
+    if (footer === null) break
+    parts.push(text.slice(cursor, header.index), REDACTED_PLACEHOLDER)
+    cursor = footer.index + footer[0].length
+  }
+  return parts.length === 0 ? text : [...parts, text.slice(cursor)].join('')
 }
 
 /**

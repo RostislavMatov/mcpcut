@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- **Secret redaction no longer slows down on crafted text.** Two of its
+  patterns (credentials in a URL, a private key block without its footer)
+  rescanned the rest of the text from every candidate start, so a tool
+  argument or a server answer of a few hundred kilobytes shaped for it could
+  hold the proxy for minutes. Both now scan linearly; what they redact is
+  unchanged (a URL scheme is matched up to 32 characters).
+
 ## [0.3.0] — 2026-10-04
 
 ### Added
