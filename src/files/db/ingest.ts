@@ -1,10 +1,8 @@
-import { TREE_ACTIONS, entryOfCall, entryOfEdit, type EditEntry, type FileAuditEntry } from '../audit-entry.js'
-import { ACCESS_EDIT_SESSION_ID } from '../../journal/access-edit-record.js'
-import { journalBounds, journalRecordsAfter, type RecordAfterSeq } from '../../journal/db-read-after.js'
-import { pathModuleOf } from '../names.js'
+import { journalBounds, journalRecordsAfter } from '../../journal/db-read-after.js'
 import type { FilesDb } from './connection.js'
 import { INGEST_LOCK_KEY } from './constants.js'
-import { pathMatchKey } from './path-key.js'
+import { insertMapped } from './ingest-insert.js'
+import { mapRecord, touchedOf } from './ingest-map.js'
 import type { PgQueryable } from './pg-types.js'
 
 /**
@@ -24,6 +22,8 @@ export interface IngestOptions {
 
 export interface IngestResult {
   readonly added: number
+  /** Records the database refused for what they hold: still in the journal, not in the index. */
+  readonly skipped: number
   /** The journal `seq` the index has been filled through. */
   readonly lastSeq: number
   readonly journalMaxSeq: number
@@ -33,110 +33,12 @@ export interface IngestResult {
 }
 
 const DEFAULT_BATCH_SIZE = 1000
-/** Tools that change the file system: the catalog re-stats what they named. */
-const MUTATING_TOOLS: ReadonlySet<string> = new Set(['write_file', 'edit_file', 'create_directory', 'move_file', 'delete_file'])
-const ALLOW_OUTCOME = 'allow'
-
-interface EventRow {
-  readonly journal_seq: number
-  readonly record_id: string
-  readonly session_id: string
-  readonly ts: string
-  readonly actor_kind: string
-  readonly actor_name: string | null
-  readonly actor_via: string | null
-  readonly action: string
-  readonly outcome: string | null
-  readonly rule: string | null
-  readonly subject_kind: string | null
-  readonly subject_name: string | null
-  readonly agent_key: string | null
-  readonly paths: readonly string[]
-}
-
-interface PathRow {
-  readonly journal_seq: number
-  readonly ord: number
-  readonly path_key: string
-  readonly is_tree: boolean
-}
-
-interface Mapped {
-  readonly event: EventRow
-  readonly pathRows: readonly PathRow[]
-}
 
 interface BatchResult {
   readonly added: number
+  readonly skipped: number
   readonly lastSeq: number
   readonly touched: readonly string[]
-}
-
-function mapRecord(row: RecordAfterSeq, platform: NodeJS.Platform): Mapped | undefined {
-  const isEdit = row.sessionId === ACCESS_EDIT_SESSION_ID
-  const mapped = isEdit ? entryOfEdit(row.record) : entryOfCall(row.sessionId, row.record)
-  if (mapped === undefined) return undefined
-  return { event: eventRowOf(row.seq, mapped, agentKeyOf(mapped)), pathRows: pathRowsOf(row.seq, mapped, platform) }
-}
-
-/** What `--agent` matches: the calling agent, or the agent an admin edit was for. */
-function agentKeyOf(entry: FileAuditEntry | EditEntry): string | null {
-  if ('agentOfEdit' in entry) return entry.agentOfEdit ?? null
-  return entry.actor.kind === 'agent' ? entry.actor.name : null
-}
-
-function eventRowOf(seq: number, entry: FileAuditEntry, agentKey: string | null): EventRow {
-  return {
-    journal_seq: seq,
-    record_id: entry.recordId,
-    session_id: entry.sessionId,
-    ts: entry.ts,
-    actor_kind: entry.actor.kind,
-    actor_name: entry.actor.name,
-    actor_via: entry.actor.kind === 'admin' ? entry.actor.via : null,
-    action: entry.action,
-    outcome: entry.outcome,
-    rule: entry.rule,
-    subject_kind: entry.subject?.kind ?? null,
-    subject_name: entry.subject?.name ?? null,
-    agent_key: agentKey,
-    paths: entry.paths,
-  }
-}
-
-function pathRowsOf(seq: number, entry: FileAuditEntry, platform: NodeJS.Platform): readonly PathRow[] {
-  const isAbsolute = pathModuleOf(platform).isAbsolute
-  const isTree = TREE_ACTIONS.has(entry.action)
-  return entry.paths.flatMap((value, ord) =>
-    isAbsolute(value) ? [{ journal_seq: seq, ord, path_key: pathMatchKey(value, platform), is_tree: isTree }] : [],
-  )
-}
-
-function touchedOf(mapped: readonly Mapped[]): string[] {
-  return mapped
-    .filter(({ event }) => event.actor_kind === 'agent' && event.outcome === ALLOW_OUTCOME && MUTATING_TOOLS.has(event.action))
-    .flatMap(({ event }) => [...event.paths])
-}
-
-const INSERT_EVENTS =
-  'INSERT INTO file_events (journal_seq, record_id, session_id, ts, actor_kind, actor_name, actor_via, action, outcome, rule, ' +
-  'subject_kind, subject_name, agent_key, paths) ' +
-  'SELECT x.journal_seq, x.record_id, x.session_id, x.ts, x.actor_kind, x.actor_name, x.actor_via, x.action, x.outcome, x.rule, ' +
-  'x.subject_kind, x.subject_name, x.agent_key, ARRAY(SELECT jsonb_array_elements_text(x.paths)) ' +
-  'FROM jsonb_to_recordset($1::jsonb) AS x(journal_seq bigint, record_id text, session_id text, ts text, actor_kind text, ' +
-  'actor_name text, actor_via text, action text, outcome text, rule text, subject_kind text, subject_name text, agent_key text, paths jsonb) ' +
-  'ON CONFLICT DO NOTHING'
-
-const INSERT_PATHS =
-  'INSERT INTO file_event_paths (journal_seq, ord, path_key, is_tree) ' +
-  'SELECT x.journal_seq, x.ord, x.path_key, x.is_tree FROM jsonb_to_recordset($1::jsonb) AS x(journal_seq bigint, ord smallint, path_key text, is_tree boolean) ' +
-  'ON CONFLICT DO NOTHING'
-
-async function insertMapped(tx: PgQueryable, mapped: readonly Mapped[]): Promise<number> {
-  if (mapped.length === 0) return 0
-  const inserted = await tx.query(INSERT_EVENTS, [JSON.stringify(mapped.map((one) => one.event))])
-  await tx.query(INSERT_PATHS, [JSON.stringify(mapped.flatMap((one) => one.pathRows))])
-  return inserted.rowCount ?? 0
 }
 
 async function readCursor(tx: PgQueryable): Promise<number> {
@@ -150,9 +52,9 @@ async function runBatch(db: FilesDb, opts: IngestOptions, batchSize: number): Pr
     const cursor = await readCursor(tx)
     const after = await journalRecordsAfter(opts.journalDir, cursor, batchSize)
     const mapped = after.rows.flatMap((row) => mapRecord(row, opts.platform) ?? [])
-    const added = await insertMapped(tx, mapped)
+    const { added, skipped } = await insertMapped(tx, mapped)
     await tx.query('UPDATE ingest_state SET last_seq = $1, updated_at = now() WHERE id = 1', [after.throughSeq])
-    return { added, lastSeq: after.throughSeq, touched: touchedOf(mapped) }
+    return { added, skipped, lastSeq: after.throughSeq, touched: touchedOf(mapped) }
   })
 }
 
@@ -176,13 +78,15 @@ export async function ingestJournal(db: FilesDb, opts: IngestOptions): Promise<I
   const startedAt = now()
   const { maxSeq } = await reconcile(db, opts.journalDir)
   let added = 0
+  let skipped = 0
   let lastSeq = 0
   let touched: readonly string[] = []
   do {
     const batch = await runBatch(db, opts, batchSize)
     added += batch.added
+    skipped += batch.skipped
     lastSeq = batch.lastSeq
     touched = [...touched, ...batch.touched]
   } while (lastSeq < maxSeq && now() - startedAt < opts.budgetMs)
-  return { added, lastSeq, journalMaxSeq: maxSeq, caughtUp: lastSeq >= maxSeq, touched }
+  return { added, skipped, lastSeq, journalMaxSeq: maxSeq, caughtUp: lastSeq >= maxSeq, touched }
 }

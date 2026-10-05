@@ -32,3 +32,14 @@ export function descendantRange(key: string, platform: NodeJS.Platform): { reado
   const base = key.endsWith(sep) ? key.slice(0, -1) : key
   return { from: `${base}${sep}`, to: `${base}${String.fromCharCode(sep.charCodeAt(0) + 1)}` }
 }
+
+/** The indexed part of a key: 600 code points are at most 2400 bytes, under the btree row limit of 2704. */
+export const KEY_PREFIX_CODE_POINTS = 600
+
+export function keyPrefix(key: string): string {
+  return Array.from(key).slice(0, KEY_PREFIX_CODE_POINTS).join('')
+}
+
+export function fitsKeyPrefix(value: string): boolean {
+  return Array.from(value).length <= KEY_PREFIX_CODE_POINTS
+}

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { ACCESS_EDIT_SESSION_ID } from '../../../src/journal/access-edit-record.js'
 import type { JournalRecord } from '../../../src/journal/record.js'
 import { createJournalSink } from '../../../src/journal/sink.js'
@@ -57,4 +58,11 @@ export async function writeJournal(dir: string, sessionId: string, records: read
   const sink = createJournalSink(sessionId, { dir })
   for (const entry of records) sink.write({ ...entry, sessionId })
   await sink.close()
+}
+
+/** Text that Postgres cannot compress away, so an oversized index key really is oversized. */
+export function incompressible(length: number): string {
+  let out = ''
+  for (let i = 0; out.length < length; i += 1) out += createHash('sha256').update(String(i)).digest('hex')
+  return out.slice(0, length)
 }

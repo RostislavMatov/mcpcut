@@ -8,7 +8,7 @@ import { openFilesDb, type FilesDb } from '../../../src/files/db/connection.js'
 import { ingestJournal } from '../../../src/files/db/ingest.js'
 import { loadPg } from '../../../src/files/db/pg-loader.js'
 import { ACCESS_EDIT_SESSION_ID } from '../../../src/journal/access-edit-record.js'
-import { call, edit, writeJournal } from './journal-fixtures.js'
+import { call, edit, incompressible, writeJournal } from './journal-fixtures.js'
 import { describePg, PG_URL, withTestSchema } from './pg-helpers.js'
 
 /** The Postgres audit is pinned to the journal audit: the same journal, the same queries, the same entries. */
@@ -101,5 +101,23 @@ describePg('queryFileAuditDb pinned to queryFileAudit', () => {
     await seed()
     await ingestJournal(db, { journalDir: dir, platform: 'linux', budgetMs: 60_000 })
     expect((await queryFileAuditDb(db, { limit: 0 }, 'linux')).entries).toHaveLength(1)
+  })
+
+  test('a 3000-character path is found by itself, by a parent folder and by a descendant query', async () => {
+    const long = `/data/${incompressible(2990)}`
+    await writeJournal(dir, 's1', [
+      call({ payload: { path: `${long}/leaf.txt` } }),
+      call({ tool: 'move_file', payload: { source: long, destination: '/data/elsewhere' } }),
+      call({ payload: { path: `${long}x/sibling` } }),
+    ])
+    await ingestJournal(db, { journalDir: dir, platform: 'linux', budgetMs: 60_000 })
+    const idsOf = async (path: string) => (await queryFileAuditDb(db, { limit: 10, path }, 'linux')).entries.map((entry) => entry.action).sort()
+
+    expect(await idsOf(`${long}/leaf.txt`)).toEqual(['move_file', 'read_file'])
+    expect(await idsOf(long)).toEqual(['move_file', 'read_file'])
+    expect(await idsOf(`${long}/leaf.txt/`)).toEqual(['move_file', 'read_file'])
+    expect(await idsOf('/data')).toEqual(['move_file', 'read_file', 'read_file'])
+    expect(await idsOf(`${long}x`)).toEqual(['read_file'])
+    expect(await idsOf(`${long}y`)).toEqual([])
   })
 })

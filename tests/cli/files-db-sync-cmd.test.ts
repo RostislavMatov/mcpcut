@@ -6,7 +6,7 @@ import { ADMIN_TOKEN_ENV_VAR } from '../../src/admin/constants.js'
 import { createAdminStore } from '../../src/admin/store.js'
 import { dispatch } from '../../src/cli.js'
 import { FILES_PG_URL_SECRET } from '../../src/files/db/constants.js'
-import type { FilesDb } from '../../src/files/db/connection.js'
+import { openFilesDb, type FilesDb } from '../../src/files/db/connection.js'
 import { FilesDbModuleMissingError, loadPg } from '../../src/files/db/pg-loader.js'
 import { createVaultStore } from '../../src/vault/store.js'
 import { call, writeJournal } from '../files/db/journal-fixtures.js'
@@ -120,5 +120,25 @@ describePg('files db sync on a real Postgres', () => {
     expect(result.code).toBe(1)
     expect(result.out).toContain(`${folder}  error: the folder is gone or cannot be read`)
     expect(result.err).toContain(`files root remove ${folder}`)
+  })
+
+  test('records the index refuses are counted with the way to read them from the journal', async () => {
+    await declareRoot()
+    await writeJournal(journalDir, 's1', [call({ payload: { path: join(folder, 'a.txt') } }), call({ payload: { path: join(folder, 'bad') } })])
+    const { schema, cleanup } = withTestSchema()
+    cleanups.push(cleanup)
+    await createVaultStore({ journalDir }).setSecret(FILES_PG_URL_SECRET, PG_URL)
+    const db = await openFilesDb({ pg: await loadPg(process.cwd()), url: PG_URL, schema })
+    await db.query(
+      `CREATE FUNCTION refuse_bad() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.paths[1] LIKE '%/bad' THEN ` +
+        `RAISE EXCEPTION 'refused' USING ERRCODE = '22023'; END IF; RETURN NEW; END $$`,
+    )
+    await db.query('CREATE TRIGGER refuse_bad BEFORE INSERT ON file_events FOR EACH ROW EXECUTE FUNCTION refuse_bad()')
+    await db.close()
+
+    const result = await files(['db', 'sync'], schema)
+
+    expect(result.code).toBe(0)
+    expect(result.out).toContain('1 record could not be indexed; they are still in the journal: mcpcut files audit\n')
   })
 })

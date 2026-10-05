@@ -58,6 +58,9 @@ export async function runDbSync(io: AgentCliIo, opts: FilesCliOptions): Promise<
       withWalk: true,
     })
     io.stdout.write(`events: +${ingest.added} (synced through record ${ingest.lastSeq})\n`)
+    if (ingest.skipped > 0) {
+      io.stdout.write(`${countOf(ingest.skipped, 'record')} could not be indexed; they are still in the journal: ${cli} files audit\n`)
+    }
     walks.forEach((walk) => io.stdout.write(`${walkLine(walk)}\n`))
     io.stderr.write(`${nextStepOf(walks, roots, cli)}\n`)
     return walks.some((walk) => walk.error !== undefined) ? 1 : 0

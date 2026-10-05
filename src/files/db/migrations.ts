@@ -40,10 +40,12 @@ CREATE TABLE file_event_paths (
   journal_seq bigint NOT NULL REFERENCES file_events (journal_seq) ON DELETE CASCADE,
   ord smallint NOT NULL,
   path_key text COLLATE "C" NOT NULL,
+  key_prefix text COLLATE "C" NOT NULL,
   is_tree boolean NOT NULL,
   PRIMARY KEY (journal_seq, ord)
 );
-CREATE INDEX file_event_paths_key ON file_event_paths (path_key);
+-- key_prefix is the first 600 code points of path_key: a long path never exceeds the btree row limit.
+CREATE INDEX file_event_paths_key ON file_event_paths (key_prefix);
 
 CREATE TABLE catalog (
   root text NOT NULL,

@@ -12,11 +12,14 @@ export type FilesDbErrorKind = 'unreachable' | 'other'
 
 export class FilesDbError extends Error {
   readonly kind: FilesDbErrorKind
+  /** The server's SQLSTATE when it sent one (`22…` data exceptions, `54…` limits exceeded). */
+  readonly sqlState: string | undefined
 
-  constructor(message: string, kind: FilesDbErrorKind = 'other') {
+  constructor(message: string, kind: FilesDbErrorKind = 'other', sqlState?: string) {
     super(message)
     this.name = 'FilesDbError'
     this.kind = kind
+    this.sqlState = sqlState
   }
 }
 
@@ -101,5 +104,5 @@ export function mapPgError(error: unknown, ctx: DbErrorContext): FilesDbError {
     return new FilesDbError(`Postgres user ${user} may not create the schema "${ctx.schema}": grant it CREATE on database "${database}"`)
   }
   const message = error instanceof Error ? error.message : String(error)
-  return new FilesDbError(`Postgres error ${code ?? 'unknown'}: ${scrubPassword(message, ctx.url)}`)
+  return new FilesDbError(`Postgres error ${code ?? 'unknown'}: ${scrubPassword(message, ctx.url)}`, 'other', code)
 }
