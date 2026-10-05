@@ -4,7 +4,8 @@ import type { PgModule } from '../db/pg-types.js'
 import { pathMatchKey } from '../db/path-key.js'
 import { isWithinOn, segmentCount } from '../names.js'
 import { loadCatalogFiles, loadIndexRows } from './index-store.js'
-import { planIndex, absoluteOf } from './index-plan.js'
+import { FAILED_REASON } from './constants.js'
+import { planIndex, absoluteOf, type IndexRow } from './index-plan.js'
 import type { IndexRule } from './index-rules-store.js'
 
 /**
@@ -24,6 +25,8 @@ export interface SearchTotals {
   readonly indexed: number
   readonly chunks: number
   readonly skipped: number
+  /** Files whose embedding failed (parked for a retry); not part of `skipped`. */
+  readonly failed: number
   /** ISO time of the newest `indexed_at`, or `null` when nothing was indexed. */
   readonly lastIndexedAt: string | null
 }
@@ -32,13 +35,14 @@ export interface RuleCounts {
   readonly indexed: number
   readonly chunks: number
   readonly skipped: number
+  readonly failed: number
   readonly pending: number
 }
 
 const HAS_TABLES = "SELECT to_regclass('search_files') IS NOT NULL AS present"
 const TOTALS =
   "SELECT count(*) FILTER (WHERE status = 'indexed') AS indexed, coalesce(sum(chunks) FILTER (WHERE status = 'indexed'), 0) AS chunks, " +
-  "count(*) FILTER (WHERE status = 'skipped') AS skipped, to_char(max(indexed_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS last FROM search_files"
+  "count(*) FILTER (WHERE status = 'skipped' AND reason IS DISTINCT FROM 'failed') AS skipped, count(*) FILTER (WHERE reason = 'failed') AS failed, to_char(max(indexed_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS last FROM search_files"
 
 async function withPool<T>(target: SearchTarget, fn: (pool: ReturnType<typeof createPool>) => Promise<T>): Promise<T> {
   const pool = createPool(target.pg, target.url, target.schema)
@@ -60,8 +64,8 @@ async function hasSearchTables(pool: ReturnType<typeof createPool>): Promise<boo
 export async function readSearchTotals(target: SearchTarget): Promise<SearchTotals | undefined> {
   return withPool(target, async (pool) => {
     if (!(await hasSearchTables(pool))) return undefined
-    const row = (await pool.query<{ indexed: string; chunks: string; skipped: string; last: string | null }>(TOTALS)).rows[0]
-    return { indexed: Number(row?.indexed ?? 0), chunks: Number(row?.chunks ?? 0), skipped: Number(row?.skipped ?? 0), lastIndexedAt: row?.last ?? null }
+    const row = (await pool.query<{ indexed: string; chunks: string; skipped: string; failed: string; last: string | null }>(TOTALS)).rows[0]
+    return { indexed: Number(row?.indexed ?? 0), chunks: Number(row?.chunks ?? 0), skipped: Number(row?.skipped ?? 0), failed: Number(row?.failed ?? 0), lastIndexedAt: row?.last ?? null }
   })
 }
 
@@ -78,17 +82,23 @@ function governingRule(absPath: string, rules: readonly IndexRule[], platform: N
   return best?.rule
 }
 
-type Tally = { indexed: number; chunks: number; skipped: number; pending: number }
+type Tally = RuleCounts
 
 function bump(tallies: Map<string, Tally>, rule: IndexRule | undefined, change: Partial<Tally>): void {
   if (rule === undefined || !rule.enabled) return
-  const current = tallies.get(rule.path) ?? { indexed: 0, chunks: 0, skipped: 0, pending: 0 }
+  const current = tallies.get(rule.path) ?? { indexed: 0, chunks: 0, skipped: 0, failed: 0, pending: 0 }
   tallies.set(rule.path, {
     indexed: current.indexed + (change.indexed ?? 0),
     chunks: current.chunks + (change.chunks ?? 0),
     skipped: current.skipped + (change.skipped ?? 0),
+    failed: current.failed + (change.failed ?? 0),
     pending: current.pending + (change.pending ?? 0),
   })
+}
+
+function rowChange(row: IndexRow): Partial<Tally> {
+  if (row.status === 'indexed') return { indexed: 1, chunks: row.chunks }
+  return row.reason === FAILED_REASON ? { failed: 1 } : { skipped: 1 }
 }
 
 export interface RuleCountsInput {
@@ -97,6 +107,7 @@ export interface RuleCountsInput {
   readonly platform: NodeJS.Platform
   /** The model the index is meant to hold: files embedded by another count as pending. */
   readonly model: string
+  readonly now?: Date
 }
 
 /**
@@ -108,20 +119,20 @@ export async function readRuleCounts(target: SearchTarget, input: RuleCountsInpu
   return withPool(target, async (pool) => {
     if (!(await hasSearchTables(pool))) return undefined
     const [files, rows] = await Promise.all([loadCatalogFiles(pool, input.roots), loadIndexRows(pool)])
-    const plan = planIndex({ files, rows, rules: input.rules, platform: input.platform, model: input.model })
+    const plan = planIndex({ files, rows, rules: input.rules, platform: input.platform, model: input.model, now: input.now ?? new Date() })
     const tallies = new Map<string, Tally>()
     const doomed = new Set(plan.remove.map((row) => `${row.root}\u0000${row.relPath}`))
     for (const row of rows) {
       if (doomed.has(`${row.root}\u0000${row.relPath}`)) continue
       const rule = governingRule(absoluteOf(row.root, row.relPath, input.platform), input.rules, input.platform)
-      bump(tallies, rule, row.status === 'indexed' ? { indexed: 1, chunks: row.chunks } : { skipped: 1 })
+      bump(tallies, rule, rowChange(row))
     }
     for (const work of plan.work) bump(tallies, governingRule(work.abs, input.rules, input.platform), { pending: 1 })
     for (const file of plan.waiting) bump(tallies, governingRule(absoluteOf(file.root, file.relPath, input.platform), input.rules, input.platform), { pending: 1 })
     return new Map(
       input.rules
         .filter((rule) => rule.enabled)
-        .map((rule) => [rule.path, tallies.get(rule.path) ?? { indexed: 0, chunks: 0, skipped: 0, pending: 0 }]),
+        .map((rule) => [rule.path, tallies.get(rule.path) ?? { indexed: 0, chunks: 0, skipped: 0, failed: 0, pending: 0 }]),
     )
   })
 }

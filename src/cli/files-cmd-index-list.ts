@@ -45,7 +45,7 @@ function ruleLine(rule: IndexRule, counts: Counts): string {
   if (!rule.enabled) return `off  ${path}  (cut out)`
   const found = counts.kind === 'counts' ? counts.byRule.get(rule.path) : undefined
   if (found === undefined) return `on   ${path}`
-  return `on   ${path}  ${found.indexed} files, ${found.chunks} chunks, ${found.skipped} skipped, ${found.pending} pending`
+  return `on   ${path}  ${found.indexed} files, ${found.chunks} chunks, ${found.skipped} skipped, ${found.pending} pending${found.failed > 0 ? `, ${found.failed} failed` : ''}`
 }
 
 async function nextStepOf(opts: FilesCliOptions, rules: readonly IndexRule[], counts: Counts, runtimeProblem: string | null): Promise<string> {

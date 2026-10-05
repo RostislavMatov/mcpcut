@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { pathMatchKey } from '../db/path-key.js'
 import { pathModuleOf } from '../names.js'
-import { INDEX_MAX_FILE_BYTES } from './constants.js'
+import { FAILED_REASON, INDEX_MAX_FILE_BYTES, INDEX_RETRY_FAILED_MS } from './constants.js'
 import type { IndexRule } from './index-rules-store.js'
 import { prepareIndexRules, skipReasonOfName } from './index-scope.js'
 
@@ -26,6 +26,8 @@ export interface IndexRow {
   readonly size: number
   readonly model: string
   readonly chunks: number
+  /** When the row was written, in epoch milliseconds. */
+  readonly indexedAt: number
 }
 
 export type SkipKind = 'secret-like name' | 'too large'
@@ -38,7 +40,7 @@ export type PlannedWork =
 export interface IndexPlan {
   /** Index rows to delete: out of scope, or no longer in the catalog. */
   readonly remove: ReadonlyArray<{ readonly root: string; readonly relPath: string }>
-  /** In deterministic (root, rel_path) order. */
+  /** Files with no row first, then changed ones by how long ago they were last indexed (oldest first), ties by (root, rel_path). */
   readonly work: readonly PlannedWork[]
   /** In-scope files whose catalog hash is not computed yet: they wait for a later round. */
   readonly waiting: readonly CatalogFile[]
@@ -50,6 +52,7 @@ export interface PlanInput {
   readonly rules: readonly IndexRule[]
   readonly platform: NodeJS.Platform
   readonly model: string
+  readonly now: Date
 }
 
 export function absoluteOf(root: string, relPath: string, platform: NodeJS.Platform): string {
@@ -61,10 +64,17 @@ const keyOf = (root: string, relPath: string): string => `${root}\u0000${relPath
 
 function isDone(row: IndexRow | undefined, expected: { sha256: string | null; model: string; reason?: SkipKind }): boolean {
   if (row === undefined || row.model !== expected.model) return false
+  if (row.reason === FAILED_REASON) return false
   if (expected.reason !== undefined) {
     return row.status === 'skipped' && row.reason === expected.reason && row.sha256 === expected.sha256
   }
   return row.sha256 === expected.sha256
+}
+
+/** A file that failed with this very content and model is left alone until the retry delay has passed. */
+function isParkedFailure(row: IndexRow | undefined, sha256: string | null, input: PlanInput): boolean {
+  if (row === undefined || row.reason !== FAILED_REASON || row.model !== input.model || row.sha256 !== sha256) return false
+  return input.now.getTime() - row.indexedAt < INDEX_RETRY_FAILED_MS
 }
 
 function workOf(file: CatalogFile, row: IndexRow | undefined, input: PlanInput): PlannedWork | 'waiting' | undefined {
@@ -80,7 +90,20 @@ function workOf(file: CatalogFile, row: IndexRow | undefined, input: PlanInput):
     return done ? undefined : { kind: 'skip', reason: 'too large', file, abs, pathKey }
   }
   if (isDone(row, { sha256: file.sha256, model: input.model })) return undefined
+  if (isParkedFailure(row, file.sha256, input)) return undefined
   return { kind: 'index', sha256: file.sha256, file, abs, pathKey }
+}
+
+const compareText = (left: string, right: string): number => (left < right ? -1 : left > right ? 1 : 0)
+
+/** Never indexed first, then the longest-waiting; a file rewritten every minute cannot take every round. */
+function byTurn(rowsByKey: ReadonlyMap<string, IndexRow>): (left: PlannedWork, right: PlannedWork) => number {
+  const stamp = (work: PlannedWork): number => rowsByKey.get(keyOf(work.file.root, work.file.relPath))?.indexedAt ?? Number.NEGATIVE_INFINITY
+  return (left, right) => {
+    const [a, b] = [stamp(left), stamp(right)]
+    if (a !== b) return a < b ? -1 : 1
+    return compareText(left.file.root, right.file.root) || compareText(left.file.relPath, right.file.relPath)
+  }
 }
 
 export function planIndex(input: PlanInput): IndexPlan {
@@ -98,5 +121,5 @@ export function planIndex(input: PlanInput): IndexPlan {
     if (planned === 'waiting') waiting.push(file)
     else if (planned !== undefined) work.push(planned)
   }
-  return { remove, work, waiting }
+  return { remove, work: [...work].sort(byTurn(rowsByKey)), waiting }
 }

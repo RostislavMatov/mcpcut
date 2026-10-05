@@ -16,6 +16,7 @@ import { PG_URL, withTestSchema } from '../db/pg-helpers.js'
 
 export interface IndexFixture {
   readonly root: string
+  readonly schema: string
   readonly sdb: SearchDb
   readonly db: FilesDb
   readonly embedder: FakeEmbedder
@@ -47,6 +48,7 @@ export async function createIndexFixture(wrapPg: (pg: PgModule) => PgModule = (p
   const embedder = createFakeEmbedder()
   return {
     root,
+    schema: schema.schema,
     sdb,
     db,
     embedder,

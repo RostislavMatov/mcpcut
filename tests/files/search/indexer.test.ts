@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, expect, test } from 'vitest'
 import { indexOnce } from '../../../src/files/search/indexer.js'
 import { createFakeEmbedder } from './fake-embedder.js'
-import { createIndexFixture, ruleOn, usingEmbedder, type IndexFixture } from './index-fixture.js'
+import { INDEX_RETRY_FAILED_MS } from '../../../src/files/search/constants.js'
+import { createIndexFixture, NOW, ruleOn, usingEmbedder, type IndexFixture } from './index-fixture.js'
 import { describePg } from '../db/pg-helpers.js'
 
 let fx: IndexFixture
@@ -211,7 +212,7 @@ describePg('indexOnce', () => {
     expect(fx.embedder.calls).toEqual([])
   })
 
-  test('a failing file is counted failed, the others continue, and it is retried next round', async () => {
+  test('a failing file is counted failed, the others continue, and it is retried once the retry delay has passed', async () => {
     await fx.put({ 'a.md': 'good one', 'b.md': 'poison', 'c.md': 'good two' })
     await fx.walk()
     let isPoisoned = true
@@ -225,7 +226,8 @@ describePg('indexOnce', () => {
 
     const first = await indexOnce(fx.sdb, fx.options(usingEmbedder(embedder)))
     isPoisoned = false
-    const second = await indexOnce(fx.sdb, fx.options(usingEmbedder(embedder)))
+    const later = new Date(NOW.getTime() + INDEX_RETRY_FAILED_MS)
+    const second = await indexOnce(fx.sdb, fx.options({ ...usingEmbedder(embedder), now: later }))
 
     expect(first).toMatchObject({ indexed: 2, failed: 1, firstFailure: 'b.md: model exploded' })
     expect(second).toMatchObject({ indexed: 1, failed: 0 })

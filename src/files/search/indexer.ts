@@ -4,7 +4,7 @@ import { FilesDbError } from '../db/errors.js'
 import type { PgQueryable } from '../db/pg-types.js'
 import { pathMatchKey } from '../db/path-key.js'
 import { chunkText } from './chunk.js'
-import { INDEX_LOCK_KEY } from './constants.js'
+import { FAILED_REASON, INDEX_LOCK_KEY } from './constants.js'
 import { planIndex, type PlannedWork } from './index-plan.js'
 import type { IndexRule } from './index-rules-store.js'
 import {
@@ -57,7 +57,7 @@ export interface IndexResult {
   readonly removed: number
   /** Planned files not reached (budget, changed meanwhile) plus files whose catalog hash is not computed yet. */
   readonly pending: number
-  /** Files whose embedding or write failed: retried next round. */
+  /** Files whose embedding or write failed this round: parked (a `failed` row) until their content changes or an hour passes. */
   readonly failed: number
   /** The first failure, for the caller's log. */
   readonly firstFailure?: string
@@ -152,6 +152,19 @@ async function processOne(sdb: SearchDb, work: PlannedWork, opts: IndexOptions, 
   tally.indexed += 1
 }
 
+/**
+ * The failed file gets a row of its own (`skipped`, reason `failed`, its hash and model): the next
+ * rounds leave it alone until its content changes or the retry delay passes. Best effort: when even
+ * this write fails the file is simply tried again next round.
+ */
+async function parkFailure(sdb: SearchDb, work: PlannedWork, opts: IndexOptions): Promise<void> {
+  try {
+    await sdb.db.transaction((tx) => writeSkipped(tx, writeOf(work, opts, work.file.sha256), FAILED_REASON))
+  } catch {
+    // Nothing more to do: the failure is already counted and reported.
+  }
+}
+
 async function processAll(sdb: SearchDb, work: readonly PlannedWork[], opts: IndexOptions, embedder: RoundEmbedder, tally: Tally): Promise<void> {
   const clock = opts.monotonicMs ?? (() => performance.now())
   const startedAt = clock()
@@ -167,6 +180,7 @@ async function processAll(sdb: SearchDb, work: readonly PlannedWork[], opts: Ind
       if (embedder.isUnavailable() || (error instanceof FilesDbError && error.kind === 'unreachable')) throw error
       tally.failed += 1
       tally.firstFailure ??= `${item.file.relPath}: ${describe(error)}`
+      await parkFailure(sdb, item, opts)
     }
     opts.onProgress?.(index + 1, work.length)
   }
@@ -177,7 +191,7 @@ async function runRound(sdb: SearchDb, opts: IndexOptions): Promise<IndexResult>
   // One after the other: the lock holds one pooled client and the pool has two.
   const files = await loadCatalogFiles(sdb.db, opts.roots)
   const rows = await loadIndexRows(sdb.db)
-  const plan = planIndex({ files, rows, rules: opts.rules, platform: opts.platform, model: opts.modelId })
+  const plan = planIndex({ files, rows, rules: opts.rules, platform: opts.platform, model: opts.modelId, now: opts.now })
   const removed = await deleteIndexRows(sdb.db, plan.remove)
   const tally: Tally = { indexed: 0, skipped: 0, skippedByReason: {}, pending: plan.waiting.length, failed: 0, firstFailure: undefined }
   const embedder = lazyEmbedder(opts.createEmbedder)

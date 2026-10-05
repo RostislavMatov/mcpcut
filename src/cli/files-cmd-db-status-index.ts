@@ -13,7 +13,7 @@ export async function reportSearchCounts(io: AgentCliIo, target: SearchTarget): 
     const totals = await readSearchTotals(target)
     if (totals === undefined) return
     const last = totals.lastIndexedAt === null ? 'nothing indexed yet' : `last indexed ${formatReadableField(totals.lastIndexedAt)}`
-    io.stdout.write(`search index: ${totals.indexed} files indexed (${totals.chunks} chunks), ${totals.skipped} skipped, ${last}\n`)
+    io.stdout.write(`search index: ${totals.indexed} files indexed (${totals.chunks} chunks), ${totals.skipped} skipped${totals.failed > 0 ? `, ${totals.failed} failed (retried when the file changes or in an hour)` : ''}, ${last}\n`)
   } catch (error: unknown) {
     if (!(error instanceof FilesDbError)) throw error
     io.stdout.write(`search index: unavailable (${formatReadableField(error.message)})\n`)

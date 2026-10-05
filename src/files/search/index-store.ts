@@ -25,7 +25,11 @@ export async function loadIndexRows(db: PgQueryable): Promise<IndexRow[]> {
     size: string
     model: string
     chunks: number
-  }>('SELECT root, rel_path, status, reason, sha256, size, model, chunks FROM search_files ORDER BY root, rel_path')
+    indexed_ms: string
+  }>(
+    'SELECT root, rel_path, status, reason, sha256, size, model, chunks, floor(extract(epoch FROM indexed_at) * 1000)::bigint AS indexed_ms ' +
+      'FROM search_files ORDER BY root, rel_path',
+  )
   return found.rows.map((row) => ({
     root: row.root,
     relPath: row.rel_path,
@@ -35,6 +39,7 @@ export async function loadIndexRows(db: PgQueryable): Promise<IndexRow[]> {
     size: Number(row.size),
     model: row.model,
     chunks: row.chunks,
+    indexedAt: Number(row.indexed_ms),
   }))
 }
 
