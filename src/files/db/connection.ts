@@ -21,6 +21,11 @@ export interface FilesDb {
   /** One transaction on a dedicated client; rolled back when `fn` throws. */
   transaction<T>(fn: (tx: PgQueryable) => Promise<T>): Promise<T>
   close(): Promise<void>
+  /**
+   * A dedicated client with no transaction opened, for session state such as an advisory lock; released
+   * (destroyed when `fn` throws) afterwards. Appended for search by meaning (phase 5).
+   */
+  withClient<T>(fn: (client: PgQueryable) => Promise<T>): Promise<T>
 }
 
 export interface OpenFilesDbOptions {
@@ -64,7 +69,7 @@ export async function openFilesDb(opts: OpenFilesDbOptions): Promise<FilesDb> {
 }
 
 function dbOver(pool: PgPool, schema: string, schemaVersion: number, mapError: (error: unknown) => Error): FilesDb {
-  return {
+  const db: FilesDb = {
     schema,
     schemaVersion,
     async query<Row>(text: string, values?: readonly unknown[]) {
@@ -75,10 +80,23 @@ function dbOver(pool: PgPool, schema: string, schemaVersion: number, mapError: (
       }
     },
     async transaction<T>(fn: (tx: PgQueryable) => Promise<T>) {
+      return db.withClient(async (tx) => {
+        try {
+          await tx.query('BEGIN')
+          const result = await fn(tx)
+          await tx.query('COMMIT')
+          return result
+        } catch (error: unknown) {
+          await tx.query('ROLLBACK').catch(() => undefined)
+          throw error
+        }
+      })
+    },
+    async withClient<T>(fn: (client: PgQueryable) => Promise<T>) {
       const client = await pool.connect().catch((error: unknown) => {
         throw mapError(error)
       })
-      const tx: PgQueryable = {
+      const mapped: PgQueryable = {
         query: async <Row>(text: string, values?: readonly unknown[]) => {
           try {
             return await client.query<Row>(text, values)
@@ -89,12 +107,8 @@ function dbOver(pool: PgPool, schema: string, schemaVersion: number, mapError: (
       }
       let failure: Error | undefined
       try {
-        await tx.query('BEGIN')
-        const result = await fn(tx)
-        await tx.query('COMMIT')
-        return result
+        return await fn(mapped)
       } catch (error: unknown) {
-        await client.query('ROLLBACK').catch(() => undefined)
         failure = error instanceof Error ? error : new Error(String(error))
         throw error
       } finally {
@@ -105,4 +119,5 @@ function dbOver(pool: PgPool, schema: string, schemaVersion: number, mapError: (
       await pool.end()
     },
   }
+  return db
 }
