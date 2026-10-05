@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, truncate, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
@@ -7,6 +7,8 @@ import { createAdminStore } from '../../src/admin/store.js'
 import { dispatch } from '../../src/cli.js'
 import type { FilesDb } from '../../src/files/db/connection.js'
 import { FILES_PG_URL_SECRET, PG_PACKAGE_VERSION } from '../../src/files/db/constants.js'
+import { SEARCH_MODEL_FILES } from '../../src/files/search/constants.js'
+import { modelDirOf } from '../../src/files/search/model-files.js'
 import { FilesDbModuleMissingError, loadPg } from '../../src/files/db/pg-loader.js'
 import type { PgModule } from '../../src/files/db/pg-types.js'
 import { createVaultStore } from '../../src/vault/store.js'
@@ -234,12 +236,15 @@ describe('files db init: with the secret set', () => {
   })
 })
 
+const SEARCH_NOT_INSTALLED =
+  'search runtime: not installed (run `mcpcut files setup --search`)\nsearch model: not installed (run `mcpcut files setup --search`)\n'
+
 describe('files db status', () => {
   test('client not installed and mode off: the setup step', async () => {
     await initVaultAndOwner()
     const result = await db(['status'], { clientInstalled: false })
     expect(result.code).toBe(0)
-    expect(result.out).toBe('client: not installed\nurl: off\n')
+    expect(result.out).toBe(`client: not installed\n${SEARCH_NOT_INSTALLED}url: off\n`)
     expect(result.err).toBe('Next: mcpcut files setup\n')
   })
 
@@ -248,8 +253,36 @@ describe('files db status', () => {
     await mkdir(join(journalDir, 'modules', 'node_modules', 'pg'), { recursive: true })
     await writeFile(join(journalDir, 'modules', 'node_modules', 'pg', 'package.json'), JSON.stringify({ version: PG_PACKAGE_VERSION }))
     const result = await db(['status'])
-    expect(result.out).toBe(`client: installed pg ${PG_PACKAGE_VERSION}\nurl: off\n`)
+    expect(result.out).toBe(`client: installed pg ${PG_PACKAGE_VERSION}\n${SEARCH_NOT_INSTALLED}url: off\n`)
     expect(result.err).toBe('Turn it on: mcpcut files db init\n')
+  })
+
+  test('the search block reports an installed runtime and a complete model', async () => {
+    await initVaultAndOwner()
+    const searchDir = join(journalDir, 'modules', 'search')
+    for (const [name, version] of [['onnxruntime-node', '1.30.0'], ['@huggingface/tokenizers', '0.2.0']] as const) {
+      await mkdir(join(searchDir, 'node_modules', ...name.split('/')), { recursive: true })
+      await writeFile(join(searchDir, 'node_modules', ...name.split('/'), 'package.json'), JSON.stringify({ version }))
+    }
+    for (const file of SEARCH_MODEL_FILES) {
+      const path = join(modelDirOf(searchDir), ...file.path.split('/'))
+      await mkdir(join(path, '..'), { recursive: true })
+      await writeFile(path, '')
+      await truncate(path, file.size)
+    }
+    const result = await db(['status'])
+    expect(result.out).toContain('search runtime: installed onnxruntime-node 1.30.0, tokenizers 0.2.0\nsearch model: ok\n')
+  })
+
+  test('a half-downloaded model names the missing file and the setup command', async () => {
+    await initVaultAndOwner()
+    const dir = modelDirOf(join(journalDir, 'modules', 'search'))
+    const file = SEARCH_MODEL_FILES.find((candidate) => candidate.path === 'tokenizer_config.json')!
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, 'tokenizer_config.json'), '')
+    await truncate(join(dir, 'tokenizer_config.json'), file.size)
+    const result = await db(['status'])
+    expect(result.out).toContain('search model: incomplete (onnx/model_quantized.onnx, tokenizer.json) (run `mcpcut files setup --search`)\n')
   })
 
   test('an uninitialized vault is the vault init step', async () => {
@@ -273,7 +306,7 @@ describe('files db status', () => {
     await setUrl('mysql://u:hunter2@h/d')
     const result = await db(['status'])
     expect(result.code).toBe(1)
-    expect(result.out).toBe('client: not installed\nurl: invalid\n')
+    expect(result.out).toBe(`client: not installed\n${SEARCH_NOT_INSTALLED}url: invalid\n`)
     expect(result.out + result.err).not.toContain('hunter2')
   })
 

@@ -6,6 +6,7 @@ import { journalBounds } from '../journal/db-read-after.js'
 import { formatReadableField } from '../journal/format.js'
 import type { AgentCliIo } from './agent-cmd.js'
 import { installedPgVersion } from './files-cmd-setup.js'
+import { writeSearchStatus } from './files-cmd-db-status-search.js'
 import { journalDirOf, loadClient, schemaOf } from './files-cmd-db-shared.js'
 import type { FilesCliOptions } from './files-cmd.js'
 import { cliCommand } from './next-step.js'
@@ -21,6 +22,8 @@ export async function runDbStatus(io: AgentCliIo, opts: FilesCliOptions): Promis
   const journalDir = journalDirOf(opts)
   const installed = await installedPgVersion(modulesDirOf(journalDir))
   io.stdout.write(`client: ${installed === undefined ? 'not installed' : `installed pg ${formatReadableField(installed)}`}\n`)
+
+  await writeSearchStatus(io, modulesDirOf(journalDir), cli)
 
   const state = await readDbUrl({ journalDir, cli })
   if (state.status === 'vault-error') {
