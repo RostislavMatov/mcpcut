@@ -2,7 +2,7 @@ import { isWithinOn, lexicalKey, pathModuleOf, segmentCount } from '../names.js'
 import { resolveWithinRoots } from '../paths.js'
 import { isAllowed, type FileRule, type PreparedRule } from '../rights.js'
 import { pathMatchKey } from '../db/path-key.js'
-import { SEARCH_OVERFETCH } from './constants.js'
+import { SEARCH_MAX_PAGES, SEARCH_OVERFETCH } from './constants.js'
 import { absoluteOf } from './index-plan.js'
 import type { SearchDb } from './search-schema.js'
 
@@ -55,8 +55,8 @@ function searchSql(vectorSchema: string): string {
   return `SELECT f.root, f.rel_path, c.start_line, c.end_line, c.body,
        c.embedding OPERATOR(${vectorSchema}.<=>) $5::${vectorSchema}.vector AS distance
 FROM search_chunks c JOIN search_files f USING (root, rel_path)${READABLE_FILTER}
-ORDER BY distance
-LIMIT $6`
+ORDER BY distance, c.root, c.rel_path, c.chunk_no
+LIMIT $6 OFFSET $7`
 }
 
 const COUNT_SQL = `SELECT 1 AS found FROM search_files f${READABLE_FILTER}
@@ -124,15 +124,21 @@ async function checkedPath(row: Row, scope: SearchScope): Promise<string | null>
  */
 export async function searchChunks(sdb: SearchDb, request: SearchRequest): Promise<readonly SearchHit[]> {
   const vectorText = `[${Array.from(request.vector).join(',')}]`
-  const found = await sdb.db.query<Row>(searchSql(sdb.vectorSchema), [
-    ...scopeParams(request),
-    vectorText,
-    request.limit * SEARCH_OVERFETCH,
-  ])
+  const pageSize = request.limit * SEARCH_OVERFETCH
   const hits: SearchHit[] = []
   const seen = new Set<string>()
-  for (const row of found.rows) {
-    if (hits.length >= request.limit) break
+  for (let page = 0; page < SEARCH_MAX_PAGES && hits.length < request.limit; page += 1) {
+    const found = await sdb.db.query<Row>(searchSql(sdb.vectorSchema), [...scopeParams(request), vectorText, pageSize, page * pageSize])
+    await collectHits(found.rows, request, seen, hits)
+    if (found.rows.length < pageSize) break
+  }
+  return hits
+}
+
+/** Adds the rows that pass the run-time check and are not repeats, until `limit` hits are held. */
+async function collectHits(rows: readonly Row[], request: SearchRequest, seen: Set<string>, hits: SearchHit[]): Promise<void> {
+  for (const row of rows) {
+    if (hits.length >= request.limit) return
     const path = await checkedPath(row, request)
     if (path === null) continue
     const id = `${pathMatchKey(path, request.platform)}\u0000${row.start_line}-${row.end_line}`
@@ -140,7 +146,6 @@ export async function searchChunks(sdb: SearchDb, request: SearchRequest): Promi
     seen.add(id)
     hits.push({ path, startLine: row.start_line, endLine: row.end_line, body: row.body, distance: Number(row.distance) })
   }
-  return hits
 }
 
 /** True when the SQL filter sees at least one indexed file the agent may read: tells "nothing indexed" from "nothing matched". */

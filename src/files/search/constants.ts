@@ -61,6 +61,8 @@ export const SEARCH_QUERY_MAX_CHARS = 1000
 export const SNIPPET_MAX_CHARS = 600
 /** Rows fetched per result asked for, so the run-time rights check can drop some and still fill the answer. */
 export const SEARCH_OVERFETCH = 4
+/** Pages of that size one search reads while the run-time check keeps dropping rows. */
+export const SEARCH_MAX_PAGES = 5
 
 /** First 8 bytes of sha256('mcpcut:files:index') as a signed bigint. */
 export const INDEX_LOCK_KEY = '-6514132781421794227'

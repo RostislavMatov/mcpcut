@@ -2,6 +2,7 @@ import { rm } from 'node:fs/promises'
 import { afterEach, beforeEach, expect, test } from 'vitest'
 import { prepareRules, type FileRule } from '../../../src/files/rights.js'
 import { hasReadableIndexed, searchChunks, type SearchScope } from '../../../src/files/search/search-query.js'
+import { SEARCH_MAX_PAGES, SEARCH_OVERFETCH } from '../../../src/files/search/constants.js'
 import { fakeVector } from './fake-embedder.js'
 import { createSearchFixture, type SearchFixture } from './search-fixture.js'
 import { describePg } from '../db/pg-helpers.js'
@@ -46,6 +47,30 @@ describePg('searchChunks', () => {
     const hits = await searchChunks(fx.sdb, request(await scopeOf([a], [{ path: a, ops: ['read'] }])))
 
     expect(hits.map((hit) => hit.path)).toEqual([`${a}/kept.md`])
+  })
+
+  test('a readable match behind more refused rows than one page is still returned', async () => {
+    const goneNames = Array.from({ length: 12 }, (_, index) => `gone${index}.md`)
+    await fx.put({ ...Object.fromEntries(goneNames.map((name) => [`A/${name}`, 'alpha beta'])), 'A/kept.md': 'alpha beta gamma delta epsilon zeta' })
+    const a = fx.dir('A')
+    await fx.index([a])
+    for (const name of goneNames) await rm(`${a}/${name}`)
+
+    const hits = await searchChunks(fx.sdb, request(await scopeOf([a], [{ path: a, ops: ['read'] }]), 1))
+
+    expect(hits.map((hit) => hit.path)).toEqual([`${a}/kept.md`])
+  })
+
+  test('paging stops after the page cap, so a flood of refused rows cannot make one search unbounded', async () => {
+    const goneNames = Array.from({ length: SEARCH_MAX_PAGES * SEARCH_OVERFETCH + 8 }, (_, index) => `gone${index}.md`)
+    await fx.put({ ...Object.fromEntries(goneNames.map((name) => [`A/${name}`, 'alpha beta'])), 'A/kept.md': 'alpha beta gamma delta epsilon zeta' })
+    const a = fx.dir('A')
+    await fx.index([a])
+    for (const name of goneNames) await rm(`${a}/${name}`)
+
+    const hits = await searchChunks(fx.sdb, request(await scopeOf([a], [{ path: a, ops: ['read'] }]), 1))
+
+    expect(hits).toEqual([])
   })
 
   test('the same file under two nested roots shows once', async () => {
