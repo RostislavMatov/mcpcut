@@ -29,7 +29,7 @@ function entryRow(entry: FileAuditEntry): Html {
   return html`<tr>
     <td class="num">${entry.ts}</td>
     <td>${actorText(entry.actor)}</td>
-    <td>${entry.action}</td>
+    <td>${entry.action}${entry.subject === null ? '' : ` for ${entry.subject.kind} ${entry.subject.name}`}</td>
     <td>${entry.outcome ?? ''}</td>
     <td><code>${pathsText(entry.paths)}</code></td>
     <td class="small dim">${rule}</td>

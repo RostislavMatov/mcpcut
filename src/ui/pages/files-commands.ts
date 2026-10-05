@@ -37,6 +37,10 @@ export function revokeCommand(agent: string, folder: string): string {
   return filesCommand(`revoke ${shellArg(agent)} ${shellArg(folder)}`)
 }
 
+export function rootListCommand(): string {
+  return filesCommand('root list')
+}
+
 export function trashListCommand(root: string): string {
   return filesCommand(`trash list ${shellArg(root)}`)
 }

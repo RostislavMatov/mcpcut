@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
 import { moveToTrash } from '../../src/files/io-trash.js'
@@ -34,6 +34,29 @@ describe('findDeclaredRoot', () => {
 
   test('returns undefined when nothing is declared', async () => {
     expect(await findDeclaredRoot([], sandbox.root)).toBeUndefined()
+  })
+
+  test('other spellings of the declared root resolve to it: trailing slash, dot segments, a symlink', async () => {
+    await mkdir(join(sandbox.root, 'sub'), { recursive: true })
+    const link = join(sandbox.base, 'root-link')
+    await symlink(sandbox.root, link)
+
+    expect(await findDeclaredRoot([sandbox.root], `${sandbox.root}/`)).toBe(sandbox.root)
+    expect(await findDeclaredRoot([sandbox.root], join(sandbox.root, 'sub') + '/..')).toBe(sandbox.root)
+    expect(await findDeclaredRoot([sandbox.root], link)).toBe(sandbox.root)
+  })
+
+  test('a folder inside the declared root, a symlink elsewhere or a parent is not the root', async () => {
+    const elsewhere = join(sandbox.base, 'elsewhere-dir')
+    await mkdir(elsewhere, { recursive: true })
+    const link = join(sandbox.base, 'elsewhere-link')
+    await symlink(elsewhere, link)
+    await mkdir(join(sandbox.root, 'inner'), { recursive: true })
+
+    expect(await findDeclaredRoot([sandbox.root], join(sandbox.root, 'inner'))).toBeUndefined()
+    expect(await findDeclaredRoot([sandbox.root], link)).toBeUndefined()
+    expect(await findDeclaredRoot([sandbox.root], sandbox.base)).toBeUndefined()
+    expect(await findDeclaredRoot([sandbox.root], 'relative/path')).toBeUndefined()
   })
 })
 

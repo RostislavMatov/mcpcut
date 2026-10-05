@@ -41,6 +41,7 @@ function originOf(source: GrantSource | undefined): string {
 
 export function accessOf(agents: readonly AgentRecord[], groups: readonly GroupRecord[]): AccessView {
   const live = agents.filter((agent) => agent.revokedAt === undefined)
+  const revoked = new Set(agents.filter((agent) => agent.revokedAt !== undefined).map((agent) => agent.name))
   const holders = live.flatMap((agent) => {
     const effective = effectiveGrantsOf(agent, groups)
     const rules = effective.grants[FILES_SERVER_NAME]?.paths ?? []
@@ -51,7 +52,7 @@ export function accessOf(agents: readonly AgentRecord[], groups: readonly GroupR
   const groupRules = groups.map((group) => ({
     group: group.name,
     rules: group.grants[FILES_SERVER_NAME]?.paths ?? [],
-    members: group.members,
+    members: group.members.map((name) => (revoked.has(name) ? `${name} (revoked)` : name)),
   }))
   const firstAgent = live[0]?.name
   const firstGroup = groups[0]?.name

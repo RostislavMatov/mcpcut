@@ -1,7 +1,8 @@
 import type { AgentsStore } from '../../agents/store.js'
 import { restoreInDeclaredRoot } from '../../files/trash-restore.js'
 import { isTrashId } from '../../files/trash-manifest.js'
-import type { RootsStore } from '../../files/roots-store.js'
+import type { RootEntry, RootsStore } from '../../files/roots-store.js'
+import { rootListCommand } from '../pages/files-commands.js'
 import type { GroupsStore } from '../../groups/store.js'
 import { TENANT_SETTINGS, type TenantSettings } from '../../tenant/settings.js'
 import type { UiSession } from '../auth.js'
@@ -11,6 +12,7 @@ import {
   CONTENT_TYPE_HTML,
   HTTP_STATUS_BAD_REQUEST,
   HTTP_STATUS_FORBIDDEN,
+  HTTP_STATUS_INTERNAL_ERROR,
   HTTP_STATUS_NOT_FOUND,
   HTTP_STATUS_OK,
 } from '../constants.js'
@@ -35,6 +37,7 @@ import { fieldsOf } from './request-helpers.js'
  */
 
 export const HOSTED_MESSAGE = 'The file module runs on your own machine, not on a hosted install.'
+export const ROOTS_UNREADABLE_MESSAGE = `The list of folders cannot be read. See why in a terminal: ${rootListCommand()}`
 const FILES_HREF = '/files'
 const FILES_TRASH_HREF = '/files#trash'
 
@@ -82,6 +85,26 @@ function hostedResult(session: UiSession): UiResult {
   )
 }
 
+/**
+ * The roots file, or undefined when it cannot be read (corrupt, locked, I/O).
+ * The cause is not echoed into the browser (see `store-errors.ts`); the
+ * notice names the CLI command that prints it.
+ */
+async function readRoots(roots: Pick<RootsStore, 'list'>): Promise<readonly RootEntry[] | undefined> {
+  try {
+    return await roots.list()
+  } catch {
+    return undefined
+  }
+}
+
+function rootsUnreadable(session: UiSession): UiResult {
+  return htmlResult(
+    HTTP_STATUS_INTERNAL_ERROR,
+    renderNotice({ title: 'Files', message: ROOTS_UNREADABLE_MESSAGE, ok: false, backHref: '/', backLabel: 'Back to the dashboard', session }),
+  )
+}
+
 export function createFilesHandlers(deps: FilesHandlersDeps): FilesHandlers {
   const isHosted = (deps.tenant ?? TENANT_SETTINGS).isTenant
   const now = (): Date => new Date((deps.clock ?? Date.now)())
@@ -90,7 +113,9 @@ export function createFilesHandlers(deps: FilesHandlersDeps): FilesHandlers {
     const session = ctx.session
     if (session === undefined) return FORBIDDEN
     if (isHosted) return hostedResult(session)
-    const [roots, agents, groups] = await Promise.all([deps.roots.list(), deps.agents.listAgents(), deps.groups.listGroups()])
+    const roots = await readRoots(deps.roots)
+    if (roots === undefined) return rootsUnreadable(session)
+    const [agents, groups] = await Promise.all([deps.agents.listAgents(), deps.groups.listGroups()])
     const [folders, trash, audit] = await Promise.all([
       foldersOf(roots),
       trashOfRoots(roots),
@@ -111,7 +136,9 @@ export function createFilesHandlers(deps: FilesHandlersDeps): FilesHandlers {
     const id = form.id?.trim() ?? ''
     if (root === '' || id === '') return refusal('folder and trash id are required', session)
     if (!isTrashId(id)) return refusal('that is not a trash id: restore from the list below', session)
-    const declared = (await deps.roots.list()).map((entry) => entry.path)
+    const roots = await readRoots(deps.roots)
+    if (roots === undefined) return rootsUnreadable(session)
+    const declared = roots.map((entry) => entry.path)
     const outcome = await restoreInDeclaredRoot(declared, root, id)
     if (outcome.status === 'no-root') return refusal('that folder is not declared: restore only from a folder listed above', session)
     if (outcome.status === 'failed') return refusal(outcome.message, session)

@@ -1,4 +1,4 @@
-import { writeFile } from 'node:fs/promises'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { ulid } from 'ulid'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
@@ -338,5 +338,96 @@ describe('who touched what', () => {
     expect(page).toContain('Showing the newest 50')
     expect(page).toContain(`${NPX} files audit --agent bot --since 3d --limit 1000</pre>`)
     expect(statusOf(await fx.handlers().filesPage(getCtx(session('owner'))))).toBe(200)
+  })
+})
+
+describe('review fixes', () => {
+  test('an admin edit in the audit says whom it was for', async () => {
+    await fx.declareRoot()
+    await fx.writeRecords('plane_access', [
+      {
+        id: '01ARZ3NDEKTSV4RRFFQ69HZZZY',
+        ts: '2026-10-04T09:00:00.000Z',
+        sessionId: 'plane_access',
+        direction: 'client→server',
+        kind: 'access-edit',
+        payload: { action: 'files.grant', path: fx.root, group: 'devs', actor: { adminName: 'ann', role: 'owner', via: 'ui' } },
+      } as never,
+    ])
+
+    expect(await pageFor('viewer')).toContain('for group devs')
+  })
+
+  test('every folder with trash gets its own purge command', async () => {
+    await fx.declareRoot()
+    const second = join(fx.base, 'second')
+    await mkdir(second, { recursive: true })
+    await fx.roots.add(second)
+    await mkdir(join(second, '.mcpcut-trash'), { recursive: true, mode: 0o700 })
+    await fx.trashFile('a.txt')
+    await writeManifest(trashDirOf(second), {
+      id: '01ARZ3NDEKTSV4RRFFQ69G5FAW',
+      root: second,
+      relative: 'gone',
+      originalPath: join(second, 'gone'),
+      kind: 'directory',
+      size: 0,
+      deletedAt: '2026-10-04T08:00:00.000Z',
+      deletedBy: 'bot',
+    })
+
+    const page = await pageFor('owner')
+
+    expect(page).toContain(`${NPX} files trash purge ${fx.root} --older-than-days 30</pre>`)
+    expect(page).toContain(`${NPX} files trash purge ${second} --older-than-days 30</pre>`)
+  })
+
+  test('a trashed folder shows no byte size', async () => {
+    await fx.declareRoot()
+    await writeManifest(trashDirOf(fx.root), {
+      id: '01ARZ3NDEKTSV4RRFFQ69G5FAX',
+      root: fx.root,
+      relative: 'old-folder',
+      originalPath: join(fx.root, 'old-folder'),
+      kind: 'directory',
+      size: 0,
+      deletedAt: '2026-10-04T08:00:00.000Z',
+      deletedBy: 'bot',
+    })
+
+    const page = await pageFor('owner')
+
+    expect(page).toMatch(/<td>folder<\/td>\s*<td class="num">-<\/td>/)
+  })
+
+  test('an empty trash with no folder points an owner at the folders panel', async () => {
+    const page = await pageFor('owner')
+
+    expect(page).toMatch(/Nothing in the trash\.[^<]*<a href="#folders">/)
+  })
+
+  test('a broken folders file answers a notice that names the command to see why', async () => {
+    await writeFile(join(fx.journalDir, 'files-roots.json'), '{ not json')
+
+    const result = await fx.handlers().filesPage(getCtx(session('owner')))
+
+    expect(statusOf(result)).toBe(500)
+    expect(bodyOf(result)).toContain('files root list')
+    expect(bodyOf(result)).not.toContain('not json')
+  })
+
+  test('a revoked agent is marked as such among a group\'s members', async () => {
+    await fx.declareRoot()
+    await fx.agents.createAgent('ann')
+    await fx.agents.createAgent('bot')
+    await fx.groups.createGroup('devs')
+    await fx.groups.addMember('devs', 'ann')
+    await fx.groups.addMember('devs', 'bot')
+    await fx.groups.setServerGrant('devs', 'files', { tools: '*', paths: [{ path: fx.root, ops: ['read'] }] })
+    await fx.agents.revokeAgent('bot')
+
+    const page = await pageFor('viewer')
+
+    expect(page).toContain('members: ann, bot (revoked)')
   })
 })

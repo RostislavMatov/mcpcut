@@ -21,7 +21,7 @@ function entryRow(view: FilesView, root: string, entry: TrashManifest): Html {
   return html`<tr>
     <td><code>${entry.relative}</code></td>
     <td>${entry.kind === 'directory' ? 'folder' : 'file'}</td>
-    <td class="num">${String(entry.size)} B</td>
+    <td class="num">${entry.kind === 'directory' ? '-' : `${String(entry.size)} B`}</td>
     <td class="num">${entry.deletedAt}</td>
     <td>${entry.deletedBy}</td>
     <td>${restoreCell(view, root, entry)}</td>
@@ -52,17 +52,24 @@ function rootBlock(view: FilesView, root: TrashRootView): Html {
   return html`<div class="fl-root"><h3 class="small"><code>${root.root}</code></h3>${problem}${table}${rootNotes(root)}</div>`
 }
 
+/** The retention note and, for an owner, one purge command per folder that has something in its trash. */
 function purgeFooter(view: FilesView): Html {
-  const first = view.folders[0]
   const keep = html`<p class="small dim">Kept ${String(TRASH_RETENTION_DAYS)} days, then removed automatically.</p>`
-  if (!view.canManage || first === undefined) return keep
-  return html`${keep}${renderCommandBlock(trashPurgeCommand(first.path, TRASH_RETENTION_DAYS))}`
+  const withTrash = view.trash.filter((root) => root.entries.length > 0)
+  if (!view.canManage || withTrash.length === 0) return keep
+  return html`${keep}${join(withTrash.map((root) => renderCommandBlock(trashPurgeCommand(root.root, TRASH_RETENTION_DAYS))))}`
+}
+
+function emptyTrash(view: FilesView): Html {
+  const note = `Nothing in the trash. What agents delete stays here for ${String(TRASH_RETENTION_DAYS)} days.`
+  if (view.folders.length > 0 || !view.canManage) return html`<p class="empty">${note}</p>`
+  return html`<p class="empty">${note} <a href="#folders">Declare a folder first</a>.</p>`
 }
 
 export function renderTrashPanel(view: FilesView): Html {
   const isEmpty = view.trash.every((root) => root.entries.length === 0 && root.skipped === 0 && root.problem === undefined)
   const body = isEmpty
-    ? html`<p class="empty">Nothing in the trash. What agents delete stays here for ${String(TRASH_RETENTION_DAYS)} days.</p>`
+    ? emptyTrash(view)
     : join(view.trash.filter((root) => root.entries.length > 0 || root.skipped > 0 || root.problem !== undefined).map((root) => rootBlock(view, root)))
   return html`<section class="panel fl-panel" id="trash" aria-label="Trash">
     <div class="panel-hd"><h2>Trash</h2></div>
