@@ -35,19 +35,25 @@ export interface OpenFilesDbOptions {
   readonly migrations?: readonly Migration[]
 }
 
-export async function openFilesDb(opts: OpenFilesDbOptions): Promise<FilesDb> {
-  const schema = opts.schema ?? DEFAULT_DB_SCHEMA
+/** A pool pinned to `schema` on the given server; the schema need not exist yet. */
+export function createPool(pg: PgModule, url: string, schema: string, onError?: (error: Error) => void): PgPool {
   assertSchemaName(schema)
-  const ctx = { url: opts.url, schema, cli: opts.cli ?? 'mcpcut' }
-  const pool: PgPool = new opts.pg.Pool({
-    connectionString: opts.url,
+  const pool: PgPool = new pg.Pool({
+    connectionString: url,
     max: POOL_MAX,
     connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
     statement_timeout: STATEMENT_TIMEOUT_MS,
     application_name: APPLICATION_NAME,
     options: `-c search_path=${schema}`,
   })
-  pool.on('error', opts.onError ?? (() => undefined))
+  pool.on('error', onError ?? (() => undefined))
+  return pool
+}
+
+export async function openFilesDb(opts: OpenFilesDbOptions): Promise<FilesDb> {
+  const schema = opts.schema ?? DEFAULT_DB_SCHEMA
+  const ctx = { url: opts.url, schema, cli: opts.cli ?? 'mcpcut' }
+  const pool = createPool(opts.pg, opts.url, schema, opts.onError)
   try {
     const schemaVersion = await migrate(pool, schema, opts.migrations ?? MIGRATIONS)
     return dbOver(pool, schema, schemaVersion, (error) => mapPgError(error, ctx))

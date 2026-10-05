@@ -4,6 +4,7 @@ import { effectiveGrantsOf } from '../agents/effective.js'
 import { AgentNotFoundError } from '../agents/store.js'
 import { createAgentsStore } from '../agents/store.js'
 import { TRASH_DIR_NAME, FILES_SERVER_NAME } from '../files/constants.js'
+import { FilesDbError } from '../files/db/errors.js'
 import { RuleRefusedError } from '../files/grant-admin.js'
 import { RootsLimitError, createRootsStore } from '../files/roots-store.js'
 import { GroupNotFoundError, createGroupsStore } from '../groups/store.js'
@@ -19,20 +20,26 @@ import {
   grantNextStep,
 } from './files-cmd-format.js'
 import { runAudit } from './files-cmd-audit.js'
+import { runDb } from './files-cmd-db.js'
+import type { FilesDbCliSeams } from './files-db-seams.js'
+import { runSetup } from './files-cmd-setup.js'
 import { isGroupForm, runGroupGrant, runGroupRevoke, runGroupShow } from './files-cmd-group.js'
 import { runTrash } from './files-cmd-trash.js'
 import { findAgent, runGrant, runRevoke, runRootAdd, runRootRemove } from './files-cmd-write.js'
 import { cliCommand, shellArg } from './next-step.js'
 
 /**
- * `mcpcut files root|grant|revoke|show|trash` — the admin side of the file module
+ * `mcpcut files root|grant|revoke|show|audit|trash|setup|db` — the admin side of the file module
  * (ADR-0020 §2). Same shape as `agent-cmd.ts`: injectable io and options,
  * exit code returned, expected errors become one stderr line. Changes need an
  * owner token and leave an audit line plus an `access-edit` record
  * (`files-cmd-write.ts`); `root list` and `show` are free.
  */
 
-export interface FilesCliOptions extends AccessWriteOptions {}
+export interface FilesCliOptions extends AccessWriteOptions {
+  /** @internal test seams for `files setup` and `files db …`. */
+  readonly db?: FilesDbCliSeams
+}
 
 const DEFAULT_IO: AgentCliIo = { stdout: process.stdout, stderr: process.stderr }
 
@@ -45,6 +52,7 @@ const EXPECTED_ERRORS = [
   StoreCorruptError,
   StoreLockError,
   StoreWriteRejectedError,
+  FilesDbError,
 ] as const
 
 export async function runFilesCommand(
@@ -67,6 +75,10 @@ export async function runFilesCommand(
         return await runAudit(rest, io, opts)
       case 'trash':
         return await runTrash(rest, io, opts)
+      case 'setup':
+        return await runSetup(rest, io, opts)
+      case 'db':
+        return await runDb(rest, io, opts)
       default:
         io.stderr.write(FILES_USAGE)
         return 1

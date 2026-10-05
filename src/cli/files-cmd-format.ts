@@ -60,6 +60,8 @@ export const FILES_USAGE = `Usage:
   mcpcut files trash list [<root>] | restore <root> <id> | purge <root> [--older-than-days N]
                                          List what agents deleted, put an item back, or delete
                                          old ones for good (default 30 days; serve does it daily)
+  mcpcut files setup                     Install the Postgres client (optional: a faster, complete audit)
+  mcpcut files db init | status          Turn Postgres on and create its schema, or show where it stands
 Changes need an owner token in MCP_ADMIN_TOKEN; list and show do not.
 `
 
@@ -68,4 +70,10 @@ export const FILES_TRASH_USAGE = `Usage:
   mcpcut files trash restore <root> <id>
   mcpcut files trash purge <root> [--older-than-days N]   (N: 1 to 3650, default 30)
 Restore and purge need an owner token in MCP_ADMIN_TOKEN; list does not.
+`
+
+export const FILES_DB_USAGE = `Usage:
+  mcpcut files db init      Create the Postgres URL and print the docker command (first run), then connect and migrate
+  mcpcut files db status    Client, URL, server and how far the index has caught up
+The first init needs an owner token in MCP_ADMIN_TOKEN; the second init and status do not.
 `
