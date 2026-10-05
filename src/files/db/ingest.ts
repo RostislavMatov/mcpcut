@@ -1,9 +1,10 @@
 import { TREE_ACTIONS, entryOfCall, entryOfEdit, type EditEntry, type FileAuditEntry } from '../audit-entry.js'
 import { ACCESS_EDIT_SESSION_ID } from '../../journal/access-edit-record.js'
 import { journalBounds, journalRecordsAfter, type RecordAfterSeq } from '../../journal/db-read-after.js'
-import { lexicalKey, pathModuleOf } from '../names.js'
+import { pathModuleOf } from '../names.js'
 import type { FilesDb } from './connection.js'
 import { INGEST_LOCK_KEY } from './constants.js'
+import { pathMatchKey } from './path-key.js'
 import type { PgQueryable } from './pg-types.js'
 
 /**
@@ -107,7 +108,7 @@ function pathRowsOf(seq: number, entry: FileAuditEntry, platform: NodeJS.Platfor
   const isAbsolute = pathModuleOf(platform).isAbsolute
   const isTree = TREE_ACTIONS.has(entry.action)
   return entry.paths.flatMap((value, ord) =>
-    isAbsolute(value) ? [{ journal_seq: seq, ord, path_key: lexicalKey(value, platform), is_tree: isTree }] : [],
+    isAbsolute(value) ? [{ journal_seq: seq, ord, path_key: pathMatchKey(value, platform), is_tree: isTree }] : [],
   )
 }
 
