@@ -431,3 +431,21 @@ describe('review fixes', () => {
     expect(page).toContain('members: ann, bot (revoked)')
   })
 })
+
+describe('the audit panel when Postgres is turned on but cannot answer', () => {
+  test('shows why the journal answered, above the table, and still lists the rows', async () => {
+    await fx.declareRoot()
+    await fx.writeRecords('s1', [decision({ agent: 'bot', tool: 'read_file', payload: { path: `${fx.root}/docs/a.txt` } })])
+    const { createVaultStore } = await import('../../src/vault/store.js')
+    await createVaultStore({ journalDir: fx.journalDir }).init()
+    await createVaultStore({ journalDir: fx.journalDir }).setSecret('files-pg-url', 'postgres://u:pw-secret@127.0.0.1:1/db')
+
+    const page = await pageFor('owner')
+
+    expect(page).toContain('role="status"')
+    expect(page).toContain('Postgres support is not installed: run')
+    expect(page).toContain('answered from the journal.')
+    expect(page).not.toContain('pw-secret')
+    expect(page).toContain('read_file')
+  })
+})

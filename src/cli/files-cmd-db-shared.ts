@@ -1,8 +1,8 @@
 import { openFilesDb, type FilesDb } from '../files/db/connection.js'
-import { DEFAULT_DB_SCHEMA } from '../files/db/constants.js'
 import { readDbUrl, parseDbUrl } from '../files/db/db-url.js'
 import { FilesDbModuleMissingError, loadPg, modulesDirOf, moduleMissingMessage } from '../files/db/pg-loader.js'
 import type { PgModule } from '../files/db/pg-types.js'
+import { resolveSchema } from '../files/db/schema-env.js'
 import { JOURNAL_DIR } from '../config.js'
 import { formatReadableField } from '../journal/format.js'
 import type { FilesCliOptions } from './files-cmd.js'
@@ -27,7 +27,7 @@ export function journalDirOf(opts: FilesCliOptions): string {
 }
 
 export function schemaOf(opts: FilesCliOptions): string {
-  return opts.db?.schema ?? DEFAULT_DB_SCHEMA
+  return resolveSchema({ schema: opts.db?.schema, env: opts.env })
 }
 
 /** The client, or the missing-client line. Never throws for a missing client. */

@@ -91,9 +91,13 @@ function resultTable(view: FilesView): Html {
   </table></div>`
 }
 
+function sourceNotice(audit: AuditView): Html {
+  return audit.notice === undefined ? html`` : html`<p class="small dim" role="status">${audit.notice}</p>`
+}
+
 export function renderAuditPanel(view: FilesView): Html {
   return html`<section class="panel fl-panel" id="audit" aria-label="Who touched what">
     <div class="panel-hd"><h2>Who touched what</h2></div>
-    <div class="panel-bd">${filterForm(view.audit)}${resultTable(view)}${resultNotes(view.audit)}</div>
+    <div class="panel-bd">${filterForm(view.audit)}${sourceNotice(view.audit)}${resultTable(view)}${resultNotes(view.audit)}</div>
   </section>`
 }

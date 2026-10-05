@@ -58,6 +58,8 @@ export interface AuditView {
   /** A filter the page could not use; the panel shows it instead of results. */
   readonly error?: string
   readonly result?: FileAuditResult
+  /** Why the answer came from the journal although Postgres is turned on; shown above the table. */
+  readonly notice?: string
   /** The default window and no path or agent: an empty result means "nothing yet". */
   readonly isUnfiltered: boolean
 }

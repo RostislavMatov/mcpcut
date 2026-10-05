@@ -2,7 +2,9 @@ import { stat } from 'node:fs/promises'
 import path from 'node:path'
 import type { AgentRecord } from '../../agents/schema.js'
 import { effectiveGrantsOf, type GrantSource } from '../../agents/effective.js'
-import { parseSince, queryFileAudit } from '../../files/audit.js'
+import { npxCommand } from '../../cli/next-step.js'
+import { parseSince } from '../../files/audit.js'
+import { fileAudit } from '../../files/audit-source.js'
 import { FILES_SERVER_NAME, TRASH_DIR_NAME } from '../../files/constants.js'
 import { listTrash } from '../../files/io-trash-admin.js'
 import type { RootEntry } from '../../files/roots-store.js'
@@ -95,6 +97,9 @@ export function auditFiltersOf(query: URLSearchParams): AuditFilters {
   }
 }
 
+/** The page waits at most this long for Postgres to catch up before it answers from the journal. */
+const UI_INGEST_BUDGET_MS = 2000
+
 interface AuditContext {
   readonly dir: string
   readonly now: Date
@@ -110,14 +115,14 @@ export async function auditOf(filters: AuditFilters, context: AuditContext): Pro
   const since = parseSince(filters.since, context.now)
   if (since === null) return { ...base, error: SINCE_ERROR }
   if (filters.path !== '' && !path.isAbsolute(filters.path)) return { ...base, error: PATH_ERROR }
-  const result = await queryFileAudit(
+  const { source: _source, notice, ...result } = await fileAudit(
     {
       limit: AUDIT_PAGE_SIZE,
       since,
       ...(filters.path !== '' ? { path: filters.path } : {}),
       ...(filters.agent !== '' ? { agent: filters.agent } : {}),
     },
-    { dir: context.dir },
+    { journalDir: context.dir, cli: npxCommand(), budgetMs: UI_INGEST_BUDGET_MS },
   )
-  return { ...base, result }
+  return { ...base, result, ...(notice !== undefined ? { notice } : {}) }
 }

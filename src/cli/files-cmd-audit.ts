@@ -1,7 +1,8 @@
 import path from 'node:path'
 import { parseArgs } from 'node:util'
 import { createAgentsStore } from '../agents/store.js'
-import { parseSince, queryFileAudit, type FileAuditActor, type FileAuditEntry, type FileAuditResult, type FileAuditSubject } from '../files/audit.js'
+import { parseSince, type FileAuditActor, type FileAuditEntry, type FileAuditSubject } from '../files/audit.js'
+import { fileAudit, type AuditAnswer } from '../files/audit-source.js'
 import { canonicalPath } from '../files/paths.js'
 import { createRootsStore } from '../files/roots-store.js'
 import { formatReadableField } from '../journal/format.js'
@@ -16,6 +17,8 @@ import { cliCommand, shellArg } from './next-step.js'
  * operation on stdout; counts, truncation and the next step on stderr.
  */
 
+/** `files audit` waits this long for Postgres to catch up before it answers from the journal. */
+const CLI_INGEST_BUDGET_MS = 10_000
 const DEFAULT_LIMIT = 100
 const MAX_LIMIT = 1000
 const LIMIT_PATTERN = /^[1-9]\d{0,3}$/
@@ -84,11 +87,11 @@ export function formatAuditLine(entry: FileAuditEntry): string {
 }
 
 /** The stderr footer: the count, why the list may be short, and the next step. */
-function footerOf(result: FileAuditResult, cli: string): string {
+function footerOf(result: AuditAnswer, cli: string): string {
   const [newest] = result.entries
   if (newest === undefined) return ''
   const shown = result.entries.length
-  const lines = [`${shown} file operation(s)`, `Full record: ${cli} show ${shellArg(newest.sessionId)}`]
+  const lines = [`${shown} file operation(s)${result.source === 'postgres' ? ' from Postgres' : ''}`, `Full record: ${cli} show ${shellArg(newest.sessionId)}`]
   if (result.truncated) lines.push('Searched only the newest sessions or file calls — narrow with --since or --agent')
   if (result.hasMore) lines.push(`Showing the newest ${shown} — more with --limit ${Math.min(shown * 2, MAX_LIMIT)}`)
   return `${lines.join('\n')}\n`
@@ -123,17 +126,28 @@ export async function runAudit(args: string[], io: AgentCliIo, opts: FilesCliOpt
   if (parsed.path === '') return fail(io, '--path takes a file or folder, e.g. --path ~/project/notes.md')
   const pathQuery = parsed.path === undefined ? {} : await pathQueryOf(parsed.path)
 
-  const result = await queryFileAudit(
+  const result = await fileAudit(
     {
       limit: parsed.limit === undefined ? DEFAULT_LIMIT : Number(parsed.limit),
       ...pathQuery,
       ...(parsed.agent !== undefined ? { agent: parsed.agent } : {}),
       ...(since !== undefined ? { since } : {}),
     },
-    opts.journalDir !== undefined ? { dir: opts.journalDir } : {},
+    {
+      cli: cliCommand(opts.env),
+      budgetMs: CLI_INGEST_BUDGET_MS,
+      ...(opts.journalDir !== undefined ? { journalDir: opts.journalDir } : {}),
+      ...(opts.env !== undefined ? { env: opts.env } : {}),
+      ...(opts.db?.loadPg !== undefined ? { loadPg: opts.db.loadPg } : {}),
+      ...(opts.db?.schema !== undefined ? { schema: opts.db.schema } : {}),
+      ...(opts.db?.onOpen !== undefined ? { onOpen: opts.db.onOpen } : {}),
+    },
   )
+  if (result.notice !== undefined) io.stderr.write(`${result.notice}\n`)
   if (parsed.json === true) {
-    io.stdout.write(`${JSON.stringify({ entries: result.entries, hasMore: result.hasMore, truncated: result.truncated })}\n`)
+    io.stdout.write(
+      `${JSON.stringify({ entries: result.entries, hasMore: result.hasMore, truncated: result.truncated, source: result.source })}\n`,
+    )
   } else {
     result.entries.forEach((entry) => io.stdout.write(`${formatAuditLine(entry)}\n`))
   }

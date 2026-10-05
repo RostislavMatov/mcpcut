@@ -171,7 +171,8 @@ describe('files audit', () => {
     expect(parsed.entries).toHaveLength(1)
     expect(parsed.entries[0]).toMatchObject({ action: 'read_file', paths: ['/data/a'] })
     expect(parsed).toMatchObject({ hasMore: false, truncated: false })
-    expect(Object.keys(parsed).sort()).toEqual(['entries', 'hasMore', 'truncated'])
+    expect(Object.keys(parsed).sort()).toEqual(['entries', 'hasMore', 'source', 'truncated'])
+    expect(parsed).toMatchObject({ source: 'journal' })
   })
 
   test('control characters in journal values never reach the terminal raw', async () => {
@@ -216,7 +217,7 @@ describe('files audit — empty states', () => {
   test('--json on an empty journal is still one valid object', async () => {
     const result = await files(['audit', '--json'])
 
-    expect(JSON.parse(result.out)).toEqual({ entries: [], hasMore: false, truncated: false })
+    expect(JSON.parse(result.out)).toEqual({ entries: [], hasMore: false, truncated: false, source: 'journal' })
   })
 })
 
