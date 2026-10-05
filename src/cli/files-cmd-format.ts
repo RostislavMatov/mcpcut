@@ -61,7 +61,7 @@ export const FILES_USAGE = `Usage:
                                          List what agents deleted, put an item back, or delete
                                          old ones for good (default 30 days; serve does it daily)
   mcpcut files setup                     Install the Postgres client (optional: a faster, complete audit)
-  mcpcut files db init | status          Turn Postgres on and create its schema, or show where it stands
+  mcpcut files db init | status | sync   Turn Postgres on and create its schema, show where it stands, or bring it up to date
 Changes need an owner token in MCP_ADMIN_TOKEN; list and show do not.
 `
 
@@ -75,5 +75,6 @@ Restore and purge need an owner token in MCP_ADMIN_TOKEN; list does not.
 export const FILES_DB_USAGE = `Usage:
   mcpcut files db init      Create the Postgres URL and print the docker command (first run), then connect and migrate
   mcpcut files db status    Client, URL, server and how far the index has caught up
-The first init needs an owner token in MCP_ADMIN_TOKEN; the second init and status do not.
+  mcpcut files db sync      Ingest the journal and walk every declared folder into Postgres
+The first init needs an owner token in MCP_ADMIN_TOKEN; the second init, status and sync do not.
 `

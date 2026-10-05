@@ -7,6 +7,7 @@ import { createVaultStore } from '../vault/store.js'
 import type { AgentCliIo } from './agent-cmd.js'
 import { journalDirOf, openTarget, resolveTarget, type DbTarget } from './files-cmd-db-shared.js'
 import { runDbStatus } from './files-cmd-db-status.js'
+import { runDbSync } from './files-cmd-db-sync.js'
 import { FILES_DB_USAGE } from './files-cmd-format.js'
 import type { FilesCliOptions } from './files-cmd.js'
 import { requireOwner } from './files-cmd-write.js'
@@ -15,7 +16,7 @@ import { recordChange } from './vault-cmd-write.js'
 import type { VaultCmdDeps } from './vault-cmd.js'
 
 /**
- * `mcpcut files db init|status` (ADR-0020 §6). The order of steps is always
+ * `mcpcut files db init|status|sync` (ADR-0020 §6). The order of steps is always
  * `files setup` → `files db init` (writes the URL, prints the docker command)
  * → docker → `files db init` (connects, migrates). `status` and the second
  * `init` change nothing of mcpcut's own state, so no token; the first `init`
@@ -26,6 +27,7 @@ export async function runDb(args: string[], io: AgentCliIo, opts: FilesCliOption
   const [action, ...rest] = args
   if (rest.length === 0 && action === 'init') return runDbInit(io, opts)
   if (rest.length === 0 && action === 'status') return runDbStatus(io, opts)
+  if (rest.length === 0 && action === 'sync') return runDbSync(io, opts)
   io.stderr.write(FILES_DB_USAGE)
   return 1
 }
