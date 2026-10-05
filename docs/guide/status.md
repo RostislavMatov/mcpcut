@@ -23,7 +23,7 @@ other text about the project may claim more than it does.
 | `connect --url` bridge for agents on another machine | shipped, **[preview](console.md#what-preview-means-here)** | bridge tests, a live run over TLS |
 | remote console (`--remote`, `--connect`) | shipped, **[preview](console.md#what-preview-means-here)** | remote-console tests, a live run over TLS |
 | ready-made client config at `agent create` | shipped | config tests, a live run with real clients |
-| npm package (`npm i -g mcpcut`, `npx mcpcut@0.3.0`) | shipped, 0.1.0 | `tests/release/*`, a CI smoke of the published package on Linux, macOS and Windows |
+| npm package (`npm i -g mcpcut`, `npx mcpcut@0.3.1`) | shipped, 0.1.0 | `tests/release/*`, a CI smoke of the published package on Linux, macOS and Windows |
 | whole-product security audit | passed 2026-09-02, **internal** | 0 critical, 4 high findings, all fixed; no independent audit yet; reports via `SECURITY.md` |
 
 The journal is a persistent, append-oriented, secret-redacted SQLite database

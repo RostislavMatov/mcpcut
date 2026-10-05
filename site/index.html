@@ -75,13 +75,13 @@
       <div class="step">
         <h3>See</h3>
         <p>Put the MCP servers you already have behind mcpcut. <code>adopt</code> finds them in Claude Code, Cursor and Claude Desktop and shows the change; <code>--apply</code> writes it, keeping a copy of each file. Then restart the client:</p>
-<pre data-from-readme>npx -y mcpcut@0.3.0 adopt
-npx -y mcpcut@0.3.0 adopt --apply</pre>
-        <p>Or put mcpcut in front of one server by hand — here for Claude Code. In any other client, the server's command becomes <code>npx -y mcpcut@0.3.0 wrap -- &lt;your server&gt;</code>.</p>
-<pre data-from-readme>claude mcp add fs -- npx -y mcpcut@0.3.0 wrap --server fs -- npx -y @modelcontextprotocol/server-filesystem ~/project</pre>
+<pre data-from-readme>npx -y mcpcut@0.3.1 adopt
+npx -y mcpcut@0.3.1 adopt --apply</pre>
+        <p>Or put mcpcut in front of one server by hand — here for Claude Code. In any other client, the server's command becomes <code>npx -y mcpcut@0.3.1 wrap -- &lt;your server&gt;</code>.</p>
+<pre data-from-readme>claude mcp add fs -- npx -y mcpcut@0.3.1 wrap --server fs -- npx -y @modelcontextprotocol/server-filesystem ~/project</pre>
         <p>Let the agent work, then read what happened — every request and response, secrets redacted (with a policy, every decision too):</p>
-<pre data-from-readme>npx -y mcpcut@0.3.0 sessions
-npx -y mcpcut@0.3.0 show &lt;id&gt;</pre>
+<pre data-from-readme>npx -y mcpcut@0.3.1 sessions
+npx -y mcpcut@0.3.1 show &lt;id&gt;</pre>
       </div>
       <div class="step">
         <h3>Stop</h3>
@@ -89,19 +89,19 @@ npx -y mcpcut@0.3.0 show &lt;id&gt;</pre>
 <pre data-from-readme>{ "version": 1, "defaultDecision": "require-approval", "classDefaults": { "read": "allow" },
   "quarantine": { "enabled": false } }</pre>
         <p>A write now waits. Approve it from another terminal within the agent's wait:</p>
-<pre data-from-readme>npx -y mcpcut@0.3.0 approvals list
-npx -y mcpcut@0.3.0 approvals approve &lt;id&gt;</pre>
+<pre data-from-readme>npx -y mcpcut@0.3.1 approvals list
+npx -y mcpcut@0.3.1 approvals approve &lt;id&gt;</pre>
         <p>Or be asked right in the session: let everything pass and stop only the tools you name — Claude Code shows Accept / Decline, no second terminal. <code>fs</code> is the server's name in your client — <code>adopt</code> keeps those names:</p>
 <pre data-from-readme>{ "version": 1, "defaultDecision": "allow", "quarantine": { "enabled": false },
   "servers": { "fs": { "confirmInClient": { "write_file": ["*"], "edit_file": ["*"] } } } }</pre>
-        <p>Rather click than write JSON? <code>npx -y mcpcut@0.3.0 ui</code> opens the admin UI. On Servers, <b>Create policy</b> writes a policy that lets every call pass — restart the client once — and then every tool of every server behind mcpcut has its buttons: <i>all</i> under <i>client</i> makes that tool ask you in the session, <i>approval</i> holds it for the queue, <i>deny</i> blocks it.</p>
+        <p>Rather click than write JSON? <code>npx -y mcpcut@0.3.1 ui</code> opens the admin UI. On Servers, <b>Create policy</b> writes a policy that lets every call pass — restart the client once — and then every tool of every server behind mcpcut has its buttons: <i>all</i> under <i>client</i> makes that tool ask you in the session, <i>approval</i> holds it for the queue, <i>deny</i> blocks it.</p>
       </div>
       <div class="step">
         <h3>Prove</h3>
         <p>Sign the history, export it, and check it offline — with nothing but the directory:</p>
-<pre data-from-readme>npx -y mcpcut@0.3.0 keygen &amp;&amp; npx -y mcpcut@0.3.0 export --report --out ./report
-npx -y mcpcut@0.3.0 verify --report ./report
-npx -y mcpcut@0.3.0 verify --sign</pre>
+<pre data-from-readme>npx -y mcpcut@0.3.1 keygen &amp;&amp; npx -y mcpcut@0.3.1 export --report --out ./report
+npx -y mcpcut@0.3.1 verify --report ./report
+npx -y mcpcut@0.3.1 verify --sign</pre>
         <p>The last line signs the chain head: keep what it prints somewhere this host cannot rewrite — that copy is what makes the journal tamper-evident with an external anchor.</p>
       </div>
       <p class="more">The full walkthrough, with what each step prints: <a href="https://github.com/RostislavMatov/mcpcut#quick-start">README · Quick start</a>.</p>
