@@ -1,5 +1,6 @@
 import { parseArgs } from 'node:util'
 import type { AgentGrant } from '../agents/schema.js'
+import { createAgentsStore } from '../agents/store.js'
 import { FILES_SERVER_NAME } from '../files/constants.js'
 import {
   applyRule,
@@ -55,6 +56,12 @@ function parseGroupArgs(args: readonly string[], count: number, withOps: boolean
   }
 }
 
+/** Names of the agents that can still connect, for a ready `group join` command. */
+async function activeAgentNames(opts: FilesCliOptions): Promise<readonly string[]> {
+  const agents = await createAgentsStore({ ...(opts.journalDir !== undefined ? { journalDir: opts.journalDir } : {}) }).listAgents()
+  return agents.filter((agent) => agent.revokedAt === undefined).map((agent) => agent.name)
+}
+
 function groupsOf(opts: FilesCliOptions): GroupsStore {
   return createGroupsStore({ ...(opts.journalDir !== undefined ? { journalDir: opts.journalDir } : {}) })
 }
@@ -70,12 +77,16 @@ function unknownGroupLine(opts: FilesCliOptions, name: string): string {
   return `no group "${formatReadableField(name)}": list groups with \`${cliCommand(opts.env)} group list\``
 }
 
-/** Who gets the change: the members, with a check command; or how to add the first one. */
-export function memberNextStep(env: NodeJS.ProcessEnv | undefined, group: GroupRecord): string {
+/**
+ * Who gets the change: the members, with a check command; or how to add the
+ * first one — named after an existing agent when there is one.
+ */
+export function memberNextStep(env: NodeJS.ProcessEnv | undefined, group: GroupRecord, agentNames: readonly string[] = []): string {
   const cli = cliCommand(env)
   const [first] = group.members
   if (first === undefined) {
-    return `No agent is in ${formatReadableField(group.name)} yet. Add one: ${cli} group join ${shellArg(group.name)} <agent>\n`
+    const candidate = agentNames[0] === undefined ? '<agent>' : shellArg(agentNames[0])
+    return `No agent is in ${formatReadableField(group.name)} yet. Add one: ${cli} group join ${shellArg(group.name)} ${candidate}\n`
   }
   const names = group.members.map(formatReadableField).join(', ')
   return `Agents in ${formatReadableField(group.name)} get it: ${names}. Check one: ${cli} files show ${shellArg(first)}\n`
@@ -116,7 +127,7 @@ export async function runGroupGrant(args: string[], io: AgentCliIo, opts: FilesC
   const label = formatReadableField(groupName)
   io.stdout.write(`granted group ${label} on ${formatReadableField(rule.path)}: ${rule.ops.length === 0 ? 'no access (cut out)' : rule.ops.join(', ')}\n`)
   io.stdout.write(`group ${label}'s folder rules:\n${formatRuleLines(grant.paths ?? []).join('\n')}\n`)
-  io.stderr.write(memberNextStep(opts.env, updated))
+  io.stderr.write(memberNextStep(opts.env, updated, await activeAgentNames(opts)))
   return record(io, opts, actor, 'grant', pairTarget(groupName, rule.path), {
     action: 'files.grant',
     group: groupName,
@@ -153,7 +164,7 @@ export async function runGroupRevoke(args: string[], io: AgentCliIo, opts: Files
   } else {
     io.stdout.write(`group ${label}'s folder rules:\n${formatRuleLines(grant.paths).join('\n')}\n`)
   }
-  io.stderr.write(memberNextStep(opts.env, updated))
+  io.stderr.write(memberNextStep(opts.env, updated, await activeAgentNames(opts)))
   return record(io, opts, actor, 'revoke', pairTarget(groupName, keys[0] ?? rawPath), {
     action: 'files.revoke',
     group: groupName,

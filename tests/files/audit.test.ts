@@ -241,6 +241,7 @@ describe('queryFileAudit — admin edits', () => {
         action: 'files.trash.restore',
         outcome: null,
         rule: null,
+        subject: null,
         paths: [`${data}/a`],
       },
     ])
@@ -344,5 +345,29 @@ describe('queryFileAudit — other servers do not crowd out file calls', () => {
 
     expect(pathsOf(result.entries)).toEqual([['/data/a.txt']])
     expect(result.truncated).toBe(false)
+  })
+})
+
+describe('queryFileAudit — subject and path spellings', () => {
+  test('an admin edit names the agent or the group it was for; an agent call names none', async () => {
+    await write(ACCESS_EDIT_SESSION_ID, [
+      edit('2026-10-04T10:00:00.000Z', { action: 'files.grant', agent: 'bot', path: '/data/a' }),
+      edit('2026-10-04T11:00:00.000Z', { action: 'files.grant', group: 'devs', path: '/data/a' }),
+    ])
+    await write('s-1', [call({ ts: '2026-10-04T12:00:00.000Z', agent: 'bot', payload: { path: '/data/a' } })])
+
+    const result = await audit()
+
+    expect(result.entries.map((entry) => entry.subject)).toEqual([null, { kind: 'group', name: 'devs' }, { kind: 'agent', name: 'bot' }])
+  })
+
+  test('a path alias matches what was recorded under the other spelling', async () => {
+    await write(ACCESS_EDIT_SESSION_ID, [edit('2026-10-04T10:00:00.000Z', { action: 'files.grant', agent: 'bot', path: '/private/tmp/a' })])
+
+    const without = await queryFileAudit({ limit: 100, path: '/tmp/a/x' }, { dir, platform: 'linux' })
+    const withAlias = await queryFileAudit({ limit: 100, path: '/tmp/a/x', pathAliases: ['/private/tmp/a/x'] }, { dir, platform: 'linux' })
+
+    expect(without.entries).toEqual([])
+    expect(pathsOf(withAlias.entries)).toEqual([['/private/tmp/a']])
   })
 })

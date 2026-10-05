@@ -76,11 +76,20 @@ describe('files grant --group', () => {
     expect(result.err).toContain('team')
   })
 
-  test('a group without members points at the command that adds one', async () => {
+  test('a group without members, and no agent yet, points at the command that adds one', async () => {
     const result = await files(['grant', '--group', 'team', join(root, 'a'), '--ops', 'read'])
 
     expect(result.code).toBe(0)
     expect(result.err).toContain('mcpcut group join team <agent>')
+  })
+
+  test('a group without members names an existing agent in the command that adds one', async () => {
+    await createAgentsStore({ journalDir }).createAgent('bot')
+
+    const result = await files(['grant', '--group', 'team', join(root, 'a'), '--ops', 'read'])
+
+    expect(result.code).toBe(0)
+    expect(result.err).toContain('mcpcut group join team bot\n')
   })
 
   test('journals files.grant with the group and no agent', async () => {

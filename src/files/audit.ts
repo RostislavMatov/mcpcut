@@ -17,6 +17,8 @@ import { isWithinOn, lexicalKey } from './names.js'
 export interface FileAuditQuery {
   /** Absolute; an entry matches when it touched this path or something inside it. */
   readonly path?: string
+  /** Other spellings of `path` (its canonical form through symlinks); matched like `path`. */
+  readonly pathAliases?: readonly string[]
   readonly agent?: string
   /** `YYYY-MM-DD`, already parsed (`parseSince`). */
   readonly since?: string
@@ -27,6 +29,12 @@ export interface FileAuditQuery {
 export type FileAuditActor =
   | { readonly kind: 'agent'; readonly name: string | null }
   | { readonly kind: 'admin'; readonly name: string; readonly via: string }
+
+/** Whom an admin edit was for. */
+export interface FileAuditSubject {
+  readonly kind: 'agent' | 'group'
+  readonly name: string
+}
 
 export interface FileAuditEntry {
   readonly ts: string
@@ -39,6 +47,8 @@ export interface FileAuditEntry {
   readonly outcome: string | null
   /** Decision rule (the reason of a deny); null for admin edits. */
   readonly rule: string | null
+  /** The agent or group an admin edit was for; null for agent calls and for edits of roots or trash. */
+  readonly subject: FileAuditSubject | null
   /** `[path]` or `[source, destination]`; may be empty. */
   readonly paths: readonly string[]
 }
@@ -93,8 +103,9 @@ export async function queryFileAudit(query: FileAuditQuery, opts: FileAuditOptio
   const platform = opts.platform ?? process.platform
   const limit = Math.min(MAX_PAGE_LIMIT, Math.max(MIN_LIMIT, Math.floor(query.limit)))
   const [calls, edits] = await Promise.all([readCalls(query, opts), readEdits(query, opts)])
+  const matcher = query.path === undefined ? undefined : pathMatcher([query.path, ...(query.pathAliases ?? [])], platform)
   const matching = [...calls.entries, ...edits.entries]
-    .filter((entry) => query.path === undefined || touchesPath(entry, query.path, platform))
+    .filter((entry) => matcher === undefined || matcher(entry))
     .sort(newestFirst)
   return {
     entries: matching.slice(0, limit),
@@ -166,6 +177,7 @@ function entryOfCall(sessionId: string, record: JournalRecord): FileAuditEntry |
     action,
     outcome: stringOf(decision['outcome']) ?? null,
     rule: stringOf(decision['rule']) ?? null,
+    subject: null,
     paths: [payload['path'], payload['source'], payload['destination']].flatMap((value) => stringOf(value) ?? []),
   }
 }
@@ -189,9 +201,17 @@ function entryOfEdit(record: JournalRecord): EditEntry | undefined {
     action,
     outcome: null,
     rule: null,
+    subject: subjectOf(payload),
     paths: stringOf(payload['path']) === undefined ? [] : [payload['path'] as string],
     agentOfEdit: stringOf(payload['agent']),
   }
+}
+
+function subjectOf(payload: Record<string, unknown>): FileAuditSubject | null {
+  const agent = stringOf(payload['agent'])
+  if (agent !== undefined) return { kind: 'agent', name: agent }
+  const group = stringOf(payload['group'])
+  return group === undefined ? null : { kind: 'group', name: group }
 }
 
 function newestFirst(left: FileAuditEntry, right: FileAuditEntry): number {
@@ -200,14 +220,19 @@ function newestFirst(left: FileAuditEntry, right: FileAuditEntry): number {
   return left.recordId < right.recordId ? 1 : -1
 }
 
-/** Whether `entry` touched `query` or something inside it — or, for a whole-tree action, a folder holding it. */
-function touchesPath(entry: FileAuditEntry, query: string, platform: NodeJS.Platform): boolean {
+/**
+ * Whether an entry touched one of the query spellings or something inside it —
+ * or, for a whole-tree action, a folder holding it. The spellings are keyed
+ * once, not once per entry.
+ */
+function pathMatcher(queries: readonly string[], platform: NodeJS.Platform): (entry: FileAuditEntry) => boolean {
   const pathModule = platform === 'win32' ? path.win32 : path.posix
-  if (!pathModule.isAbsolute(query)) return false
-  const wanted = lexicalKey(query, platform)
-  const isTree = TREE_ACTIONS.has(entry.action)
-  return entry.paths
-    .filter((value) => pathModule.isAbsolute(value))
-    .map((value) => lexicalKey(value, platform))
-    .some((value) => isWithinOn(wanted, value, platform) || (isTree && isWithinOn(value, wanted, platform)))
+  const wanted = queries.filter((query) => pathModule.isAbsolute(query)).map((query) => lexicalKey(query, platform))
+  return (entry) => {
+    const isTree = TREE_ACTIONS.has(entry.action)
+    const keys = entry.paths.filter((value) => pathModule.isAbsolute(value)).map((value) => lexicalKey(value, platform))
+    return wanted.some((query) =>
+      keys.some((value) => isWithinOn(query, value, platform) || (isTree && isWithinOn(value, query, platform))),
+    )
+  }
 }

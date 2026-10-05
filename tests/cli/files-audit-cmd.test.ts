@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
@@ -159,7 +159,7 @@ describe('files audit', () => {
 
     const result = await files(['audit', '--limit', '5'])
 
-    expect(result.err).toContain('Searched only the newest sessions — narrow with --since or --agent')
+    expect(result.err).toContain('Searched only the newest sessions or file calls — narrow with --since or --agent')
   })
 
   test('--json prints only the object on stdout', async () => {
@@ -204,12 +204,13 @@ describe('files audit — empty states', () => {
     expect(result.err).toContain(`mcpcut files grant bot ${root} --ops read`)
   })
 
-  test('filters given → says to drop one or widen --since', async () => {
+  test('filters given → says to drop one or widen --since, with the command without filters', async () => {
     await declareRoot()
 
     const result = await files(['audit', '--agent', 'ghost'])
 
     expect(result.err).toContain('No file operations match these filters — drop one or widen --since.')
+    expect(result.err).toContain('All file operations: mcpcut files audit\n')
   })
 
   test('--json on an empty journal is still one valid object', async () => {
@@ -242,5 +243,45 @@ describe('files audit — bad input', () => {
 
     expect(result.code).toBe(1)
     expect(result.err).toContain('mcpcut files audit')
+  })
+})
+
+describe('files audit — review fixes', () => {
+  test('an admin edit says whom it was for: an agent or a group', async () => {
+    await write(ACCESS_EDIT_SESSION_ID, [
+      edit('2026-10-04T10:00:00.000Z', { action: 'files.grant', agent: 'bot', server: 'files', path: '/data/a' }),
+      edit('2026-10-04T11:00:00.000Z', { action: 'files.grant', group: 'devs', server: 'files', path: '/data/b' }),
+    ])
+
+    const lines = (await files(['audit'])).out.trim().split('\n')
+
+    expect(lines[0]).toContain('files.grant  for group devs  /data/b')
+    expect(lines[1]).toContain('files.grant  for agent bot  /data/a')
+  })
+
+  test('--path through a symlink also finds what was recorded under the real path', async () => {
+    const link = join(base, 'link')
+    await symlink(root, link)
+    await write(ACCESS_EDIT_SESSION_ID, [edit('2026-10-04T10:00:00.000Z', { action: 'files.grant', agent: 'bot', path: root })])
+
+    const result = await files(['audit', '--path', join(link, 'x.txt')])
+
+    expect(result.out).toContain(`files.grant  for agent bot  ${root}`)
+  })
+
+  test('an empty --path is refused instead of meaning the current folder', async () => {
+    const result = await files(['audit', '--path='])
+
+    expect(result.code).toBe(1)
+    expect(result.err.trim().split('\n')).toHaveLength(1)
+    expect(result.err).toContain('--path')
+  })
+
+  test('a control character in a recorded time never reaches the terminal raw', async () => {
+    await write('sess-1', [call('2026-10-04T10:00:00.000Z\u001b[2J', 'read_file', { path: '/data/a' }, { agent: 'bot' })])
+
+    const result = await files(['audit'])
+
+    expect(result.out).not.toContain('\u001b')
   })
 })

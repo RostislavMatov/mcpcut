@@ -1,7 +1,8 @@
 import path from 'node:path'
 import { parseArgs } from 'node:util'
 import { createAgentsStore } from '../agents/store.js'
-import { parseSince, queryFileAudit, type FileAuditActor, type FileAuditEntry, type FileAuditResult } from '../files/audit.js'
+import { parseSince, queryFileAudit, type FileAuditActor, type FileAuditEntry, type FileAuditResult, type FileAuditSubject } from '../files/audit.js'
+import { canonicalPath } from '../files/paths.js'
 import { createRootsStore } from '../files/roots-store.js'
 import { formatReadableField } from '../journal/format.js'
 import type { AgentCliIo } from './agent-cmd.js'
@@ -58,6 +59,11 @@ function actorLabel(actor: FileAuditActor): string {
   return `admin ${formatReadableField(actor.name)} (${formatReadableField(actor.via)})`
 }
 
+/** `for agent bot` / `for group devs`; empty for agent calls and edits of roots or trash. */
+function subjectLabel(subject: FileAuditSubject | null): string {
+  return subject === null ? '' : `for ${subject.kind} ${formatReadableField(subject.name)}`
+}
+
 /** `a` or `source -> destination`; empty when the record named no path. */
 function pathsLabel(paths: readonly string[]): string {
   return paths.map(formatReadableField).join(' -> ')
@@ -66,10 +72,11 @@ function pathsLabel(paths: readonly string[]): string {
 export function formatAuditLine(entry: FileAuditEntry): string {
   const isAllow = entry.outcome === 'allow'
   const columns = [
-    entry.ts,
+    formatReadableField(entry.ts),
     actorLabel(entry.actor),
     ...(entry.outcome !== null ? [formatReadableField(entry.outcome)] : []),
     formatReadableField(entry.action),
+    subjectLabel(entry.subject),
     pathsLabel(entry.paths),
     ...(entry.rule !== null && !isAllow ? [formatReadableField(entry.rule)] : []),
   ]
@@ -82,7 +89,7 @@ function footerOf(result: FileAuditResult, cli: string): string {
   if (newest === undefined) return ''
   const shown = result.entries.length
   const lines = [`${shown} file operation(s)`, `Full record: ${cli} show ${shellArg(newest.sessionId)}`]
-  if (result.truncated) lines.push('Searched only the newest sessions — narrow with --since or --agent')
+  if (result.truncated) lines.push('Searched only the newest sessions or file calls — narrow with --since or --agent')
   if (result.hasMore) lines.push(`Showing the newest ${shown} — more with --limit ${Math.min(shown * 2, MAX_LIMIT)}`)
   return `${lines.join('\n')}\n`
 }
@@ -92,10 +99,17 @@ async function emptyHint(opts: FilesCliOptions, hasFilters: boolean): Promise<st
   const roots = await createRootsStore(journalDir).list()
   const cli = cliCommand(opts.env)
   if (roots.length === 0) return `No file operations recorded. Declare a folder first: ${cli} files root add <folder>\n`
-  if (hasFilters) return 'No file operations match these filters — drop one or widen --since.\n'
+  if (hasFilters) return `No file operations match these filters — drop one or widen --since.\nAll file operations: ${cli} files audit\n`
   const agents = await createAgentsStore(journalDir).listAgents()
   const step = grantNextStep(opts.env ?? process.env, agents, roots[0]?.path ?? '')
   return `No file operations recorded yet. Agents reach folders through connect — give one access:\n${step}`
+}
+
+/** The path as typed (made absolute) and, when symlinks lead elsewhere, its canonical spelling too. */
+async function pathQueryOf(raw: string): Promise<{ readonly path: string; readonly pathAliases: readonly string[] }> {
+  const resolved = path.resolve(raw)
+  const canonical = await canonicalPath(resolved)
+  return { path: resolved, pathAliases: canonical === null || canonical === resolved ? [] : [canonical] }
 }
 
 export async function runAudit(args: string[], io: AgentCliIo, opts: FilesCliOptions): Promise<number> {
@@ -106,11 +120,13 @@ export async function runAudit(args: string[], io: AgentCliIo, opts: FilesCliOpt
   if (parsed.limit !== undefined && (!LIMIT_PATTERN.test(parsed.limit) || Number(parsed.limit) > MAX_LIMIT)) {
     return fail(io, `--limit takes a whole number from 1 to ${MAX_LIMIT}, e.g. --limit 200`)
   }
+  if (parsed.path === '') return fail(io, '--path takes a file or folder, e.g. --path ~/project/notes.md')
+  const pathQuery = parsed.path === undefined ? {} : await pathQueryOf(parsed.path)
 
   const result = await queryFileAudit(
     {
       limit: parsed.limit === undefined ? DEFAULT_LIMIT : Number(parsed.limit),
-      ...(parsed.path !== undefined ? { path: path.resolve(parsed.path) } : {}),
+      ...pathQuery,
       ...(parsed.agent !== undefined ? { agent: parsed.agent } : {}),
       ...(since !== undefined ? { since } : {}),
     },
