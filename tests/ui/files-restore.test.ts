@@ -110,8 +110,8 @@ describe('refusals never touch the trash', () => {
     await expectRefused({ root: fx.root }, 'folder and trash id are required')
   })
 
-  test('an io failure shows its message', async () => {
-    await expectRefused({ root: fx.root, id: '01ARZ3NDEKTSV4RRFFQ69G5FAV' }, 'Nothing exists')
+  test('an unknown id says there is no such entry', async () => {
+    await expectRefused({ root: fx.root, id: '01ARZ3NDEKTSV4RRFFQ69G5FAV' }, 'There is no trash entry with that id')
   })
 
   test('something already at the original path', async () => {
