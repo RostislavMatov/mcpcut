@@ -24,7 +24,8 @@ export async function loadIndexRows(db: PgQueryable): Promise<IndexRow[]> {
     sha256: string | null
     size: string
     model: string
-  }>('SELECT root, rel_path, status, reason, sha256, size, model FROM search_files ORDER BY root, rel_path')
+    chunks: number
+  }>('SELECT root, rel_path, status, reason, sha256, size, model, chunks FROM search_files ORDER BY root, rel_path')
   return found.rows.map((row) => ({
     root: row.root,
     relPath: row.rel_path,
@@ -33,6 +34,7 @@ export async function loadIndexRows(db: PgQueryable): Promise<IndexRow[]> {
     sha256: row.sha256,
     size: Number(row.size),
     model: row.model,
+    chunks: row.chunks,
   }))
 }
 

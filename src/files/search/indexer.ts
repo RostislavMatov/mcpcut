@@ -149,7 +149,7 @@ async function runRound(sdb: SearchDb, opts: IndexOptions): Promise<IndexResult>
   const [files, rows] = await Promise.all([loadCatalogFiles(sdb.db, opts.roots), loadIndexRows(sdb.db)])
   const plan = planIndex({ files, rows, rules: opts.rules, platform: opts.platform, model: opts.embedder.model })
   const removed = await deleteIndexRows(sdb.db, plan.remove)
-  const tally: Tally = { indexed: 0, skipped: 0, skippedByReason: {}, pending: plan.waitingForHash, failed: 0, firstFailure: undefined }
+  const tally: Tally = { indexed: 0, skipped: 0, skippedByReason: {}, pending: plan.waiting.length, failed: 0, firstFailure: undefined }
   await processAll(sdb, plan.work, opts, tally)
   return {
     indexed: tally.indexed,
@@ -162,8 +162,15 @@ async function runRound(sdb: SearchDb, opts: IndexOptions): Promise<IndexResult>
   }
 }
 
+/**
+ * The lock key is `INDEX_LOCK_KEY` mixed with the schema name: one index per
+ * mcpcut schema, so two schemas in one database (and parallel test schemas)
+ * never block each other.
+ */
+const LOCK_KEY_SQL = '($1::bigint # hashtextextended(current_schema(), 0))'
+
 async function tryLock(client: PgQueryable): Promise<boolean> {
-  const locked = await client.query<{ locked: boolean }>('SELECT pg_try_advisory_lock($1) AS locked', [INDEX_LOCK_KEY])
+  const locked = await client.query<{ locked: boolean }>(`SELECT pg_try_advisory_lock(${LOCK_KEY_SQL}) AS locked`, [INDEX_LOCK_KEY])
   return locked.rows[0]?.locked === true
 }
 
@@ -175,11 +182,11 @@ async function underIndexLock<T>(db: FilesDb, fn: () => Promise<T>): Promise<T |
     try {
       result = await fn()
     } catch (error: unknown) {
-      await client.query('SELECT pg_advisory_unlock($1)', [INDEX_LOCK_KEY]).catch(() => undefined)
+      await client.query(`SELECT pg_advisory_unlock(${LOCK_KEY_SQL})`, [INDEX_LOCK_KEY]).catch(() => undefined)
       throw error
     }
     // A failed unlock rejects: the client is destroyed, which ends the session and frees the lock.
-    await client.query('SELECT pg_advisory_unlock($1)', [INDEX_LOCK_KEY])
+    await client.query(`SELECT pg_advisory_unlock(${LOCK_KEY_SQL})`, [INDEX_LOCK_KEY])
     return result
   })
 }

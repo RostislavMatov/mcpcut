@@ -25,6 +25,7 @@ export interface IndexRow {
   readonly sha256: string | null
   readonly size: number
   readonly model: string
+  readonly chunks: number
 }
 
 export type SkipKind = 'secret-like name' | 'too large'
@@ -40,7 +41,7 @@ export interface IndexPlan {
   /** In deterministic (root, rel_path) order. */
   readonly work: readonly PlannedWork[]
   /** In-scope files whose catalog hash is not computed yet: they wait for a later round. */
-  readonly waitingForHash: number
+  readonly waiting: readonly CatalogFile[]
 }
 
 export interface PlanInput {
@@ -91,11 +92,11 @@ export function planIndex(input: PlanInput): IndexPlan {
   const keep = new Set(inScope.map((file) => keyOf(file.root, file.relPath)))
   const remove = input.rows.filter((row) => !keep.has(keyOf(row.root, row.relPath))).map((row) => ({ root: row.root, relPath: row.relPath }))
   const work: PlannedWork[] = []
-  let waitingForHash = 0
+  const waiting: CatalogFile[] = []
   for (const file of inScope) {
     const planned = workOf(file, rowsByKey.get(keyOf(file.root, file.relPath)), input)
-    if (planned === 'waiting') waitingForHash += 1
+    if (planned === 'waiting') waiting.push(file)
     else if (planned !== undefined) work.push(planned)
   }
-  return { remove, work, waitingForHash }
+  return { remove, work, waiting }
 }

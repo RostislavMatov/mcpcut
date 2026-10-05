@@ -65,7 +65,7 @@ export async function runDbSync(io: AgentCliIo, opts: FilesCliOptions): Promise<
       platform: process.platform,
       now: (opts.clock ?? (() => new Date()))(),
       withWalk: true,
-      ...(indexSync.options === undefined ? {} : { index: indexSync.options }),
+      index: indexSync.options,
     })
     io.stdout.write(`events: +${ingest.added} (synced through record ${ingest.lastSeq})\n`)
     if (ingest.skipped > 0) {

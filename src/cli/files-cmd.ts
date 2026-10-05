@@ -9,6 +9,7 @@ import { TRASH_DIR_NAME, FILES_SERVER_NAME } from '../files/constants.js'
 import { FilesDbError } from '../files/db/errors.js'
 import { RuleRefusedError } from '../files/grant-admin.js'
 import { RootsLimitError, createRootsStore } from '../files/roots-store.js'
+import { IndexRulesLimitError } from '../files/search/index-rules-store.js'
 import { GroupNotFoundError, createGroupsStore } from '../groups/store.js'
 import { formatReadableField } from '../journal/format.js'
 import { BuiltinServerRefusedError } from '../tenant/errors.js'
@@ -25,6 +26,7 @@ import { runAudit } from './files-cmd-audit.js'
 import { runDb } from './files-cmd-db.js'
 import type { FilesDbCliSeams } from './files-db-seams.js'
 import { runSetup } from './files-cmd-setup.js'
+import { runIndex } from './files-cmd-index.js'
 import { isGroupForm, runGroupGrant, runGroupRevoke, runGroupShow } from './files-cmd-group.js'
 import { runTrash } from './files-cmd-trash.js'
 import { findAgent, runGrant, runRevoke, runRootAdd, runRootRemove } from './files-cmd-write.js'
@@ -50,6 +52,7 @@ const EXPECTED_ERRORS = [
   GroupNotFoundError,
   BuiltinServerRefusedError,
   RootsLimitError,
+  IndexRulesLimitError,
   RuleRefusedError,
   StoreCorruptError,
   StoreLockError,
@@ -81,6 +84,8 @@ export async function runFilesCommand(
         return await runSetup(rest, io, opts)
       case 'db':
         return await runDb(rest, io, opts)
+      case 'index':
+        return await runIndex(rest, io, opts)
       default:
         io.stderr.write(FILES_USAGE)
         return 1

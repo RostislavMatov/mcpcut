@@ -12,15 +12,14 @@ import { modulesDirOf } from '../files/db/pg-loader.js'
 const PROGRESS_EVERY = 50
 
 export interface IndexSyncHandle {
-  /** `undefined` when no rule was ever set: the sync then behaves exactly as without search. */
-  readonly options: SyncIndexOptions | undefined
+  /** Always present: with no rule on, the sync only clears what an earlier rule left (nothing, and no output, if search was never used). */
+  readonly options: SyncIndexOptions
   /** Closes the embedder if one was made. */
   close(): Promise<void>
 }
 
 export async function openIndexSync(opts: FilesCliOptions, journalDir: string, write: (line: string) => void): Promise<IndexSyncHandle> {
   const rules = await createIndexRulesStore({ journalDir }).list()
-  if (rules.length === 0) return { options: undefined, close: async () => undefined }
   const make = opts.db?.indexEmbedder ?? ((modulesDir: string) => createLocalEmbedder({ modulesDir }))
   let embedder: Embedder | undefined
   return {
