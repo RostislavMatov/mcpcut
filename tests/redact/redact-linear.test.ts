@@ -23,6 +23,9 @@ describe('redaction stays linear on crafted input', () => {
     ['a lowercase hyphen run (URL scheme candidates)', 'a-'],
     ['an sk- run', 'sk-'],
     ['a JWT-like run with dots', 'eyJa.'],
+    ['a JWT-like run of word boundaries (every `-` starts a candidate)', 'eyJ-'],
+    ['JWT-like candidates with one dot each', 'eyJ-a.'],
+    ['JWT-like candidates with two dots and a trailing run', 'eyJ-a.b-'],
     ['private key headers with no footer', '-----BEGIN PRIVATE KEY-----'],
     ['private key headers with bodies and no footer', '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n'],
     ['scheme and user info without an @', 'a://x:'],
@@ -62,6 +65,22 @@ describe('the linear forms keep what they redact', () => {
   })
 })
 
+describe('JWTs stay redacted', () => {
+  const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl'
+
+  test('a whole token, alone or inside text', () => {
+    expect(redactText(jwt)).toBe(REDACTED_PLACEHOLDER)
+    expect(redactText(`Authorization token was ${jwt}, then`)).toContain(`${REDACTED_PLACEHOLDER}, then`)
+    expect(redactText(`a-${jwt}`)).toBe(`a-${REDACTED_PLACEHOLDER}`)
+  })
+
+  test('a token right after a run of lookalike starts loses its payload and signature', () => {
+    const text = `${'eyJ-'.repeat(3)}${jwt}`
+    expect(redactText(text)).not.toContain('eyJzdWIiOiIxIn0')
+    expect(redactText(text)).not.toContain('c2lnbmF0dXJl')
+  })
+})
+
 describe('the PEM scan replaces exactly what the block regex replaced', () => {
   const blockRegex = REDACT_VALUE_PATTERNS[0] as RegExp
   const byRegex = (text: string): string => text.replace(new RegExp(blockRegex.source, blockRegex.flags), REDACTED_PLACEHOLDER)
@@ -93,15 +112,22 @@ describe('the PEM scan replaces exactly what the block regex replaced', () => {
       'MIIE',
       ' ',
     ]
+    // mulberry32: a product of two 32-bit numbers in plain JS loses bits past 2^53, and an LCG
+    // written that way cycled through 45 distinct strings.
     let seed = 42
     const next = (): number => {
-      seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648
-      return seed
+      seed = (seed + 0x6d2b79f5) | 0
+      let t = Math.imul(seed ^ (seed >>> 15), seed | 1)
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+      return (t ^ (t >>> 14)) >>> 0
     }
+    const texts = new Set<string>()
     for (let round = 0; round < 20_000; round += 1) {
-      const text = Array.from({ length: 1 + (next() % 8) }, () => tokens[next() % tokens.length]).join('')
+      const text = Array.from({ length: 1 + (next() % 14) }, () => tokens[next() % tokens.length]).join('')
+      texts.add(text)
       expect(redactKeyBlocks(text), JSON.stringify(text)).toBe(byRegex(text))
     }
+    expect(texts.size).toBeGreaterThan(15_000)
   })
 })
 

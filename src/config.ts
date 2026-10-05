@@ -158,7 +158,10 @@ export const PRIVATE_KEY_FOOTER_PATTERN = /-----END [A-Z ]*PRIVATE KEY-----/g
 export const REDACT_TOKEN_PATTERNS: readonly RegExp[] = [
   /\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi,
   /\bBasic\s+[A-Za-z0-9+/]+=*/gi,
-  /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g,
+  // The header segment stops at the next `eyJ`: otherwise every `-` in an `eyJ-eyJ-…` run starts
+  // a candidate that rescans the run to its end (512 KiB took two minutes). A real header with
+  // `eyJ` inside keeps only its public head; payload and signature are still redacted.
+  /\beyJ(?:(?!eyJ)[A-Za-z0-9_-])+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g,
   /\bsk-[A-Za-z0-9_-]{16,}/g,
   /\bgh[posu]_[A-Za-z0-9]{20,}/g,
   /\bxox[baprs]-[A-Za-z0-9-]+/g,
