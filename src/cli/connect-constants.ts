@@ -1,6 +1,7 @@
 import { join } from 'node:path'
 import { POLICY_ENV_VAR, POLICY_FILE_NAME } from '../policy/constants.js'
 import { DIAGNOSTIC_PREFIX } from '../upstream/constants.js'
+import { SESSION_MODELS_GUIDE_URL } from './serve-constants.js'
 
 /**
  * Constants and operator-facing messages for `mcpcut connect` (M3
@@ -19,14 +20,6 @@ import { DIAGNOSTIC_PREFIX } from '../upstream/constants.js'
  * client config sets it per server anyway).
  */
 export const AGENT_TOKEN_ENV_VAR = 'MCP_AGENT_TOKEN'
-
-/**
- * Where the "no translation between session models" decision is recorded.
- * `cli/serve-constants.ts` declares the same path for the `serve` side; the
- * two are deliberately independent (parallel Wave 4 tasks own one file each)
- * and should be hoisted into one shared constant when both have landed.
- */
-export const ADR_0002_REFERENCE = 'docs/adr/0002-http-dual-version.md'
 
 /**
  * Diagnostic prefix and child-exit grace period moved to
@@ -55,7 +48,7 @@ export const CONNECT_USAGE = `Usage:
                                          the policy comes from ${POLICY_SOURCE_DESCRIPTION} only
                                          (no --policy, no $${POLICY_ENV_VAR}).
   mcpcut connect --url <address> [--allow-http]
-                                         The REMOTE form (ADR-0015): bridge this machine's stdio
+                                         The REMOTE form: bridge this machine's stdio
                                          to a mcpcut service on another host. Reads no registry,
                                          no vault and no install config — the service on the
                                          other end resolves the agent from the same
@@ -126,6 +119,6 @@ export function statelessInitializeRefusal(serverName: string): string {
   return (
     `protocol-mismatch: this client opened a sessionful MCP session (initialize) but server ` +
     `"${serverName}" is registered as stateless (2026-07-28); the control plane does not ` +
-    `translate between session models — see ${ADR_0002_REFERENCE}\n`
+    `translate between session models — see ${SESSION_MODELS_GUIDE_URL}\n`
   )
 }

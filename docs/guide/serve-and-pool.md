@@ -48,8 +48,7 @@ sessionful one). Upstream it comes from the registry record's `--protocol`
 (`sessionful`, `stateless`, or `auto` to probe once and pin). The plane
 **transports both models and translates between neither**: a stateless agent
 against a sessionful-only server, or the reverse, is refused with a clear
-error rather than a lossy bridge. The reasoning, and the full MUST/SHOULD
-matrix of both revisions, is in `docs/adr/0002-http-dual-version.md`.
+error rather than a lossy bridge.
 
 `serve` binds `127.0.0.1` by default. A bearer token crossing a network on
 plain HTTP is not acceptable, so any `--host` beyond localhost prints a loud

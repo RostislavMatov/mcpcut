@@ -4,7 +4,7 @@
 journal's decision history that a third party can check **offline** — with
 nothing but the export directory and a public key, no access to this
 installation, no database. This is the report format `journal/report.ts`
-implements (`docs/adr/0007-evidentiary-journal.md`).
+implements.
 
 ## Producing and handing over a report
 

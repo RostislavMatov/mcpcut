@@ -2,8 +2,8 @@
 
 mcpcut sees every tool call an AI agent makes over MCP, holds the risky ones for
 a human's approval, and keeps a secret-redacted journal that is tamper-evident
-with an external anchor. This page is the map; the reasons behind each choice
-live in the decision records (`docs/adr/`).
+with an external anchor. This page is the map: the processes, how a call flows
+through them, and the invariants the code keeps.
 
 ## The picture
 
@@ -100,26 +100,3 @@ force), `grantsHash` (the agent's effective grants) and the `actor` who decided.
 - Messages are forwarded byte for byte (the pool's name prefix is the one exception).
 - Every request id gets exactly one outcome.
 - Two runtime dependencies (`ulid`, `zod`); no MCP SDK. Node 24+ for `node:sqlite`.
-
-## Decision records
-
-Decision records are written in Russian; ADR-0007 has an English translation.
-
-| ADR | Decision |
-|---|---|
-| [0001](adr/0001-stack.md) | Stack and dependency boundary: two runtime packages, no MCP SDK |
-| [0002](adr/0002-http-dual-version.md) | Streamable HTTP: carry both session models, never translate between them |
-| [0003](adr/0003-vault-crypto.md) | Vault crypto: AES-256-GCM, master key in a file next to it, an honest threat model |
-| [0004](adr/0004-admin-ui-architecture.md) | Admin UI: a separate process, no dependencies, named admins with fixed roles |
-| [0005](adr/0005-policy-source-resolution.md) | Where policy comes from depends on the trust class of the entry point |
-| [0006](adr/0006-storage-sqlite.md) | Storage: SQLite (`node:sqlite`, WAL), two databases |
-| [0007](adr/0007-evidentiary-journal.md) ([en](adr/0007-evidentiary-journal.en.md)) | Evidentiary journal: hash chain and a signed head |
-| [0008](adr/0008-server-probe-threat-model.md) | Active server probe: connection state at the cost of running the server on view |
-| [0009](adr/0009-policy-editing-and-hot-reload.md) | Policy edited from the UI and CLI; the file stays a file; rules reload hot |
-| [0010](adr/0010-server-groups.md) | Server groups: grants in bulk, keys stay personal |
-| [0011](adr/0011-open-source-release.md) | Open-source release under Apache-2.0 |
-| [0012](adr/0012-mcpcut-install-config-and-services.md) | Install config `~/.mcpcut/config.json` and services under `mcpcut` |
-| [0013](adr/0013-single-name-mcpcut.md) | One name, `mcpcut`; `~/.mcpcut` holds the data too |
-| [0014](adr/0014-remote-console.md) | Remote console over the `ui` HTTP endpoint (preview) |
-| [0015](adr/0015-agent-pool-endpoint.md) | One address per agent: a multiplexer in front of single-server sessions |
-| [0016](adr/0016-pool-resident-servers.md) | Granted stdio servers stay running: held sessions and warm pool servers |

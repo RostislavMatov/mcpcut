@@ -2,14 +2,14 @@
 
 ## Setup
 
-- Node.js 24 LTS or newer (the floor is enforced by `engines`; ADR-0006).
+- Node.js 24 LTS or newer (the floor is enforced by `engines`).
 - `npm ci`, then `npm run build`, `npm test` (vitest with coverage), `npm run lint`
   (`tsc --noEmit`, strict).
 
 ## Ground rules
 
-- **Two production dependencies** — `ulid` and `zod`. A third one needs its own
-  ADR (ADR-0001). The MCP SDK is deliberately not used: the proxy works on bytes
+- **Two production dependencies** — `ulid` and `zod`. A third one needs
+  discussing in an issue first. The MCP SDK is deliberately not used: the proxy works on bytes
   and the only binding to the specification is `src/protocol/mcp.ts`.
 - **Tests first.** Write the failing test, then the implementation. Coverage
   stays at or above 80% (it is ~96% today); behavioural tests are not weakened
@@ -21,9 +21,8 @@
 - **Immutable data, small units.** New objects instead of mutation; files under
   ~400 lines, functions under ~50; named constants instead of magic numbers;
   comments say *why*.
-- **Every new entry point, route or dependency needs an ADR** (`docs/adr/README.md`
-  explains when). Changing an accepted decision means amending its ADR, not
-  quietly changing the code.
+- **Discuss a new entry point, route or dependency in an issue first**, before
+  writing the code.
 
 ## Commits and pull requests
 
@@ -35,10 +34,3 @@
   and that must stay true.
 - Public wording: the journal is "tamper-evident with an external anchor";
   never "tamper-proof", never "audit-ready".
-
-## Languages
-
-`README.md` and the files at the repository root are in English. Architecture
-decision records under `docs/adr/` and the smoke-test logs under `docs/` are in
-Russian; translations are welcome as long as the Russian original stays the
-source of truth until it is replaced.

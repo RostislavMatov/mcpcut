@@ -124,7 +124,7 @@ const FAILED_TRANSCRIPT = [
 const EXPOSURE_WARNING =
   'ui binds 0.0.0.0: reachable from the network. Terminate TLS in front (ui: ' +
   "--behind-tls + --allowed-host; serve: agents' bearer tokens travel in clear " +
-  'otherwise) — ADR-0004'
+  'otherwise)'
 
 const WAITING_DETAIL = deployWaitingDetail(START_READY_TIMEOUT_MS)
 
@@ -269,7 +269,7 @@ describe('renderWizard: the exposure confirmation', () => {
     for (const wrapped of wrapWords(EXPOSURE_WARNING, DEFAULT_SIZE.columns)) {
       expect(body).toContain(wrapped)
     }
-    expect(body).toContain('ADR-0004')
+    expect(body).not.toContain('ADR')
     expect(body).toContain(WIZARD_EXPOSURE_QUESTION)
     expect(lines.at(-1)).toBe(padRight(WIZARD_EXPOSURE_FOOTER, DEFAULT_SIZE.columns))
   })

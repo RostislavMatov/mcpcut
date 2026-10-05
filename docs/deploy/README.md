@@ -13,8 +13,8 @@ directory holds **examples** of the unit files that do that:
 | `com.mcpcut.serve.plist` | launchd (user agent) | `mcpcut serve` |
 
 TLS in front of `serve` on a VPS is in [`caddy/`](caddy/): a `Caddyfile` and a
-compose override (`docker-compose.tls.yml`) — exactly what the pool's live smoke
-ran (`docs/smoke-agent-pool.md`), Let's Encrypt over HTTP-01, the UI left on host
+compose override (`docker-compose.tls.yml`) — exactly what the pool's live test
+ran on, Let's Encrypt over HTTP-01, the UI left on host
 loopback.
 
 They are examples, not something `mcpcut` installs, generates or reads: copy

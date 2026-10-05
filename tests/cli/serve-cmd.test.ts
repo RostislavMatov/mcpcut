@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import { writeCorruptDatabase } from '../support/corrupt-db.js'
 import {
-  ADR_0002_REFERENCE,
+  SESSION_MODELS_GUIDE_URL,
   DEFAULT_SERVE_HOST,
   DEFAULT_SERVE_PORT,
   JSONRPC_ERROR_HEADER_MISMATCH,
@@ -392,8 +392,8 @@ describe('runServe: session-model mismatch refusals (ADR-0002)', () => {
     expect(response.status).toBe(400)
     const body = (await response.json()) as { error: string }
     expect(body.error).toBe('protocol-mismatch')
-    expect(body.error).not.toContain(ADR_0002_REFERENCE)
-    expect(fixture.io.errText()).toContain(ADR_0002_REFERENCE)
+    expect(body.error).not.toContain(SESSION_MODELS_GUIDE_URL)
+    expect(fixture.io.errText()).toContain(SESSION_MODELS_GUIDE_URL)
   })
 
   test('a stateless agent against a stdio server record is refused the same way', async () => {
@@ -407,7 +407,7 @@ describe('runServe: session-model mismatch refusals (ADR-0002)', () => {
 
     expect(response.status).toBe(400)
     expect(((await response.json()) as { error: string }).error).toBe('protocol-mismatch')
-    expect(fixture.io.errText()).toContain(ADR_0002_REFERENCE)
+    expect(fixture.io.errText()).toContain(SESSION_MODELS_GUIDE_URL)
   })
 
   test("an 'auto' HTTP record accepts a sessionful agent", async () => {

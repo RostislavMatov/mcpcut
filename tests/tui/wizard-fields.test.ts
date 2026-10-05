@@ -231,11 +231,12 @@ describe('exposureWarningsOf: what is said before anything is written', () => {
     expect(exposureWarningsOf(withValues({ [WIZARD_FIELD.uiHost]: '[::1]' }))).toEqual([])
   })
 
-  test('a public UI bind warns once and points at the ADR that owns the model', () => {
+  test('a public UI bind warns once and says what to put in front', () => {
     const warnings = exposureWarningsOf(withValues({ [WIZARD_FIELD.uiHost]: '0.0.0.0' }))
 
     expect(warnings).toHaveLength(1)
-    expect(warnings[0]).toContain('ADR-0004')
+    expect(warnings[0]).toContain('Terminate TLS')
+    expect(warnings[0]).not.toContain('ADR')
     expect(warnings[0]).toContain('ui binds 0.0.0.0')
   })
 

@@ -150,7 +150,7 @@ export function wizardFieldsOf(prefill: WizardPrefill): readonly FieldSpec[] {
       label: 'TLS in front',
       kind: 'flag',
       initial: config.ui.behindTls === true ? FLAG_ON : 'false',
-      hint: 'a proxy terminates TLS (ADR-0004)',
+      hint: 'a proxy terminates TLS',
     },
     publicUrlField(WIZARD_FIELD.uiPublicUrl, 'UI URL', '--ui-public-url', 'optional: how you will open it, http://<ip>:8091', ''),
     {

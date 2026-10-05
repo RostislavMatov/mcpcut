@@ -30,7 +30,7 @@ import {
  */
 
 const DATA_DIR = '/tmp/mcpcut-output-status-exposure'
-const EXPOSURE_DETAIL = 'ui binds 0.0.0.0: reachable from the network. — ADR-0004'
+const EXPOSURE_DETAIL = 'ui binds 0.0.0.0: reachable from the network.'
 
 const STATUSES: Readonly<Record<ServiceName, ServiceStatus>> = {
   ui: {

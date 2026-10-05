@@ -1,4 +1,4 @@
-import { PRODUCT_VERSION } from '../../src/brand.js'
+import { GUIDE_URL, PRODUCT_VERSION } from '../../src/brand.js'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -888,7 +888,8 @@ describe('connect: http upstream', () => {
 
     expect(exitCode).toBe(1)
     expect(io.err()).toContain('protocol-mismatch')
-    expect(io.err()).toContain('docs/adr/0002-http-dual-version.md')
+    expect(io.err()).toContain(`${GUIDE_URL}/serve-and-pool.md`)
+    expect(io.err()).not.toContain('docs/adr')
     expect((await fixture.stats()).posts).toBe(0)
     expect(stdio.stdoutText()).toBe('')
     fixture.stop()

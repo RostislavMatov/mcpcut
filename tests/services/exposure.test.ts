@@ -42,7 +42,7 @@ describe('withExposure', () => {
     })
     expect(status.exposure?.detail).toBe(
       'ui binds 0.0.0.0: reachable from the network. Terminate TLS in front ' +
-        "(ui: --behind-tls + --allowed-host; serve: agents' bearer tokens travel in clear otherwise) — ADR-0004",
+        "(ui: --behind-tls + --allowed-host; serve: agents' bearer tokens travel in clear otherwise)",
     )
   })
 
@@ -64,7 +64,7 @@ describe('withExposure', () => {
       level: 'warn',
       detail:
         'ui binds 0.0.0.0: reachable from the network. TLS is declared (--behind-tls), so make sure ' +
-        'a terminating proxy really is in front and --allowed-host names it — ADR-0004',
+        'a terminating proxy really is in front and --allowed-host names it',
     })
   })
 

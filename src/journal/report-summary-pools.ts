@@ -32,7 +32,7 @@ export const POOL_NAMING_NOTE =
   'itself and opened one ordinary per-server session -- a child -- for each server the agent ' +
   'was granted, so every decision it led to is recorded by a child session, under the bare ' +
   'tool name that server published. The agent addressed that tool as `<server>__<tool>`: the ' +
-  'prefix is the server name and nothing else (ADR-0015 §2, PE11). Every name in this section ' +
+  'prefix is the server name and nothing else. Every name in this section ' +
   'was read back from the journal.'
 
 export interface PoolSectionInput {

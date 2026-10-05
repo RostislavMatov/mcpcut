@@ -82,8 +82,14 @@ export const REFUSAL_MODEL_UNDETECTED = 'session-model-undetected'
 /** SEP-2243 `HeaderMismatch`: stateless header↔body validation failed. */
 export const JSONRPC_ERROR_HEADER_MISMATCH = -32020
 
-/** Where the "no translation between session models" decision is recorded. */
-export const ADR_0002_REFERENCE = 'docs/adr/0002-http-dual-version.md'
+/**
+ * Where a refused agent reads about the two session models. A published URL,
+ * not a repository path: the reader has an npm install, not a checkout.
+ * Spelled out rather than built from `GUIDE_URL`: this file is an import-free
+ * leaf (tests/architecture/imports.test.ts); tests/cli/refusal-guide-links.test.ts
+ * holds the two together.
+ */
+export const SESSION_MODELS_GUIDE_URL = 'https://github.com/RostislavMatov/mcpcut/blob/main/docs/guide/serve-and-pool.md'
 
 /**
  * The 400 body for a stateless request whose `Mcp-Method`/`Mcp-Name` header
@@ -120,6 +126,6 @@ export function protocolMismatchRefusal(
   return (
     `protocol-mismatch: the agent opened a ${downstream} MCP session but server ` +
     `"${serverName}" is ${upstreamDescription}; the control plane does not translate ` +
-    `between session models — see ${ADR_0002_REFERENCE}`
+    `between session models — see ${SESSION_MODELS_GUIDE_URL}`
   )
 }

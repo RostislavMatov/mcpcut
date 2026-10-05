@@ -101,7 +101,7 @@ describe('formatExposureWarnings', () => {
       level: 'warn',
       detail:
         'ui binds 0.0.0.0: reachable from the network. Terminate TLS in front ' +
-        "(ui: --behind-tls + --allowed-host; serve: agents' bearer tokens travel in clear otherwise) — ADR-0004",
+        "(ui: --behind-tls + --allowed-host; serve: agents' bearer tokens travel in clear otherwise)",
     },
   }
 
@@ -110,7 +110,7 @@ describe('formatExposureWarnings', () => {
 
     expect(text).toBe(
       'ui:    warning: ui binds 0.0.0.0: reachable from the network. Terminate TLS in front ' +
-        "(ui: --behind-tls + --allowed-host; serve: agents' bearer tokens travel in clear otherwise) — ADR-0004\n",
+        "(ui: --behind-tls + --allowed-host; serve: agents' bearer tokens travel in clear otherwise)\n",
     )
   })
 

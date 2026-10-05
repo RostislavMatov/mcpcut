@@ -315,7 +315,7 @@ describe('checkBindExposure', () => {
     expect(result.detail).toContain('serve binds 0.0.0.0')
     expect(result.detail).toContain('reachable from the network')
     expect(result.detail).toContain('bearer tokens')
-    expect(result.detail).toContain('ADR-0004')
+    expect(result.detail).not.toContain('ADR')
   })
 
   test('warns when the ui binds a routable address of the host', () => {
@@ -330,7 +330,7 @@ describe('checkBindExposure', () => {
 
     expect(result.level).toBe('warn')
     expect(result.detail).toContain('TLS is declared')
-    expect(result.detail).toContain('ADR-0004')
+    expect(result.detail).not.toContain('ADR')
   })
 })
 

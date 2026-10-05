@@ -5,8 +5,7 @@
 Requires **Node.js 24+** (`engines: ">=24"` in `package.json`). The floor is
 not arbitrary: `node:sqlite`, the storage layer, is only complete from
 v24.19.0 (older builds either lack the module entirely or lack the
-`Session` class the audit export uses); see `docs/adr/0006-storage-sqlite.md`
-for the measured version matrix.
+`Session` class the audit export uses).
 
 ### From npm
 
@@ -124,9 +123,7 @@ data directory would be the worst possible outcome. Fix the file (or point
 ### Tenant mode (hosted)
 
 A `tenant` section in `config.json` turns this install into one meant to be
-handed to somebody who is not you — see
-[ADR-0017](../adr/0017-hosted-install-per-tenant.md) for the reasoning and
-what was rejected. No section: the install behaves exactly as everywhere
+handed to somebody who is not you. No section: the install behaves exactly as everywhere
 else in this guide, byte for byte. A present section — even an empty
 `tenant: {}` — reads as **fully locked down**: every field it omits takes the
 strict default below, not the permissive one, so leaving a key out can never

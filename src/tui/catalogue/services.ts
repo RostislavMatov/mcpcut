@@ -154,7 +154,7 @@ export const SERVICES_SECTION: SectionSpec = {
   minRole: 'viewer',
   intro: [
     'ui and serve as the manager sees them: pid alive AND',
-    'the probe answering (ADR-0012). They outlive this',
+    'the probe answering. They outlive this',
     'console; q never stops them. Under supervisor:',
     'external (compose/systemd) start and stop are hidden.',
   ],

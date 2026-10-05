@@ -100,7 +100,7 @@ export const TUI_SYNOPSIS_LINES: readonly string[] = [
   `${ROW_INDENT}${`${CLI_NAME} --remote <url>`.padEnd(USAGE_DESCRIPTION_COLUMN - ROW_INDENT.length)}Open the console over HTTP against a remote "ui" instead (a Bearer admin`,
   `${DESCRIPTION_INDENT}token, never a browser); ${REMOTE_URL_ENV_VAR} sets the address too, the flag wins`,
   `${DESCRIPTION_INDENT}(a bare "${CLI_NAME}" with only the variable set does the same). Everything the`,
-  `${DESCRIPTION_INDENT}console can do runs there except Services ▸ setup (local only, ADR-0014).`,
+  `${DESCRIPTION_INDENT}console can do runs there except Services ▸ setup (local only).`,
   `${DESCRIPTION_INDENT}Plain http to a non-loopback host warns loudly rather than refusing.`,
   `${ROW_INDENT}${`${CLI_NAME} --connect [url]`.padEnd(USAGE_DESCRIPTION_COLUMN - ROW_INDENT.length)}Open the "connect to another host" form directly, address optional and`,
   `${DESCRIPTION_INDENT}prefilled when given; a bad one is a notice on the form, not a refusal.`,

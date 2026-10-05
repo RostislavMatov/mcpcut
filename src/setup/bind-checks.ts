@@ -20,9 +20,6 @@ export type BindService = 'ui' | 'serve'
 
 const EPHEMERAL_PORT_DETAIL = 'ephemeral'
 
-/** The ADR that owns the plane's HTTP-front threat model; both exposure warnings point at it. */
-const EXPOSURE_ADR = 'ADR-0004'
-
 const TERMINATE_TLS_ADVICE =
   "Terminate TLS in front (ui: --behind-tls + --allowed-host; serve: agents' bearer tokens travel in clear otherwise)"
 
@@ -135,7 +132,7 @@ export function checkBindExposure(
   return {
     name,
     level: 'warn',
-    detail: `${service} binds ${host}: reachable from the network. ${advice} — ${EXPOSURE_ADR}`,
+    detail: `${service} binds ${host}: reachable from the network. ${advice}`,
   }
 }
 

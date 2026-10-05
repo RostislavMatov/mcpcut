@@ -332,7 +332,7 @@ describe('refusal bodies', () => {
       createFakeSessionFactory({
         refuseWith:
           'protocol-mismatch: the agent opened a stateless MCP session but server "github" is ' +
-          'registered as a sessionful HTTP server; see docs/adr/0002-http-dual-version.md',
+          'registered as a sessionful HTTP server; see https://github.com/RostislavMatov/mcpcut/blob/main/docs/guide/serve-and-pool.md',
       }),
     )
 
@@ -341,7 +341,7 @@ describe('refusal bodies', () => {
     expect(plan.status).toBe(400)
     expect(bodyText(plan)).toBe('{"error":"protocol-mismatch"}')
     expect(bodyText(plan)).not.toContain('registered as')
-    expect(bodyText(plan)).not.toContain('docs/adr')
+    expect(bodyText(plan)).not.toContain('docs/guide')
   })
 
   test('a refusal that is not code-shaped degrades to the generic bad-request body', async () => {

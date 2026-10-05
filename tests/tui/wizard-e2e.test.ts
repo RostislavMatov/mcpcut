@@ -273,7 +273,7 @@ describe('the first-run wizard, end to end', () => {
       await answerForm(stand, fake, { uiHost: '0.0.0.0' })
       await waitForFrame(
         fake,
-        (screen) => screen.includes('ADR-0004') && screen.includes('[y/N]'),
+        (screen) => screen.includes('reachable from the network') && screen.includes('[y/N]'),
         'the exposure question',
       )
       expect(configWritten()).toBe(false)
