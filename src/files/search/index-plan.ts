@@ -3,7 +3,7 @@ import { pathMatchKey } from '../db/path-key.js'
 import { pathModuleOf } from '../names.js'
 import { FAILED_REASON, INDEX_MAX_FILE_BYTES, INDEX_RETRY_FAILED_MS } from './constants.js'
 import type { IndexRule } from './index-rules-store.js'
-import { prepareIndexRules, skipReasonOfName } from './index-scope.js'
+import { prepareRuleLookup, skipReasonOfName } from './index-scope.js'
 
 /**
  * What one indexing round has to do, decided from the catalog, the rows the
@@ -40,7 +40,10 @@ export type PlannedWork =
 export interface IndexPlan {
   /** Index rows to delete: out of scope, or no longer in the catalog. */
   readonly remove: ReadonlyArray<{ readonly root: string; readonly relPath: string }>
-  /** Files with no row first, then changed ones by how long ago they were last indexed (oldest first), ties by (root, rel_path). */
+  /**
+   * Per index rule: files with no row first, then changed ones by how long ago they were last indexed (oldest first),
+   * ties by (root, rel_path). The rules take turns, so one folder's flood cannot keep another's files waiting.
+   */
   readonly work: readonly PlannedWork[]
   /** In-scope files whose catalog hash is not computed yet: they wait for a later round. */
   readonly waiting: readonly CatalogFile[]
@@ -106,11 +109,23 @@ function byTurn(rowsByKey: ReadonlyMap<string, IndexRow>): (left: PlannedWork, r
   }
 }
 
+/** One from each group in turn, the groups in the order their first file appears; each group keeps its own order. */
+function interleave(work: readonly PlannedWork[], groupOf: (work: PlannedWork) => string): PlannedWork[] {
+  const groups = new Map<string, PlannedWork[]>()
+  for (const item of work) {
+    const key = groupOf(item)
+    groups.set(key, [...(groups.get(key) ?? []), item])
+  }
+  const queues = [...groups.values()]
+  const turns = Math.max(0, ...queues.map((queue) => queue.length))
+  return Array.from({ length: turns }, (_, turn) => queues.flatMap((queue) => queue[turn] ?? [])).flat()
+}
+
 export function planIndex(input: PlanInput): IndexPlan {
   const rowsByKey = new Map(input.rows.map((row) => [keyOf(row.root, row.relPath), row]))
-  const isCovered = prepareIndexRules(input.rules, input.platform)
+  const ruleOf = prepareRuleLookup(input.rules, input.platform)
   const inScope = input.files.filter(
-    (file) => skipReasonOfName(file.relPath, file.root) !== 'skipped folder' && isCovered(absoluteOf(file.root, file.relPath, input.platform)),
+    (file) => skipReasonOfName(file.relPath, file.root) !== 'skipped folder' && ruleOf(absoluteOf(file.root, file.relPath, input.platform))?.enabled === true,
   )
   const keep = new Set(inScope.map((file) => keyOf(file.root, file.relPath)))
   const remove = input.rows.filter((row) => !keep.has(keyOf(row.root, row.relPath))).map((row) => ({ root: row.root, relPath: row.relPath }))
@@ -121,5 +136,6 @@ export function planIndex(input: PlanInput): IndexPlan {
     if (planned === 'waiting') waiting.push(file)
     else if (planned !== undefined) work.push(planned)
   }
-  return { remove, work: [...work].sort(byTurn(rowsByKey)), waiting }
+  const sorted = [...work].sort(byTurn(rowsByKey))
+  return { remove, work: interleave(sorted, (item) => ruleOf(item.abs)?.key ?? item.file.root), waiting }
 }

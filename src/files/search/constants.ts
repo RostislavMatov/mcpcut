@@ -49,6 +49,8 @@ export const INDEX_RULES_FILE_NAME = 'files-index.json'
 export const INDEX_SKIP_DIR_NAMES: readonly string[] = ['.git', '.hg', '.svn', 'node_modules', '.ssh', '.gnupg', '.aws', '.kube', '.docker']
 /** Time one `serve` round may spend embedding; the rest waits for the next minute. */
 export const INDEX_SERVE_BUDGET_MS = 20_000
+/** Chunks one round may embed (a file with more still goes, alone, as the round's first); the rest waits for the next round. */
+export const INDEX_ROUND_MAX_CHUNKS = 300
 /** A file whose embedding failed is tried again with the same content only after this long (a changed file at once). */
 export const INDEX_RETRY_FAILED_MS = 60 * 60 * 1000
 /** The reason a `skipped` index row carries when embedding or writing the file failed. */
