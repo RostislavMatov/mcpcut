@@ -1,5 +1,6 @@
 import { MS_PER_DAY, TRASH_RETENTION_DAYS } from '../files/constants.js'
 import { purgeTrash } from '../files/io-trash-admin.js'
+import { journalAccessEdit } from '../groups/journal-access-edit.js'
 import { formatReadableField } from '../journal/format.js'
 
 /**
@@ -28,6 +29,8 @@ export interface TrashSweepDeps {
   readonly stderr: { write(chunk: string): unknown }
   readonly now: () => number
   readonly timer?: TrashSweepTimer
+  /** Records a purge in the journal, so "who touched what" shows what went for good. */
+  readonly journalPurge?: (root: string, deletedCount: number) => Promise<void>
 }
 
 export interface TrashSweep {
@@ -58,8 +61,17 @@ async function sweepRoot(deps: TrashSweepDeps, root: string): Promise<void> {
     report(deps, `${label}: ${formatReadableField(purged.message)}`)
     return
   }
+  if (purged.value.purged > 0) await journalPurge(deps, root, purged.value.purged)
   if (purged.value.skipped.length > 0) {
     report(deps, `${label}: ${purged.value.skipped.length} entries could not be purged; list them with \`mcpcut files trash list ${label}\``)
+  }
+}
+
+async function journalPurge(deps: TrashSweepDeps, root: string, count: number): Promise<void> {
+  try {
+    await deps.journalPurge?.(root, count)
+  } catch (error: unknown) {
+    report(deps, `${formatReadableField(root)}: purged ${count} item(s) but the journal record failed: ${describe(error)}`)
   }
 }
 
@@ -82,4 +94,22 @@ export function startTrashSweep(deps: TrashSweepDeps): TrashSweep {
   }, TRASH_SWEEP_INTERVAL_MS)
   handle.unref?.()
   return { done, idle: () => latest, stop: () => timer.clearInterval(handle) }
+}
+
+/** The journal side of a purge in `serve`: an access-edit with no admin behind it, `via: 'serve'`. */
+export function journalPurgeTo(journalDir: string, stderr: { write(chunk: string): unknown }): (root: string, deletedCount: number) => Promise<void> {
+  return async (root, deletedCount) => {
+    const outcome = await journalAccessEdit({
+      info: {
+        actor: { adminName: null, role: null, via: 'serve' },
+        action: 'files.trash.purge',
+        path: root,
+        olderThan: `${TRASH_RETENTION_DAYS}d`,
+        deletedCount,
+      },
+      dir: journalDir,
+      diagnostics: (line) => void stderr.write(line),
+    })
+    if (!outcome.written) throw new Error('the record was dropped')
+  }
 }

@@ -42,7 +42,7 @@ import { createRootsStore } from '../files/roots-store.js'
 import { cliCommand } from './next-step.js'
 import { createSearchBackend, type SearchBackend } from '../files/search/search-backend.js'
 import { startFilesSync } from './serve-files-sync.js'
-import { startTrashSweep } from './serve-trash-sweep.js'
+import { journalPurgeTo, startTrashSweep } from './serve-trash-sweep.js'
 import { stopAll, waitForShutdown, type ServeRuntime } from './serve-shutdown.js'
 import { AGENT_REVOCATION_POLL_INTERVAL_MS } from '../session/constants.js'
 import { MAX_POOL_RESIDENTS } from '../pool/constants.js'
@@ -366,6 +366,7 @@ export async function runServe(
     stderr: io.stderr,
     now: opts.clock ?? Date.now,
     ...(opts.trashSweepTimer !== undefined ? { timer: opts.trashSweepTimer } : {}),
+    journalPurge: journalPurgeTo(journalDir, io.stderr),
   })
   const filesSync = startFilesSync({
     journalDir,

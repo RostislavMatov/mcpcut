@@ -44,7 +44,8 @@ export const ACCESS_EDIT_SESSION_ID = 'plane_access'
 const ACCESS_EDIT_DIRECTION: ClientServerDirection = 'client→server'
 
 /** Which surface the admin used. */
-export type AccessEditVia = 'ui' | 'cli'
+/** `serve` is the 30-day trash sweep: housekeeping with no admin behind it. */
+export type AccessEditVia = 'ui' | 'cli' | 'serve'
 
 /** Every access change that gets its own record. `server.remove` is the cascade (G6). */
 export type AccessEditAction =

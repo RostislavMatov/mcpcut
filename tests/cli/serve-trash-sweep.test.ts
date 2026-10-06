@@ -4,8 +4,11 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { TRASH_DIR_NAME } from '../../src/files/constants.js'
 import { writeManifest } from '../../src/files/trash-manifest.js'
+import { ACCESS_EDIT_SESSION_ID } from '../../src/journal/access-edit-record.js'
+import { searchSession } from '../../src/journal/search.js'
 import {
   TRASH_SWEEP_INTERVAL_MS,
+  journalPurgeTo,
   startTrashSweep,
   type TrashSweepTimer,
 } from '../../src/cli/serve-trash-sweep.js'
@@ -88,6 +91,44 @@ describe('startTrashSweep', () => {
     expect(await exists(join(one, TRASH_DIR_NAME, `${ID_NEW}.json`))).toBe(true)
     expect(await exists(join(two, TRASH_DIR_NAME, `${ID_OLD}.json`))).toBe(false)
     expect(lines).toEqual([])
+    sweep.stop()
+  })
+
+  test('journals each root it purged something from, and nothing for a root it left alone', async () => {
+    const one = await rootWith('one', [{ id: ID_OLD, ageDays: 31 }])
+    const two = await rootWith('two', [{ id: ID_NEW, ageDays: 1 }])
+    const journaled: Array<{ root: string; deletedCount: number }> = []
+
+    const sweep = startTrashSweep({
+      listRoots: async () => [one, two],
+      stderr: stderrCapture().stderr,
+      now: () => NOW,
+      timer: fakeTimer(),
+      journalPurge: async (root, deletedCount) => void journaled.push({ root, deletedCount }),
+    })
+    await sweep.done
+
+    expect(journaled).toEqual([{ root: one, deletedCount: 1 }])
+    sweep.stop()
+  })
+
+  test('a journal that fails is one stderr line, not a stopped sweep', async () => {
+    const one = await rootWith('one', [{ id: ID_OLD, ageDays: 31 }])
+    const { stderr, lines } = stderrCapture()
+
+    const sweep = startTrashSweep({
+      listRoots: async () => [one],
+      stderr,
+      now: () => NOW,
+      timer: fakeTimer(),
+      journalPurge: async () => {
+        throw new Error('disk full')
+      },
+    })
+    await sweep.done
+
+    expect(await exists(join(one, TRASH_DIR_NAME, `${ID_OLD}.json`))).toBe(false)
+    expect(lines.join('')).toContain('purged 1 item(s) but the journal record failed: disk full')
     sweep.stop()
   })
 
@@ -176,5 +217,21 @@ describe('startTrashSweep', () => {
 
     await sweep.done
     sweep.stop()
+  })
+})
+
+describe('journalPurgeTo', () => {
+  test('writes one access-edit for files.trash.purge with no admin, via serve', async () => {
+    const journalDir = await mkdtemp(join(tmpdir(), 'mcpcut-sweep-journal-'))
+    try {
+      await journalPurgeTo(journalDir, stderrCapture().stderr)('/data/root', 3)
+
+      const page = await searchSession(ACCESS_EDIT_SESSION_ID, { kind: 'access-edit', dir: journalDir })
+      expect(page.records.map((record) => record.payload)).toEqual([
+        expect.objectContaining({ action: 'files.trash.purge', path: '/data/root', deletedCount: 3, olderThan: '30d', actor: { adminName: null, role: null, via: 'serve' } }),
+      ])
+    } finally {
+      await rm(journalDir, { recursive: true, force: true })
+    }
   })
 })
