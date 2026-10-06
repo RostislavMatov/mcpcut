@@ -14,18 +14,18 @@ Requires **Node.js 24+** (`node -v`); on older Node, mcpcut prints one line and 
 
 **See.** Put the MCP servers you already have behind mcpcut. `adopt` finds them in Claude Code, Cursor and Claude Desktop and shows the change; `--apply` writes it, keeping a copy of each file (`adopt --undo` puts them back). Then restart the client:
 
-    npx -y mcpcut@0.3.0 adopt
-    npx -y mcpcut@0.3.0 adopt --apply
+    npx -y mcpcut@0.3.1 adopt
+    npx -y mcpcut@0.3.1 adopt --apply
 
-Or put mcpcut in front of one server by hand — here for Claude Code; in any other client, the server's command becomes `npx -y mcpcut@0.3.0 wrap -- <your server>`:
+Or put mcpcut in front of one server by hand — here for Claude Code; in any other client, the server's command becomes `npx -y mcpcut@0.3.1 wrap -- <your server>`:
 
-    claude mcp add fs -- npx -y mcpcut@0.3.0 wrap --server fs -- npx -y @modelcontextprotocol/server-filesystem ~/project
+    claude mcp add fs -- npx -y mcpcut@0.3.1 wrap --server fs -- npx -y @modelcontextprotocol/server-filesystem ~/project
 
 On Windows, npm commands start only through `cmd /c` (`adopt` adds it for you) — by hand, put it before both `npx`:
 
-    claude mcp add fs -- cmd /c npx -y mcpcut@0.3.0 wrap --server fs -- cmd /c npx -y @modelcontextprotocol/server-filesystem C:\path\to\project
+    claude mcp add fs -- cmd /c npx -y mcpcut@0.3.1 wrap --server fs -- cmd /c npx -y @modelcontextprotocol/server-filesystem C:\path\to\project
 
-The first start downloads mcpcut and the server; if your client gives up on it, start it once more. Let the agent work, then `npx -y mcpcut@0.3.0 sessions` and `npx -y mcpcut@0.3.0 show <id>`: every request and response, secrets redacted (with a policy, every decision too). `--server fs` names the server in the decisions a policy writes to the journal and in the approval queue.
+The first start downloads mcpcut and the server; if your client gives up on it, start it once more. Let the agent work, then `npx -y mcpcut@0.3.1 sessions` and `npx -y mcpcut@0.3.1 show <id>`: every request and response, secrets redacted (with a policy, every decision too). `--server fs` names the server in the decisions a policy writes to the journal and in the approval queue.
 
 **Stop.** Save this as `~/.mcpcut/data/policy.json` — every server behind mcpcut reads it when it starts — and restart the client. Reads pass, everything else waits for you (quarantine of new tools is off, so the first minute shows one gate: see [Quarantine](docs/guide/policies.md#quarantine)):
 
@@ -36,21 +36,21 @@ A server added by hand can take its own file instead: `--policy "$PWD/policy.jso
 
 A write now waits. Approve it from another terminal within the agent's wait (60 s; after it, the agent's retry passes) — no token needed until you add your first admin ([Approvals](docs/guide/policies.md#approval-scenario)):
 
-    npx -y mcpcut@0.3.0 approvals list
-    npx -y mcpcut@0.3.0 approvals approve <id>
+    npx -y mcpcut@0.3.1 approvals list
+    npx -y mcpcut@0.3.1 approvals approve <id>
 
 Or be asked right in the session: let everything pass and stop only the tools you name — Claude Code shows **Accept** / **Decline**, no second terminal. `fs` is the server's name in your client — `adopt` keeps those names ([Confirming in the client](docs/guide/policies.md#confirming-in-the-client)):
 
     { "version": 1, "defaultDecision": "allow", "quarantine": { "enabled": false },
       "servers": { "fs": { "confirmInClient": { "write_file": ["*"], "edit_file": ["*"] } } } }
 
-Rather click than write JSON? `npx -y mcpcut@0.3.0 ui` opens the admin UI. On **Servers**, **Create policy** writes a policy that lets every call pass — restart the client once — and then every tool of every server behind mcpcut has its buttons: **all** under **client** makes that tool ask you in the session, **approval** holds it for the queue, **deny** blocks it. Each click takes effect on the next call.
+Rather click than write JSON? `npx -y mcpcut@0.3.1 ui` opens the admin UI. On **Servers**, **Create policy** writes a policy that lets every call pass — restart the client once — and then every tool of every server behind mcpcut has its buttons: **all** under **client** makes that tool ask you in the session, **approval** holds it for the queue, **deny** blocks it. Each click takes effect on the next call.
 
 **Prove.** Sign the history, export it, and check it offline — with nothing but the directory:
 
-    npx -y mcpcut@0.3.0 keygen && npx -y mcpcut@0.3.0 export --report --out ./report
-    npx -y mcpcut@0.3.0 verify --report ./report
-    npx -y mcpcut@0.3.0 verify --sign
+    npx -y mcpcut@0.3.1 keygen && npx -y mcpcut@0.3.1 export --report --out ./report
+    npx -y mcpcut@0.3.1 verify --report ./report
+    npx -y mcpcut@0.3.1 verify --sign
 
 The last line signs the chain head: keep what it prints somewhere this host cannot rewrite — [the out-of-band anchor](docs/guide/audit-reports.md#the-out-of-band-anchor) is what makes the journal tamper-evident, not the hashes alone.
 

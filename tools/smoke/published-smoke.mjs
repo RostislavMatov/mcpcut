@@ -5,7 +5,7 @@
  * as a stranger would, and records every step instead of stopping at the
  * first failure, so one run tells the whole story of a platform.
  *
- * Usage: MCPCUT_VERSION=0.3.0 node tools/smoke/published-smoke.mjs
+ * Usage: MCPCUT_VERSION=0.3.1 node tools/smoke/published-smoke.mjs
  *        MCPCUT_TARBALL=/abs/mcpcut-x.y.z.tgz node tools/smoke/published-smoke.mjs  (a build not yet on npm)
  * Writes smoke-results-<source>.json to the working directory and a Markdown
  * table to $GITHUB_STEP_SUMMARY when it is set. Exit code 1 if any step failed.
@@ -15,7 +15,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realp
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-const VERSION = process.env.MCPCUT_VERSION ?? '0.3.0'
+const VERSION = process.env.MCPCUT_VERSION ?? '0.3.1'
 const TARBALL = process.env.MCPCUT_TARBALL
 /** What npm installs and what `npx` runs: the registry version, or a packed build of this checkout. */
 const INSTALL_SPEC = TARBALL ?? `mcpcut@${VERSION}`

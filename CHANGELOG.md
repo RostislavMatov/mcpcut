@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-10-05
+
+### Security
+
+- **Secret redaction no longer slows down on crafted text.** Three of its
+  patterns (credentials in a URL, a private key block without its footer, a
+  JWT) rescanned the rest of the text from every candidate start, so a tool
+  argument or a server answer of a few hundred kilobytes shaped for it could
+  hold the proxy for minutes. All three now scan linearly. What they redact
+  is unchanged with two narrow exceptions: a URL scheme is matched up to 32
+  characters, and in a JWT whose header contains `-eyJ` the part of the
+  header before it may stay visible (the rest of the token, payload and
+  signature included, is still redacted).
+
 ## [0.3.0] — 2026-10-04
 
 ### Added
@@ -898,7 +912,8 @@ publication — several are security fixes, so they are kept.
   real loopback address are unaffected, since the URL parser normalizes them
   first. Found by the security review of the bridge, 2026-09-21.
 
-[Unreleased]: https://github.com/RostislavMatov/mcpcut/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/RostislavMatov/mcpcut/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/RostislavMatov/mcpcut/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/RostislavMatov/mcpcut/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/RostislavMatov/mcpcut/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/RostislavMatov/mcpcut/compare/v0.2.2...v0.2.3

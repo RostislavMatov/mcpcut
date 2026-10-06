@@ -138,19 +138,31 @@ export const REDACT_KEY_TOKENS: readonly string[] = [
  * - Bearer/Basic and other well-shaped tokens before the generic
  *   `label: value` pattern, which would otherwise stop at the first space and
  *   leave the tail of the secret behind.
- * All patterns are linear (no nested quantifiers) to stay ReDoS-free.
+ * Every pattern scans linearly: no nested quantifiers, and no unbounded run
+ * that a crafted input can make every start position rescan. PEM blocks are
+ * matched by a linear scan over these header and footer patterns
+ * (`redactKeyBlocks`), not by the block regex below: on text with many headers
+ * and no footer its lazy body would rescan to the end from every header.
+ *
+ * `[A-Z ]*` (zero-or-more), not `+`: PKCS8 ("-----BEGIN PRIVATE KEY-----",
+ * what `generateKeyPairSync(..., { privateKeyEncoding: { type: 'pkcs8' } })`
+ * emits -- see journal/signing.ts) carries no algorithm qualifier, unlike
+ * the legacy PKCS1/SEC1 shapes ("RSA PRIVATE KEY", "EC PRIVATE KEY"). A
+ * `+` here would require a qualifier word and silently let the unqualified,
+ * now-standard form through unredacted.
  */
-export const REDACT_VALUE_PATTERNS: readonly RegExp[] = [
-  // `[A-Z ]*` (zero-or-more), not `+`: PKCS8 ("-----BEGIN PRIVATE KEY-----",
-  // what `generateKeyPairSync(..., { privateKeyEncoding: { type: 'pkcs8' } })`
-  // emits -- see journal/signing.ts) carries no algorithm qualifier, unlike
-  // the legacy PKCS1/SEC1 shapes ("RSA PRIVATE KEY", "EC PRIVATE KEY"). A
-  // `+` here would require a qualifier word and silently let the unqualified,
-  // now-standard form through unredacted.
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+export const PRIVATE_KEY_HEADER_PATTERN = /-----BEGIN [A-Z ]*PRIVATE KEY-----/g
+export const PRIVATE_KEY_FOOTER_PATTERN = /-----END [A-Z ]*PRIVATE KEY-----/g
+
+/** The whole-match token patterns `redactText` applies after the PEM scan. */
+export const REDACT_TOKEN_PATTERNS: readonly RegExp[] = [
   /\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi,
   /\bBasic\s+[A-Za-z0-9+/]+=*/gi,
-  /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g,
+  // The header segment stops where another candidate could start (`eyJ` right after a `-`):
+  // otherwise every `-` in an `eyJ-eyJ-…` run starts a candidate that rescans the run to its end
+  // (512 KiB took two minutes). An inner `eyJ` after a letter — a nested object such as `jwk` —
+  // stays inside the header, so such a token is redacted whole.
+  /\beyJ(?:(?!\beyJ)[A-Za-z0-9_-])+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g,
   /\bsk-[A-Za-z0-9_-]{16,}/g,
   /\bgh[posu]_[A-Za-z0-9]{20,}/g,
   /\bxox[baprs]-[A-Za-z0-9-]+/g,
@@ -162,6 +174,16 @@ export const REDACT_VALUE_PATTERNS: readonly RegExp[] = [
   // neighbouring query parameters and JSON syntax survive; the negative
   // lookahead keeps an already-redacted value from swallowing what follows.
   /(?:api[-_ ]?key|x-api-key|authorization|token|secret|password|passwd)\s*[:=]\s*(?!\[REDACTED\])[^\s&"',;]+/gi,
+]
+
+/**
+ * Every value shape, the PEM block included, for short values an admin types
+ * (`registry/schema.ts` refuses a secret pasted as a plain env value). Not for
+ * untrusted text: use `redactText`, which scans PEM blocks linearly.
+ */
+export const REDACT_VALUE_PATTERNS: readonly RegExp[] = [
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+  ...REDACT_TOKEN_PATTERNS,
 ]
 
 /** A value pattern that redacts only part of its match, via `$n` back-references. */
@@ -177,7 +199,9 @@ export interface PartialValueRule {
  */
 export const REDACT_PARTIAL_VALUE_PATTERNS: readonly PartialValueRule[] = [
   // scheme://user:pass@host -> scheme://[REDACTED]@host
-  { pattern: /(\b[a-z][a-z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s@]+@/gi, replacement: '$1[REDACTED]@' },
+  // The scheme is bounded (RFC 3986 schemes are short): unbounded, every word start in a long
+  // `a-b-c…` run rescanned to its end, and 512 KiB took minutes.
+  { pattern: /(\b[a-z][a-z0-9+.-]{0,31}:\/\/)[^/\s:@]+:[^/\s@]+@/gi, replacement: '$1[REDACTED]@' },
   // ?api_key=secret&next=1 -> ?api_key=[REDACTED]&next=1
   {
     pattern: /([?&](?:api[-_]?key|access_token|token|secret|password)=)[^&\s"']+/gi,
