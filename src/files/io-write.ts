@@ -23,6 +23,7 @@ import {
 } from './io-common.js'
 import { readBytes, readText } from './io-read.js'
 import type { ResolvedPath } from './paths.js'
+import { findAtMost } from './text-search.js'
 
 export { makeDirectory, moveEntry } from './io-move.js'
 
@@ -192,24 +193,19 @@ async function unchangedSince(target: ResolvedPath, before: BigIntStats, isGuard
   return isGuarded && isTouched ? staleResult() : null
 }
 
-function countOccurrences(text: string, needle: string): number {
-  let count = 0
-  for (let at = text.indexOf(needle); at !== -1; at = text.indexOf(needle, at + 1)) count += 1
-  return count
-}
-
 /** Applies each edit in order; `oldText` must occur exactly once in the text as it is at that step. */
 function applyEdits(text: string, edits: readonly TextEdit[]): IoResult<string> {
   if (edits.length === 0) return fail('edit-mismatch', 'No edits were given: pass at least one {oldText, newText}.')
   let current = text
   for (const [index, edit] of edits.entries()) {
     if (edit.oldText === '') return fail('edit-mismatch', `Edit ${index}: oldText is empty; give the exact text to replace.`)
-    const count = countOccurrences(current, edit.oldText)
-    if (count !== 1) {
-      const hint = count === 0 ? 'read the file again and copy the text exactly' : 'add more surrounding text so it matches once'
-      return fail('edit-mismatch', `Edit ${index}: oldText was found ${count} times, it must be found exactly once: ${hint}.`)
+    const found = findAtMost(current, edit.oldText, 2)
+    const at = found[0]
+    if (at === undefined || found.length > 1) {
+      const times = at === undefined ? '0 times' : 'more than once'
+      const hint = at === undefined ? 'read the file again and copy the text exactly' : 'add more surrounding text so it matches once'
+      return fail('edit-mismatch', `Edit ${index}: oldText was found ${times}, it must be found exactly once: ${hint}.`)
     }
-    const at = current.indexOf(edit.oldText)
     current = current.slice(0, at) + edit.newText + current.slice(at + edit.oldText.length)
   }
   return succeed(current)

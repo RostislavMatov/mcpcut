@@ -183,16 +183,28 @@ describe('editFile', () => {
     expect(await readFile(join(sandbox.root, 'e3.txt'), 'utf8')).toBe('abc')
   })
 
-  test('reports edit-mismatch with count 2 when oldText is ambiguous', async () => {
+  test('reports edit-mismatch, found more than once, when oldText is ambiguous', async () => {
     const target = await fileWith('e4.txt', 'x x')
     const result = await editFile(target, [{ oldText: 'x', newText: 'y' }])
     expect(problemOf(result)).toBe('edit-mismatch')
-    if (!result.ok) expect(result.message).toMatch(/Edit 0.*2 times/)
+    if (!result.ok) expect(result.message).toMatch(/Edit 0.*found more than once/)
   })
 
   test('counts overlapping occurrences as ambiguous', async () => {
     const target = await fileWith('e5.txt', 'aaa')
     expect(problemOf(await editFile(target, [{ oldText: 'aa', newText: 'b' }]))).toBe('edit-mismatch')
+  })
+
+  test('a long oldText that indexOf would take minutes over is settled in well under a few seconds', async () => {
+    const target = await fileWith('big.txt', 'a'.repeat(4 * 1024 * 1024))
+    const needle = `${'a'.repeat(16 * 1024)}b${'a'.repeat(16 * 1024)}`
+
+    const started = performance.now()
+    const result = await editFile(target, [{ oldText: needle, newText: 'x' }])
+
+    expect(problemOf(result)).toBe('edit-mismatch')
+    if (!result.ok) expect(result.message).toMatch(/found 0 times/)
+    expect(performance.now() - started).toBeLessThan(3_000)
   })
 
   test('refuses an empty oldText and an empty edit list', async () => {
@@ -235,3 +247,4 @@ describe('editFile', () => {
     expect(problemOf(await editFile(target, edits))).toBe('too-large')
   })
 })
+
