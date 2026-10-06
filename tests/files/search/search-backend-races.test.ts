@@ -238,6 +238,9 @@ describePg('what the agent and the administrator are told', () => {
   })
 })
 
-test('the embedder of a fixture is a plain fake (guards the tests above)', () => {
-  expect(createFakeEmbedder().isClosed()).toBe(false)
+// Its fixture's hooks open Postgres, like the tests it guards.
+describePg('the fixture', () => {
+  test('the embedder of a fixture is a plain fake (guards the tests above)', () => {
+    expect(createFakeEmbedder().isClosed()).toBe(false)
+  })
 })

@@ -4,7 +4,8 @@ import { MAX_PATH_LENGTH, TRASH_DIR_NAME } from './constants.js'
 import { identitiesCollapse, statIdentity, type StatFn } from './identity.js'
 import { canonicalDataDir, overlapMessage, overlapsDataDir } from './data-overlap.js'
 import { hasTrashSegment } from './names.js'
-import { resolveWithinRoots } from './paths.js'
+import { resolveWithinRoots, type VolumeOf } from './paths.js'
+import { networkVolumeMessage, volumeKindOf } from './volume.js'
 
 /**
  * Declaring a root (ADR-0020 §2, §3.7-3.8): the admin's path is made canonical,
@@ -117,11 +118,14 @@ export async function prepareRoot(
   existing: readonly string[] = [],
   identityOf: StatFn = statIdentity,
   dataDir?: string,
+  volumeOf: VolumeOf = volumeKindOf,
 ): Promise<PrepareRootResult> {
   const problem = syntaxProblem(raw)
   if (problem !== null) return refuse(problem)
   const folder = await existingFolder(raw)
   if ('message' in folder) return refuse(folder.message)
+  const volume = await volumeOf(folder.real)
+  if (volume.kind === 'network') return refuse(networkVolumeMessage(folder.real, volume.fsType))
   const data = dataDir === undefined ? undefined : await canonicalDataDir(dataDir)
   if (data !== undefined && overlapsDataDir(folder.real, data)) return refuse(overlapMessage(folder.real, data))
   const trashNote = 'a root cannot be (or lie inside) a trash folder: declare the folder that holds the files'

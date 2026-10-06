@@ -13,6 +13,7 @@ import {
   type StatFn,
 } from './identity.js'
 import { checkName, hasTrashSegment, isLexicallyUnder, isWithinOn } from './names.js'
+import { volumeKindOf, type VolumeKind } from './volume.js'
 
 /**
  * The one resolver every agent-named path goes through before a file is
@@ -34,6 +35,8 @@ import { checkName, hasTrashSegment, isLexicallyUnder, isWithinOn } from './name
  *  5. A trash-like name at any depth below the root is refused, so an agent
  *     cannot create the trash folder before mcpcut does under a spelling the
  *     volume folds (`.mcpcut-traſh`).
+ *  6. A target on a network or FUSE drive is refused (`volume.ts`): there the
+ *     identities of step 4 may be made up per spelling.
  *
  * Opening without following a last-moment symlink swap is the I/O layer's
  * job (O_NOFOLLOW, dev/ino of the descriptor); this module only names the file.
@@ -95,6 +98,17 @@ interface RootInfo {
 function refuse(refusal: PathRefusal, message: string = REFUSAL_MESSAGES[refusal]): Refused {
   return { ok: false, refusal, message }
 }
+
+/** What an agent reads when the target lies on a network or FUSE drive. */
+function networkVolumeRefusal(fsType: string): Refused {
+  return refuse(
+    'unresolvable',
+    `The path is on a network or FUSE drive (${fsType}), where folders cannot be told apart reliably, so it is not reachable through file tools; ask an administrator.`,
+  )
+}
+
+/** Checks the volume a canonical path lies on. */
+export type VolumeOf = (canonical: string) => Promise<VolumeKind>
 
 const UNRELIABLE_IDENTITIES_MESSAGE =
   'The path could not be resolved safely: file identities are not reliable on this file system, so folders cannot be told apart; ask an administrator.'
@@ -189,7 +203,12 @@ function relativeBelow(ancestor: string, target: string): string {
  * means the canonical target lies inside one of them and outside every
  * trash; nothing about the agent's operations on it — that is `rights.ts`.
  */
-export async function resolveWithinRoots(raw: string, roots: readonly string[], stat: StatFn = statIdentity): Promise<PathResult> {
+export async function resolveWithinRoots(
+  raw: string,
+  roots: readonly string[],
+  stat: StatFn = statIdentity,
+  volumeOf: VolumeOf = volumeKindOf,
+): Promise<PathResult> {
   const syntaxRefusal = checkSyntax(raw)
   if (syntaxRefusal !== null) return refuse(syntaxRefusal)
   const lexical = path.resolve(raw)
@@ -197,6 +216,8 @@ export async function resolveWithinRoots(raw: string, roots: readonly string[], 
   if (!isLexicallyUnder(lexical, infos.flatMap((info) => [info.declared, info.canonical]))) return refuse('outside-roots')
   const target = await canonicalTarget(lexical)
   if (!target.ok) return target
+  const volume = await volumeOf(target.real)
+  if (volume.kind === 'network') return networkVolumeRefusal(volume.fsType)
   const chain = await existingChain(target.real, stat)
   const root = deepestRoot(chain, infos)
   if (root === undefined || !isWithinOn(root.path, target.real)) return refuse('outside-roots')
