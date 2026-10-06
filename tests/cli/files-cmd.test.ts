@@ -224,7 +224,7 @@ describe('files grant', () => {
     expect(result.code).toBe(0)
     expect(result.out).toContain('no access')
     expect((await createAgentsStore({ journalDir }).getAgent('writer'))?.grants['files']?.paths).toEqual([
-      { path: join(root, 'a', 'secret'), ops: [] },
+      { path: join(root, 'a', 'secret'), ops: [], identity: { dev: expect.any(String), ino: expect.any(String) } },
     ])
   })
 

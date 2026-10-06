@@ -7,6 +7,7 @@ import {
   dropRule,
   filesGrantsOf,
   normalizeOps,
+  ruleFor,
   resolveRulePath,
   RuleRefusedError,
   ruleKeysOf,
@@ -116,7 +117,7 @@ export async function runGroupGrant(args: string[], io: AgentCliIo, opts: FilesC
   const roots = await createRootsStore({ ...(opts.journalDir !== undefined ? { journalDir: opts.journalDir } : {}) }).list()
   const resolved = await resolveRulePath(roots.map((root) => root.path), rawPath, (folder) => `${cliCommand(opts.env)} files root add ${shellArg(folder)}`)
   if (!resolved.ok) return fail(io, replaceControlChars(resolved.message))
-  const rule = { path: resolved.path, ops: normalizeOps(ops.ops) }
+  const rule = await ruleFor(resolved.path, ops.ops)
 
   const updated = await groupsOf(opts).setServerGrant(groupName, FILES_SERVER_NAME, (current) => {
     const applied = applyRule(filesGrantsOf(current), rule)

@@ -24,13 +24,15 @@ import { realpathOf, type ResolvedPath } from './paths.js'
 export interface FileRule {
   readonly path: string
   readonly ops: readonly FileOp[]
+  /** On a cut-out granted on an existing folder: that folder's dev/ino, as decimal strings. */
+  readonly identity?: { readonly dev: string; readonly ino: string } | undefined
 }
 
 export type PreparedRule =
   | ({ readonly kind: 'identity'; readonly ops: readonly FileOp[] } & FileIdentity)
   | { readonly kind: 'missing'; readonly path: string; readonly ops: readonly FileOp[] }
 
-export type RulesProblem = 'rule-changed' | 'rule-unresolvable'
+export type RulesProblem = 'rule-changed' | 'rule-unresolvable' | 'cut-out-moved'
 
 export type PreparedRules =
   | { readonly ok: true; readonly rules: readonly PreparedRule[] }
@@ -38,17 +40,29 @@ export type PreparedRules =
 
 type RuleOutcome = PreparedRule | { readonly problem: RulesProblem }
 
+/** A cut-out whose folder is gone from its path or is another folder now: its content may sit elsewhere, readable. */
+function isCutOutMoved(rule: FileRule, found: FileIdentity | null): boolean {
+  if (rule.identity === undefined) return false
+  return found === null || String(found.dev) !== rule.identity.dev || String(found.ino) !== rule.identity.ino
+}
+
 async function prepareRule(rule: FileRule): Promise<RuleOutcome> {
   const outcome = await realpathOf(rule.path)
+  if (outcome.kind === 'missing' && isCutOutMoved(rule, null)) return { problem: 'cut-out-moved' }
   if (outcome.kind !== 'found') {
     return outcome.kind === 'missing' ? { kind: 'missing', path: path.resolve(rule.path), ops: rule.ops } : { problem: 'rule-unresolvable' }
   }
   if (outcome.real !== path.resolve(rule.path)) return { problem: 'rule-changed' }
   const identity = await statIdentity(outcome.real)
-  return identity === null ? { problem: 'rule-unresolvable' } : { kind: 'identity', dev: identity.dev, ino: identity.ino, ops: rule.ops }
+  if (identity === null) return { problem: 'rule-unresolvable' }
+  if (isCutOutMoved(rule, identity)) return { problem: 'cut-out-moved' }
+  return { kind: 'identity', dev: identity.dev, ino: identity.ino, ops: rule.ops }
 }
 
 function problemMessage(problem: RulesProblem, rulePath: string): string {
+  if (problem === 'cut-out-moved') {
+    return `File access is closed: the cut-out folder ${rulePath} was moved, deleted or replaced. An administrator checks it and runs \`mcpcut files revoke\` or \`mcpcut files grant\` again.`
+  }
   const what = problem === 'rule-changed' ? 'now resolves to a different place' : 'cannot be resolved'
   return `File access is closed: the granted folder ${rulePath} ${what}. An administrator re-grants it with \`mcpcut files grant\`.`
 }

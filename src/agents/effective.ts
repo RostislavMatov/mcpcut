@@ -106,7 +106,7 @@ type PathRules = NonNullable<AgentGrant['paths']>
 
 /** A rule with its operations in `FILE_OPS` order — one spelling per meaning. */
 function normalizedRule(rule: PathRules[number]): PathRules[number] {
-  return { path: rule.path, ops: FILE_OPS.filter((op) => rule.ops.includes(op)) }
+  return { ...rule, ops: FILE_OPS.filter((op) => rule.ops.includes(op)) }
 }
 
 /**

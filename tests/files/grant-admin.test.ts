@@ -61,10 +61,12 @@ describe('grantPath', () => {
     expect(second.ok && filesOf(second.grants)?.paths?.map((rule) => rule.path)).toEqual([join(root, 'a'), join(root, 'b')])
   })
 
-  test('none gives an empty ops list (a cut-out)', async () => {
+  test('none gives an empty ops list (a cut-out) that remembers its folder', async () => {
     const result = await grantPath({}, [root], join(root, 'a', 'secret'), [])
 
-    expect(result.ok && filesOf(result.grants)?.paths).toEqual([{ path: join(root, 'a', 'secret'), ops: [] }])
+    expect(result.ok && filesOf(result.grants)?.paths).toEqual([
+      { path: join(root, 'a', 'secret'), ops: [], identity: { dev: expect.any(String), ino: expect.any(String) } },
+    ])
   })
 
   test('orders and dedupes ops in the canonical order', async () => {

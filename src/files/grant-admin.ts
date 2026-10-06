@@ -1,6 +1,7 @@
 import path from 'node:path'
 import type { AgentGrant } from '../agents/schema.js'
 import { FILE_OPS, FILES_SERVER_NAME, MAX_PATHS_PER_GRANT, type FileOp } from './constants.js'
+import { statIdentity } from './identity.js'
 import { canonicalPath, resolveWithinRoots, type PathRefusal } from './paths.js'
 import type { FileRule } from './rights.js'
 
@@ -118,10 +119,23 @@ export function applyRule(grants: AgentGrants, rule: FileRule): ApplyRuleResult 
       message: `at most ${MAX_PATHS_PER_GRANT} folder rules per agent: revoke one first with \`mcpcut files revoke <agent> <path>\``,
     }
   }
-  const stored = { path: rule.path, ops: [...normalizeOps(rule.ops)] }
-  const paths = [...others.map((other) => ({ path: other.path, ops: [...other.ops] })), stored].sort(byPath)
+  const stored = { ...rule, ops: [...normalizeOps(rule.ops)] }
+  const paths = [...others.map((other) => ({ ...other, ops: [...other.ops] })), stored].sort(byPath)
   const next: AgentGrant = { ...(current ?? { tools: '*' }), paths }
   return { ok: true, grants: { ...grants, [FILES_SERVER_NAME]: next } }
+}
+
+/** A cut-out on a canonical folder path, with the folder's identity when it exists (a later move or swap then closes access). */
+export async function carveOutRule(folder: string): Promise<FileRule> {
+  const identity = await statIdentity(folder)
+  if (identity === null || !identity.isDirectory || identity.isSymbolicLink) return { path: folder, ops: [] }
+  return { path: folder, ops: [], identity: { dev: String(identity.dev), ino: String(identity.ino) } }
+}
+
+/** The rule `files grant` stores: a cut-out remembers its folder, a grant is just the path and the operations. */
+export async function ruleFor(folder: string, ops: readonly FileOp[]): Promise<FileRule> {
+  const normalized = normalizeOps(ops)
+  return normalized.length === 0 ? carveOutRule(folder) : { path: folder, ops: normalized }
 }
 
 /** Resolves `rawPath` against the roots and applies the rule — the whole of `files grant`. */
@@ -133,7 +147,7 @@ export async function grantPath(
 ): Promise<GrantPathResult> {
   const resolved = await resolveRulePath(roots, rawPath)
   if (!resolved.ok) return resolved
-  const rule: FileRule = { path: resolved.path, ops: normalizeOps(ops) }
+  const rule = await ruleFor(resolved.path, ops)
   const applied = applyRule(agentGrants, rule)
   return applied.ok ? { ok: true, grants: applied.grants, rule } : applied
 }
@@ -159,7 +173,7 @@ export function dropRule(grants: AgentGrants, keys: readonly string[]): RevokeRe
   const kept = rules.filter((rule) => !keys.includes(rule.path))
   if (current === undefined || kept.length === rules.length) return { grants, removed: false, remaining: rules.length }
   const { paths: _dropped, ...rest } = current
-  const next: AgentGrant = kept.length === 0 ? rest : { ...rest, paths: kept.map((rule) => ({ path: rule.path, ops: [...rule.ops] })) }
+  const next: AgentGrant = kept.length === 0 ? rest : { ...rest, paths: kept.map((rule) => ({ ...rule, ops: [...rule.ops] })) }
   return { grants: { ...grants, [FILES_SERVER_NAME]: next }, removed: true, remaining: kept.length }
 }
 
