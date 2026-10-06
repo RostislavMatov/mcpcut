@@ -88,7 +88,10 @@ async function tick(timer: FakeTimer, sync: FilesSync, advanceMs = FILES_SYNC_IN
   await sync.idle()
 }
 
-async function turnOn(url = PG_URL): Promise<void> {
+/** Without a test Postgres, a well-formed URL nothing listens on: tests that never connect still read one. */
+const URL_OR_PLACEHOLDER = PG_URL === '' ? 'postgres://mcpcut:placeholder@127.0.0.1:1/none' : PG_URL
+
+async function turnOn(url = URL_OR_PLACEHOLDER): Promise<void> {
   await createVaultStore({ journalDir }).init()
   await createVaultStore({ journalDir }).setSecret(FILES_PG_URL_SECRET, url)
 }
@@ -225,7 +228,7 @@ describe('startFilesSync: lifecycle', () => {
     await sync.done
   })
 
-  test('stop waits for a run in flight, then closes what it opened', async () => {
+  test.skipIf(PG_URL === '')('stop waits for a run in flight, then closes what it opened', async () => {
     const { schema, cleanup } = withTestSchema()
     cleanups.push(cleanup)
     await turnOn()

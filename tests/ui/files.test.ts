@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { ulid } from 'ulid'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
@@ -322,6 +322,17 @@ describe('who touched what', () => {
     expect(page).toContain(`<code>${fx.root}/in/a</code>`)
     expect(page).not.toContain(`${fx.root}/in/b`)
     expect(page).not.toContain(`${fx.root}/out/c`)
+  })
+
+  test('a path typed through a symlink finds the calls journaled under its real spelling, like the CLI', async () => {
+    await fx.declareRoot()
+    await mkdir(join(fx.root, 'in'), { recursive: true })
+    await symlink(join(fx.root, 'in'), join(fx.root, 'alias'))
+    await fx.writeRecords('s4', [decision({ agent: 'bot', payload: { path: `${fx.root}/in/a` } })])
+
+    const page = await pageFor('owner', `path=${encodeURIComponent(`${fx.root}/alias`)}`)
+
+    expect(page).toContain(`<code>${fx.root}/in/a</code>`)
   })
 
   test('past 50 rows it points to the full list with the filters filled in', async () => {

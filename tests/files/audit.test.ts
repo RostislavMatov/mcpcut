@@ -371,3 +371,29 @@ describe('queryFileAudit — subject and path spellings', () => {
     expect(pathsOf(withAlias.entries)).toEqual([['/private/tmp/a']])
   })
 })
+
+describe('an agent cannot bury a call under a flood of later calls', () => {
+  test('a path query finds a delete made before more than a thousand newer file calls', async () => {
+    const target = join(data, 'p', 'important.txt')
+    const flood = Array.from({ length: 1_100 }, (_unused, index) =>
+      call({ ts: '2026-10-04T11:00:00.000Z', agent: 'bot', outcome: 'deny', rule: 'files: outside-roots', payload: { path: `/elsewhere/${index}` } }),
+    )
+    await write('s-delete', [call({ ts: '2026-10-04T10:00:00.000Z', agent: 'bot', tool: 'delete_file', payload: { path: target } })])
+    await write('s-flood', flood)
+
+    const result = await audit({ path: target })
+
+    expect(result.entries.map((entry) => [entry.action, entry.paths[0]])).toEqual([['delete_file', target]])
+  })
+
+  test('a Windows path is found through the JSON escaping of its backslashes', async () => {
+    const target = 'C:\\data\\p\\important.txt'
+    const flood = Array.from({ length: 1_100 }, (_unused, index) => call({ ts: '2026-10-04T11:00:00.000Z', payload: { path: `C:\\elsewhere\\${index}` } }))
+    await write('s-delete', [call({ tool: 'delete_file', payload: { path: target } })])
+    await write('s-flood', flood)
+
+    const result = await queryFileAudit({ limit: 100, path: target }, { dir, platform: 'win32' })
+
+    expect(result.entries.map((entry) => entry.action)).toEqual(['delete_file'])
+  })
+})

@@ -162,6 +162,17 @@ describe('files audit', () => {
     expect(result.err).toContain('Searched only the newest sessions or file calls — narrow with --since or --agent')
   })
 
+  test('an empty answer from a walk that stopped early says so, not "nothing matches"', async () => {
+    const records = Array.from({ length: 1002 }, (_unused, index) =>
+      call(`2026-10-04T10:00:00.${String(index % 1000).padStart(3, '0')}Z`, 'read_file', { path: `/data/${index}` }, { agent: 'bot' }),
+    )
+    await write('sess-1', records)
+
+    const result = await files(['audit', '--path', '/nowhere/at-all'])
+
+    expect(result.err).toContain('Searched only the newest sessions or file calls — narrow with --since or --agent')
+  })
+
   test('--json prints only the object on stdout', async () => {
     await write('sess-1', [call('2026-10-04T10:00:00.000Z', 'read_file', { path: '/data/a' }, { agent: 'bot' })])
 

@@ -5,6 +5,7 @@ import { MAX_PAGE_LIMIT, searchAllSessions, searchSession } from '../journal/sea
 import { FILES_SERVER_NAME } from './constants.js'
 import { entryOfCall, entryOfEdit, TREE_ACTIONS, type FileAuditEntry } from './audit-entry.js'
 import { isWithinOn, lexicalKey } from './names.js'
+import { canonicalPath } from './paths.js'
 
 export type { FileAuditActor, FileAuditEntry, FileAuditSubject } from './audit-entry.js'
 
@@ -62,6 +63,13 @@ export function parseSince(raw: string, now: Date): string | null {
   return new Date(now.getTime() - Number(days) * MS_PER_DAY).toISOString().slice(0, 10)
 }
 
+/** The path as typed (made absolute) and, when symlinks lead elsewhere, its canonical spelling too — one query for the CLI and the web UI. */
+export async function auditPathQuery(raw: string): Promise<{ readonly path: string; readonly pathAliases: readonly string[] }> {
+  const resolved = path.resolve(raw)
+  const canonical = await canonicalPath(resolved)
+  return { path: resolved, pathAliases: canonical === null || canonical === resolved ? [] : [canonical] }
+}
+
 export async function queryFileAudit(query: FileAuditQuery, opts: FileAuditOptions = {}): Promise<FileAuditResult> {
   const platform = opts.platform ?? process.platform
   const limit = Math.min(MAX_PAGE_LIMIT, Math.max(MIN_LIMIT, Math.floor(query.limit)))
@@ -82,17 +90,37 @@ interface Collected {
   readonly truncated: boolean
 }
 
+/**
+ * The newest file calls, plus — for a path query — one walk per spelling with
+ * the path as a text filter, applied before the page limit: a call on that
+ * path is found however many newer calls an agent made after it. The plain
+ * walk still serves whole-tree actions on a folder holding the path.
+ */
 async function readCalls(query: FileAuditQuery, opts: FileAuditOptions): Promise<Collected> {
-  const found = await searchAllSessions({
+  const base = {
     kind: 'decision',
     serverName: FILES_SERVER_NAME,
     limit: MAX_PAGE_LIMIT,
     ...(opts.dir !== undefined ? { dir: opts.dir } : {}),
     ...(query.agent !== undefined ? { agentName: query.agent } : {}),
     ...(query.since !== undefined ? { from: query.since } : {}),
-  })
-  const entries = found.hits.flatMap((hit) => entryOfCall(hit.sessionId, hit.record) ?? [])
-  return { entries, truncated: found.truncated }
+  }
+  const spellings = query.path === undefined ? [] : [query.path, ...(query.pathAliases ?? [])]
+  const walks = await Promise.all([base, ...spellings.map((spelling) => ({ ...base, text: journaledForm(spelling) }))].map((walk) => searchAllSessions(walk)))
+  const seen = new Set<string>()
+  const entries = walks
+    .flatMap((walk) => walk.hits)
+    .filter((hit) => {
+      const key = `${hit.sessionId}/${hit.record.id}`
+      return seen.has(key) ? false : (seen.add(key), true)
+    })
+    .flatMap((hit) => entryOfCall(hit.sessionId, hit.record) ?? [])
+  return { entries, truncated: walks.some((walk) => walk.truncated) }
+}
+
+/** A path as it reads inside the journal's JSON payload (backslashes escaped), for the substring filter. */
+function journaledForm(value: string): string {
+  return JSON.stringify(value).slice(1, -1)
 }
 
 async function readEdits(query: FileAuditQuery, opts: FileAuditOptions): Promise<Collected> {

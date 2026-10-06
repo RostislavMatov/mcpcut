@@ -1,9 +1,8 @@
 import path from 'node:path'
 import { parseArgs } from 'node:util'
 import { createAgentsStore } from '../agents/store.js'
-import { parseSince, type FileAuditActor, type FileAuditEntry, type FileAuditSubject } from '../files/audit.js'
+import { auditPathQuery, parseSince, type FileAuditActor, type FileAuditEntry, type FileAuditSubject } from '../files/audit.js'
 import { fileAudit, type AuditAnswer } from '../files/audit-source.js'
-import { canonicalPath } from '../files/paths.js'
 import { createRootsStore } from '../files/roots-store.js'
 import { formatReadableField } from '../journal/format.js'
 import type { AgentCliIo } from './agent-cmd.js'
@@ -86,13 +85,15 @@ export function formatAuditLine(entry: FileAuditEntry): string {
   return columns.filter((column) => column !== '').join(COLUMN_GAP)
 }
 
+const TRUNCATED_LINE = 'Searched only the newest sessions or file calls — narrow with --since or --agent'
+
 /** The stderr footer: the count, why the list may be short, and the next step. */
 function footerOf(result: AuditAnswer, cli: string): string {
   const [newest] = result.entries
   if (newest === undefined) return ''
   const shown = result.entries.length
   const lines = [`${shown} file operation(s)${result.source === 'postgres' ? ' from Postgres' : ''}`, `Full record: ${cli} show ${shellArg(newest.sessionId)}`]
-  if (result.truncated) lines.push('Searched only the newest sessions or file calls — narrow with --since or --agent')
+  if (result.truncated) lines.push(TRUNCATED_LINE)
   if (result.hasMore) lines.push(`Showing the newest ${shown} — more with --limit ${Math.min(shown * 2, MAX_LIMIT)}`)
   return `${lines.join('\n')}\n`
 }
@@ -108,13 +109,6 @@ async function emptyHint(opts: FilesCliOptions, hasFilters: boolean): Promise<st
   return `No file operations recorded yet. Agents reach folders through connect — give one access:\n${step}`
 }
 
-/** The path as typed (made absolute) and, when symlinks lead elsewhere, its canonical spelling too. */
-async function pathQueryOf(raw: string): Promise<{ readonly path: string; readonly pathAliases: readonly string[] }> {
-  const resolved = path.resolve(raw)
-  const canonical = await canonicalPath(resolved)
-  return { path: resolved, pathAliases: canonical === null || canonical === resolved ? [] : [canonical] }
-}
-
 export async function runAudit(args: string[], io: AgentCliIo, opts: FilesCliOptions): Promise<number> {
   const parsed = parseAuditArgs(args)
   if (parsed === undefined) return fail(io, FILES_USAGE.trimEnd())
@@ -124,7 +118,7 @@ export async function runAudit(args: string[], io: AgentCliIo, opts: FilesCliOpt
     return fail(io, `--limit takes a whole number from 1 to ${MAX_LIMIT}, e.g. --limit 200`)
   }
   if (parsed.path === '') return fail(io, '--path takes a file or folder, e.g. --path ~/project/notes.md')
-  const pathQuery = parsed.path === undefined ? {} : await pathQueryOf(parsed.path)
+  const pathQuery = parsed.path === undefined ? {} : await auditPathQuery(parsed.path)
 
   const result = await fileAudit(
     {
@@ -152,6 +146,8 @@ export async function runAudit(args: string[], io: AgentCliIo, opts: FilesCliOpt
     result.entries.forEach((entry) => io.stdout.write(`${formatAuditLine(entry)}\n`))
   }
   const hasFilters = parsed.path !== undefined || parsed.agent !== undefined || parsed.since !== undefined
-  io.stderr.write(result.entries.length === 0 ? await emptyHint(opts, hasFilters) : footerOf(result, cliCommand(opts.env)))
+  // An empty answer from a walk that stopped early is not "nothing matches".
+  const emptyNote = result.truncated ? `${TRUNCATED_LINE}\n` : ''
+  io.stderr.write(result.entries.length === 0 ? `${emptyNote}${await emptyHint(opts, hasFilters)}` : footerOf(result, cliCommand(opts.env)))
   return 0
 }
