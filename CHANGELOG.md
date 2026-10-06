@@ -15,7 +15,8 @@ All notable changes to this project are documented here. The format follows
   `edit_file`, `move_file`, `delete_file`, …) behind the same gate as every
   other server. Rights are inherited down the tree, the most specific rule
   wins, and `--ops none` cuts a subfolder out. Groups carry folder rules too
-  (`files grant --group`); an agent's own rules replace its groups'.
+  (`files grant --group`); an agent's own rules replace its groups'. Folders on
+  network or FUSE drives are refused: there one folder can look like two.
 - **A trash instead of deletes.** `delete_file` moves to `.mcpcut-trash` inside
   the root; `mcpcut files trash list | restore | purge` manage it, and `serve`
   purges what is older than 30 days once a day.

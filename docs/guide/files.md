@@ -96,6 +96,12 @@ The agent reads all of `~/project`, edits `~/project/docs`, and gets nothing in
 folder still appears by name in its parent's listing; its contents are refused.
 Two rules on the same folder add up, except that `none` on it wins.
 
+A carve-out remembers the folder it was granted on. If that folder is later
+moved, deleted or replaced by a new one of the same name (by another agent, or
+by you), the agent's file access closes with one line until you check it and
+run `mcpcut files revoke` or `mcpcut files grant` again; the content never
+follows the old path to the agent it was hidden from.
+
 **Groups** hand the same rules to many agents. A member inherits the group's
 folder rules; an agent with rules of its own keeps only those, exactly as with
 [server grants](agents.md#server-groups):
@@ -297,8 +303,14 @@ Next: `mcpcut files db status` shows the index counts.
   itself, so a different letter case or Unicode form of the same path gets the
   same answer. If a granted folder is replaced by a link or cannot be resolved,
   access is closed for that agent until you grant it again.
-- **Network drives.** A root on a file system that does not report stable file
-  identities is refused by `root add`; choose a folder on a local disk.
+- **Network drives.** SMB, NFS and FUSE volumes are refused: `root add` will
+  not declare a folder on one, and a path on one (a share mounted inside a
+  root, or a link to it) is refused to agents. On such volumes one folder can
+  report different identities under different spellings, so carve-outs could
+  not be enforced. Choose a folder on a local disk.
+- **Paths as sent.** An agent's path with a `.` or `..` segment is refused, so
+  the journal names the file a call acted on. Paths into `.mcpcut-project`
+  (mcpcut's own project settings) are refused too.
 - **Windows.** Names Windows reserves (`CON`, `NUL`, `COM1`…, a stream after
   `:`, a trailing dot or space) and device paths (`\\.\`, `\\?\`) are refused.
 - **mcpcut's own data.** A root that is, lies inside or contains the data
@@ -321,6 +333,7 @@ Next: `mcpcut files db status` shows the index counts.
 | `the path must be absolute` | pass the full path, as the message suggests |
 | `<folder> overlaps mcpcut's own data folder` | pick a folder outside it |
 | `<folder> is on a file system that does not report stable file identities` | use a folder on a local disk |
+| `<folder> is on a network or FUSE drive (smbfs)` | use a folder on a local disk; copy or sync the files there |
 | `<path> is outside the declared roots` | `mcpcut files root add <folder>` first |
 | `the built-in file server is not registered yet` | `mcpcut files root add <folder>` registers it |
 | `a server named "files" is already registered and is not the built-in file server` | `mcpcut server remove files`, then repeat |
@@ -332,6 +345,8 @@ Next: `mcpcut files db status` shows the index counts.
 | Agent: `Use an absolute path inside one of your folders` | same: paths must be absolute |
 | Agent: `Unknown tool: files__delete_file` right after a grant | the client has not listed tools again: restart it or reopen the session |
 | Agent: `File access is closed: the granted folder … now resolves to a different place` | check the folder, then `mcpcut files grant <agent> <folder> --ops …` again |
+| Agent: `File access is closed: the cut-out folder … was moved, deleted or replaced` | find where the folder went; `mcpcut files grant <agent> <its new path> --ops none`, then `mcpcut files revoke <agent> <old path>` |
+| Agent: `The path has a "." or ".." segment` | the agent should send the full path without them |
 | Agent: `The file has several hard links` | the file cannot be changed through these tools; ask for a copy |
 | Agent: `Search by meaning is not available right now` | `mcpcut files setup --search`, or `mcpcut files db status` for the reason |
 | Agent: `None of the folders you can read is indexed yet` | `mcpcut files index on <folder>` |
