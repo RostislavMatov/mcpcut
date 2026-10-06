@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
@@ -11,7 +11,8 @@ let dir: string
 const sha = (data: string | Buffer): string => createHash('sha256').update(data).digest('hex')
 
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), 'mcpcut-read-indexable-'))
+  // Canonical, as roots are stored: files under a symlinked folder are refused.
+  dir = await realpath(await mkdtemp(join(tmpdir(), 'mcpcut-read-indexable-')))
 })
 afterEach(async () => {
   await rm(dir, { recursive: true, force: true })

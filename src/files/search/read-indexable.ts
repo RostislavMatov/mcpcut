@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
 import { open } from 'node:fs/promises'
+import { isOpenedDirectly } from '../db/catalog-hash.js'
 import { O_NOFOLLOW, O_NONBLOCK } from '../io-common.js'
 import { INDEX_MAX_FILE_BYTES } from './constants.js'
 
@@ -55,9 +56,9 @@ export async function readIndexable(file: string, expectedSha256: string): Promi
     return CHANGED
   }
   try {
-    const info = await handle.stat()
-    if (!info.isFile()) return CHANGED
-    if (info.size > INDEX_MAX_FILE_BYTES) return { kind: 'skip', reason: 'too large' }
+    const info = await handle.stat({ bigint: true })
+    if (!info.isFile() || !(await isOpenedDirectly(file, info))) return CHANGED
+    if (info.size > BigInt(INDEX_MAX_FILE_BYTES)) return { kind: 'skip', reason: 'too large' }
     const bytes = await readCapped(handle, INDEX_MAX_FILE_BYTES)
     if (bytes.length > INDEX_MAX_FILE_BYTES) return { kind: 'skip', reason: 'too large' }
     if (createHash('sha256').update(bytes).digest('hex') !== expectedSha256) return CHANGED
