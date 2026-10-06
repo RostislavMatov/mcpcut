@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { INDEX_RETRY_FAILED_MS } from '../../../src/files/search/constants.js'
 import { planIndex, type CatalogFile, type IndexRow } from '../../../src/files/search/index-plan.js'
 import { indexOnce } from '../../../src/files/search/indexer.js'
@@ -54,6 +54,33 @@ test('a file that failed with this content waits for the retry delay, a changed 
   expect(plan([file('p.md')], [failed], justBefore).work).toEqual([])
   expect(plan([file('p.md')], [failed], atDelay).work).toHaveLength(1)
   expect(plan([file('p.md', 'new-sha')], [failed], justBefore).work).toHaveLength(1)
+})
+
+describe('one folder cannot starve another', () => {
+  const rules = [
+    { path: '/data/a', enabled: true, setAt: NOW.toISOString() },
+    { path: '/data/b', enabled: true, setAt: NOW.toISOString() },
+    { path: '/data/b/inner', enabled: true, setAt: NOW.toISOString() },
+  ]
+  const under = (relPath: string): CatalogFile => ({ root: '/data', relPath, size: 10, sha256: `sha-${relPath}` })
+  const planWork = (files: CatalogFile[], rows: IndexRow[] = []) =>
+    planIndex({ files, rows, rules, platform: 'linux', model: 'm', now: NOW }).work.map((item) => item.file.relPath)
+
+  test('work alternates between the rules covering the files, however many files one folder has', () => {
+    const flood = Array.from({ length: 5 }, (_, index) => under(`a/f${index}.md`))
+
+    expect(planWork([...flood, under('b/x.md'), under('b/inner/y.md')])).toEqual(['a/f0.md', 'b/inner/y.md', 'b/x.md', 'a/f1.md', 'a/f2.md', 'a/f3.md', 'a/f4.md'])
+  })
+
+  test('inside one folder the longest-waiting still goes first', () => {
+    const rows = [row('a/old.md', { root: '/data', indexedAt: 1000 }), row('a/new.md', { root: '/data', indexedAt: 2000 })]
+
+    expect(planWork([under('a/new.md'), under('b/x.md'), under('a/old.md')], rows)).toEqual(['b/x.md', 'a/old.md', 'a/new.md'])
+  })
+
+  test('a single folder keeps the plain order', () => {
+    expect(planWork([under('a/2.md'), under('a/1.md')])).toEqual(['a/1.md', 'a/2.md'])
+  })
 })
 
 describePg('a failing file on Postgres', () => {

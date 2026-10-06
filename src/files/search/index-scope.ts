@@ -13,24 +13,32 @@ export type SkipReason = 'secret-like name' | 'skipped folder'
 
 export type PathMatcher = (absPath: string) => boolean
 
+type RuleInput = Pick<IndexRule, 'path' | 'enabled'>
+
 /**
- * The rules' keys are worked out once; the matcher then answers per path. The
- * deepest rule containing the path decides; no rule means not indexed.
+ * The rules' keys are worked out once; the lookup then answers per path with
+ * the key of the deepest rule containing it (`undefined`: no rule), and whether that rule is on.
  */
-export function prepareIndexRules(rules: readonly Pick<IndexRule, 'path' | 'enabled'>[], platform: NodeJS.Platform): PathMatcher {
+export function prepareRuleLookup(rules: readonly RuleInput[], platform: NodeJS.Platform): (absPath: string) => { key: string; enabled: boolean } | undefined {
   const prepared = rules.map((rule) => {
     const key = pathMatchKey(rule.path, platform)
     return { key, depth: segmentCount(key), enabled: rule.enabled }
   })
   return (absPath) => {
     const key = pathMatchKey(absPath, platform)
-    let best: { depth: number; enabled: boolean } | undefined
+    let best: { key: string; depth: number; enabled: boolean } | undefined
     for (const rule of prepared) {
       if (!isWithinOn(rule.key, key, platform)) continue
       if (best === undefined || rule.depth > best.depth) best = rule
     }
-    return best?.enabled === true
+    return best
   }
+}
+
+/** The deepest rule containing the path decides; no rule means not indexed. */
+export function prepareIndexRules(rules: readonly RuleInput[], platform: NodeJS.Platform): PathMatcher {
+  const lookup = prepareRuleLookup(rules, platform)
+  return (absPath) => lookup(absPath)?.enabled === true
 }
 
 /** One-off form of {@link prepareIndexRules}. */

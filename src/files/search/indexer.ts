@@ -3,8 +3,8 @@ import type { FilesDb } from '../db/connection.js'
 import { FilesDbError } from '../db/errors.js'
 import type { PgQueryable } from '../db/pg-types.js'
 import { pathMatchKey } from '../db/path-key.js'
-import { chunkText } from './chunk.js'
-import { FAILED_REASON, INDEX_LOCK_KEY } from './constants.js'
+import { chunkText, type TextChunk } from './chunk.js'
+import { FAILED_REASON, INDEX_LOCK_KEY, INDEX_ROUND_MAX_CHUNKS } from './constants.js'
 import { planIndex, type PlannedWork } from './index-plan.js'
 import type { IndexRule } from './index-rules-store.js'
 import {
@@ -46,6 +46,8 @@ export interface IndexOptions {
   /** @internal test seams. */
   readonly read?: typeof readIndexable
   readonly monotonicMs?: () => number
+  /** Chunks one round may embed; `INDEX_ROUND_MAX_CHUNKS` by default. */
+  readonly maxChunks?: number
 }
 
 export interface IndexResult {
@@ -73,15 +75,18 @@ interface Tally {
   pending: number
   failed: number
   firstFailure: string | undefined
+  /** Chunks embedded so far this round. */
+  chunks: number
 }
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-async function embedChunks(text: string, relPath: string, embedder: Embedder): Promise<EmbeddedChunk[]> {
+const chunksOf = (text: string): TextChunk[] => chunkText(maskSecrets(redactString(text)))
+
+async function embedChunks(chunks: readonly TextChunk[], relPath: string, embedder: Embedder): Promise<EmbeddedChunk[]> {
   const label = redactString(relPath)
-  const chunks = chunkText(maskSecrets(redactString(text)))
   const embedded: EmbeddedChunk[] = []
   for (const chunk of chunks) {
     embedded.push({ ...chunk, embedding: await embedder.embedPassage(`${label}\n${chunk.body}`) })
@@ -148,8 +153,15 @@ async function processOne(sdb: SearchDb, work: PlannedWork, opts: IndexOptions, 
     noteSkip(tally, read.reason)
     return
   }
-  const chunks = await embedChunks(read.text, work.file.relPath, await embedder.get())
-  await sdb.db.transaction((tx) => writeIndexed(tx, sdb.vectorSchema, write, chunks))
+  const chunks = chunksOf(read.text)
+  // A file that does not fit what is left of the round waits whole (no row, so it is planned again), unless nothing was embedded yet: then it goes alone.
+  if (tally.chunks > 0 && tally.chunks + chunks.length > (opts.maxChunks ?? INDEX_ROUND_MAX_CHUNKS)) {
+    tally.pending += 1
+    return
+  }
+  const embedded = await embedChunks(chunks, work.file.relPath, await embedder.get())
+  await sdb.db.transaction((tx) => writeIndexed(tx, sdb.vectorSchema, write, embedded))
+  tally.chunks += embedded.length
   tally.indexed += 1
 }
 
@@ -194,7 +206,7 @@ async function runRound(sdb: SearchDb, opts: IndexOptions): Promise<IndexResult>
   const rows = await loadIndexRows(sdb.db)
   const plan = planIndex({ files, rows, rules: opts.rules, platform: opts.platform, model: opts.modelId, now: opts.now })
   const removed = await deleteIndexRows(sdb.db, plan.remove)
-  const tally: Tally = { indexed: 0, skipped: 0, skippedByReason: {}, pending: plan.waiting.length, failed: 0, firstFailure: undefined }
+  const tally: Tally = { indexed: 0, skipped: 0, skippedByReason: {}, pending: plan.waiting.length, failed: 0, firstFailure: undefined, chunks: 0 }
   const embedder = lazyEmbedder(opts.createEmbedder)
   try {
     await processAll(sdb, plan.work, opts, embedder, tally)
