@@ -59,6 +59,17 @@ jobs:
           MCPCUT_VERSION: ${{ inputs.version || '0.3.1' }}
         run: node tools/smoke/published-smoke.mjs
 
+      # The file module (not on npm yet) on the same packed build: owner setup,
+      # an agent over stdio, refusals checked by their reason, trash and audit.
+      - name: File module on this checkout
+        if: always() && steps.pack.outcome == 'success'
+        run: node tools/smoke/files-smoke.mjs
+
+      # Postgres tests skip without MCPCUT_TEST_PG_URL; that is expected here.
+      - name: File module tests on this OS
+        if: always() && steps.pack.outcome == 'success'
+        run: npx vitest run tests/files --coverage.enabled=false
+
       - name: Keep the results
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
