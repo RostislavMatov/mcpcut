@@ -1,6 +1,7 @@
 import type { FileAuditActor, FileAuditEntry } from '../../files/audit.js'
 import { html, join, safeUrl, type Html } from '../html.js'
 import { sessionHref } from './journal-parts.js'
+import { renderUntrustedPath } from '../display-name.js'
 import {
   auditCommand,
   grantCommand,
@@ -19,8 +20,8 @@ function actorText(actor: FileAuditActor): string {
   return actor.kind === 'agent' ? (actor.name ?? '-') : `admin ${actor.name} (${actor.via})`
 }
 
-function pathsText(paths: readonly string[]): string {
-  return paths.join(' → ')
+function pathsCell(paths: readonly string[]): Html {
+  return join(paths.map(renderUntrustedPath), html` → `)
 }
 
 function entryRow(entry: FileAuditEntry): Html {
@@ -31,7 +32,7 @@ function entryRow(entry: FileAuditEntry): Html {
     <td>${actorText(entry.actor)}</td>
     <td>${entry.action}${entry.subject === null ? '' : ` for ${entry.subject.kind} ${entry.subject.name}`}</td>
     <td>${entry.outcome ?? ''}</td>
-    <td><code>${pathsText(entry.paths)}</code></td>
+    <td><code>${pathsCell(entry.paths)}</code></td>
     <td class="small dim">${rule}</td>
     <td><a href="${safeUrl(sessionHref(entry.sessionId))}">session</a></td>
   </tr>`

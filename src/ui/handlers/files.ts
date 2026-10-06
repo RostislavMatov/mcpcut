@@ -22,6 +22,7 @@ import type { UiHandler, UiRequestContext, UiResult } from '../routes.js'
 import { journalAccessEditGuarded } from './access-edit-journal.js'
 import type { AccessEditJournalPort, UiAuditSink } from './agents.js'
 import { accessOf, auditFiltersOf, auditOf, foldersOf, trashOfRoots } from './files-data.js'
+import { untrustedPathText } from '../display-name.js'
 import { fieldsOf } from './request-helpers.js'
 
 /**
@@ -152,7 +153,7 @@ export function createFilesHandlers(deps: FilesHandlersDeps): FilesHandlers {
       HTTP_STATUS_OK,
       renderNotice({
         title: 'Files',
-        message: `Restored ${outcome.target}. Agents with rights on that folder can use it again.`,
+        message: `Restored ${untrustedPathText(outcome.target)}. Agents with rights on that folder can use it again.`,
         ok: true,
         backHref: FILES_HREF,
         backLabel: 'Back to files',

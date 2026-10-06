@@ -55,3 +55,22 @@ export function renderToolName(raw: string): Html {
   if (!shown.isFlagged) return html`${shown.text}`
   return html`${shown.text}<span class="name-flag" role="img" aria-label="${FLAG_LABEL}" title="${FLAG_TITLE}">⚠</span>`
 }
+
+const PATH_FLAG_LABEL = 'invisible characters removed from name'
+const PATH_FLAG_TITLE = 'This name contained invisible or direction-changing characters; they are not shown.'
+
+/**
+ * A file name or path an agent chose. Invisible and bidi characters are
+ * removed and flagged, as for tool names; other non-ASCII is a legitimate
+ * name (`отчёт.txt`) and is shown unflagged.
+ */
+export function renderUntrustedPath(raw: string): Html {
+  const text = raw.replace(INVISIBLE_PATTERN, '')
+  if (text.length === raw.length) return html`${text}`
+  return html`${text}<span class="name-flag" role="img" aria-label="${PATH_FLAG_LABEL}" title="${PATH_FLAG_TITLE}">⚠</span>`
+}
+
+/** The same, as plain text for a message line. */
+export function untrustedPathText(raw: string): string {
+  return raw.replace(INVISIBLE_PATTERN, '')
+}

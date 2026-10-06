@@ -75,6 +75,37 @@ describe('the page with data', () => {
   })
 })
 
+describe('names that hide characters', () => {
+  test('a right-to-left override or zero-width space in a trashed name is removed and flagged', async () => {
+    await fx.declareRoot()
+    await fx.trashFile('notes\u202etxt.exe')
+
+    const page = await pageFor('owner')
+
+    expect(page).not.toContain('\u202e')
+    expect(page).toContain('notestxt.exe<span class="name-flag"')
+  })
+
+  test('a Cyrillic name is shown as it is, with no flag', async () => {
+    await fx.declareRoot()
+    await fx.trashFile('отчёт.txt')
+
+    const page = await pageFor('owner')
+
+    expect(page).toContain('отчёт.txt</code>')
+  })
+
+  test('an agent path in the audit loses its invisible characters', async () => {
+    await fx.declareRoot()
+    await fx.writeRecords('s5', [decision({ agent: 'bot', payload: { path: `${fx.root}/secret\u200b.txt` } })])
+
+    const page = await pageFor('owner')
+
+    expect(page).not.toContain('\u200b')
+    expect(page).toContain(`${fx.root}/secret.txt<span class="name-flag"`)
+  })
+})
+
 describe('access', () => {
   test('shows personal rules, a cut-out, and where inherited rules come from', async () => {
     await fx.declareRoot()

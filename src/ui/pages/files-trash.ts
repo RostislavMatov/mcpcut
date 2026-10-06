@@ -1,6 +1,7 @@
 import { TRASH_DIR_NAME, TRASH_RETENTION_DAYS } from '../../files/constants.js'
 import type { TrashManifest } from '../../files/trash-manifest.js'
 import { html, join, type Html } from '../html.js'
+import { renderUntrustedPath } from '../display-name.js'
 import { csrfField } from './csrf-field.js'
 import { renderCommandBlock, trashListCommand, trashPurgeCommand } from './files-commands.js'
 import type { FilesView, TrashRootView } from './files-view.js'
@@ -19,7 +20,7 @@ function restoreCell(view: FilesView, root: string, entry: TrashManifest): Html 
 
 function entryRow(view: FilesView, root: string, entry: TrashManifest): Html {
   return html`<tr>
-    <td><code>${entry.relative}</code></td>
+    <td><code>${renderUntrustedPath(entry.relative)}</code></td>
     <td>${entry.kind === 'directory' ? 'folder' : 'file'}</td>
     <td class="num">${entry.kind === 'directory' ? '-' : `${String(entry.size)} B`}</td>
     <td class="num">${entry.deletedAt}</td>
