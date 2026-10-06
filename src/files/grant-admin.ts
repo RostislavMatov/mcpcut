@@ -68,6 +68,8 @@ export function adminMessage(refusal: PathRefusal, raw: string, roots: readonly 
       return `${raw} has a name Windows reserves: rename it or grant its folder`
     case 'unresolvable':
       return `${raw} cannot be resolved (link loop or unreadable folder): check the path`
+    case 'mcpcut-settings':
+      return `${raw} is inside mcpcut's own project settings: grant the folder that holds the files instead`
     case 'dot-segment':
       return `${raw} has a "." or ".." segment: pass the full path without them`
   }

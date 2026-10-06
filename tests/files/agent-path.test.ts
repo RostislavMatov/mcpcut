@@ -56,3 +56,20 @@ describe('resolveAgentPath', () => {
     expect((await resolveAgentPath(join(root, 'p', '..notes'), [root])).ok).toBe(true)
   })
 })
+
+describe('mcpcut project settings are out of an agent\'s reach', () => {
+  test('a path into .mcpcut-project is refused under any spelling a volume folds', async () => {
+    for (const name of ['.mcpcut-project', '.MCPCUT-PROJECT', '.mcpcut-project.', '.\uff4dcpcut-project']) {
+      const result = await resolveAgentPath(join(root, 'p', name, 'policy.json'), [root])
+
+      expect(result.ok, name).toBe(false)
+      if (result.ok) continue
+      expect(result.refusal).toBe('mcpcut-settings')
+      expect(result.message).toBe('The path is inside .mcpcut-project, mcpcut\'s own project settings, which file tools never touch — call list_roots to see your folders.')
+    }
+  })
+
+  test('a name that only starts the same is a name', async () => {
+    expect((await resolveAgentPath(join(root, 'p', '.mcpcut-projects', 'x'), [root])).ok).toBe(true)
+  })
+})

@@ -55,9 +55,14 @@ export function foldName(segment: string): string {
   return segment.normalize('NFKC').toUpperCase().toLowerCase().replace(/[. ]+$/, '')
 }
 
+/** Any segment that some volume could take for `name` (given folded). */
+export function hasSegmentFolded(value: string, name: string): boolean {
+  return value.split(/[\\/]/).some((segment) => segment !== '' && foldName(segment) === name)
+}
+
 /** Any segment that some volume could take for the trash folder. */
 export function hasTrashSegment(relative: string): boolean {
-  return relative.split(/[\\/]/).some((segment) => segment !== '' && foldName(segment) === TRASH_DIR_NAME)
+  return hasSegmentFolded(relative, TRASH_DIR_NAME)
 }
 
 /** The comparison key for lexical checks: folded where the platform's volumes usually fold. */

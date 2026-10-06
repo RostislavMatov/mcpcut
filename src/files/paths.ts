@@ -12,7 +12,8 @@ import {
   type FileIdentity,
   type StatFn,
 } from './identity.js'
-import { checkName, hasTrashSegment, isLexicallyUnder, isWithinOn } from './names.js'
+import { PROJECT_POLICY_SUBDIR } from '../policy/load.js'
+import { checkName, hasSegmentFolded, hasTrashSegment, isLexicallyUnder, isWithinOn } from './names.js'
 import { volumeKindOf, type VolumeKind } from './volume.js'
 
 /**
@@ -54,6 +55,7 @@ export type PathRefusal =
   | 'trash'
   | 'unresolvable'
   | 'dot-segment'
+  | 'mcpcut-settings'
 
 export interface ResolvedPath {
   /** The root the target lies in (of nested roots, the deepest), spelled as in `absolute`. */
@@ -87,6 +89,7 @@ const REFUSAL_MESSAGES: Readonly<Record<PathRefusal, string>> = {
   'dangling-symlink': 'The path is a symbolic link to something that does not exist and was refused.',
   trash: 'The trash is not reachable through file tools; an administrator restores files from it.',
   unresolvable: 'The path could not be resolved (a link loop or a folder that cannot be read).',
+  'mcpcut-settings': `The path is inside ${PROJECT_POLICY_SUBDIR}, mcpcut's own project settings, which file tools never touch — ${LIST_ROOTS_HINT}.`,
   'dot-segment': `The path has a "." or ".." segment: send the full path without them — ${LIST_ROOTS_HINT}.`,
 }
 
@@ -241,5 +244,8 @@ export function hasDotSegment(raw: string): boolean {
  * back is refused: what is journaled then names the file acted on.
  */
 export async function resolveAgentPath(raw: string, roots: readonly string[]): Promise<PathResult> {
-  return hasDotSegment(raw) ? refuse('dot-segment') : resolveWithinRoots(raw, roots)
+  if (hasDotSegment(raw)) return refuse('dot-segment')
+  // A policy planted there would govern the next `serve` or `wrap` started from that folder.
+  if (hasSegmentFolded(raw, PROJECT_POLICY_SUBDIR)) return refuse('mcpcut-settings')
+  return resolveWithinRoots(raw, roots)
 }
