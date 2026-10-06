@@ -1,5 +1,5 @@
 import type { ArgsCheck, ArgsRefusal } from '../proxy/gate-args-check.js'
-import { resolveWithinRoots, type ResolvedPath } from './paths.js'
+import { resolveAgentPath, type ResolvedPath } from './paths.js'
 import { carriedMessage, carriedShortfall, INNER_GRANT_RULE, innerGrantMessage, innerGrantOf } from './access-checks.js'
 import { needsOf, opsOfNeed, type PathNeed } from './tool-access.js'
 import { contextFor, firstMissing, heldText, noRightMessage, type ContextSource, type ToolContext } from './tool-context.js'
@@ -7,7 +7,7 @@ import { contextFor, firstMissing, heldText, noRightMessage, type ContextSource,
 /**
  * The gate's argument check for the built-in file server (ADR-0020 §2): the
  * SAME authorization the server runs before acting (prepared rules, then
- * `resolveWithinRoots`, then the rights at the resolved path), run one step
+ * `resolveAgentPath`, then the rights at the resolved path), run one step
  * earlier so a refusal is a `deny` decision in the journal with a rule that
  * says why. It only ever refuses; whatever it cannot parse is left to the
  * server, which refuses it in its own words. The client is told what the
@@ -38,7 +38,7 @@ async function refusalFor(ctx: ToolContext, needs: readonly PathNeed[]): Promise
   }
   const resolved: Resolved[] = []
   for (const need of needs) {
-    const outcome = await resolveWithinRoots(need.raw, ctx.roots)
+    const outcome = await resolveAgentPath(need.raw, ctx.roots)
     if (!outcome.ok) return { rule: `files: ${outcome.refusal}`, reason: outcome.message, clientMessage: outcome.message }
     resolved.push({ need, target: outcome.path })
   }

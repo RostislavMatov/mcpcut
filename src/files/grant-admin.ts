@@ -68,6 +68,8 @@ export function adminMessage(refusal: PathRefusal, raw: string, roots: readonly 
       return `${raw} has a name Windows reserves: rename it or grant its folder`
     case 'unresolvable':
       return `${raw} cannot be resolved (link loop or unreadable folder): check the path`
+    case 'dot-segment':
+      return `${raw} has a "." or ".." segment: pass the full path without them`
   }
 }
 

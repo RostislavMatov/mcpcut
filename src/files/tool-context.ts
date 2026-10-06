@@ -1,6 +1,6 @@
 import { FILE_OPS, type FileOp } from './constants.js'
 import type { IoResult } from './io-common.js'
-import { resolveWithinRoots, type ResolvedPath } from './paths.js'
+import { resolveAgentPath, type ResolvedPath } from './paths.js'
 import { opsAt, prepareRules, type FileRule, type PreparedRules } from './rights.js'
 import type { SearchBackend } from './search/search-backend.js'
 
@@ -59,7 +59,7 @@ export function fromIo<T>(result: IoResult<T>, describe: (value: T) => ToolOutpu
 /** The rules must be usable, then the path must lie within the roots. */
 export async function resolveFor(ctx: ToolContext, raw: string): Promise<Outcome<ResolvedPath>> {
   if (!ctx.prepared.ok) return { ok: false, output: errorOutput(ctx.prepared.message) }
-  const resolved = await resolveWithinRoots(raw, ctx.roots)
+  const resolved = await resolveAgentPath(raw, ctx.roots)
   return resolved.ok ? { ok: true, value: resolved.path } : { ok: false, output: errorOutput(resolved.message) }
 }
 

@@ -53,6 +53,7 @@ export type PathRefusal =
   | 'dangling-symlink'
   | 'trash'
   | 'unresolvable'
+  | 'dot-segment'
 
 export interface ResolvedPath {
   /** The root the target lies in (of nested roots, the deepest), spelled as in `absolute`. */
@@ -86,6 +87,7 @@ const REFUSAL_MESSAGES: Readonly<Record<PathRefusal, string>> = {
   'dangling-symlink': 'The path is a symbolic link to something that does not exist and was refused.',
   trash: 'The trash is not reachable through file tools; an administrator restores files from it.',
   unresolvable: 'The path could not be resolved (a link loop or a folder that cannot be read).',
+  'dot-segment': `The path has a "." or ".." segment: send the full path without them — ${LIST_ROOTS_HINT}.`,
 }
 
 interface RootInfo {
@@ -225,4 +227,19 @@ export async function resolveWithinRoots(
   const relative = relativeBelow(root.path, target.real)
   if (hasTrashSegment(relative) || touchesTrash(chain, infos)) return refuse('trash')
   return { ok: true, path: { root: root.path, absolute: target.real, relative, exists: target.exists, chain } }
+}
+
+/** A `.` or `..` segment, with either separator; names like `..notes` are names. */
+export function hasDotSegment(raw: string): boolean {
+  return raw.split(/[\\/]/).some((segment) => segment === '.' || segment === '..')
+}
+
+/**
+ * What every agent-named path goes through (the file server and the gate). The
+ * journal keeps the path as typed and its redaction may eat a tail
+ * (`/p/password=1/../x` is journaled `/p/[REDACTED]`), so a path that steps
+ * back is refused: what is journaled then names the file acted on.
+ */
+export async function resolveAgentPath(raw: string, roots: readonly string[]): Promise<PathResult> {
+  return hasDotSegment(raw) ? refuse('dot-segment') : resolveWithinRoots(raw, roots)
 }
