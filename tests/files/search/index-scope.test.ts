@@ -84,6 +84,20 @@ describe('skipReasonOfName', () => {
     '.yarnrc.yml',
     '.s3cfg',
     '.vault-token',
+    'auth.json',
+    'a/AUTH.JSON',
+    '.dockercfg',
+    'my.secrets.json',
+    'prod.secret.yml',
+    'htpasswd',
+    'conf/.htpasswd',
+    '.bash_history',
+    '.zsh_history',
+    'shell-history',
+    'hosts.yml',
+    '.terraformrc',
+    'api_keys.txt',
+    'token.txt',
   ])('%s is a secret-like name', (name) => {
     expect(skipReasonOfName(name)).toBe('secret-like name')
   })
@@ -96,7 +110,7 @@ describe('skipReasonOfName', () => {
     expect(skipReasonOfName('.git/id_rsa')).toBe('skipped folder')
   })
 
-  test.each(['environment.md', 'keys.md', 'monkey.ts', 'README.md', 'src/env.ts', 'credentials-guide.md', 'secrets-policy', 'notes/id_rsa_help.md', 'kubeconfig.md', 'service-accounts.md'])(
+  test.each(['environment.md', 'keys.md', 'monkey.ts', 'README.md', 'src/env.ts', 'credentials-guide.md', 'secrets-policy', 'notes/id_rsa_help.md', 'kubeconfig.md', 'service-accounts.md', 'auth.md', 'history.md', 'hosts.md', 'tokens-guide.md'])(
     '%s is indexed',
     (name) => {
       const reason = skipReasonOfName(name)

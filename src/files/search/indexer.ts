@@ -17,6 +17,7 @@ import {
   type EmbeddedChunk,
   type FileWrite,
 } from './index-store.js'
+import { maskSecrets } from './mask-secrets.js'
 import { readIndexable } from './read-indexable.js'
 import type { SearchDb } from './search-schema.js'
 import type { Embedder } from './types.js'
@@ -26,7 +27,7 @@ import type { Embedder } from './types.js'
  * says which files exist and what their content hash is; the rules say which
  * are in scope; this embeds what changed. Secrets are kept out twice: files
  * with secret-like names are never opened, and the text of every other file
- * passes the journal's redaction before it is chunked, embedded or stored.
+ * passes the journal's redaction and a second masking of key/value secrets before it is chunked, embedded or stored.
  */
 
 export interface IndexOptions {
@@ -80,7 +81,7 @@ function describe(error: unknown): string {
 
 async function embedChunks(text: string, relPath: string, embedder: Embedder): Promise<EmbeddedChunk[]> {
   const label = redactString(relPath)
-  const chunks = chunkText(redactString(text))
+  const chunks = chunkText(maskSecrets(redactString(text)))
   const embedded: EmbeddedChunk[] = []
   for (const chunk of chunks) {
     embedded.push({ ...chunk, embedding: await embedder.embedPassage(`${label}\n${chunk.body}`) })

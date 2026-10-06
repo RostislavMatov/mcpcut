@@ -52,6 +52,13 @@ const SECRET_EXACT: ReadonlySet<string> = new Set([
   '.yarnrc.yml',
   '.s3cfg',
   '.vault-token',
+  'auth.json',
+  '.dockercfg',
+  'htpasswd',
+  'hosts.yml',
+  '.terraformrc',
+  'api_keys.txt',
+  'token.txt',
   'application_default_credentials.json',
 ])
 const SECRET_PREFIXES: readonly string[] = ['.env.', 'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519', 'credentials.', 'secrets.']
@@ -76,12 +83,13 @@ const SECRET_SUFFIXES: readonly string[] = [
   '.gpg',
   '.asc',
   '.ppk',
+  'history',
 ]
 
 function isSecretBasename(lower: string): boolean {
   if (SECRET_EXACT.has(lower)) return true
   if (SECRET_PREFIXES.some((prefix) => lower.startsWith(prefix))) return true
-  if (lower.includes('.tfstate')) return true
+  if (lower.includes('.tfstate') || lower.includes('.secret.') || lower.includes('.secrets.')) return true
   if (SECRET_SUFFIXES.some((suffix) => lower.endsWith(suffix))) return true
   return lower.startsWith('service-account') && lower.endsWith('.json')
 }

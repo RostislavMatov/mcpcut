@@ -58,6 +58,22 @@ describePg('indexOnce', () => {
     expect(stored).toContain('deploy notes')
   })
 
+  test('key/value secrets and bare tokens in common formats reach neither the stored body nor the embedder', async () => {
+    const yaml = 'password: "S3cr3tPassw0rd!"\nexport AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\nSECRET_KEY = "dj-key-1"\nbare 0123456789abcdef0123456789abcdef01234567\nthe password field is required'
+    await fx.put({ 'conf.yml': yaml })
+    await fx.walk()
+
+    await indexOnce(fx.sdb, fx.options())
+
+    const bodies = await fx.db.query<{ body: string }>('SELECT body FROM search_chunks')
+    const stored = bodies.rows.map((row) => row.body).join('\n')
+    const embedded = fx.embedder.calls.map((call) => call.text).join('\n')
+    for (const text of [stored, embedded]) {
+      for (const secret of ['S3cr3tPassw0rd', 'wJalrXUtnFEMI', 'dj-key-1', '0123456789abcdef0123456789abcdef']) expect(text).not.toContain(secret)
+      expect(text).toContain('the password field is required')
+    }
+  })
+
   test('.env and id_rsa files are never read: skipped rows, nothing embedded', async () => {
     await fx.put({ '.env': `TOKEN=${AWS_KEY}`, 'ssh/id_rsa': PEM, 'ok.md': 'plain words' })
     await fx.walk()
