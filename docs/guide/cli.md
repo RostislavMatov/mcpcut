@@ -1,7 +1,8 @@
 # CLI reference
 
 Every command in one place. A command that changes who may do what needs a
-personal admin token in `MCP_ADMIN_TOKEN`; the comments name the role.
+personal admin token in `MCP_ADMIN_TOKEN`; the comments name the role. The
+`files` family is explained in [Giving an agent folders](files.md).
 
 ```
 mcpcut wrap [--server <name>] [--policy <path>] [--no-policy] [--fail-closed] -- <cmd> [args...]
@@ -19,6 +20,20 @@ mcpcut group create <name> | remove <name> | list | show <name>
 mcpcut group grant <group> <server> --tools a,b,prefix*|* [--resources ...|*] [--prompts ...|*]
 mcpcut group ungrant <group> <server>
 mcpcut group join <group> <agent> | leave <group> <agent>        # mutations need MCP_ADMIN_TOKEN (owner)
+mcpcut files root add <folder> | list | remove <folder>        # add/remove need MCP_ADMIN_TOKEN (owner)
+mcpcut files grant <agent> <folder> --ops read,write,edit,delete|none
+mcpcut files revoke <agent> <folder>
+mcpcut files show <agent>
+mcpcut files grant|revoke --group <group> <folder> [--ops ...] | show --group <group>
+                                                  # grant/revoke need MCP_ADMIN_TOKEN (owner); show does not
+mcpcut files audit [--path <path>] [--agent <name>] [--since <YYYY-MM-DD|Nd>] [--limit <n>] [--json]
+                                                  # read-only, no token; --limit 1..1000, default 100
+mcpcut files trash list [<root>] | restore <root> <id> | purge <root> [--older-than-days N]
+                                                  # restore/purge need MCP_ADMIN_TOKEN (owner); N 1..3650, default 30
+mcpcut files setup [--search]                     # install the Postgres client; --search adds the local search runtime and model (≈ 430 MB)
+mcpcut files db init | status | sync              # the first init needs MCP_ADMIN_TOKEN (owner); status and sync do not
+mcpcut files index on <folder> | off <folder> | list
+                                                  # on/off need MCP_ADMIN_TOKEN (owner); list does not
 mcpcut sessions
 mcpcut show <sessionId> [--method X] [--direction Y] [--kind Z] [--json]
 mcpcut policy validate [path]

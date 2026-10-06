@@ -6,6 +6,42 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Built-in file server: give an agent folders.** `mcpcut files root add
+  <folder>` declares a folder, `mcpcut files grant <agent> <folder> --ops
+  read,write,edit,delete` says what an agent may do in it, and the agent
+  reaches it through file tools (`list_directory`, `read_file`, `write_file`,
+  `edit_file`, `move_file`, `delete_file`, …) behind the same gate as every
+  other server. Rights are inherited down the tree, the most specific rule
+  wins, and `--ops none` cuts a subfolder out. Groups carry folder rules too
+  (`files grant --group`); an agent's own rules replace its groups'.
+- **A trash instead of deletes.** `delete_file` moves to `.mcpcut-trash` inside
+  the root; `mcpcut files trash list | restore | purge` manage it, and `serve`
+  purges what is older than 30 days once a day.
+- **`mcpcut files audit`** lists every file call, allowed or refused, and every
+  change of roots and rights, newest first, filtered by `--path`, `--agent` and
+  `--since`. The same data is on the new **Files** page of the admin UI, where
+  an owner can restore from the trash.
+- **Optional Postgres for the file module.** `mcpcut files setup` installs the
+  client, `files db init` prints the `docker run` command for a local
+  container, `files db sync` and `files db status` fill and show it. It gives a
+  complete, faster audit and a catalogue of the files under each root.
+- **Optional search by meaning.** `mcpcut files setup --search` installs a
+  local model (`multilingual-e5-small`, downloaded once), `files index on
+  <folder>` chooses what is indexed, and agents get `search_files`, filtered by
+  their rights. File text never leaves the machine; secret-like file names,
+  `.git`, `node_modules`, `.ssh`, `.aws` and similar folders are never indexed,
+  and secrets inside indexed text are masked. Not available on Intel Macs.
+- Guide page [Giving an agent folders](docs/guide/files.md).
+
+### Changed
+
+- `mcpcut agent grant` on a server that already holds folder rules no longer
+  drops them when it rewrites the tools.
+- `mcpcut server show` describes a built-in server and names the command that
+  gives an agent folders.
+
 ## [0.3.1] — 2026-10-05
 
 ### Security

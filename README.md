@@ -63,6 +63,11 @@ The last line signs the chain head: keep what it prints somewhere this host cann
 - **[Approvals](docs/guide/policies.md#approval-scenario)** — a risky call waits until someone approves it from the CLI, the web UI or the terminal console.
 - **[Quarantine](docs/guide/policies.md#quarantine)** — a new tool, or one whose description or schema changed after you trusted it, is held until reviewed, with a diff of what changed.
 - **[Agents and grants](docs/guide/agents.md)** — a registry of servers, a key per agent, per-tool grants, groups, and an encrypted vault, so server credentials never sit in an agent's config.
+- **[Folders for agents](docs/guide/files.md)** — built-in file tools over the folders you declare. Rights per agent or group, inherited down the tree; the most specific rule wins, and an empty one carves a subfolder out. Deletes go to a trash you can restore from, and every call is in the audit (`files audit`, and the Files page of the admin UI). Optionally a local Postgres for a complete audit, and search by meaning that runs on your machine.
+
+      mcpcut files root add ~/project
+      mcpcut files grant research-bot ~/project --ops read,write,edit
+
 - **[One address per agent](docs/guide/serve-and-pool.md)** — every server an agent is granted behind one endpoint; grant or revoke without touching the client.
 - **[Evidence](docs/guide/audit-reports.md)** — a hash chain with a signed head, and an audit report anyone can verify offline with a public key.
 - **[Admin UI](docs/guide/admin-ui.md) and [terminal console](docs/guide/console.md)** — named admins with `owner`, `operator` and `viewer` roles; every change is attributed in the journal.
@@ -97,6 +102,7 @@ The full picture, with the trust boundaries: [docs/ARCHITECTURE.md](docs/ARCHITE
 | [Wrapping a server and reading the journal](docs/guide/wrap-and-journal.md) | `wrap`, `sessions`, `show`, `.mcp.json`, fail-closed journaling, known limits |
 | [Policies, approvals and quarantine](docs/guide/policies.md) | `policy.json`, tool classes, approvals, quarantine, `tools/list` filtering |
 | [Registry, agents and the vault](docs/guide/agents.md) | servers, agent keys and grants, groups, revoking access, the vault |
+| [Giving an agent folders](docs/guide/files.md) | the built-in file server: roots, per-agent rights, trash, audit, optional Postgres and search by meaning |
 | [HTTP agents and the pool](docs/guide/serve-and-pool.md) | `serve`, one address per agent, `connect --url` |
 | [Admin UI](docs/guide/admin-ui.md) | the web console, admins and roles, its threat model |
 | [The terminal console](docs/guide/console.md) | `mcpcut` in a terminal, the remote console |

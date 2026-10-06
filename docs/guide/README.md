@@ -8,6 +8,7 @@ Start with the [Quick start](../../README.md#quick-start); come here for the det
 | [Wrapping a server and reading the journal](wrap-and-journal.md) | `wrap`, `sessions`, `show`, `.mcp.json`, fail-closed journaling, known limits |
 | [Policies, approvals and quarantine](policies.md) | `policy.json`, tool classes, approvals, quarantine, `tools/list` filtering |
 | [Registry, agents and the vault](agents.md) | servers, agent keys and grants, groups, revoking access, the vault |
+| [Giving an agent folders](files.md) | the built-in file server: roots, per-agent rights, trash, audit, optional Postgres and search by meaning |
 | [HTTP agents and the pool](serve-and-pool.md) | `serve`, one address per agent, `connect --url` |
 | [Admin UI](admin-ui.md) | the web console, admins and roles, its threat model |
 | [The terminal console](console.md) | `mcpcut` in a terminal, the remote console |
