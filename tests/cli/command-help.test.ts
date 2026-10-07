@@ -72,6 +72,13 @@ describe('commandUsage', () => {
     expect(text).toContain('approvals deny')
   })
 
+  test('files lists every subcommand, the optional ones included', () => {
+    const text = commandUsage('files') ?? ''
+    for (const needle of ['files index on <folder> | off <folder> | list', 'files setup [--search]', 'files db init|status|sync']) {
+      expect(text).toContain(needle)
+    }
+  })
+
   test('an unknown command has none', () => {
     expect(commandUsage('nope')).toBeUndefined()
   })

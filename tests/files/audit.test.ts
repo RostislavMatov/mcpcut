@@ -120,6 +120,18 @@ describe('queryFileAudit — agent calls', () => {
     expect(result.truncated).toBe(false)
   })
 
+  test('decisions that are not file tool calls (tools/list) are no file operations', async () => {
+    await write('s1', [
+      call({ agent: 'bot', tool: 'tools/list', rule: 'tools/list: ok' }),
+      call({ agent: 'bot', tool: '', rule: 'tools/list: ok' }),
+      call({ agent: 'bot', tool: 'read_file', payload: { path: `${data}/a` } }),
+    ])
+
+    const result = await audit()
+
+    expect(result.entries.map((entry) => entry.action)).toEqual(['read_file'])
+  })
+
   test('the agent filter keeps one agent; a call without an agent has a null name', async () => {
     await write('s1', [
       call({ agent: 'bot', payload: { path: `${data}/a` } }),

@@ -13,6 +13,8 @@ import type { GroupRecord, GroupsFile } from '../../src/groups/schema.js'
 import { createGroupsStore } from '../../src/groups/store.js'
 import { createJsonStore } from '../../src/policy/store.js'
 import { ACCESS_EDIT_SESSION_ID } from '../../src/journal/access-edit-record.js'
+import { createJournalSink } from '../../src/journal/sink.js'
+import type { JournalRecord } from '../../src/journal/record.js'
 import { readJournalRecords } from '../support/journal-rows.js'
 
 /** `mcpcut files …` through the dispatcher, on temp dirs only (never the real ~/.mcpcut). */
@@ -218,6 +220,38 @@ describe('files grant', () => {
     expect(result.err).toContain('mcpcut files show writer')
   })
 
+  test('the audit line names the agent and the folder with "on", not a glued slash', async () => {
+    const result = await files(['grant', 'writer', join(root, 'a'), '--ops', 'read'])
+
+    expect(result.err).toContain(`[audit] files grant by alice (owner): writer on ${join(root, 'a')}\n`)
+  })
+
+  test('an agent that never connected gets the connect step as one extra line', async () => {
+    const result = await files(['grant', 'writer', join(root, 'a'), '--ops', 'read'])
+
+    expect(result.err).toContain('Check the result: mcpcut files show writer\n')
+    expect(result.err).toContain('Connect it: mcpcut agent config writer\n')
+  })
+
+  test('an agent that already connected gets no connect step', async () => {
+    const sink = createJournalSink('s1', { dir: journalDir })
+    sink.write({
+      id: '01ARZ3NDEKTSV4RRFFQ69G0001',
+      ts: '2026-10-04T10:00:00.000Z',
+      sessionId: 's1',
+      direction: 'client→server',
+      kind: 'decision',
+      payload: {},
+      decision: { outcome: 'allow', rule: 'x', serverName: 'files', toolName: 'tools/list', toolClass: 'read', quarantineState: 'known', argsHash: 'h', agentName: 'writer' },
+    } as unknown as JournalRecord)
+    await sink.close()
+
+    const result = await files(['grant', 'writer', join(root, 'a'), '--ops', 'read'])
+
+    expect(result.err).toContain('Check the result: mcpcut files show writer\n')
+    expect(result.err).not.toContain('Connect it')
+  })
+
   test('--ops none stores a cut-out and says so', async () => {
     const result = await files(['grant', 'writer', join(root, 'a', 'secret'), '--ops', 'none'])
 
@@ -300,6 +334,23 @@ describe('files revoke', () => {
     expect((await createAgentsStore({ journalDir }).getAgent('writer'))?.grants['files']).toEqual({ tools: '*' })
     expect((await accessPayloads()).map((payload) => payload['action'])).toContain('files.revoke')
     expect(result.err).toContain('mcpcut files grant writer')
+  })
+
+  test('the audit line names the agent and the folder with "on"', async () => {
+    const result = await files(['revoke', 'writer', join(root, 'a')])
+
+    expect(result.err).toContain(`[audit] files revoke by alice (owner): writer on ${join(root, 'a')}\n`)
+  })
+
+  test('revoking a cut-out says the wider rule governs the folder, not "give a folder again"', async () => {
+    const cut = join(root, 'a', 'secret')
+    await files(['grant', 'writer', cut, '--ops', 'none'])
+
+    const result = await files(['revoke', 'writer', cut])
+
+    expect(result.code).toBe(0)
+    expect(result.err).toContain(`${cut} is no longer cut out: the wider rule governs it again. See the result: mcpcut files show writer\n`)
+    expect(result.err).not.toContain('Give a folder again')
   })
 
   test('a rule that does not exist exits 1 pointing at files show', async () => {

@@ -1,5 +1,6 @@
 import type { JournalRecord } from '../journal/record.js'
 import { FILES_SERVER_NAME } from './constants.js'
+import { TOOL_SPECS } from './tools.js'
 
 /**
  * How a journal record becomes an audit entry (ADR-0020 §5) — shared by the
@@ -37,6 +38,9 @@ export interface FileAuditEntry {
 }
 
 
+/** Only calls of these tools are file operations; `tools/list` and other protocol decisions of the server are not. */
+const FILE_TOOL_NAMES: ReadonlySet<string> = new Set(TOOL_SPECS.map((spec) => spec.name))
+
 const UNATTRIBUTED = 'unattributed'
 const UNKNOWN_VIA = 'unknown'
 
@@ -65,7 +69,7 @@ export function entryOfCall(sessionId: string, record: JournalRecord): FileAudit
   const decision = asRecord(record.decision)
   if (decision === undefined || decision['serverName'] !== FILES_SERVER_NAME) return undefined
   const action = stringOf(decision['toolName'])
-  if (action === undefined) return undefined
+  if (action === undefined || !FILE_TOOL_NAMES.has(action)) return undefined
   const payload = asRecord(record.payload) ?? {}
   return {
     ts: record.ts,

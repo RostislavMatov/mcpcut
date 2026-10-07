@@ -12,15 +12,16 @@ import {
   RuleRefusedError,
   ruleKeysOf,
 } from '../files/grant-admin.js'
+import { hasAgentConnected } from '../files/agent-seen.js'
 import { prepareRoot } from '../files/roots-admin.js'
 import { JOURNAL_DIR } from '../config.js'
 import { createRootsStore } from '../files/roots-store.js'
 import { createRegistryStore } from '../registry/store.js'
 import { formatReadableField, replaceControlChars } from '../journal/format.js'
 import type { AdminRefusalWording, RequiredAdmin } from './admin-token.js'
-import { pairTarget, recordAccessChange, requireAccessOwner, type AccessOp } from './access-cmd-write.js'
+import { recordAccessChange, requireAccessOwner, type AccessOp } from './access-cmd-write.js'
 import type { AgentCliIo } from './agent-cmd.js'
-import { formatRuleLines, grantNextStep, FILES_USAGE } from './files-cmd-format.js'
+import { formatRuleLines, grantNextStep, onTarget, FILES_USAGE } from './files-cmd-format.js'
 import { conflictMessage, filesServerState, notRegisteredMessage, registerFilesServer } from './files-cmd-registry.js'
 import type { FilesCliOptions } from './files-cmd.js'
 import { cliCommand, shellArg } from './next-step.js'
@@ -95,8 +96,9 @@ export async function record(
   op: AccessOp,
   target: string,
   info: Parameters<typeof recordAccessChange>[0]['info'],
+  opLabel?: string,
 ): Promise<number> {
-  return recordAccessChange({ io, opts, actor, subject: 'files', op, target, info })
+  return recordAccessChange({ io, opts, actor, subject: 'files', op, target, info, ...(opLabel !== undefined ? { opLabel } : {}) })
 }
 
 export async function runRootAdd(args: string[], io: AgentCliIo, opts: FilesCliOptions): Promise<number> {
@@ -180,13 +182,25 @@ export async function runGrant(args: string[], io: AgentCliIo, opts: FilesCliOpt
   io.stdout.write(`granted ${formatReadableField(agentName)} on ${formatReadableField(rule.path)}: ${rule.ops.length === 0 ? 'no access (cut out)' : rule.ops.join(', ')}\n`)
   io.stdout.write(`${agentName}'s folder rules:\n${formatRuleLines(grant.paths ?? []).join('\n')}\n`)
   io.stderr.write(`Check the result: ${cliCommand(opts.env)} files show ${shellArg(agentName)}\n`)
-  return record(io, opts, actor, 'grant', pairTarget(agentName, rule.path), {
+  if (!(await hasAgentConnected(agentName, opts.journalDir))) {
+    io.stderr.write(`Connect it: ${cliCommand(opts.env)} agent config ${shellArg(agentName)}\n`)
+  }
+  return record(io, opts, actor, 'grant', onTarget(agentName, rule.path), {
     action: 'files.grant',
     agent: agentName,
     server: FILES_SERVER_NAME,
     path: rule.path,
     grant,
   })
+}
+
+/** After a revoke: a removed cut-out says what changed; a removed grant offers to give a folder again. */
+function revokeNextStep(env: NodeJS.ProcessEnv | undefined, agentName: string, folder: string, wasCutOut: boolean): string {
+  const cli = cliCommand(env)
+  if (wasCutOut) {
+    return `${formatReadableField(folder)} is no longer cut out: the wider rule governs it again. See the result: ${cli} files show ${shellArg(agentName)}\n`
+  }
+  return `Give a folder again: ${cli} files grant ${shellArg(agentName)} ${shellArg(folder)} --ops read\n`
 }
 
 export async function runRevoke(args: string[], io: AgentCliIo, opts: FilesCliOptions): Promise<number> {
@@ -198,6 +212,7 @@ export async function runRevoke(args: string[], io: AgentCliIo, opts: FilesCliOp
   if (agent === undefined) return 1
 
   const keys = await ruleKeysOf(rawPath)
+  const wasCutOut = agent.grants[FILES_SERVER_NAME]?.paths?.some((rule) => keys.includes(rule.path) && rule.ops.length === 0) === true
   if (!dropRule(filesGrantsOf(agent.grants[FILES_SERVER_NAME]), keys).removed) {
     return fail(io, `${formatReadableField(agentName)} has no rule for ${formatReadableField(rawPath)}: see its rules with \`${cliCommand(opts.env)} files show ${shellArg(agentName)}\``)
   }
@@ -213,8 +228,8 @@ export async function runRevoke(args: string[], io: AgentCliIo, opts: FilesCliOp
   } else {
     io.stdout.write(`${agentName}'s folder rules:\n${formatRuleLines(grant.paths).join('\n')}\n`)
   }
-  io.stderr.write(`Give a folder again: ${cliCommand(opts.env)} files grant ${shellArg(agentName)} ${shellArg(keys[0] ?? rawPath)} --ops read\n`)
-  return record(io, opts, actor, 'revoke', pairTarget(agentName, keys[0] ?? rawPath), {
+  io.stderr.write(revokeNextStep(opts.env, agentName, keys[0] ?? rawPath, wasCutOut))
+  return record(io, opts, actor, 'revoke', onTarget(agentName, keys[0] ?? rawPath), {
     action: 'files.revoke',
     agent: agentName,
     server: FILES_SERVER_NAME,

@@ -72,7 +72,7 @@ describe('files grant --group', () => {
     expect((await groupOf('team'))?.grants['files']).toEqual({ tools: '*', paths: [{ path: join(root, 'a'), ops: ['read', 'write'] }] })
     expect(result.out).toContain(`${join(root, 'a')}: read, write`)
     expect(result.err).toContain('Agents in team get it: ann, bot. Check one: mcpcut files show ann')
-    expect(result.err).toContain('[audit] files grant by alice (owner)')
+    expect(result.err).toContain('[audit] files grant by alice (owner): group team on ')
     expect(result.err).toContain('team')
   })
 

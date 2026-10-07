@@ -22,7 +22,7 @@ afterEach(async () => {
 describe('readDbUrl', () => {
   test('vault not initialized is a vault-error with the vault init step', async () => {
     const result = await readDbUrl({ journalDir, cli: 'mcpcut' })
-    expect(result).toEqual({ status: 'vault-error', message: expect.stringContaining('`mcpcut vault init`') })
+    expect(result).toEqual({ status: 'vault-error', reason: 'not-initialized', message: expect.stringContaining('`mcpcut vault init`') })
   })
 
   test('no secret means off', async () => {

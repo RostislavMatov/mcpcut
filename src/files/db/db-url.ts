@@ -11,7 +11,7 @@ import { createVaultStore } from '../../vault/store.js'
 export type DbUrlState =
   | { readonly status: 'off' }
   | { readonly status: 'on'; readonly url: string }
-  | { readonly status: 'vault-error'; readonly message: string }
+  | { readonly status: 'vault-error'; readonly reason: 'not-initialized' | 'corrupt'; readonly message: string }
 
 export interface ReadDbUrlOptions {
   readonly journalDir: string
@@ -23,10 +23,10 @@ export async function readDbUrl(opts: ReadDbUrlOptions): Promise<DbUrlState> {
   const cli = opts.cli ?? 'mcpcut'
   const result = await createVaultStore({ journalDir: opts.journalDir }).readSecretValues([FILES_PG_URL_SECRET])
   if (result.status === 'not-initialized') {
-    return { status: 'vault-error', message: `the vault is not initialized: run \`${cli} vault init\`` }
+    return { status: 'vault-error', reason: 'not-initialized', message: `the vault is not initialized: run \`${cli} vault init\`` }
   }
   if (result.status === 'corrupt') {
-    return { status: 'vault-error', message: `the vault cannot be read (${result.message}): check it with \`${cli} vault list\`` }
+    return { status: 'vault-error', reason: 'corrupt', message: `the vault cannot be read (${result.message}): check it with \`${cli} vault list\`` }
   }
   const url = result.values[FILES_PG_URL_SECRET]
   return url === undefined ? { status: 'off' } : { status: 'on', url }

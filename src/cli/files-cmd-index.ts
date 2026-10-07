@@ -101,7 +101,7 @@ export async function runIndexOn(args: string[], io: AgentCliIo, opts: FilesCliO
   const label = formatReadableField(folder.path)
   io.stdout.write(`search index: on for ${label} and its subfolders\n`)
   io.stderr.write(`${await nextAfterOn(opts)}\n`)
-  return record(io, opts, actor, 'set', label, { action: 'files.index.on', path: folder.path })
+  return record(io, opts, actor, 'set', label, { action: 'files.index.on', path: folder.path }, 'index on')
 }
 
 /** The rule this folder names (canonical or as typed) and whether a wider rule would still index it. */
@@ -141,5 +141,5 @@ export async function runIndexOff(args: string[], io: AgentCliIo, opts: FilesCli
     io.stdout.write(`search index: off for ${label}\n`)
   }
   io.stderr.write(`${listStep}  (the next sync drops its files from the index)\n`)
-  return record(io, opts, actor, isCovered ? 'set' : 'remove', label, { action: 'files.index.off', path: target })
+  return record(io, opts, actor, isCovered ? 'set' : 'remove', label, { action: 'files.index.off', path: target }, 'index off')
 }

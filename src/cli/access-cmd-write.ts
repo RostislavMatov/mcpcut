@@ -160,8 +160,9 @@ export function auditLineOf(
   op: AccessOp,
   actor: AccessActor,
   target: string,
+  opLabel: string = op,
 ): string {
-  return `[audit] ${subject} ${op} by ${whoOf(actor)}: ${target}\n`
+  return `[audit] ${subject} ${opLabel} by ${whoOf(actor)}: ${target}\n`
 }
 
 /**
@@ -186,6 +187,8 @@ export interface RecordAccessChangeInput {
   readonly op: AccessOp
   /** The names the change touched, already sanitized for the terminal. */
   readonly target: string
+  /** What the audit line says instead of `op` (e.g. `index on`); the journal record is unaffected. */
+  readonly opLabel?: string
   readonly info: Omit<AccessEditInfo, 'actor'>
 }
 
@@ -198,7 +201,7 @@ export interface RecordAccessChangeInput {
  */
 export async function recordAccessChange(input: RecordAccessChangeInput): Promise<number> {
   const { io, opts, actor, subject } = input
-  io.stderr.write(auditLineOf(subject, input.op, actor, input.target))
+  io.stderr.write(auditLineOf(subject, input.op, actor, input.target, input.opLabel))
   const outcome = await journalAccessEdit({
     info: { ...input.info, actor: { adminName: actor.adminName, role: actor.role, via: 'cli' } },
     ...(opts.journalDir !== undefined ? { dir: opts.journalDir } : {}),

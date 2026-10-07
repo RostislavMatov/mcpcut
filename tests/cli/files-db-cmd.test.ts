@@ -240,6 +240,22 @@ const SEARCH_NOT_INSTALLED =
   'search runtime: not installed (run `mcpcut files setup --search`)\nsearch model: not installed (run `mcpcut files setup --search`)\n'
 
 describe('files db status', () => {
+  test('no vault yet: Postgres is off, exit 0, vault init then db init', async () => {
+    const result = await db(['status'])
+    expect(result.code).toBe(0)
+    expect(result.out).toContain('url: off\n')
+    expect(result.out).not.toContain('unknown')
+    expect(result.err).toBe('Next: mcpcut files setup, then mcpcut vault init, then mcpcut files db init\n')
+  })
+
+  test('no vault yet and the client installed: vault init then db init', async () => {
+    await mkdir(join(journalDir, 'modules', 'node_modules', 'pg'), { recursive: true })
+    await writeFile(join(journalDir, 'modules', 'node_modules', 'pg', 'package.json'), JSON.stringify({ version: PG_PACKAGE_VERSION }))
+    const result = await db(['status'])
+    expect(result.code).toBe(0)
+    expect(result.err).toBe('Next: mcpcut vault init, then mcpcut files db init\n')
+  })
+
   test('client not installed and mode off: the setup step', async () => {
     await initVaultAndOwner()
     const result = await db(['status'], { clientInstalled: false })
@@ -285,10 +301,13 @@ describe('files db status', () => {
     expect(result.out).toContain('search model: incomplete (onnx/model_quantized.onnx, tokenizer.json) (run `mcpcut files setup --search`)\n')
   })
 
-  test('an uninitialized vault is the vault init step', async () => {
+  test('a corrupt vault stays an error: exit 1 and the vault list step', async () => {
+    await initVaultAndOwner()
+    await writeFile(join(journalDir, 'vault.enc'), 'garbage')
     const result = await db(['status'])
     expect(result.code).toBe(1)
-    expect(result.err).toContain('`mcpcut vault init`')
+    expect(result.out).toContain('url: unknown\n')
+    expect(result.err).toContain('`mcpcut vault list`')
   })
 
   test('an unreachable server shows the URL without the password and the start step', async () => {

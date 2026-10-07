@@ -16,9 +16,8 @@ import { createRootsStore } from '../files/roots-store.js'
 import type { GroupRecord } from '../groups/schema.js'
 import { createGroupsStore, type GroupsStore } from '../groups/store.js'
 import { formatReadableField, replaceControlChars } from '../journal/format.js'
-import { pairTarget } from './access-cmd-write.js'
 import type { AgentCliIo } from './agent-cmd.js'
-import { FILES_USAGE, formatRuleLines } from './files-cmd-format.js'
+import { FILES_USAGE, formatRuleLines, onTarget } from './files-cmd-format.js'
 import { conflictMessage, filesServerState, notRegisteredMessage } from './files-cmd-registry.js'
 import { fail, parseOps, record, registryOf, requireOwner } from './files-cmd-write.js'
 import type { FilesCliOptions } from './files-cmd.js'
@@ -129,7 +128,7 @@ export async function runGroupGrant(args: string[], io: AgentCliIo, opts: FilesC
   io.stdout.write(`granted group ${label} on ${formatReadableField(rule.path)}: ${rule.ops.length === 0 ? 'no access (cut out)' : rule.ops.join(', ')}\n`)
   io.stdout.write(`group ${label}'s folder rules:\n${formatRuleLines(grant.paths ?? []).join('\n')}\n`)
   io.stderr.write(memberNextStep(opts.env, updated, await activeAgentNames(opts)))
-  return record(io, opts, actor, 'grant', pairTarget(groupName, rule.path), {
+  return record(io, opts, actor, 'grant', onTarget(`group ${groupName}`, rule.path), {
     action: 'files.grant',
     group: groupName,
     server: FILES_SERVER_NAME,
@@ -166,7 +165,7 @@ export async function runGroupRevoke(args: string[], io: AgentCliIo, opts: Files
     io.stdout.write(`group ${label}'s folder rules:\n${formatRuleLines(grant.paths).join('\n')}\n`)
   }
   io.stderr.write(memberNextStep(opts.env, updated, await activeAgentNames(opts)))
-  return record(io, opts, actor, 'revoke', pairTarget(groupName, keys[0] ?? rawPath), {
+  return record(io, opts, actor, 'revoke', onTarget(`group ${groupName}`, keys[0] ?? rawPath), {
     action: 'files.revoke',
     group: groupName,
     server: FILES_SERVER_NAME,

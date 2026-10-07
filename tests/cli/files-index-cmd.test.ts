@@ -89,7 +89,7 @@ describe('files index on', () => {
     expect(result.code).toBe(0)
     expect(result.out).toBe(`search index: on for ${folder} and its subfolders\n`)
     expect(result.err).toContain('Next: mcpcut files db init\n')
-    expect(result.err).toContain(`[audit] files set by alice (owner): ${folder}\n`)
+    expect(result.err).toContain(`[audit] files index on by alice (owner): ${folder}\n`)
     expect(await rulesOf()).toEqual([[folder, true]])
   })
 
@@ -151,6 +151,17 @@ describe('files index on', () => {
   })
 })
 
+describe('files usage', () => {
+  test('bare index prints the full files usage with every subcommand', async () => {
+    const result = await run(['index'])
+
+    expect(result.code).toBe(1)
+    for (const needle of ['files index on <folder> | off <folder> | list', 'files setup [--search]', 'files db init | status | sync']) {
+      expect(result.err).toContain(needle)
+    }
+  })
+})
+
 describe('files index off', () => {
   test('removes the rule of a folder that has no wider rule above it', async () => {
     await run(['index', 'on', folder], { token })
@@ -160,7 +171,7 @@ describe('files index off', () => {
     expect(result.code).toBe(0)
     expect(result.out).toBe(`search index: off for ${folder}\n`)
     expect(result.err).toContain('Next: mcpcut files index list')
-    expect(result.err).toContain(`[audit] files remove by alice (owner): ${folder}\n`)
+    expect(result.err).toContain(`[audit] files index off by alice (owner): ${folder}\n`)
     expect(await rulesOf()).toEqual([])
   })
 

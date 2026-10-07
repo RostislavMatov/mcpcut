@@ -27,6 +27,12 @@ export async function runDbStatus(io: AgentCliIo, opts: FilesCliOptions): Promis
   await writeSearchStatus(io, modulesDirOf(journalDir), cli)
 
   const state = await readDbUrl({ journalDir, cli })
+  if (state.status === 'vault-error' && state.reason === 'not-initialized') {
+    io.stdout.write('url: off\n')
+    const setup = installed === undefined ? `${cli} files setup, then ` : ''
+    io.stderr.write(`Next: ${setup}${cli} vault init, then ${cli} files db init\n`)
+    return 0
+  }
   if (state.status === 'vault-error') {
     io.stdout.write('url: unknown\n')
     io.stderr.write(`${formatReadableField(state.message)}\n`)

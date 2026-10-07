@@ -45,6 +45,11 @@ export function grantNextStep(env: NodeJS.ProcessEnv, agents: readonly AgentReco
   return `Give an agent access: ${cli} files grant <agent> ${target} --ops read   (agents: ${names})\n`
 }
 
+/** `<who> on <path>` — the target of a files audit line, both halves sanitized. */
+export function onTarget(who: string, folder: string): string {
+  return `${formatReadableField(who)} on ${formatReadableField(folder)}`
+}
+
 export const FILES_USAGE = `Usage:
   mcpcut files root add <folder> | list | remove <folder>
                                          Declare, list or drop the folders the file module works in
@@ -62,8 +67,10 @@ export const FILES_USAGE = `Usage:
   mcpcut files trash list [<root>] | restore <root> <id> | purge <root> [--older-than-days N]
                                          List what agents deleted, put an item back, or delete
                                          old ones for good (default 30 days; serve does it daily)
-  mcpcut files setup                     Install the Postgres client (optional: a faster, complete audit)
+  mcpcut files setup [--search]          Install the Postgres client (optional: a faster, complete audit);
+                                         --search adds search by meaning (downloads about 430 MB)
   mcpcut files db init | status | sync   Turn Postgres on and create its schema, show where it stands, or bring it up to date
+                                         (sync also embeds the indexed folders once search is set up)
 Changes need an owner token in MCP_ADMIN_TOKEN; list and show do not.
 `
 
