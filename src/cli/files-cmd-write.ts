@@ -181,17 +181,19 @@ export async function runGrant(args: string[], io: AgentCliIo, opts: FilesCliOpt
   const grant = agent.grants[FILES_SERVER_NAME] as AgentGrant
   io.stdout.write(`granted ${formatReadableField(agentName)} on ${formatReadableField(rule.path)}: ${rule.ops.length === 0 ? 'no access (cut out)' : rule.ops.join(', ')}\n`)
   io.stdout.write(`${agentName}'s folder rules:\n${formatRuleLines(grant.paths ?? []).join('\n')}\n`)
-  io.stderr.write(`Check the result: ${cliCommand(opts.env)} files show ${shellArg(agentName)}\n`)
-  if (!(await hasAgentConnected(agentName, opts.journalDir))) {
-    io.stderr.write(`Connect it: ${cliCommand(opts.env)} agent config ${shellArg(agentName)}\n`)
-  }
-  return record(io, opts, actor, 'grant', onTarget(agentName, rule.path), {
+  // The change is journaled first: the hint below reads the journal and must not delay or lose the record.
+  const code = await record(io, opts, actor, 'grant', onTarget(agentName, rule.path), {
     action: 'files.grant',
     agent: agentName,
     server: FILES_SERVER_NAME,
     path: rule.path,
     grant,
   })
+  io.stderr.write(`Check the result: ${cliCommand(opts.env)} files show ${shellArg(agentName)}\n`)
+  if (!(await hasAgentConnected(agentName, opts.journalDir))) {
+    io.stderr.write(`Connect it: ${cliCommand(opts.env)} agent config ${shellArg(agentName)}\n`)
+  }
+  return code
 }
 
 /** After a revoke: a removed cut-out says what changed; a removed grant offers to give a folder again. */

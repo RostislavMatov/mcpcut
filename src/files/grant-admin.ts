@@ -71,6 +71,8 @@ export function adminMessage(refusal: PathRefusal, raw: string, roots: readonly 
       return `${raw} cannot be resolved (link loop or unreadable folder): check the path`
     case 'mcpcut-settings':
       return `${raw} is inside mcpcut's own project settings: grant the folder that holds the files instead`
+    case 'secret-like-name':
+      return `${raw} has a name that looks like a secret: rename the folder`
     case 'non-canonical':
       return `${raw} is not how the disk names it: pass the path list_directory or \`ls\` shows`
     case 'dot-segment':

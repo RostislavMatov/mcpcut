@@ -103,7 +103,9 @@ describe('an agent sends the path as the disk names it', () => {
   test.skipIf(process.platform !== 'darwin')('macOS: another letter case or Unicode form of an existing name is refused', async () => {
     await writeFile(join(root, 'p', 'café.txt'), 'c')
 
-    expect((await resolveAgentPath(join(root, 'P', 'important.txt'), [root])).ok).toBe(false)
+    const upper = await resolveAgentPath(join(root, 'P', 'important.txt'), [root])
+    expect(upper.ok).toBe(false)
+    if (!upper.ok) expect(upper.message).toBe(`Send the path exactly as list_directory shows it: ${join(root, 'p', 'important.txt')}`)
     expect((await resolveAgentPath(join(root, 'p', 'café.txt'), [root])).ok).toBe(false)
     expect((await resolveAgentPath(join(root, 'p', 'café.txt'), [root])).ok).toBe(true)
   })
@@ -111,5 +113,23 @@ describe('an agent sends the path as the disk names it', () => {
   test('a file that does not exist yet is judged by the folders that do', async () => {
     expect((await resolveAgentPath(join(root, 'p', 'new.txt'), [root])).ok).toBe(true)
     expect((await resolveAgentPath(`${root}/p//new.txt`, [root])).ok).toBe(false)
+  })
+})
+
+describe('a name the journal would redact', () => {
+  test('is refused, so the audit never shows a call as [REDACTED]', async () => {
+    const token = ['sk', '-', 'abcdefghijklmnop1234'].join('')
+
+    const result = await resolveAgentPath(join(root, 'p', token, 'x.txt'), [root])
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.refusal).toBe('secret-like-name')
+    expect(result.message).toBe('The path has a name that looks like a secret (an API key or token), which the journal would hide: choose another name — call list_roots to see your folders.')
+    expect(result.message).not.toContain(token)
+  })
+
+  test('an ordinary name with "token" in it is fine', async () => {
+    expect((await resolveAgentPath(join(root, 'p', 'token-notes.md'), [root])).ok).toBe(true)
   })
 })

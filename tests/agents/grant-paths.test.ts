@@ -93,3 +93,16 @@ describe('grantsHashOf — paths', () => {
     expect(grantsHashOf(one)).not.toBe(grantsHashOf(two))
   })
 })
+
+describe('cut-outs of two groups on one path', () => {
+  test('both stay, so a stale or missing identity in one cannot hide the other', () => {
+    const folder = resolve('/data/secret')
+    const one = groupOf('one', { files: { tools: '*', paths: [{ path: folder, ops: [], identity: { dev: '1', ino: '42' } }] } })
+    const two = groupOf('two', { files: { tools: '*', paths: [{ path: folder, ops: [] }] } })
+
+    const paths = effectiveGrantsOf(agentOf(), [one, two]).grants['files']?.paths
+
+    expect(paths).toHaveLength(2)
+    expect(paths).toContainEqual({ path: folder, ops: [], identity: { dev: '1', ino: '42' } })
+  })
+})

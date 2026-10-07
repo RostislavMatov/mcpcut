@@ -40,10 +40,15 @@ export type PreparedRules =
 
 type RuleOutcome = PreparedRule | { readonly problem: RulesProblem }
 
-/** A cut-out whose folder is gone from its path or is another folder now: its content may sit elsewhere, readable. */
+/**
+ * A cut-out whose folder is gone from its path or is another folder now: its
+ * content may sit elsewhere, readable. Only the inode is compared: the device
+ * number of btrfs, LVM, overlay or external volumes can change with a reboot
+ * or remount while the folder stays the same.
+ */
 function isCutOutMoved(rule: FileRule, found: FileIdentity | null): boolean {
   if (rule.identity === undefined) return false
-  return found === null || String(found.dev) !== rule.identity.dev || String(found.ino) !== rule.identity.ino
+  return found === null || String(found.ino) !== rule.identity.ino
 }
 
 async function prepareRule(rule: FileRule): Promise<RuleOutcome> {
@@ -61,7 +66,7 @@ async function prepareRule(rule: FileRule): Promise<RuleOutcome> {
 
 function problemMessage(problem: RulesProblem, rulePath: string): string {
   if (problem === 'cut-out-moved') {
-    return `File access is closed: the cut-out folder ${rulePath} was moved, deleted or replaced. An administrator checks it and runs \`mcpcut files revoke\` or \`mcpcut files grant\` again.`
+    return `File access is closed: the cut-out folder ${rulePath} was moved, deleted or replaced. An administrator cuts it out again where it is now, \`mcpcut files grant <agent> <its new path> --ops none\`, then drops the old rule, \`mcpcut files revoke <agent> ${rulePath}\`.`
   }
   const what = problem === 'rule-changed' ? 'now resolves to a different place' : 'cannot be resolved'
   return `File access is closed: the granted folder ${rulePath} ${what}. An administrator re-grants it with \`mcpcut files grant\`.`

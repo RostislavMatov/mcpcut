@@ -70,7 +70,7 @@ describe('a cut-out remembers its folder', () => {
     expect(prepared.ok).toBe(false)
     if (prepared.ok) return
     expect(prepared.message).toBe(
-      `File access is closed: the cut-out folder ${join(root, 'p', 'secret')} was moved, deleted or replaced. An administrator checks it and runs \`mcpcut files revoke\` or \`mcpcut files grant\` again.`,
+      `File access is closed: the cut-out folder ${join(root, 'p', 'secret')} was moved, deleted or replaced. An administrator cuts it out again where it is now, \`mcpcut files grant <agent> <its new path> --ops none\`, then drops the old rule, \`mcpcut files revoke <agent> ${join(root, 'p', 'secret')}\`.`,
     )
   })
 
@@ -80,6 +80,13 @@ describe('a cut-out remembers its folder', () => {
 
     expect(ahead.identity).toBeUndefined()
     expect(await canRead([{ path: root, ops: ['read'] }, ahead, old], join(root, 'p', 'secret', 'key'))).toBe(false)
+  })
+
+  test('a device number that changed with a reboot or remount, on the same folder, does not close access', async () => {
+    const carve = await carveOutRule(join(root, 'p', 'secret'))
+    const remounted: FileRule = { ...carve, identity: { dev: '999999', ino: carve.identity?.ino ?? '' } }
+
+    expect(await canRead([{ path: root, ops: ['read'] }, remounted], join(root, 'p', 'secret', 'key'))).toBe(false)
   })
 
   test('applyRule and dropRule keep the identity of the rules they do not touch', async () => {

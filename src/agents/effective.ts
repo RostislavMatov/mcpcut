@@ -118,7 +118,9 @@ function normalizedRule(rule: PathRules[number]): PathRules[number] {
 function unionPaths(grants: readonly AgentGrant[]): PathRules | undefined {
   const declared = grants.map((grant) => grant.paths).filter((paths): paths is PathRules => paths !== undefined)
   if (declared.length === 0) return undefined
-  const keyed = new Map(declared.flat().map(normalizedRule).map((rule) => [`${rule.path}\u0000${rule.ops.join(',')}`, rule]))
+  // A cut-out's folder identity is part of the key: two groups' cut-outs on one path both stay checked.
+  const keyOf = (rule: PathRules[number]): string => `${rule.path}\u0000${rule.ops.join(',')}\u0000${rule.identity?.ino ?? ''}`
+  const keyed = new Map(declared.flat().map(normalizedRule).map((rule) => [keyOf(rule), rule]))
   return [...keyed.entries()].sort(([left], [right]) => compareAsText(left, right)).map(([, rule]) => rule)
 }
 
