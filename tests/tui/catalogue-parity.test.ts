@@ -49,11 +49,14 @@ const NOT_YET_COVERED: readonly CommandPair[] = [
   // `list` and `remove` are the parser's reading of `files root add|list|remove`;
   // `trash`, `restore` and `purge` are `files trash list|restore|purge` (ADR-0020 §4).
   // `files setup` and `files db init|status|sync` (ADR-0020 §6, §7: the optional Postgres index) are CLI-only too;
-  // the parser reads `files db init|status|sync` as the pair `files db`.
+  // the parser reads `files db init|status|sync` as the pair `files db`;
+  // `files index on|off|list` (the search index rules) reads as `files index` and `files off`.
   { command: 'files', subcommand: 'audit' },
   { command: 'files', subcommand: 'db' },
   { command: 'files', subcommand: 'grant' },
+  { command: 'files', subcommand: 'index' },
   { command: 'files', subcommand: 'list' },
+  { command: 'files', subcommand: 'off' },
   { command: 'files', subcommand: 'purge' },
   { command: 'files', subcommand: 'remove' },
   { command: 'files', subcommand: 'restore' },
