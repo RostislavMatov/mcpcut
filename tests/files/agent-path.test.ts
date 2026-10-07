@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
@@ -71,5 +71,45 @@ describe('mcpcut project settings are out of an agent\'s reach', () => {
 
   test('a name that only starts the same is a name', async () => {
     expect((await resolveAgentPath(join(root, 'p', '.mcpcut-projects', 'x'), [root])).ok).toBe(true)
+  })
+})
+
+describe('an agent sends the path as the disk names it', () => {
+  test('a doubled or trailing separator is refused with the exact form to send', async () => {
+    const plain = join(root, 'p', 'important.txt')
+
+    for (const raw of [`${root}/p//important.txt`, `${root}/p/important.txt/`]) {
+      const result = await resolveAgentPath(raw, [root])
+
+      expect(result.ok, raw).toBe(false)
+      if (result.ok) continue
+      expect(result.refusal).toBe('non-canonical')
+      expect(result.message).toBe(`Send the path exactly as list_directory shows it: ${plain}`)
+    }
+  })
+
+  test('a path through a symlink inside the root is refused without naming where it leads', async () => {
+    await symlink(join(root, 'p'), join(root, 'link'))
+
+    const result = await resolveAgentPath(join(root, 'link', 'important.txt'), [root])
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.refusal).toBe('non-canonical')
+    expect(result.message).toBe('The path reaches the file through a link or under another spelling of a name: use the names list_directory shows, folder by folder from list_roots.')
+    expect(result.message).not.toContain(join(root, 'p'))
+  })
+
+  test.skipIf(process.platform !== 'darwin')('macOS: another letter case or Unicode form of an existing name is refused', async () => {
+    await writeFile(join(root, 'p', 'café.txt'), 'c')
+
+    expect((await resolveAgentPath(join(root, 'P', 'important.txt'), [root])).ok).toBe(false)
+    expect((await resolveAgentPath(join(root, 'p', 'café.txt'), [root])).ok).toBe(false)
+    expect((await resolveAgentPath(join(root, 'p', 'café.txt'), [root])).ok).toBe(true)
+  })
+
+  test('a file that does not exist yet is judged by the folders that do', async () => {
+    expect((await resolveAgentPath(join(root, 'p', 'new.txt'), [root])).ok).toBe(true)
+    expect((await resolveAgentPath(`${root}/p//new.txt`, [root])).ok).toBe(false)
   })
 })

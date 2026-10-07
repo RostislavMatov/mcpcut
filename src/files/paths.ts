@@ -56,6 +56,7 @@ export type PathRefusal =
   | 'unresolvable'
   | 'dot-segment'
   | 'mcpcut-settings'
+  | 'non-canonical'
 
 export interface ResolvedPath {
   /** The root the target lies in (of nested roots, the deepest), spelled as in `absolute`. */
@@ -90,6 +91,8 @@ const REFUSAL_MESSAGES: Readonly<Record<PathRefusal, string>> = {
   trash: 'The trash is not reachable through file tools; an administrator restores files from it.',
   unresolvable: 'The path could not be resolved (a link loop or a folder that cannot be read).',
   'mcpcut-settings': `The path is inside ${PROJECT_POLICY_SUBDIR}, mcpcut's own project settings, which file tools never touch — ${LIST_ROOTS_HINT}.`,
+  'non-canonical':
+    'The path reaches the file through a link or under another spelling of a name: use the names list_directory shows, folder by folder from list_roots.',
   'dot-segment': `The path has a "." or ".." segment: send the full path without them — ${LIST_ROOTS_HINT}.`,
 }
 
@@ -244,8 +247,17 @@ export function hasDotSegment(raw: string): boolean {
  * back is refused: what is journaled then names the file acted on.
  */
 export async function resolveAgentPath(raw: string, roots: readonly string[]): Promise<PathResult> {
+  const syntaxRefusal = checkSyntax(raw)
+  if (syntaxRefusal !== null) return refuse(syntaxRefusal)
   if (hasDotSegment(raw)) return refuse('dot-segment')
+  const lexical = path.resolve(raw)
+  // Only the agent's own text is echoed: it says nothing about the disk.
+  if (lexical !== raw) return refuse('non-canonical', `Send the path exactly as list_directory shows it: ${lexical}`)
+  const resolved = await resolveWithinRoots(raw, roots)
+  if (!resolved.ok) return resolved
+  // The journal keeps the path as sent, and the audit finds a call by the name the disk gives it.
+  if (resolved.path.absolute !== raw) return refuse('non-canonical')
   // A policy planted there would govern the next `serve` or `wrap` started from that folder.
-  if (hasSegmentFolded(raw, PROJECT_POLICY_SUBDIR)) return refuse('mcpcut-settings')
-  return resolveWithinRoots(raw, roots)
+  if (hasSegmentFolded(resolved.path.relative, PROJECT_POLICY_SUBDIR)) return refuse('mcpcut-settings')
+  return resolved
 }
