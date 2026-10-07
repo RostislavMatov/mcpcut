@@ -159,7 +159,7 @@ describe('files audit', () => {
 
     const result = await files(['audit', '--limit', '5'])
 
-    expect(result.err).toContain('Searched only the newest sessions or file calls — narrow with --since or --agent')
+    expect(result.err).toContain('Searched only the newest part of the journal — the full history needs Postgres: mcpcut files db init')
   })
 
   test('an empty answer from a walk that stopped early says so, not "nothing matches"', async () => {
@@ -170,7 +170,7 @@ describe('files audit', () => {
 
     const result = await files(['audit', '--path', '/nowhere/at-all'])
 
-    expect(result.err).toContain('Searched only the newest sessions or file calls — narrow with --since or --agent')
+    expect(result.err).toContain('Searched only the newest part of the journal — the full history needs Postgres: mcpcut files db init')
   })
 
   test('--json prints only the object on stdout', async () => {

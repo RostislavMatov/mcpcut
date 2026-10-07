@@ -21,6 +21,11 @@ function filesCommand(args: string): string {
   return `${npxCommand()} files ${args}`
 }
 
+/** Turns on the Postgres index, which keeps the whole audit history. */
+export function dbInitCommand(): string {
+  return filesCommand('db init')
+}
+
 export function rootAddCommand(folder?: string): string {
   return filesCommand(`root add ${word(folder, FOLDER_PLACEHOLDER)}`)
 }

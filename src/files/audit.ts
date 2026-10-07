@@ -73,7 +73,7 @@ export async function auditPathQuery(raw: string): Promise<{ readonly path: stri
 export async function queryFileAudit(query: FileAuditQuery, opts: FileAuditOptions = {}): Promise<FileAuditResult> {
   const platform = opts.platform ?? process.platform
   const limit = Math.min(MAX_PAGE_LIMIT, Math.max(MIN_LIMIT, Math.floor(query.limit)))
-  const [calls, edits] = await Promise.all([readCalls(query, opts), readEdits(query, opts)])
+  const [calls, edits] = await Promise.all([readCalls(query, opts, platform), readEdits(query, opts)])
   const matcher = query.path === undefined ? undefined : pathMatcher([query.path, ...(query.pathAliases ?? [])], platform)
   const matching = [...calls.entries, ...edits.entries]
     .filter((entry) => matcher === undefined || matcher(entry))
@@ -91,12 +91,13 @@ interface Collected {
 }
 
 /**
- * The newest file calls, plus — for a path query — one walk per spelling with
- * the path as a text filter, applied before the page limit: a call on that
- * path is found however many newer calls an agent made after it. The plain
- * walk still serves whole-tree actions on a folder holding the path.
+ * The newest file calls, plus — for a path query — walks with the path as a
+ * text filter applied before the page limit, so a call is found however many
+ * newer calls or sessions an agent made after it: one per spelling for the
+ * path and what lies inside it, and one for a delete or move of a folder
+ * holding it (matched whole, so listing that folder does not count).
  */
-async function readCalls(query: FileAuditQuery, opts: FileAuditOptions): Promise<Collected> {
+async function readCalls(query: FileAuditQuery, opts: FileAuditOptions, platform: NodeJS.Platform): Promise<Collected> {
   const base = {
     kind: 'decision',
     serverName: FILES_SERVER_NAME,
@@ -106,7 +107,11 @@ async function readCalls(query: FileAuditQuery, opts: FileAuditOptions): Promise
     ...(query.since !== undefined ? { from: query.since } : {}),
   }
   const spellings = query.path === undefined ? [] : [query.path, ...(query.pathAliases ?? [])]
-  const walks = await Promise.all([base, ...spellings.map((spelling) => ({ ...base, text: journaledForm(spelling) }))].map((walk) => searchAllSessions(walk)))
+  const pathWalks = spellings.length === 0 ? [] : [
+    ...spellings.map((spelling) => ({ ...base, ...PATH_WALK_CEILINGS, text: `"${journaledForm(spelling)}` })),
+    { ...base, ...PATH_WALK_CEILINGS, toolNames: TREE_CALLS, anyText: spellings.flatMap((spelling) => ancestorsOf(spelling, platform)).map((folder) => `"${journaledForm(folder)}"`) },
+  ]
+  const walks = await Promise.all([base, ...pathWalks].map((walk) => searchAllSessions(walk)))
   const seen = new Set<string>()
   const entries = walks
     .flatMap((walk) => walk.hits)
@@ -116,6 +121,22 @@ async function readCalls(query: FileAuditQuery, opts: FileAuditOptions): Promise
     })
     .flatMap((hit) => entryOfCall(hit.sessionId, hit.record) ?? [])
   return { entries, truncated: walks.some((walk) => walk.truncated) }
+}
+
+/** The calls that act on a whole folder and everything in it. */
+const TREE_CALLS: readonly string[] = [...TREE_ACTIONS].filter((action) => !action.startsWith('files.'))
+
+/** A path walk reads further back than a page of the journal: an agent cannot push a call out of reach with a few sessions. */
+const PATH_WALK_CEILINGS = { maxFiles: 5_000, maxBytes: 512 * 1024 * 1024, timeBudgetMs: 10_000 } as const
+
+/** The folders holding `value`, closest first, up to the file system root. */
+function ancestorsOf(value: string, platform: NodeJS.Platform): readonly string[] {
+  const paths = platform === 'win32' ? path.win32 : path.posix
+  const found: string[] = []
+  for (let current = paths.dirname(value); ; current = paths.dirname(current)) {
+    found.push(current)
+    if (paths.dirname(current) === current) return found
+  }
 }
 
 /** A path as it reads inside the journal's JSON payload (backslashes escaped), for the substring filter. */

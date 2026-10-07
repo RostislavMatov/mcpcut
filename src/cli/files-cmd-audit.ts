@@ -85,7 +85,7 @@ export function formatAuditLine(entry: FileAuditEntry): string {
   return columns.filter((column) => column !== '').join(COLUMN_GAP)
 }
 
-const TRUNCATED_LINE = 'Searched only the newest sessions or file calls — narrow with --since or --agent'
+const TRUNCATED_LINE = 'Searched only the newest part of the journal — the full history needs Postgres: mcpcut files db init'
 
 /** The stderr footer: the count, why the list may be short, and the next step. */
 function footerOf(result: AuditAnswer, cli: string): string {

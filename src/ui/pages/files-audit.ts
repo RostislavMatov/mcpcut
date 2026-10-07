@@ -4,6 +4,7 @@ import { sessionHref } from './journal-parts.js'
 import { renderUntrustedPath } from '../display-name.js'
 import {
   auditCommand,
+  dbInitCommand,
   grantCommand,
   renderCommandBlock,
   rootAddCommand,
@@ -76,7 +77,7 @@ function resultNotes(audit: AuditView): Html {
     ? html`<p class="small dim">Showing the newest ${String(AUDIT_PAGE_SIZE)} — the full list:</p>${renderCommandBlock(auditCommand(audit.filters, AUDIT_FULL_LIST_LIMIT))}`
     : html``
   const truncated = result.truncated
-    ? html`<p class="small dim">Searched only the newest sessions — narrow the filters.</p>`
+    ? html`<p class="small dim">Searched only the newest part of the journal — the full history needs Postgres: <code>${dbInitCommand()}</code>.</p>`
     : html``
   return html`${more}${truncated}`
 }

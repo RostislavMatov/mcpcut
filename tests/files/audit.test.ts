@@ -409,3 +409,28 @@ describe('an agent cannot bury a call under a flood of later calls', () => {
     expect(result.entries.map((entry) => entry.action)).toEqual(['delete_file'])
   })
 })
+
+describe('whole-folder actions and many sessions do not hide a call either', () => {
+  test('a delete of a folder holding the path is found under a flood, a listing of that folder is not mistaken for one', async () => {
+    const folder = join(data, 'p', 'dir')
+    const flood = Array.from({ length: 1_100 }, () => call({ ts: '2026-10-04T11:00:00.000Z', agent: 'bot', tool: 'list_directory', payload: { path: folder } }))
+    await write('s-delete', [call({ ts: '2026-10-04T10:00:00.000Z', agent: 'bot', tool: 'delete_file', payload: { path: folder } })])
+    await write('s-flood', flood)
+
+    const result = await audit({ path: join(folder, 'report.md') })
+
+    expect(result.entries.map((entry) => [entry.action, entry.paths[0]])).toEqual([['delete_file', folder]])
+  })
+
+  test('a call is found behind sixty newer sessions', async () => {
+    const target = join(data, 'p', 'old.txt')
+    await write('s-000', [call({ ts: '2026-10-04T09:00:00.000Z', agent: 'bot', tool: 'delete_file', payload: { path: target } })])
+    for (let index = 1; index <= 60; index += 1) {
+      await write(`s-${String(index).padStart(3, '0')}`, [call({ ts: `2026-10-04T10:${String(index).padStart(2, '0')}:00.000Z`, agent: 'bot', payload: { path: `/elsewhere/${index}` } })])
+    }
+
+    const result = await audit({ path: target })
+
+    expect(result.entries.map((entry) => entry.action)).toEqual(['delete_file'])
+  })
+})

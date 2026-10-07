@@ -32,6 +32,10 @@ export interface JournalFilters {
   readonly to?: string
   /** Case-insensitive substring over payload, method and decision fields. */
   readonly text?: string
+  /** Like `text`, but any one of these substrings is enough; an empty list matches nothing. */
+  readonly anyText?: readonly string[]
+  /** Tool names of a `decision` record, any one of them. */
+  readonly toolNames?: readonly string[]
 }
 
 /** The `YYYY-MM-DD` day a record belongs to, read off its fixed-width ISO `ts`. */
@@ -89,10 +93,17 @@ export function matchesWithNeedle(
   if (filters.to !== undefined && dayOf(record) > filters.to) {
     return false
   }
-  if (textNeedle !== undefined && !searchableText(record).includes(textNeedle)) {
+  if (filters.toolNames !== undefined && !filters.toolNames.includes(record.decision?.toolName ?? '')) {
     return false
   }
-  return true
+  if (textNeedle === undefined && filters.anyText === undefined) {
+    return true
+  }
+  const text = searchableText(record)
+  if (textNeedle !== undefined && !text.includes(textNeedle)) {
+    return false
+  }
+  return filters.anyText === undefined || filters.anyText.some((needle) => text.includes(needle.toLowerCase()))
 }
 
 /**
