@@ -208,9 +208,9 @@ which group, what is in the trash with a Restore button for owners, and the
 audit with the same three filters. The page shows the commands for changing
 rights and never runs them.
 
-Without Postgres the audit walks the journal and may cover only the newest
-sessions; it then says so and how to narrow it. With Postgres it is complete
-and faster.
+Without Postgres the audit walks the journal: a `--path` query reaches back
+through thousands of sessions, and if it still stops early it says so. With
+Postgres it is complete and faster: `mcpcut files db init`.
 
 ## Optional: Postgres
 
@@ -308,9 +308,12 @@ Next: `mcpcut files db status` shows the index counts.
   root, or a link to it) is refused to agents. On such volumes one folder can
   report different identities under different spellings, so carve-outs could
   not be enforced. Choose a folder on a local disk.
-- **Paths as sent.** An agent's path with a `.` or `..` segment is refused, so
-  the journal names the file a call acted on. Paths into `.mcpcut-project`
-  (mcpcut's own project settings) are refused too.
+- **Paths as sent.** An agent sends a path exactly as the disk names it — the
+  names `list_directory` shows. A `.` or `..` segment, a doubled or trailing
+  separator, forward slashes on Windows, another letter case or Unicode form of
+  an existing name, or a path through a link is refused, so the journal always
+  names the file a call acted on. Paths into `.mcpcut-project` (mcpcut's own
+  project settings) are refused too.
 - **Windows.** Names Windows reserves (`CON`, `NUL`, `COM1`…, a stream after
   `:`, a trailing dot or space) and device paths (`\\.\`, `\\?\`) are refused.
 - **mcpcut's own data.** A root that is, lies inside or contains the data
@@ -347,6 +350,7 @@ Next: `mcpcut files db status` shows the index counts.
 | Agent: `File access is closed: the granted folder … now resolves to a different place` | check the folder, then `mcpcut files grant <agent> <folder> --ops …` again |
 | Agent: `File access is closed: the cut-out folder … was moved, deleted or replaced` | find where the folder went; `mcpcut files grant <agent> <its new path> --ops none`, then `mcpcut files revoke <agent> <old path>` |
 | Agent: `The path has a "." or ".." segment` | the agent should send the full path without them |
+| Agent: `Send the path exactly as list_directory shows it` / `The path reaches the file through a link or under another spelling` | the agent should take names from `list_roots` and `list_directory` |
 | Agent: `The file has several hard links` | the file cannot be changed through these tools; ask for a copy |
 | Agent: `Search by meaning is not available right now` | `mcpcut files setup --search`, or `mcpcut files db status` for the reason |
 | Agent: `None of the folders you can read is indexed yet` | `mcpcut files index on <folder>` |
