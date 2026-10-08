@@ -109,13 +109,15 @@ export function heldCallNotice(notice: PendingApprovalNotice): string {
 
 /**
  * The `notifications/progress` text a call held for approval sends its client
- * (decision M36): which approval it waits for and the command that releases
- * it, so the person at the client can act without opening another view. The
- * owner chose to show the command here; the -32002 error the AGENT reads at a
- * timeout still carries none (see `heldCallNotice`).
+ * (decision M36). It travels on the AGENT's channel, and an agent with a shell
+ * on the same host could run whatever it is told — before the first admin
+ * exists `approvals approve` needs no token — so, like the -32002 error the
+ * agent reads at a timeout (`heldCallNotice`), it names neither the approval
+ * nor the command that releases it (security review of M36 phase A). The
+ * person who approves finds the request in `approvals list` or the console.
  */
-export function heldCallProgressText(approvalId: string): string {
-  return `waiting for approval ${approvalId} — ${cliCommand()} approvals approve ${shellArg(approvalId)}`
+export function heldCallProgressText(): string {
+  return 'waiting for a person to approve this call'
 }
 
 export function listApprovalsHint(): string {

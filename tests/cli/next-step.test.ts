@@ -200,11 +200,14 @@ describe('the Prove and Stop steps name what comes next (0.2.3)', () => {
     expect(notice).toContain(`${NPX} approvals approve 01HELD`)
   })
 
-  test('the progress a held call sends its client names the approval and the command that releases it', () => {
-    asNpx()
-    expect(heldCallProgressText('01HELD')).toBe(`waiting for approval 01HELD — ${NPX} approvals approve 01HELD`)
-    asInstalled()
-    expect(heldCallProgressText('01HELD')).toBe('waiting for approval 01HELD — mcpcut approvals approve 01HELD')
+  test('the progress a held call sends its client never tells the agent how to approve itself', () => {
+    for (const as of [asNpx, asInstalled]) {
+      as()
+      const text = heldCallProgressText()
+      expect(text).toBe('waiting for a person to approve this call')
+      expect(text).not.toContain('mcpcut')
+      expect(text.toLowerCase()).not.toContain('approvals approve')
+    }
   })
 
   test('a tool name the agent chose cannot drive the terminal', () => {
