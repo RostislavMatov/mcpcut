@@ -15,7 +15,8 @@ import type {
   SessionContext,
 } from '../transport/http/session.js'
 import type { ServeWritable } from './serve-constants.js'
-import { heldCallProgressText } from './next-step.js'
+import type { ToolUseAnswers } from '../proxy/tool-use-answers.js'
+import { heldCallProgressText, unansweredCallsNotice } from './next-step.js'
 import { createMemoryPipe } from './serve-pipe.js'
 import { openUpstream, type OpenUpstreamDeps } from './serve-upstream.js'
 
@@ -60,6 +61,14 @@ export interface ChildSessionDeps {
   readonly revocationPollIntervalMs?: number
   /** When true, a journal write failure ends the session it belongs to. */
   readonly failClosed: boolean
+  /**
+   * The process's server answers by tool use (M36 phase C), one for every
+   * session `serve` opens: Claude Code resends a tool use on a NEW session
+   * after a 404, so a table per session would miss it.
+   */
+  readonly toolUseAnswers?: ToolUseAnswers
+  /** The teardown grace for calls already sent; the session's default when absent (tests shorten it). */
+  readonly forwardedAnswerGraceMs?: number
   /** @internal test-only seam mirroring `wrap`'s, for fail-closed tests. */
   readonly journalCommitBatchImpl?: JournalSinkOptions['commitBatchImpl']
 }
@@ -164,6 +173,10 @@ export function createChildSessionOpener(deps: ChildSessionDeps): ChildSessionOp
       // M36 phase B: the front sends a held call's progress on its own POST,
       // as an SSE stream, so the agent's client knows the call still waits.
       heldCallProgress: heldCallProgressText,
+      ...(deps.toolUseAnswers !== undefined ? { toolUseAnswers: deps.toolUseAnswers } : {}),
+      ...(deps.forwardedAnswerGraceMs !== undefined ? { forwardedAnswerGraceMs: deps.forwardedAnswerGraceMs } : {}),
+      onUnansweredCalls: (count) =>
+        report(ctx, unansweredCallsNotice(target.record.name, count, journal.sessionId).trimEnd()),
     }
   }
 

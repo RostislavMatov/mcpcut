@@ -17,6 +17,7 @@ import { isRevokedFor, startAgentWatch, type AgentWatch } from './agent-watch.js
 import {
   AGENT_REVOCATION_POLL_INTERVAL_MS,
   AGENT_REVOKED_RULE,
+  FORWARDED_ANSWER_GRACE_MS,
   SESSION_TOOL_NAME,
 } from './constants.js'
 
@@ -51,6 +52,14 @@ import {
  * final `agent-revoked` decision record is journaled, and
  * `onSessionEnd('revoked')` fires. Grant edits WITHOUT revocation are
  * picked up by the same poll and apply from the next call.
+ *
+ * Teardown grace (M36 phase C): when the agent leaves (`client-ended`, or the
+ * plane's own `closed`) while calls it sent are still running, the session
+ * stops reading the client at once but keeps reading the server for up to
+ * `FORWARDED_ANSWER_GRACE_MS` — each answer is journaled, and the gate marks
+ * it `undelivered`; nothing reaches the client. What is still unanswered then
+ * is journaled `unanswered` and counted to `onUnansweredCalls`. A server that
+ * ended, or an agent revoked, gets no grace.
  *
  * This module owns lifecycle, not transports: sources/sinks arrive
  * constructed and are disposed here on end, but process/socket lifetimes
@@ -97,6 +106,8 @@ export function createSession(deps: CreateSessionDeps): SessionHandle {
   })
   /** In-flight verdicts and sink writes, awaited before the sinks go away. */
   const pending = new Set<Promise<void>>()
+  /** The teardown grace: the server is still read (journaled, gated), the client is gone. */
+  let isDraining = false
 
   const watch: AgentWatch | null =
     deps.agent !== undefined
@@ -140,6 +151,7 @@ export function createSession(deps: CreateSessionDeps): SessionHandle {
     ...(watch !== null ? { agentScope: watch.scope } : {}),
     ...(deps.confirmInClient !== undefined ? { confirmInClient: deps.confirmInClient } : {}),
     ...(deps.heldCallProgress !== undefined ? { heldCallProgress: deps.heldCallProgress } : {}),
+    ...(deps.toolUseAnswers !== undefined ? { toolUseAnswers: deps.toolUseAnswers } : {}),
     clock,
     onError,
   })
@@ -191,7 +203,7 @@ export function createSession(deps: CreateSessionDeps): SessionHandle {
     direction: ClientServerDirection,
     sink: MessageSink,
   ): void {
-    if (endedReason !== null) return
+    if (endedReason !== null && !(isDraining && direction === 'server→client')) return
     if (isBlankMessage(message)) {
       trackPending(sink.write(message))
       return
@@ -249,10 +261,32 @@ export function createSession(deps: CreateSessionDeps): SessionHandle {
     }
   }
 
+  /**
+   * The teardown grace for calls already sent (see the module doc): the agent
+   * leaving gets it, a server that ended or an agent revoked does not.
+   * Resolves to how many calls the server left unanswered.
+   */
+  async function settleForwarded(reason: SessionEndReason): Promise<number> {
+    const isAgentGone = reason === 'client-ended' || reason === 'closed'
+    try {
+      if (!isAgentGone) return await gate.settleForwarded(0, reason)
+      isDraining = true
+      await gate.agentLeft()
+      return await gate.settleForwarded(deps.forwardedAnswerGraceMs ?? FORWARDED_ANSWER_GRACE_MS, reason)
+    } catch (error: unknown) {
+      onError(error)
+      return 0
+    } finally {
+      isDraining = false
+    }
+  }
+
   async function runEnd(reason: SessionEndReason): Promise<void> {
     watch?.stop()
-    // Stop intake first: no new message may enter the gate after the end.
+    // Stop intake first: no new request may enter the gate after the end.
+    // The server is still read through the grace, for answers already owed.
     client.source.dispose()
+    const unanswered = await settleForwarded(reason)
     server.source.dispose()
     // In-flight approval waits settle as timeouts and answer their clients
     // through client.sink — which must still be alive here.
@@ -274,8 +308,17 @@ export function createSession(deps: CreateSessionDeps): SessionHandle {
     }
     client.sink.dispose()
     server.sink.dispose()
+    if (unanswered > 0) reportUnanswered(unanswered)
     deps.onSessionEnd?.(reason)
     settleEnded(reason)
+  }
+
+  function reportUnanswered(count: number): void {
+    try {
+      deps.onUnansweredCalls?.(count)
+    } catch (error: unknown) {
+      onError(error)
+    }
   }
 
   function endSession(reason: SessionEndReason): Promise<void> {

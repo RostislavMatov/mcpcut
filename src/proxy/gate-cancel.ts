@@ -1,5 +1,6 @@
 import { cleanWithdrawReason } from '../policy/approvals/withdraw.js'
 import type { JsonRpcId } from '../protocol/classify.js'
+import type { Departure, DepartureKind } from './gate-delivery.js'
 import type { Verdict } from './pipeline.js'
 import { DROP, FORWARD, idKeyOf, isPromiseVerdict, parseCancelledReason, parseCancelledRequestId } from './gate-helpers.js'
 
@@ -21,8 +22,8 @@ import { DROP, FORWARD, idKeyOf, isPromiseVerdict, parseCancelledReason, parseCa
 export interface CancelTrackerDeps {
   /** Remembers an in-flight verdict so `cancelPending()` can wait it out. */
   readonly track: (work: Verdict | Promise<Verdict>) => Verdict | Promise<Verdict>
-  /** Hears each cancel with its cleaned reason (see `GateRouterDeps.onClientCancelled`). */
-  readonly onClientCancelled?: (idKey: string, reason: string) => void | Promise<void>
+  /** Hears each cancel (or abandonment) with its cleaned reason (see `GateRouterDeps.onClientCancelled`). */
+  readonly onClientCancelled?: (idKey: string, reason: string, kind: DepartureKind) => void | Promise<void>
   readonly onError: (error: unknown) => void
 }
 
@@ -41,11 +42,13 @@ export interface CancelTracker {
   abandon(idKey: string, reason: string): void
   /** The reason of a cancel (or abandonment) for `idKey` while that request's verdict is still in flight. */
   cancelReasonOf(idKey: string): string | undefined
+  /** The same, with whether the server was told (a cancel) or not (an abandonment) — phase C. */
+  departureOf(idKey: string): Departure | undefined
 }
 
 export function createCancelTracker(deps: CancelTrackerDeps): CancelTracker {
   const verdictsByRequestId = new Map<string, Promise<Verdict>>()
-  const cancelledInFlight = new Map<string, string>()
+  const cancelledInFlight = new Map<string, Departure>()
 
   function recordVerdict(id: JsonRpcId, verdict: Verdict | Promise<Verdict>): Verdict | Promise<Verdict> {
     if (id === null || !isPromiseVerdict(verdict)) return verdict
@@ -61,11 +64,11 @@ export function createCancelTracker(deps: CancelTrackerDeps): CancelTracker {
   }
 
   /** Notes the agent left `key` (for a call not queued yet) and tells whatever holds it. */
-  function announce(key: string, reason: string): Promise<Verdict> | undefined {
+  function announce(key: string, reason: string, kind: DepartureKind): Promise<Verdict> | undefined {
     const pending = verdictsByRequestId.get(key)
-    if (pending !== undefined) cancelledInFlight.set(key, reason)
+    if (pending !== undefined) cancelledInFlight.set(key, Object.freeze({ reason, kind }))
     try {
-      void Promise.resolve(deps.onClientCancelled?.(key, reason)).catch(deps.onError)
+      void Promise.resolve(deps.onClientCancelled?.(key, reason, kind)).catch(deps.onError)
     } catch (error: unknown) {
       deps.onError(error)
     }
@@ -75,7 +78,7 @@ export function createCancelTracker(deps: CancelTrackerDeps): CancelTracker {
   function gateCancel(raw: string): Verdict | Promise<Verdict> {
     const requestId = parseCancelledRequestId(raw)
     if (requestId === null) return FORWARD
-    const pending = announce(idKeyOf(requestId), cleanWithdrawReason(parseCancelledReason(raw)))
+    const pending = announce(idKeyOf(requestId), cleanWithdrawReason(parseCancelledReason(raw)), 'cancel')
     if (pending === undefined) return FORWARD
     return deps.track(pending.then((verdict) => (verdict.action === 'forward' ? FORWARD : DROP), () => FORWARD))
   }
@@ -83,7 +86,8 @@ export function createCancelTracker(deps: CancelTrackerDeps): CancelTracker {
   return {
     recordVerdict,
     gateCancel,
-    abandon: (idKey, reason) => void announce(idKey, reason),
-    cancelReasonOf: (idKey) => cancelledInFlight.get(idKey),
+    abandon: (idKey, reason) => void announce(idKey, reason, 'abandon'),
+    cancelReasonOf: (idKey) => cancelledInFlight.get(idKey)?.reason,
+    departureOf: (idKey) => cancelledInFlight.get(idKey),
   }
 }

@@ -161,6 +161,8 @@ function createSessionHarness(opts: HarnessOptions = {}): SessionHarness {
     },
     ...(opts.agent !== undefined ? { agent: opts.agent } : {}),
     revocationPollIntervalMs: POLL_INTERVAL_MS,
+    // The teardown grace has its own suite (`core-teardown-grace.test.ts`).
+    forwardedAnswerGraceMs: 0,
     onError: (error) => errors.push(error),
     onSessionEnd: (reason) => endReasons.push(reason),
   })

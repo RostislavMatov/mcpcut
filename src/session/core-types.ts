@@ -81,6 +81,16 @@ export interface CreateSessionDeps {
   readonly confirmInClient?: MessagePolicyGateDeps['confirmInClient']
   /** Progress text of a call held for approval (M36); see `MessagePolicyGateDeps.heldCallProgress`. */
   readonly heldCallProgress?: MessagePolicyGateDeps['heldCallProgress']
+  /** The process's answers by tool use (M36 phase C); see `MessagePolicyGateDeps.toolUseAnswers`. */
+  readonly toolUseAnswers?: MessagePolicyGateDeps['toolUseAnswers']
+  /** The teardown grace for calls already sent; `FORWARDED_ANSWER_GRACE_MS` when absent (tests shorten it). */
+  readonly forwardedAnswerGraceMs?: number
+  /**
+   * Hears, once, at the end of a session whose server left calls unanswered
+   * (journaled `unanswered`), how many — so the operator is told the server
+   * has a problem (M36 phase C). Not called when there were none.
+   */
+  readonly onUnansweredCalls?: (count: number) => void
   /** Fired exactly once, after the session has fully ended. */
   readonly onSessionEnd?: (reason: SessionEndReason) => void
 }

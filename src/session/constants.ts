@@ -19,3 +19,11 @@ export const AGENT_REVOKED_RULE = 'agent-revoked'
  * involved; the subject is the session itself).
  */
 export const SESSION_TOOL_NAME = '<session>'
+
+/**
+ * How long a session whose agent left keeps reading its server for the
+ * answers to calls already sent (decision M36, phase C: "the server finishes
+ * what it started"), before the server is let go. Ends early once nothing is
+ * owed. Injectable per session for tests.
+ */
+export const FORWARDED_ANSWER_GRACE_MS = 30_000

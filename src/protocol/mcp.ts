@@ -1,4 +1,5 @@
 import type { ClassifiedMessage, JsonRpcId } from './classify.js'
+import { callMetaOf } from './call-meta.js'
 import { META_PROTOCOL_VERSION_KEY } from './mcp-stateless.js'
 
 /**
@@ -50,6 +51,12 @@ export interface ParsedToolCall {
   readonly id: JsonRpcId
   /** `params._meta.progressToken` (a string or finite number): the gate reports on it while it holds the call (M36). */
   readonly progressToken?: string | number
+  /**
+   * `params._meta["claudecode/toolUseId"]`: the model's tool use this call
+   * carries out (`call-meta.ts`). The same id again is a resend of the same
+   * tool use, answered with the first result (M36 phase C).
+   */
+  readonly toolUseId?: string
 }
 
 /** The result of successfully parsing a `tools/list` response. */
@@ -83,17 +90,8 @@ export function parseToolCallParams(raw: string): Omit<ParsedToolCall, 'id'> | n
   }
 
   const rawArgs = params['arguments']
-  const progressToken = progressTokenOf(params['_meta'])
   const args = rawArgs === undefined ? null : rawArgs
-  return progressToken !== undefined ? { toolName: name, args, progressToken } : { toolName: name, args }
-}
-
-/** The `progressToken` of a request's `_meta`, if it is one a progress notification may name. */
-function progressTokenOf(meta: unknown): string | number | undefined {
-  if (!isPlainObject(meta)) return undefined
-  const token = meta['progressToken']
-  if (typeof token === 'string') return token
-  return typeof token === 'number' && Number.isFinite(token) ? token : undefined
+  return { toolName: name, args, ...callMetaOf(params['_meta']) }
 }
 
 /**

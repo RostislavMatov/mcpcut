@@ -56,6 +56,10 @@ export interface PolicyGate {
   cancelPending(): Promise<void>
   /** The agent stopped waiting for `id` without a cancel (see `MessagePolicyGate.abandonRequest`). */
   abandonRequest(id: JsonRpcId): void
+  /** The agent is gone, the server still runs (see `MessagePolicyGate.agentLeft`). */
+  agentLeft(): Promise<void>
+  /** See `MessagePolicyGate.settleForwarded`. */
+  settleForwarded(graceMs: number, reason: string): Promise<number>
 }
 
 /** Reattaches the line framing the message-level core deliberately omits. */
@@ -93,5 +97,7 @@ export function createPolicyGate(deps: PolicyGateDeps): PolicyGate {
     gateServerMessage: frameGateOf(core.gateServerMessage, 'server'),
     cancelPending: () => core.cancelPending(),
     abandonRequest: (id) => core.abandonRequest(id),
+    agentLeft: () => core.agentLeft(),
+    settleForwarded: (graceMs, reason) => core.settleForwarded(graceMs, reason),
   }
 }

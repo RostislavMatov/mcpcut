@@ -197,6 +197,8 @@ export interface DecisionExtras {
   readonly confirmedBy?: string
   /** Why the agent left a held call (`agent-gone`, M36): its cancel's reason, or `disconnected`. */
   readonly reason?: string
+  /** The client's tool-use id, on the records of M36 phase C (`gate-delivery.ts`). */
+  readonly toolUseId?: string
 }
 
 /**

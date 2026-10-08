@@ -7,7 +7,6 @@ import {
 } from '../policy/constants.js'
 import {
   classify,
-  type ClassifiedMessage,
   type ClassifiedNotification,
   type ClassifiedRequest,
   type JsonRpcId,
@@ -16,17 +15,16 @@ import { INITIALIZE_METHOD, TOOLS_CALL_METHOD, isToolsListRequest, parseToolCall
 import type { McpMessage } from '../transport/message.js'
 import type { ClientConfirmer } from './client-confirm.js'
 import { createCancelTracker } from './gate-cancel.js'
+import type { Departure, DepartureKind } from './gate-delivery.js'
 import { createMethodGrantRouter, type MethodFrame } from './gate-method-router.js'
+import { createServerRouter } from './gate-server-router.js'
 import type { Verdict } from './pipeline.js'
 import { methodNotGrantableError, methodNotGrantedError, type SynthesizableId } from './synthesize.js'
 import type { ToolCatalog } from './tool-catalog.js'
-import { filterToolsListResult } from './tools-filter.js'
 import {
   DROP,
-  DUPLICATE_RESPONSE_RULE,
   FORWARD,
   MALFORMED_TOOLS_CALL_RULE,
-  RESPONSE_TOOL_NAME,
   TOOLS_LIST_OVERFLOW_RULE,
   TOOLS_LIST_TOOL_NAME,
   UNPARSEABLE_CLIENT_FRAME_RULE,
@@ -37,7 +35,6 @@ import {
   idKeyOf,
   parseIdlessToolCall,
   recoverScalarId,
-  trimTrailingNewline,
   unsafeClientFrameDecision,
   type AnswerGuard,
   type DecisionWriter,
@@ -63,13 +60,6 @@ import {
  * is matched and observed; an eviction past this bound is journaled.
  */
 const MAX_TRACKED_TOOLS_LIST_IDS = 65_536
-
-/**
- * `rule` recorded when a `tools/list`-shaped response the gate never asked for
- * (an unsolicited push, or one whose id the tracker had to evict) was rewritten
- * down to the agent's grants on its way out.
- */
-const UNTRACKED_CATALOG_RULE = 'toolsList.untracked-grant-filtered'
 
 /**
  * True for a method an agent's grant matrix cannot describe. An entry ending
@@ -127,7 +117,9 @@ export interface GateRouterDeps {
    * person's confirmation must not run on a later Accept once the client gave
    * it up (ADR-0019), and a call held for an admin is withdrawn (M36).
    */
-  readonly onClientCancelled?: (idKey: string, reason: string) => void | Promise<void>
+  readonly onClientCancelled?: (idKey: string, reason: string, kind: DepartureKind) => void | Promise<void>
+  /** Hears each server response the router does not handle itself (`ServerRouterDeps.onResponse`). */
+  readonly onResponse?: (idKey: string, raw: string) => void
 }
 
 export interface GateRouter {
@@ -139,6 +131,8 @@ export interface GateRouter {
    * cancel that arrived before its call was even queued (M36).
    */
   cancelReasonOf(idKey: string): string | undefined
+  /** The same, with whether the server was told (phase C); see `CancelTracker.departureOf`. */
+  departureOf(idKey: string): Departure | undefined
   /** The agent stopped waiting for `idKey` without a cancel; see `CancelTracker.abandon`. */
   abandonRequest(idKey: string, reason: string): void
 }
@@ -312,68 +306,26 @@ export function createGateRouter(deps: GateRouterDeps): GateRouter {
     }
   }
 
-  // -- server -> client --------------------------------------------------
+  // -- server -> client (`gate-server-router.ts`) ---------------------------
 
-  /**
-   * A `tools/list`-shaped response the gate never tracked: an unsolicited
-   * server push, or one whose id the bounded tracker had to evict. `M2` simply
-   * forwarded it, which on an agent session leaks the NAMES of tools the agent
-   * was never granted (calling them is still denied — this is visibility only,
-   * and the reason it is a low-severity fix).
-   *
-   * Only the grant half of the filter runs here: policy visibility depends on
-   * quarantine state, and quarantine state comes from observing the catalog —
-   * which this path deliberately does NOT do. `observeToolsList` on an
-   * untracked response would let an unsolicited push rewrite the inventory
-   * (and so the quarantine state) of a server the client never queried.
-   * Grants need no inventory, so they can be applied safely.
-   */
-  async function filterUntrackedCatalog(msg: ClassifiedMessage): Promise<Verdict> {
-    if (isGrantedToAgent === undefined) return FORWARD
-    const filtered = filterToolsListResult(msg, () => true, isGrantedToAgent)
-    // `null` means "not a catalog shape we understand" (any other response,
-    // unparseable content): forward it exactly as before.
-    if (filtered === null || filtered.removed.length === 0) return FORWARD
-
-    writeDecision(
-      bookkeepingDecisionInfo(serverName, UNTRACKED_CATALOG_RULE, TOOLS_LIST_TOOL_NAME, filtered.removed),
-      { removed: filtered.removed },
-    )
-    await settleJournal()
-    return { action: 'emit', bytes: trimTrailingNewline(filtered.bytes) }
-  }
-
-  function gateServerMessage(message: McpMessage): Verdict | Promise<Verdict> {
-    try {
-      const msg = classify(message.bytes.toString('utf8'))
-      // A server->client message can never execute a tool, so an invalid or
-      // non-response message keeps forwarding untouched (unlike the client
-      // direction, which fails closed).
-      if (msg.kind !== 'response') return FORWARD
-
-      const key = idKeyOf(msg.id)
-      if (pendingToolsListIds.delete(key)) return catalog.handleResponse(msg)
-      const trackedList = methodRouter.takePendingList(key)
-      if (trackedList !== null) return methodRouter.filterListResponse(msg.raw, trackedList)
-      if (answerGuard.isAnswered(key)) {
-        // The client reused an id we already answered: forward it as-is, and
-        // leave a trace for whoever has to explain the duplicate later.
-        writeDecision(
-          bookkeepingDecisionInfo(serverName, DUPLICATE_RESPONSE_RULE, RESPONSE_TOOL_NAME, msg.id),
-          { rpcId: msg.id },
-        )
-      }
-      return filterUntrackedCatalog(msg)
-    } catch (error: unknown) {
-      onError(error)
-      return FORWARD
-    }
-  }
+  const gateServerMessage = createServerRouter({
+    serverName,
+    writeDecision,
+    settleJournal,
+    answerGuard,
+    catalog,
+    onError,
+    pendingToolsListIds,
+    methodRouter,
+    ...(isGrantedToAgent !== undefined ? { isGrantedToAgent } : {}),
+    ...(deps.onResponse !== undefined ? { onResponse: deps.onResponse } : {}),
+  })
 
   return {
     gateClientMessage,
     gateServerMessage,
     cancelReasonOf: cancels.cancelReasonOf,
+    departureOf: cancels.departureOf,
     abandonRequest: cancels.abandon,
   }
 }

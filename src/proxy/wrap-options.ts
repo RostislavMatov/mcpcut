@@ -76,6 +76,14 @@ export interface RunWrapOptions {
    */
   readonly sessionEndNotice?: (sessionId: string) => string
   /**
+   * The line written when the server left calls unanswered at the end of the
+   * session (M36 phase C): which server, how many, how to read them.
+   * Formatted by the CLI; absent means silence.
+   */
+  readonly unansweredNotice?: (serverName: string, count: number, sessionId: string) => string
+  /** Test seam: the teardown grace for calls already sent (M36 phase C); 30 s when absent. */
+  readonly forwardedAnswerGraceMs?: number
+  /**
    * Forces fail-closed journaling on regardless of `policy.journal.failClosed`
    * (the `--fail-closed` flag). Never forces it *off*: a policy that asks for
    * fail-closed always gets it.

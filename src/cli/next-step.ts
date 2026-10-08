@@ -179,6 +179,21 @@ export function vaultNotInitializedMessage(): string {
   return `vault is not initialized. Run "${cliCommand()} vault init" first.\n`
 }
 
+/**
+ * The operator's one line when a server left calls unanswered at the end of a
+ * session (decision M36, phase C): which server, how many, and the command
+ * that shows the `unanswered` records. The server name comes from the
+ * registry or the command line, so it is made readable before it is printed.
+ */
+export function unansweredCallsNotice(serverName: string, count: number, sessionId: string): string {
+  const calls = count === 1 ? '1 call' : `${count} calls`
+  const pronoun = count === 1 ? 'it' : 'them'
+  return (
+    `server "${formatReadableField(serverName)}" did not answer ${calls} before its session closed ` +
+    `(journaled "unanswered"); see ${pronoun}: ${cliCommand()} show ${shellArg(sessionId)} --kind decision\n`
+  )
+}
+
 /** The line `wrap` writes when the session ends: the id and the command that reads it back. */
 export function sessionJournaledNotice(sessionId: string): string {
   const id = shellArg(sessionId)

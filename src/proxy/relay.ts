@@ -62,6 +62,10 @@ export interface RelayArgs {
   readonly heldCallProgress?: (approvalId: string) => string
   /** The client channel for `confirmInClient` (ADR-0019); mode B only. */
   readonly confirmInClient?: ConfirmInClientDeps
+  /** The teardown grace for calls already sent (M36 phase C); `FORWARDED_ANSWER_GRACE_MS` when absent; mode B only. */
+  readonly forwardedAnswerGraceMs?: number
+  /** Hears how many calls the server left unanswered when the session ended (M36 phase C); mode B only. */
+  readonly onUnansweredCalls?: (count: number) => void
 }
 
 /** Wires client stdio through the child, in whichever mode this run calls for. */
@@ -94,6 +98,8 @@ function wirePipelines(args: RelayArgs, policy: Policy | PolicyProvider): RelayW
     ...(args.onApprovalPending !== undefined ? { onApprovalPending: args.onApprovalPending } : {}),
     ...(args.heldCallProgress !== undefined ? { heldCallProgress: args.heldCallProgress } : {}),
     ...(args.confirmInClient !== undefined ? { confirmInClient: args.confirmInClient } : {}),
+    ...(args.forwardedAnswerGraceMs !== undefined ? { forwardedAnswerGraceMs: args.forwardedAnswerGraceMs } : {}),
+    ...(args.onUnansweredCalls !== undefined ? { onUnansweredCalls: args.onUnansweredCalls } : {}),
   })
 }
 

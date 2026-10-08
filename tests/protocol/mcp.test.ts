@@ -26,6 +26,32 @@ describe('parseToolCall: the progressToken a held call is reported on (M36)', ()
   })
 })
 
+describe('parseToolCall: the toolUseId that names one tool use of the model (M36 phase C)', () => {
+  function callWithMeta(meta: unknown): string {
+    return JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 't', arguments: {}, _meta: meta } })
+  }
+
+  test('Claude Code\'s claudecode/toolUseId is carried beside the progress token', () => {
+    const call = parseToolCall(classify(callWithMeta({ 'claudecode/toolUseId': 'toolu_01QWvMGM8qKzbKiR7omHk34n', progressToken: 2 })))
+    expect(call?.toolUseId).toBe('toolu_01QWvMGM8qKzbKiR7omHk34n')
+    expect(call?.progressToken).toBe(2)
+  })
+
+  test('an empty, overlong, non-string or control-character id names nothing, and the key stays absent', () => {
+    const rejected = ['', 'x'.repeat(257), 7, null, { a: 1 }, 'toolu_\u0007bell', 'toolu_\nline']
+    for (const value of rejected) {
+      const call = parseToolCall(classify(callWithMeta({ 'claudecode/toolUseId': value })))
+      expect(call).not.toBeNull()
+      expect(call).not.toHaveProperty('toolUseId')
+    }
+  })
+
+  test('the longest id accepted is 256 characters', () => {
+    const id = 't'.repeat(256)
+    expect(parseToolCall(classify(callWithMeta({ 'claudecode/toolUseId': id })))?.toolUseId).toBe(id)
+  })
+})
+
 describe('parseToolCall', () => {
   test('parses a valid tools/call request', () => {
     const line =

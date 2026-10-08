@@ -4,6 +4,7 @@ import type { ParsedToolCall } from '../protocol/mcp.js'
 import type { ApprovalFlow } from './gate-approvals.js'
 import type { ConfirmStep } from './gate-confirm.js'
 import type { createDecideInputAssembler } from './gate-decide-input.js'
+import type { GateDelivery } from './gate-delivery.js'
 import {
   ALREADY_ANSWERED_RULE,
   DROP,
@@ -44,6 +45,8 @@ export interface CallDeciderDeps {
   readonly answerGuard: AnswerGuard
   readonly writeDecision: DecisionWriter
   readonly settleJournal: () => Promise<void>
+  /** A resend of the same tool use, and the tracking of what is forwarded (M36 phase C). */
+  readonly delivery: Pick<GateDelivery, 'admit' | 'track'>
 }
 
 export interface CallDecider {
@@ -128,8 +131,21 @@ export function createCallDecider(deps: CallDeciderDeps): CallDecider {
       const evaluation = evaluate(call)
       const { facts, decision } = evaluation
       if (decision.outcome === 'deny') return deps.applyDeny(call, facts, decision)
-      if (confirmStep.isRequired(facts.toolName)) return confirmThenGo(call, facts, decision.outcome === 'require-approval')
-      return go(call, evaluation, {})
+      // After the rules, before anyone is asked: a rule that now denies still
+      // wins over a kept answer, and a resend asks nobody twice (M36 phase C).
+      const admission = deps.delivery.admit(call, facts)
+      if (admission.kind === 'answered') return admission.verdict
+      let verdict: Verdict | Promise<Verdict>
+      try {
+        verdict = confirmStep.isRequired(facts.toolName)
+          ? confirmThenGo(call, facts, decision.outcome === 'require-approval')
+          : go(call, evaluation, {})
+      } catch (error: unknown) {
+        // The caller fails the call closed; the tool use must not stay claimed.
+        admission.claim?.release()
+        throw error
+      }
+      return deps.delivery.track(call, facts, admission.claim, verdict)
     },
   }
 }

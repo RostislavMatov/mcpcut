@@ -14,7 +14,7 @@ import {
   type SessionHandle,
 } from '../session/core.js'
 import { DIAGNOSTIC_PREFIX } from './connect-constants.js'
-import { heldCallProgressText } from './next-step.js'
+import { heldCallProgressText, unansweredCallsNotice } from './next-step.js'
 
 /**
  * Assembles one `connect` session's non-transport half — journal, tool
@@ -64,6 +64,8 @@ export interface StartConnectSessionArgs {
   readonly now?: () => number
   /** Revocation poll interval; defaults to the ≤5 s session constant. */
   readonly revocationPollIntervalMs?: number
+  /** The teardown grace for calls already sent (M36 phase C); the session's default when absent. */
+  readonly forwardedAnswerGraceMs?: number
   /** One complete, newline-terminated diagnostic line. Always stderr-bound. */
   readonly onDiagnostic: (line: string) => void
   /** @internal test-only seam for exercising fail-closed without an unwritable disk. */
@@ -187,6 +189,9 @@ export function startConnectSession(args: StartConnectSessionArgs): ConnectSessi
     confirmInClient: { onNotice: args.onDiagnostic },
     // M36: the same stdio client hears that a held call still waits, and for which approval.
     heldCallProgress: heldCallProgressText,
+    ...(args.forwardedAnswerGraceMs !== undefined ? { forwardedAnswerGraceMs: args.forwardedAnswerGraceMs } : {}),
+    // M36 phase C: the operator hears of a server that left calls unanswered.
+    onUnansweredCalls: (count) => args.onDiagnostic(unansweredCallsNotice(args.serverName, count, args.sessionId)),
   })
 
   failure.arm(session)

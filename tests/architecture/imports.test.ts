@@ -73,6 +73,13 @@ const SEMANTIC_ALLOWLIST: ReadonlySet<string> = new Set([
   // `gate-approvals.ts`: both read the approvals policy, so both are semantic.
   'src/proxy/gate-cancel.ts',
   'src/proxy/approval-hold.ts',
+  // M36 phase C: what becomes of a forwarded call's answer (it parses the call
+  // and names the approvals' withdraw reason), the server -> client half of
+  // the router and the fail-closed guard, both extracted from the gate for the
+  // line budget: all three are the gate's semantics.
+  'src/proxy/gate-delivery.ts',
+  'src/proxy/gate-server-router.ts',
+  'src/proxy/gate-guard.ts',
   'src/proxy/journal-failure.ts',
   'src/protocol/classify.ts',
   'src/protocol/mcp.ts',

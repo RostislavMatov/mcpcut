@@ -40,6 +40,7 @@ import { createPoolWiring } from './serve-pool-wiring.js'
 import { createServeSessionFactory } from './serve-runtime.js'
 import { waitForShutdown, type ServeRuntime } from './serve-shutdown.js'
 import { AGENT_REVOCATION_POLL_INTERVAL_MS } from '../session/constants.js'
+import { createToolUseAnswers } from '../proxy/tool-use-answers.js'
 import { MAX_POOL_RESIDENTS } from '../pool/constants.js'
 
 /**
@@ -225,6 +226,9 @@ function buildFront(
       : {}),
     // Wiring-time configuration: read once, does not hot-reload.
     failClosed: policy.current().journal.failClosed,
+    // M36 phase C: one table of answers by tool use for every session of this process.
+    toolUseAnswers: createToolUseAnswers(),
+    ...(opts.forwardedAnswerGraceMs !== undefined ? { forwardedAnswerGraceMs: opts.forwardedAnswerGraceMs } : {}),
     ...(opts.journalCommitBatchImpl !== undefined
       ? { journalCommitBatchImpl: opts.journalCommitBatchImpl }
       : {}),

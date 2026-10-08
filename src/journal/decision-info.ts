@@ -23,6 +23,23 @@ export type PolicyOutcome =
    * withdrawn and nothing was sent. `reason` says which.
    */
   | 'agent-gone'
+  /**
+   * Decision M36, phase C: the server answered a call the agent had stopped
+   * waiting for (a cancel, a dropped connection, the session ending). `reason`
+   * says why the agent left; `rule` whether the answer was kept for a resend
+   * of the same tool use.
+   */
+  | 'undelivered'
+  /**
+   * Phase C: a resend of the same tool use (same `toolUseId`) got the server's
+   * first answer, under its own id; nothing was sent to the server again.
+   */
+  | 'replayed'
+  /**
+   * Phase C: a forwarded call the server had not answered when the session
+   * ended (after the teardown grace). `reason` says why it ended.
+   */
+  | 'unanswered'
 
 /** Risk class a tool was resolved to at decision time. */
 export type ToolClass = 'read' | 'write' | 'destructive'
@@ -88,9 +105,19 @@ export interface DecisionInfo {
    * Why the agent left, on an `agent-gone` record (M36): the `params.reason`
    * of its `notifications/cancelled` (`AbortError: user-cancel`,
    * `SdkError: Request timed out`, …, cleaned and length-capped), or
-   * `disconnected` when the connection ended. Absent on every other record.
+   * `disconnected` when the connection ended. Phase C puts the same reason on
+   * `undelivered` and `unanswered` records (an `unanswered` call whose agent
+   * had not left carries why its session ended instead). Absent on every
+   * other record.
    */
   readonly reason?: string
+  /**
+   * The client's id of the model's tool use (`_meta["claudecode/toolUseId"]`)
+   * on the records of decision M36's phase C — `undelivered`, `replayed`,
+   * `unanswered`, and the refusal of a resend while its first call is still
+   * open — so a resend can be matched to the call it repeats. Absent elsewhere.
+   */
+  readonly toolUseId?: string
   /**
    * Fingerprint of the *effective* policy this call was decided under
    * (`policy/provenance.ts`). Required: every decision record carries it, so

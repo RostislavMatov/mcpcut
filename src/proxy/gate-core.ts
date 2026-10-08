@@ -10,6 +10,9 @@ import type { SynthesizableId } from './synthesize.js'
 import { DEFAULT_HOLD_SCHEDULER } from './approval-hold.js'
 import { createApprovalFlow } from './gate-approvals.js'
 import { createClientConfirmer } from './client-confirm.js'
+import { createGateDelivery } from './gate-delivery.js'
+import { createGateGuard } from './gate-guard.js'
+import { createToolUseAnswers } from './tool-use-answers.js'
 import { createConfirmStep } from './gate-confirm.js'
 import { createCallDecider } from './gate-call.js'
 import { createDecideInputAssembler } from './gate-decide-input.js'
@@ -151,7 +154,6 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
 
   /** Exactly-one-outcome guard: LRU of answered ids plus a non-evicting in-flight burn set (M8). */
   const answerGuard = createAnswerGuard(MAX_TRACKED_REQUEST_IDS)
-  const outstanding = new Set<Promise<Verdict>>()
 
   /** Resolves once decision records are durable — but only when fail-closed. */
   function settleJournal(): Promise<void> {
@@ -269,20 +271,22 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     ...(deps.onApprovalPending !== undefined ? { onApprovalPending: deps.onApprovalPending } : {}),
   })
 
-  /** Fail-closed handling of a gate-internal error on a `tools/call`. */
-  async function denyOnGateError(call: ParsedToolCall): Promise<Verdict> {
-    try {
-      // Worst-case class, no args fingerprint: nothing was resolved.
-      const toolName = call.toolName
-      const facts: CallFacts = { serverName, toolName, toolClass: 'destructive', quarantineState: 'unknown', argsHash: '' }
-      writeDecision(decisionInfoOf(facts, 'deny', GATE_ERROR_RULE))
-      await settleJournal()
-      await answerLocally(call.id, (id) => denialBytesFor(id, { toolName, serverName, rule: GATE_ERROR_RULE }))
-    } catch (error: unknown) {
-      onError(error)
-    }
-    return DROP
-  }
+  const { guarded, track, awaitOutstanding } = createGateGuard({
+    serverName, writeDecision, settleJournal, answerLocally, onError,
+  })
+
+  // M36 phase C: resends of the same tool use, and what becomes of the
+  // answers to forwarded calls. The answers table is the process's when the
+  // caller shares one (`serve`: a 404 resend arrives on a new session).
+  const delivery = createGateDelivery({
+    scope: agentScope?.agentName ?? '',
+    answers: deps.toolUseAnswers ?? createToolUseAnswers({ clock }),
+    clock,
+    writeDecision,
+    settleJournal,
+    answerLocally,
+    departureOf: (idKey) => router.departureOf(idKey),
+  })
 
   const { decideToolCall } = createCallDecider({
     policy,
@@ -297,6 +301,7 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     answerGuard,
     writeDecision,
     settleJournal,
+    delivery,
   })
 
   /**
@@ -313,41 +318,14 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     return decideToolCall(call)
   }
 
-  /**
-   * Runs one tool call's decision path so that neither a synchronous throw
-   * nor a rejected promise can escape: both fail closed (deny + drop). The
-   * synchronous shape is preserved when `produce` answers synchronously, so
-   * an allowed call is not reordered merely for having been guarded.
-   */
-  function guarded(call: ParsedToolCall, produce: () => Verdict | Promise<Verdict>): Verdict | Promise<Verdict> {
-    const failClose = (error: unknown): Promise<Verdict> => {
-      onError(error)
-      return denyOnGateError(call)
-    }
-
-    let outcome: Verdict | Promise<Verdict>
-    try {
-      outcome = produce()
-    } catch (error: unknown) {
-      return failClose(error)
-    }
-    return isPromiseVerdict(outcome) ? outcome.catch(failClose) : outcome
-  }
-
-  /** Remembers an in-flight verdict so `cancelPending()` can wait it out. */
-  function track(work: Verdict | Promise<Verdict>): Verdict | Promise<Verdict> {
-    if (!isPromiseVerdict(work)) return work
-    outstanding.add(work)
-    void work.finally(() => outstanding.delete(work))
-    return work
-  }
-
   const router = createGateRouter({
     ...(confirmer !== undefined ? { clientConfirmer: confirmer } : {}),
-    onClientCancelled: (idKey, reason) => {
+    onClientCancelled: (idKey, reason, kind) => {
       confirmStep.cancelByClient(idKey)
+      delivery.departed(idKey, { reason, kind })
       return approvalFlow.withdrawByClient(idKey, reason)
     },
+    onResponse: (idKey, raw) => delivery.observeAnswer(idKey, raw),
     serverName,
     writeDecision,
     settleJournal,
@@ -370,7 +348,15 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     ...(agentScope?.methodGrants !== undefined ? { methodGrants: agentScope.methodGrants } : {}),
   })
 
+  /** The agent is gone: nothing held may go out any more, and what was sent is owed to nobody. */
+  async function agentLeft(): Promise<void> {
+    delivery.agentLeft()
+    confirmStep.withdrawAll()
+    await approvalFlow.withdrawAll()
+  }
+
   async function cancelPending(): Promise<void> {
+    delivery.agentLeft()
     confirmStep.withdrawAll()
     // M36 (replacing H6's mark-expired): the agent is gone, so every held
     // call is withdrawn as `disconnected` — a resolution landing after
@@ -378,13 +364,15 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     // the withdrawal could not reach settles as a timeout below.
     await approvalFlow.withdrawAll()
     approvalWaiter.cancelAll()
-    await Promise.allSettled(Array.from(outstanding))
+    await awaitOutstanding()
   }
 
   return {
     gateClientMessage: router.gateClientMessage,
     gateServerMessage: router.gateServerMessage,
     cancelPending,
+    agentLeft,
+    settleForwarded: (graceMs, reason) => delivery.settle(graceMs, reason),
     abandonRequest: (id) => {
       if (id !== null) router.abandonRequest(idKeyOf(id), WITHDRAW_REASON_DISCONNECTED)
     },

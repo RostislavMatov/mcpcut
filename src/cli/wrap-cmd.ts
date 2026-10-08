@@ -8,7 +8,7 @@ import { autoServerName } from '../proxy/wire-policy.js'
 import { SpawnServerError } from '../proxy/spawn.js'
 import { runWrap, type RunWrapOptions } from '../proxy/wrap.js'
 import { preflightDatabases } from '../store/preflight.js'
-import { heldCallNotice, heldCallProgressText, noPolicyNotice, sessionJournaledNotice, spawnFailureHint, wrapExampleLine } from './next-step.js'
+import { heldCallNotice, heldCallProgressText, noPolicyNotice, sessionJournaledNotice, spawnFailureHint, unansweredCallsNotice, wrapExampleLine } from './next-step.js'
 import { formatPolicyLoadErrors } from './policy-load-errors.js'
 import { createReloadingPolicy } from './policy-reload.js'
 
@@ -112,6 +112,8 @@ export async function runWrapCommand(
       // M36: the client hears, while the call is held, which approval it waits for.
       heldCallProgress: heldCallProgressText,
       sessionEndNotice: sessionJournaledNotice,
+      // M36 phase C: a server that left calls unanswered is named, with how to read them.
+      unansweredNotice: unansweredCallsNotice,
       ...opts.runWrap,
       ...(flags.server !== undefined ? { serverName: flags.server } : {}),
       ...(flags.failClosed ? { failClosed: true } : {}),

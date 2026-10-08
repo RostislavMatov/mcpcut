@@ -17,6 +17,7 @@ import {
   shellArg,
   showSessionHint,
   spawnFailureHint,
+  unansweredCallsNotice,
   unknownSessionMessage,
   verifyReportHint,
 } from '../../src/cli/next-step.js'
@@ -279,5 +280,21 @@ describe('spawnFailureHint: the wrapped server could not be started', () => {
 
   test('a failure that is not about finding the command adds nothing', () => {
     expect(spawnFailureHint({ command: 'npx', args: [], code: 'EACCES' }, 'linux')).toBe('')
+  })
+})
+
+describe('a server that left calls unanswered is named, with the command that shows them (M36 phase C)', () => {
+  test('one call: singular, the server, the session and the command to read it', () => {
+    asNpx()
+    expect(unansweredCallsNotice('fs', 1, '01KSESSION')).toBe(
+      `server "fs" did not answer 1 call before its session closed (journaled "unanswered"); ` +
+        `see it: ${NPX} show 01KSESSION --kind decision\n`,
+    )
+  })
+
+  test('several calls: plural, and a hostile server name cannot reach the terminal raw', () => {
+    const text = unansweredCallsNotice('evil\u001b[2Jname', 3, '01KSESSION')
+    expect(text).toContain('did not answer 3 calls')
+    expect(text).not.toContain('\u001b')
   })
 })

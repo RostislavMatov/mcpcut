@@ -15,6 +15,7 @@ import { startPipeline, type GateFn } from './pipeline.js'
 import type { ServerHandle } from './spawn.js'
 import { splice, type SpliceErrorOrigin } from './splice.js'
 import { createOrderedWriter } from './writer.js'
+import { FORWARDED_ANSWER_GRACE_MS } from '../session/constants.js'
 
 /**
  * Mode B wiring: the relay used when a policy is active.
@@ -114,6 +115,10 @@ export interface PolicyRelayArgs {
   readonly heldCallProgress?: (approvalId: string) => string
   /** The client channel for `confirmInClient` (ADR-0019); stdio `wrap` always has one. */
   readonly confirmInClient?: ConfirmInClientDeps
+  /** The teardown grace for calls already sent (M36 phase C); `FORWARDED_ANSWER_GRACE_MS` when absent; mode B only. */
+  readonly forwardedAnswerGraceMs?: number
+  /** Hears how many calls the server left unanswered when the session ended (M36 phase C); mode B only. */
+  readonly onUnansweredCalls?: (count: number) => void
 }
 
 /** Where the policy layer's on-disk state lives for one run. */
@@ -201,13 +206,35 @@ export function wirePolicyRelay(args: PolicyRelayArgs): RelayWiring {
     }
   }
 
+  /** Hears the count once, from whichever of the two endings below found calls unanswered. */
+  function reportUnanswered(count: number): void {
+    if (count > 0) args.onUnansweredCalls?.(count)
+  }
+
+  /**
+   * The client is gone (M36 phase C): held calls are withdrawn at once, but
+   * the server keeps its stdin — and the answers it still owes are read and
+   * journaled `undelivered` — until it has answered every call already sent
+   * or the grace runs out. Only then does it see the end of its input.
+   */
+  async function endServerStdinAfterGrace(): Promise<void> {
+    try {
+      await gate.agentLeft()
+      const graceMs = args.forwardedAnswerGraceMs ?? FORWARDED_ANSWER_GRACE_MS
+      reportUnanswered(await gate.settleForwarded(graceMs, 'client-ended'))
+    } catch (error: unknown) {
+      onInternalError(error)
+    }
+    endServerStdin()
+  }
+
   const toServer = startPipeline(
     args.clientStdin,
     serverWriter,
     tappedGate(gate.gateClientMessage, 'client→server', args.tapLine),
     {
       onError: (error) => args.reportError('client→server', error, 'source'),
-      onEnd: endServerStdin,
+      onEnd: () => void endServerStdinAfterGrace(),
     },
   )
 
@@ -245,6 +272,10 @@ export function wirePolicyRelay(args: PolicyRelayArgs): RelayWiring {
       Promise.all([toClient.done, stderrRelay.relayed]).then(() => undefined),
       disposed,
     ]),
-    cancelPending: () => gate.cancelPending(),
+    cancelPending: async () => {
+      // The server is gone: whatever it still owed will never come.
+      reportUnanswered(await gate.settleForwarded(0, 'server-ended'))
+      await gate.cancelPending()
+    },
   }
 }
