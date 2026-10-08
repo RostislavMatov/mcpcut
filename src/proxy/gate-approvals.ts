@@ -114,6 +114,8 @@ export interface ApprovalFlowDeps {
   readonly onError: (error: unknown) => void
   /** Hears of each call queued for a human, once, before its wait starts. */
   readonly onApprovalPending?: (notice: PendingApprovalNotice) => void
+  /** See `MessagePolicyGateDeps.onRequestDropped`. */
+  readonly onRequestDropped?: (id: JsonRpcId) => void
 }
 
 export interface ApprovalFlow {
@@ -164,10 +166,10 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
   })
   const syncHeartbeat = (): void => heartbeat.update(Array.from(held, (entry) => entry.approvalId))
 
-  /** An announcement is a courtesy to the operator: its failure never decides the call. */
-  function announcePending(notice: PendingApprovalNotice): void {
+  /** An announcement is a courtesy to a listener: its failure never decides the call. */
+  function announce(listen: () => void): void {
     try {
-      deps.onApprovalPending?.(notice)
+      listen()
     } catch (error: unknown) {
       deps.onError(error)
     }
@@ -227,12 +229,13 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
       captured,
     )
     await settleJournal()
-    announcePending({
+    const notice: PendingApprovalNotice = {
       approvalId,
       toolName: facts.toolName,
       serverName,
       ...(waitCapMs !== undefined ? { waitMs: waitCapMs } : {}),
-    })
+    }
+    announce(() => deps.onApprovalPending?.(notice))
     return approvalId
   }
 
@@ -331,6 +334,8 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
     writeDecision(decisionInfoOf(ctx.facts, 'agent-gone', ctx.rule, extras), ctx.call.args, ctx.captured)
     await settleJournal()
     answerGuard.markAnswered(ctx.held.idKey)
+    // No answer will ever come for this id: a correlator may forget it (S-L1).
+    announce(() => deps.onRequestDropped?.(ctx.call.id))
     return DROP
   }
 

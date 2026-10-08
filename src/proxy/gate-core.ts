@@ -269,6 +269,7 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     answerGuard,
     onError,
     ...(deps.onApprovalPending !== undefined ? { onApprovalPending: deps.onApprovalPending } : {}),
+    ...(deps.onRequestDropped !== undefined ? { onRequestDropped: deps.onRequestDropped } : {}),
   })
 
   const { guarded, track, awaitOutstanding } = createGateGuard({

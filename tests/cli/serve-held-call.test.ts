@@ -162,6 +162,42 @@ describe('a call held for approval over HTTP streams until the admin decides', (
     expect(after.status).toBe(200)
   })
 
+  test('pool: a held call its agent left no longer counts as in flight when the pool closes (S-L1)', async () => {
+    const fixture = await startHeldServe()
+    const session = await openSession(fixture, POOL_ROUTE_PATH, `${SERVER}__${TOOL}`)
+    const controller = new AbortController()
+    const abandoned = await fetch(`${fixture.baseUrl}${POOL_ROUTE_PATH}`, {
+      method: 'POST',
+      body: heldCall(6, `${SERVER}__${TOOL}`),
+      signal: controller.signal,
+      headers: { authorization: `Bearer ${fixture.token}`, 'content-type': 'application/json', 'mcp-session-id': session, ...ACCEPT_BOTH },
+    })
+    await eventReader(abandoned).next()
+    await onlyPending(fixture)
+    controller.abort()
+    await waitUntil(async () =>
+      (await fixture.journalRecords()).some((record) => record.kind === 'decision' && record.decision?.outcome === 'agent-gone'),
+    )
+
+    // The agent ends its pool session. Before S-L1 the withdrawn call was
+    // still an entry of the pool's correlator — no answer ever came for it —
+    // so the child left DIRTY, as if a call were still running there.
+    const closed = await fetch(`${fixture.baseUrl}${POOL_ROUTE_PATH}`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${fixture.token}`, 'mcp-session-id': session },
+    })
+    expect(closed.status).toBeLessThan(300)
+
+    await waitUntil(async () =>
+      (await fixture.journalRecords()).some((record) => record.kind === 'pool' && (record.payload as Record<string, unknown>)['event'] === 'close'),
+    )
+    const departures = (await fixture.journalRecords())
+      .filter((record) => record.kind === 'pool')
+      .map((record) => record.payload as Record<string, unknown>)
+      .filter((payload) => payload['event'] === 'detach')
+    expect(departures.filter((detach) => detach['reason'] === 'in-flight-at-close')).toEqual([])
+  })
+
   test('per-server address: closing the POST ends the session and withdraws the held call', async () => {
     const fixture = await startHeldServe()
     const path = `/agents/${AGENT}/servers/${SERVER}`

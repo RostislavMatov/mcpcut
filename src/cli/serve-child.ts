@@ -1,4 +1,5 @@
 import type { AgentRecord } from '../agents/schema.js'
+import type { JsonRpcId } from '../protocol/classify.js'
 import { createRecordBuilder } from '../journal/record.js'
 import { createJournalSink, type JournalSink, type JournalSinkOptions } from '../journal/sink.js'
 import { createApprovalQueue } from '../policy/approvals/queue.js'
@@ -88,6 +89,12 @@ export interface OpenedChildSession extends OpenedSession {
    * listening on that end reads the reason in the same synchronous chain.
    */
   readonly endReason: () => SessionEndReason | null
+  /**
+   * Registers the ONE listener that hears each request id this session's gate
+   * settled without forwarding or answering (a held call whose agent left):
+   * the pool forgets it in its correlator (S-L1). A later call replaces it.
+   */
+  readonly onRequestDropped: (listener: (id: JsonRpcId) => void) => void
 }
 
 export type ChildSessionOpener = (
@@ -210,6 +217,7 @@ export function createChildSessionOpener(deps: ChildSessionDeps): ChildSessionOp
     }
 
     const pipe = createMemoryPipe()
+    let droppedListener: ((id: JsonRpcId) => void) | null = null
     let closePromise: Promise<void> | null = null
     const closeAll = (): Promise<void> => {
       closePromise ??= (async () => {
@@ -225,6 +233,7 @@ export function createChildSessionOpener(deps: ChildSessionDeps): ChildSessionOp
         ...sessionDepsOf(ctx, target, journal),
         client: { source: pipe.session.source, sink: pipe.session.sink },
         server: { source: opened.upstream.source, sink: opened.upstream.sink },
+        onRequestDropped: (id) => droppedListener?.(id),
         onSessionEnd: (reason) => {
           // The session died on its own terms (revocation, upstream end):
           // tell whoever is driving it, whose teardown then calls `close()` —
@@ -249,6 +258,9 @@ export function createChildSessionOpener(deps: ChildSessionDeps): ChildSessionOp
       sink: pipe.front.sink,
       source: pipe.front.source,
       abandon: (requestBytes) => handle?.abandonRequest(requestBytes),
+      onRequestDropped: (listener) => {
+        droppedListener = listener
+      },
       close: closeAll,
       endReason: () => endedWith,
     }

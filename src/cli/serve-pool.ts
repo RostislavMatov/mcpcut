@@ -297,6 +297,12 @@ export function createPoolSessionFactory(deps: PoolSessionDeps): OpenSession {
         }
       },
       onChildMessage: (server, message) => mux.handleChildFrame(server, message),
+      // A held call its agent left will never be answered: without this its
+      // entry stayed until the pool session ended, holding the id and marking
+      // the child dirty on release (S-L1).
+      onChildRequestDropped: (server, id) => {
+        correlator.forgetClient(server, id)
+      },
     })
     const catalog = createPoolCatalog({ fanout, children, maxPages: MAX_POOL_LIST_PAGES })
     const watch = createPoolWatch({

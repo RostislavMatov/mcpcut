@@ -152,6 +152,7 @@ async function openOwnChild(
       sessionId: opened.sessionId,
       sink: opened.sink,
       ...(opened.abandon !== undefined ? { abandon: opened.abandon } : {}),
+      onRequestDropped: opened.onRequestDropped,
       close: () => {
         closed ??= (async () => {
           input.onChildCountChange(-1)

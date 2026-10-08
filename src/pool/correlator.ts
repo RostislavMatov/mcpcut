@@ -65,6 +65,14 @@ export interface PoolCorrelator {
   hasPending(server: string): boolean
   /** Forgets everything in flight for `server`; returns the CLIENT ids now needing an error. */
   dropServer(server: string): readonly SynthesizableId[]
+  /**
+   * Forgets the agent's request `id` at `server` because no answer will ever
+   * come for it: the child's gate withdrew a call held for approval when its
+   * agent left (decision M36; review finding S-L1). Only `server`'s own CLIENT
+   * entry goes — never another server's, never the plane's own request — so
+   * a child can free nothing but what it holds. True if one was forgotten.
+   */
+  forgetClient(server: string, id: SynthesizableId): boolean
   readonly pending: number
 }
 
@@ -191,6 +199,14 @@ export function createPoolCorrelator(maxPending: number): PoolCorrelator {
         if (entry.origin === 'client') orphaned.push(entry.id)
       }
       return orphaned
+    },
+
+    forgetClient(server: string, id: SynthesizableId): boolean {
+      const key = idKeyOf(id)
+      const entry = pending.get(key)
+      if (entry === undefined || entry.origin !== 'client' || entry.server !== server) return false
+      forget(key, entry)
+      return true
     },
 
     get pending(): number {

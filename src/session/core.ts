@@ -152,6 +152,7 @@ export function createSession(deps: CreateSessionDeps): SessionHandle {
     ...(deps.confirmInClient !== undefined ? { confirmInClient: deps.confirmInClient } : {}),
     ...(deps.heldCallProgress !== undefined ? { heldCallProgress: deps.heldCallProgress } : {}),
     ...(deps.toolUseAnswers !== undefined ? { toolUseAnswers: deps.toolUseAnswers } : {}),
+    ...(deps.onRequestDropped !== undefined ? { onRequestDropped: deps.onRequestDropped } : {}),
     clock,
     onError,
   })

@@ -91,7 +91,14 @@ interface Harness {
   readonly written: Buffer[]
 }
 
-function createHarness(opts: { policy?: Policy; answers?: ToolUseAnswers; sessionSink?: JournalSink } = {}): Harness {
+interface HarnessOptions {
+  readonly policy?: Policy
+  readonly answers?: ToolUseAnswers
+  readonly sessionSink?: JournalSink
+  readonly onRequestDropped?: (id: unknown) => void
+}
+
+function createHarness(opts: HarnessOptions = {}): Harness {
   const written: Buffer[] = []
   const gate = createPolicyGate({
     policy: opts.policy ?? policyOf(),
@@ -109,6 +116,7 @@ function createHarness(opts: { policy?: Policy; answers?: ToolUseAnswers; sessio
       dispose: () => undefined,
     },
     ...(opts.answers !== undefined ? { toolUseAnswers: opts.answers } : {}),
+    ...(opts.onRequestDropped !== undefined ? { onRequestDropped: opts.onRequestDropped } : {}),
     onError: (error) => errors.push(error),
   })
   return { gate, written }
@@ -408,5 +416,32 @@ describe('the end of the session: what the server never answered', () => {
     await gate.settleForwarded(0, 'closed')
 
     expect(answers.claim('', 'toolu_A')).not.toBeNull()
+  })
+})
+
+describe('a held call its agent left is announced as never to be answered (S-L1)', () => {
+  test('a cancel withdraws the held call, and the gate says no answer will come for its id', async () => {
+    const dropped: unknown[] = []
+    const { gate } = createHarness({ policy: policyOf('require-approval'), onRequestDropped: (id) => dropped.push(id) })
+    const call = gate.gateClientMessage(toolCall(7, 'toolu_X'))
+    await waitForPending()
+
+    gate.gateClientMessage(cancelOf(7))
+
+    expect(await settled(call)).toEqual({ action: 'drop' })
+    expect(dropped).toEqual([7])
+  })
+
+  test('an approved, a denied or an answered call is not announced', async () => {
+    const dropped: unknown[] = []
+    const { gate } = createHarness({ policy: policyOf('require-approval'), onRequestDropped: (id) => dropped.push(id) })
+    const approved = gate.gateClientMessage(toolCall(1))
+    await queue.resolve((await waitForPending()).approvalId, { outcome: 'approved', actor: 'operator' })
+    await settled(approved)
+    const denied = gate.gateClientMessage(toolCall(2, undefined, { path: '/other' }))
+    await queue.resolve((await waitForPending()).approvalId, { outcome: 'denied', actor: 'operator' })
+    await settled(denied)
+
+    expect(dropped).toEqual([])
   })
 })

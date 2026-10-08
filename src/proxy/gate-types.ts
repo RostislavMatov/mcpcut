@@ -104,6 +104,15 @@ export interface MessagePolicyGateDeps {
    * its own — enough for a stdio path, whose process is one session.
    */
   readonly toolUseAnswers?: ToolUseAnswers
+  /**
+   * Hears each request id the gate settled WITHOUT forwarding it and without
+   * answering it: a call held for approval whose agent left (decision M36).
+   * No answer will ever come for that id, so whoever correlates answers to
+   * requests can forget it — the pool's correlator, which otherwise keeps it
+   * until the pool session ends (review finding S-L1). A throw is reported
+   * through `onError` and changes nothing about the call.
+   */
+  readonly onRequestDropped?: (id: JsonRpcId) => void
 }
 
 /** What the gate needs for the confirmation in the client (see `gate-confirm.ts`). */

@@ -91,6 +91,8 @@ export interface CreateSessionDeps {
    * has a problem (M36 phase C). Not called when there were none.
    */
   readonly onUnansweredCalls?: (count: number) => void
+  /** See `MessagePolicyGateDeps.onRequestDropped` (S-L1: the pool forgets the id). */
+  readonly onRequestDropped?: MessagePolicyGateDeps['onRequestDropped']
   /** Fired exactly once, after the session has fully ended. */
   readonly onSessionEnd?: (reason: SessionEndReason) => void
 }
