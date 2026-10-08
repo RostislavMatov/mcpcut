@@ -1,28 +1,19 @@
-import type { RecordBuilder, ClientServerDirection } from '../journal/record.js'
-import type { JournalSink } from '../journal/sink.js'
-import type { ApprovalWaiter } from '../policy/approvals/waiter.js'
-import type { PolicyProvider } from '../policy/reload.js'
-import type { Policy } from '../policy/schema.js'
+import type { ClientServerDirection } from '../journal/record.js'
 import { classify } from '../protocol/classify.js'
 import {
   clientMessage,
   serverMessage,
   type McpMessage,
   type MessageSink,
-  type MessageSource,
   type MessageVerdict,
 } from '../transport/message.js'
-import type { AgentRecord } from '../agents/schema.js'
-import type { GateApprovalQueue } from '../proxy/gate-approvals.js'
 import { createMessagePolicyGate, type MessagePolicyGate } from '../proxy/gate-core.js'
-import type { MessagePolicyGateDeps } from '../proxy/gate-types.js'
 import {
   createDecisionProvenance,
   createDecisionWriter,
   isPromiseVerdict,
-  type GateInventory,
 } from '../proxy/gate-helpers.js'
-import { isRevokedFor, startAgentWatch, type AgentRecordReader, type AgentWatch } from './agent-watch.js'
+import { isRevokedFor, startAgentWatch, type AgentWatch } from './agent-watch.js'
 import {
   AGENT_REVOCATION_POLL_INTERVAL_MS,
   AGENT_REVOKED_RULE,
@@ -66,88 +57,16 @@ import {
  * belong to the callers (`connect`/`serve`, Wave 4).
  */
 
-/** One side's transport endpoints, already constructed by the caller. */
-export interface SessionEndpoints {
-  readonly source: MessageSource
-  readonly sink: MessageSink
-}
-
-/** The approvals machinery for one session, shared shape with the gate. */
-export interface SessionApprovals {
-  readonly queue: GateApprovalQueue
-  readonly waiter: ApprovalWaiter
-}
-
-/** Journal wiring: the record builder and sink are bound to this session id. */
-export interface SessionJournal {
-  readonly recordBuilder: RecordBuilder
-  readonly sink: Pick<JournalSink, 'write' | 'flush'>
-}
-
-/** The authenticated agent of this session, plus where to re-read it from. */
-export interface SessionAgent {
-  /** The record as authenticated at session start. */
-  readonly record: AgentRecord
-  /** Re-reads grants/revocation; satisfied by `agents/store.ts`. */
-  readonly store: AgentRecordReader
-}
-
-export interface CreateSessionDeps {
-  readonly sessionId: string
-  /** Registry name of the proxied server (`auto:<hash>` only for ad-hoc wrap). */
-  readonly serverName: string
-  readonly client: SessionEndpoints
-  readonly server: SessionEndpoints
-  /**
-   * Pre-loaded, already-validated policy (loading is the caller's job). A
-   * `PolicyProvider` hot-reloads the rules under the session; a plain
-   * `Policy` behaves exactly as before.
-   */
-  readonly policy: Policy | PolicyProvider
-  readonly inventory: GateInventory
-  readonly approvals: SessionApprovals
-  readonly journal: SessionJournal
-  /**
-   * Exact values this session's upstream was handed (vault-resolved env and
-   * header material, plus the registry literals beside them). Registered on
-   * the record builder before any traffic is tapped, so the journal redacts
-   * the secrets the plane itself injected even when a server echoes one back
-   * under an innocent key. See `redact/known-secrets.ts`.
-   */
-  readonly knownSecrets?: readonly string[]
-  readonly agent?: SessionAgent
-  /** Injectable clock (ms since epoch) for deterministic tests. */
-  readonly clock?: () => number
-  /** Poll interval for revocation/grant re-reads. Defaults to the ≤5 s constant. */
-  readonly revocationPollIntervalMs?: number
-  /** Reports session-internal failures. Defaults to one line on stderr. */
-  readonly onError?: (error: unknown) => void
-  /**
-   * The client channel for `confirmInClient` (ADR-0019). Given only by the
-   * stdio `connect`, whose client is one process with one person; the HTTP
-   * front never passes it (a held POST has no channel for the question), so
-   * there a call that needs the confirmation is refused.
-   */
-  readonly confirmInClient?: MessagePolicyGateDeps['confirmInClient']
-  /** Progress text of a call held for approval (M36); stdio `connect` only — over HTTP it would read as the answer. */
-  readonly heldCallProgress?: MessagePolicyGateDeps['heldCallProgress']
-  /** Fired exactly once, after the session has fully ended. */
-  readonly onSessionEnd?: (reason: SessionEndReason) => void
-}
-
-/** Why a session ended. `closed` is the caller's own `close()`. */
-export type SessionEndReason = 'client-ended' | 'server-ended' | 'revoked' | 'closed'
-
-export interface SessionHandle {
-  /**
-   * Ends the session: stops the watch, disposes sources, settles in-flight
-   * approval waits (clients still get an answer), drains pending writes,
-   * then disposes sinks. Idempotent — the first reason wins.
-   */
-  close(reason?: SessionEndReason): Promise<void>
-  /** Resolves once the session has fully ended, with the winning reason. */
-  readonly ended: Promise<SessionEndReason>
-}
+export type {
+  CreateSessionDeps,
+  SessionAgent,
+  SessionApprovals,
+  SessionEndpoints,
+  SessionEndReason,
+  SessionHandle,
+  SessionJournal,
+} from './core-types.js'
+import type { CreateSessionDeps, SessionEndReason, SessionHandle } from './core-types.js'
 
 function defaultOnError(error: unknown): void {
   process.stderr.write(`[session] ${error instanceof Error ? error.message : String(error)}\n`)
@@ -399,8 +318,18 @@ export function createSession(deps: CreateSessionDeps): SessionHandle {
     watch?.start()
   }
 
+  function abandonRequest(requestBytes: Buffer): void {
+    try {
+      const message = classify(requestBytes.toString('utf8'))
+      if (message.kind === 'request') gate.abandonRequest(message.id)
+    } catch (error: unknown) {
+      onError(error)
+    }
+  }
+
   return Object.freeze({
     close: (reason: SessionEndReason = 'closed') => endSession(reason),
     ended,
+    abandonRequest,
   })
 }

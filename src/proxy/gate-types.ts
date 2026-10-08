@@ -1,4 +1,5 @@
 import type { ApprovalWaiter } from '../policy/approvals/waiter.js'
+import type { JsonRpcId } from '../protocol/classify.js'
 import type { PolicyProvider } from '../policy/reload.js'
 import type { Policy } from '../policy/schema.js'
 import type { MessageGate, MessageSink } from '../transport/message.js'
@@ -84,13 +85,13 @@ export interface MessagePolicyGateDeps {
    */
   readonly confirmInClient?: ConfirmInClientDeps
   /**
-   * Present on the stdio paths (`wrap`, `connect`), whose client channel can
-   * carry the gate's own notifications: the text of the
-   * `notifications/progress` a call held for approval sends its client at once
-   * and then once a minute, when the call carried a `progressToken`
-   * (decision M36). Absent — the HTTP paths — no progress is sent: a
-   * per-server POST is paired with the NEXT message the session emits, so a
-   * notification would be taken for the call's answer.
+   * The text of the `notifications/progress` a call held for approval sends
+   * its client at once and then once a minute, when the call carried a
+   * `progressToken` (decision M36). Given on every path whose client channel
+   * carries the gate's own notifications: stdio (`wrap`, `connect`) and, since
+   * phase B, the HTTP front of `serve`, which routes the progress onto the
+   * call's own POST as an SSE stream (`session-post-stream.ts`). Absent — no
+   * progress is sent.
    */
   readonly heldCallProgress?: (approvalId: string) => string
   /** Injectable intervals for the hold's heartbeat and progress (tests). Defaults to the real timers. */
@@ -115,4 +116,12 @@ export interface MessagePolicyGate {
    * their verdicts are awaited.
    */
   cancelPending(): Promise<void>
+  /**
+   * The agent stopped waiting for request `id` without a cancel — its HTTP
+   * request closed (phase B of M36). A call held for an approval or a
+   * confirmation under that id is withdrawn as `disconnected`; a call already
+   * forwarded is left to finish (a dropped connection is not a cancel), and
+   * nothing is sent to the server. A `null` id is ignored.
+   */
+  abandonRequest(id: JsonRpcId): void
 }

@@ -15,6 +15,7 @@ import type {
   SessionContext,
 } from '../transport/http/session.js'
 import type { ServeWritable } from './serve-constants.js'
+import { heldCallProgressText } from './next-step.js'
 import { createMemoryPipe } from './serve-pipe.js'
 import { openUpstream, type OpenUpstreamDeps } from './serve-upstream.js'
 
@@ -160,6 +161,9 @@ export function createChildSessionOpener(deps: ChildSessionDeps): ChildSessionOp
         ? { revocationPollIntervalMs: deps.revocationPollIntervalMs }
         : {}),
       onError,
+      // M36 phase B: the front sends a held call's progress on its own POST,
+      // as an SSE stream, so the agent's client knows the call still waits.
+      heldCallProgress: heldCallProgressText,
     }
   }
 
@@ -231,6 +235,7 @@ export function createChildSessionOpener(deps: ChildSessionDeps): ChildSessionOp
       sessionId: journal.sessionId,
       sink: pipe.front.sink,
       source: pipe.front.source,
+      abandon: (requestBytes) => handle?.abandonRequest(requestBytes),
       close: closeAll,
       endReason: () => endedWith,
     }

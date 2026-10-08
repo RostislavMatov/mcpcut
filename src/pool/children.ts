@@ -34,6 +34,12 @@ export interface PoolChild {
   readonly sessionId: string
   readonly sink: MessageSink
   /**
+   * The agent stopped waiting for this request without a cancel (its HTTP
+   * request closed, M36 phase B): a call the child's gate holds for a human
+   * under its id is withdrawn. Absent on a child that holds nothing.
+   */
+  readonly abandon?: (requestBytes: Buffer) => void
+  /**
    * Lets the child go. `dirty` = requests of this pool were still in flight
    * there: a child the caller would otherwise keep (a held session, ADR-0016)
    * must then not be attached again, or a late reply could reach a pool that

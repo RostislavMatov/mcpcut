@@ -33,15 +33,18 @@ import {
   POOL_ROUTE_TARGET,
   REQUEST_TIMEOUT_MS,
   RETRY_AFTER_HEADER,
+  SSE_HEARTBEAT_INTERVAL_MS,
   WILDCARD_BIND_WARNING,
 } from './server-constants.js'
-import { CONTENT_TYPE_JSON, HTTP_STATUS_NOT_FOUND } from './constants.js'
+import { CONTENT_TYPE_JSON, CONTENT_TYPE_SSE, HTTP_STATUS_NOT_FOUND } from './constants.js'
 import {
   createSessionManager,
   type ResponsePlan,
   type SessionContext,
   type SessionManagerOptions,
 } from './session.js'
+import { STREAMED } from './session-post-stream.js'
+import { openSseStream } from './sse.js'
 
 /**
  * Downstream HTTP front (M3 Task 10): `node:http`, no framework, glueing
@@ -177,6 +180,15 @@ function describeError(error: unknown): string {
 }
 
 /**
+ * Whether the client takes an SSE response to its POST (MCP: it MUST list both
+ * `application/json` and `text/event-stream`). One that does not keeps the
+ * plain JSON answer, however long it waits.
+ */
+function acceptsSse(req: IncomingMessage): boolean {
+  return (headerValue(req, 'accept') ?? '').toLowerCase().includes(CONTENT_TYPE_SSE)
+}
+
+/**
  * Fires when the socket dies before the answer was written. The session
  * manager uses it to stop waiting on an upstream nobody will read anymore
  * (an agent that gave up must not keep a child process alive).
@@ -197,6 +209,7 @@ export function createHttpFront(opts: HttpFrontOptions): HttpFront {
   const allowedHosts = opts.allowedHosts ?? []
   const maxBodyBytes = opts.maxBodyBytes ?? MAX_REQUEST_BODY_BYTES
   const now = opts.now ?? Date.now
+  const heartbeatIntervalMs = opts.heartbeatIntervalMs ?? SSE_HEARTBEAT_INTERVAL_MS
   const manager = createSessionManager({
     ...opts,
     onSessionError: (sessionId, error) => {
@@ -237,7 +250,14 @@ export function createHttpFront(opts: HttpFrontOptions): HttpFront {
       res.destroy()
       return
     }
-    const plan = await manager.handlePost(ctx, req.headers, bodyResult.body, { signal })
+    const plan = await manager.handlePost(ctx, req.headers, bodyResult.body, {
+      signal,
+      ...(acceptsSse(req) ? { openStream: () => openSseStream(res, { heartbeatIntervalMs }) } : {}),
+    })
+    if (plan === STREAMED) {
+      // The answer went out as the last event of the POST's own stream.
+      return
+    }
     if (res.writableEnded || res.destroyed) {
       // The agent hung up while its answer was being produced.
       return

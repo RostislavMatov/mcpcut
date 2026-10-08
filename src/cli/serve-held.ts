@@ -113,6 +113,10 @@ export function createHeldSession(
         // The session's sink belongs to the session, not to one attachment.
         dispose: () => undefined,
       },
+      // Only while this attachment speaks for the session, like the sink.
+      abandon: (requestBytes) => {
+        if (isCurrent()) opened.abandon?.(requestBytes)
+      },
       close: (options) => {
         released ??= (async () => {
           if (current !== mine) return

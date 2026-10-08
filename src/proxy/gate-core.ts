@@ -1,5 +1,6 @@
 import type { JsonRpcId } from '../protocol/classify.js'
 import type { PolicyDecision } from '../policy/decide.js'
+import { WITHDRAW_REASON_DISCONNECTED } from '../policy/approvals/withdraw.js'
 import { DEFAULT_CLIENT_CONFIRM_TIMEOUT_MS } from '../policy/constants.js'
 import { toPolicyProvider } from '../policy/reload.js'
 import type { ParsedToolCall } from '../protocol/mcp.js'
@@ -384,5 +385,8 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     gateClientMessage: router.gateClientMessage,
     gateServerMessage: router.gateServerMessage,
     cancelPending,
+    abandonRequest: (id) => {
+      if (id !== null) router.abandonRequest(idKeyOf(id), WITHDRAW_REASON_DISCONNECTED)
+    },
   }
 }

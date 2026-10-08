@@ -56,6 +56,8 @@ export interface FakeSessionControl {
   readonly ctx: SessionContext
   /** Bodies the front wrote into the session, in order. */
   readonly written: Buffer[]
+  /** Request bodies the front reported abandoned (their POST closed; M36 phase B). */
+  readonly abandoned: Buffer[]
   /** Emits a server-initiated message into the source. */
   push(text: string): void
   /** Fires the source's `onError` (transport failure on the upstream side). */
@@ -101,6 +103,7 @@ export function createFakeSessionFactory(options: FakeFactoryOptions = {}): Fake
     let isDisposed = false
     let isClosed = false
     const written: Buffer[] = []
+    const abandoned: Buffer[] = []
 
     const emit = (text: string): void => {
       if (!isDisposed) {
@@ -138,6 +141,7 @@ export function createFakeSessionFactory(options: FakeFactoryOptions = {}): Fake
     const control: FakeSessionControl = {
       ctx,
       written,
+      abandoned,
       push: emit,
       fail: (error: unknown) => {
         if (!isDisposed) onError?.(error)
@@ -152,6 +156,9 @@ export function createFakeSessionFactory(options: FakeFactoryOptions = {}): Fake
       sink,
       source,
       ...(options.correlate !== undefined ? { correlate: options.correlate } : {}),
+      abandon: (bytes) => {
+        abandoned.push(bytes)
+      },
       close: () => {
         isClosed = true
         return Promise.resolve()

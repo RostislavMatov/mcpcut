@@ -583,3 +583,62 @@ describe('review R2: a session holds a bounded number of calls, and beats once f
     expect(scheduler.active()).toBe(0)
   })
 })
+
+describe('phase B: the agent abandons a request without a cancel (its HTTP request closed)', () => {
+  test('a held call is withdrawn as disconnected: dropped, not answered, journaled agent-gone', async () => {
+    const { gate, written } = createHarness()
+
+    const verdict = gate.gateClientMessage(toolCall(50))
+    const pending = await waitForPending()
+    gate.abandonRequest(50)
+
+    expect(await settled(verdict)).toEqual({ action: 'drop' })
+    expect(written).toEqual([])
+    await expect(queue.readResolution(pending.approvalId)).resolves.toMatchObject({
+      outcome: 'withdrawn',
+      reason: 'disconnected',
+    })
+    expect((await decisions()).at(-1)?.decision).toMatchObject({ outcome: 'agent-gone', reason: 'disconnected' })
+  })
+
+  test('a request still being queued is withdrawn as soon as it is', async () => {
+    const { gate, written } = createHarness()
+
+    const verdict = gate.gateClientMessage(toolCall(51))
+    gate.abandonRequest(51)
+
+    expect(await settled(verdict)).toEqual({ action: 'drop' })
+    expect(written).toEqual([])
+    const [closed] = await queue.listResolved({ limit: 1 })
+    expect(closed?.resolution).toEqual({ outcome: 'withdrawn', reason: 'disconnected' })
+  })
+
+  test('an already approved call is left alone: a dropped connection is not a cancel', async () => {
+    const { gate } = createHarness()
+
+    const verdict = gate.gateClientMessage(toolCall(52))
+    const pending = await waitForPending()
+    await queue.resolve(pending.approvalId, { outcome: 'approved', actor: 'operator' })
+    expect(await settled(verdict)).toEqual({ action: 'forward' })
+
+    gate.abandonRequest(52)
+    await sleep(POLL_INTERVAL_MS * 2)
+
+    await expect(queue.readResolution(pending.approvalId)).resolves.toMatchObject({ outcome: 'approved' })
+    expect((await decisions()).map((record) => record.decision?.outcome)).toEqual(['require-approval-pending', 'approved'])
+  })
+
+  test('another id, or a null one, leaves the held call alone', async () => {
+    const { gate } = createHarness()
+
+    const verdict = gate.gateClientMessage(toolCall(53))
+    const pending = await waitForPending()
+    gate.abandonRequest(999)
+    gate.abandonRequest(null)
+    await sleep(POLL_INTERVAL_MS * 3)
+
+    await expect(queue.list()).resolves.toHaveLength(1)
+    await queue.resolve(pending.approvalId, { outcome: 'approved', actor: 'operator' })
+    expect(await settled(verdict)).toEqual({ action: 'forward' })
+  })
+})

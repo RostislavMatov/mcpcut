@@ -37,7 +37,7 @@ export interface HoldDeps {
   readonly approvalId: string
   /** The call's `params._meta.progressToken`; absent, the client hears nothing until the answer. */
   readonly progressToken?: SynthesizableId
-  /** The text of each progress notification; absent on paths that cannot carry one (HTTP). */
+  /** The text of each progress notification; absent on a path that cannot carry one. */
   readonly messageOf?: (approvalId: string) => string
   /** Writes a gate-authored message to the client (the path `answerLocally` uses). */
   readonly send: (bytes: Buffer) => Promise<void>

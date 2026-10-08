@@ -18,6 +18,7 @@ import {
   MAX_BUFFERED_SERVER_MESSAGES,
   MAX_CONCURRENT_SESSIONS,
   MAX_CORRELATED_IN_FLIGHT,
+  POST_STREAM_AFTER_MS,
   SESSION_IDLE_TTL_MS,
   SESSION_SWEEP_INTERVAL_MS,
   SSE_HEARTBEAT_INTERVAL_MS,
@@ -31,8 +32,6 @@ import {
   refusalPlan,
   sessionIdOf,
   SessionTornDownError,
-  type BufferedMessages,
-  type Deferred,
   type OpenedSession,
   type PostOptions,
   type ResponsePlan,
@@ -42,7 +41,8 @@ import {
   type StatelessValidation,
 } from './session-support.js'
 import { createSlotCounter, type SessionSlot } from './session-slots.js'
-import { createExchangeRules, rejectAllWaiting } from './session-exchange.js'
+import { createExchangeRules, rejectAllWaiting, type PairedSession } from './session-exchange.js'
+import type { Streamed } from './session-post-stream.js'
 import { openSseStream, type SseStream } from './sse.js'
 
 /**
@@ -110,6 +110,7 @@ export {
   type OpenSession,
   type OpenSessionRefusal,
   type PostOptions,
+  type ProgressCorrelation,
   type ResponseCorrelation,
   type ResponsePlan,
   type SessionContext,
@@ -120,16 +121,10 @@ export {
   type ValidateStatelessHeaders,
 } from './session-support.js'
 
-interface ActiveSession {
+interface ActiveSession extends PairedSession {
   readonly id: string
   readonly agentName: string
   readonly serverName: string
-  readonly handle: OpenedSession
-  lastActivityMs: number
-  inFlight: Deferred<Buffer> | null
-  /** Requests keyed by `correlate`; always empty for a session without it. */
-  readonly waiting: Map<string, Deferred<Buffer>>
-  buffered: BufferedMessages
   stream: SseStream | null
 }
 
@@ -157,6 +152,8 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
     expectsResponse,
     maxCorrelatedInFlight,
     now,
+    progress: opts.progress,
+    postStreamAfterMs: opts.postStreamAfterMs ?? POST_STREAM_AFTER_MS,
     buffer: (current, payload) => appendBuffered(current, payload, maxBuffered, maxBufferedBytes),
     // The hooks belong to a session's FACTORY, not to one request, so no
     // session id would be the honest answer here.
@@ -181,7 +178,11 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
     const cutoff = now() - idleTtlMs
     for (const session of sessions.values()) {
       const hasOpenStream = session.stream !== null && session.stream.isOpen()
-      if (!hasOpenStream && session.lastActivityMs < cutoff) {
+      // A request in flight is an agent waiting on an open POST (M36: a call
+      // held for a human may wait for hours); if that POST closes, the
+      // abandonment ends or releases it — never the idle clock.
+      const hasRequestInFlight = session.inFlight !== null || session.waiting.size > 0
+      if (!hasOpenStream && !hasRequestInFlight && session.lastActivityMs < cutoff) {
         void teardownSession(session)
       }
     }
@@ -231,6 +232,9 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
       waiting: new Map(),
       buffered: EMPTY_BUFFER,
       stream: null,
+      related: new Map(),
+      abandoned: new Set(),
+      end: () => void teardownSession(session),
     }
     sessions.set(session.id, session)
     handle.source.onMessage((message) => rules.deliver(session, message.bytes))
@@ -275,14 +279,14 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
     headers: IncomingHttpHeaders,
     body: Buffer,
     options?: PostOptions,
-  ): Promise<ResponsePlan> {
+  ): Promise<ResponsePlan | Streamed> {
     const sessionId = sessionIdOf(headers)
     if (sessionId !== null) {
       const session = lookupSession(ctx, sessionId)
       if (session === undefined) {
         return jsonPlan(HTTP_STATUS_NOT_FOUND, BODY_SESSION_NOT_FOUND)
       }
-      return rules.post(session, body)
+      return rules.post(session, body, options)
     }
     // A POST without a session id opens one, in either model. Take the slot
     // BEFORE the hooks run: the cap must not straddle an await, and a

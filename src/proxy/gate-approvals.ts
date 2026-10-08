@@ -102,7 +102,7 @@ export interface ApprovalFlowDeps {
   readonly answerLocally: (id: JsonRpcId, build: (id: SynthesizableId) => Buffer) => Promise<void>
   /** Writes a gate-authored notification to the client (the same path `answerLocally` uses). */
   readonly notifyClient: (bytes: Buffer) => Promise<void>
-  /** The progress text for a held call; absent on paths that cannot carry notifications (HTTP). */
+  /** The progress text for a held call; absent on a path that cannot carry the gate's notifications. */
   readonly heldCallProgress?: (approvalId: string) => string
   readonly holdScheduler: HoldScheduler
   /** The reason of a cancel that arrived for `idKey` before its call was queued, if any. */

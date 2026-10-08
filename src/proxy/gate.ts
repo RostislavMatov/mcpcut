@@ -1,3 +1,4 @@
+import type { JsonRpcId } from '../protocol/classify.js'
 import { serverMessage, type McpMessage, type MessageOrigin, type MessageVerdict } from '../transport/message.js'
 import { frameToMessage, messageToChunk } from '../transport/stdio-adapter.js'
 import type { GateFn, Verdict } from './pipeline.js'
@@ -53,6 +54,8 @@ export interface PolicyGate {
   readonly gateServerMessage: GateFn
   /** Session teardown (see `MessagePolicyGate.cancelPending`): held calls are withdrawn, none answered. */
   cancelPending(): Promise<void>
+  /** The agent stopped waiting for `id` without a cancel (see `MessagePolicyGate.abandonRequest`). */
+  abandonRequest(id: JsonRpcId): void
 }
 
 /** Reattaches the line framing the message-level core deliberately omits. */
@@ -89,5 +92,6 @@ export function createPolicyGate(deps: PolicyGateDeps): PolicyGate {
     gateClientMessage: frameGateOf(core.gateClientMessage, 'client'),
     gateServerMessage: frameGateOf(core.gateServerMessage, 'server'),
     cancelPending: () => core.cancelPending(),
+    abandonRequest: (id) => core.abandonRequest(id),
   }
 }

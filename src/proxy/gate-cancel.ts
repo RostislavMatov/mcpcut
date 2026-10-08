@@ -31,7 +31,15 @@ export interface CancelTracker {
   recordVerdict(id: JsonRpcId, verdict: Verdict | Promise<Verdict>): Verdict | Promise<Verdict>
   /** The verdict for one `notifications/cancelled` (raw JSON text). */
   gateCancel(raw: string): Verdict | Promise<Verdict>
-  /** The reason of a cancel for `idKey` while that request's verdict is still in flight. */
+  /**
+   * The agent stopped waiting for `idKey` without a cancel (phase B: its HTTP
+   * request closed). Heard like a cancel by whatever holds the call — a held
+   * approval is withdrawn, an open confirmation refused — but nothing is
+   * forwarded: a dropped connection is not a cancellation (MCP), so a call
+   * already sent is left to finish.
+   */
+  abandon(idKey: string, reason: string): void
+  /** The reason of a cancel (or abandonment) for `idKey` while that request's verdict is still in flight. */
   cancelReasonOf(idKey: string): string | undefined
 }
 
@@ -52,11 +60,8 @@ export function createCancelTracker(deps: CancelTrackerDeps): CancelTracker {
     return verdict
   }
 
-  function gateCancel(raw: string): Verdict | Promise<Verdict> {
-    const requestId = parseCancelledRequestId(raw)
-    if (requestId === null) return FORWARD
-    const key = idKeyOf(requestId)
-    const reason = cleanWithdrawReason(parseCancelledReason(raw))
+  /** Notes the agent left `key` (for a call not queued yet) and tells whatever holds it. */
+  function announce(key: string, reason: string): Promise<Verdict> | undefined {
     const pending = verdictsByRequestId.get(key)
     if (pending !== undefined) cancelledInFlight.set(key, reason)
     try {
@@ -64,9 +69,21 @@ export function createCancelTracker(deps: CancelTrackerDeps): CancelTracker {
     } catch (error: unknown) {
       deps.onError(error)
     }
+    return pending
+  }
+
+  function gateCancel(raw: string): Verdict | Promise<Verdict> {
+    const requestId = parseCancelledRequestId(raw)
+    if (requestId === null) return FORWARD
+    const pending = announce(idKeyOf(requestId), cleanWithdrawReason(parseCancelledReason(raw)))
     if (pending === undefined) return FORWARD
     return deps.track(pending.then((verdict) => (verdict.action === 'forward' ? FORWARD : DROP), () => FORWARD))
   }
 
-  return { recordVerdict, gateCancel, cancelReasonOf: (idKey) => cancelledInFlight.get(idKey) }
+  return {
+    recordVerdict,
+    gateCancel,
+    abandon: (idKey, reason) => void announce(idKey, reason),
+    cancelReasonOf: (idKey) => cancelledInFlight.get(idKey),
+  }
 }

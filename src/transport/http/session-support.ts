@@ -1,5 +1,6 @@
 import type { IncomingHttpHeaders, ServerResponse } from 'node:http'
 import type { MessageSink, MessageSource } from '../message.js'
+import type { OpenPostStream, Streamed } from './session-post-stream.js'
 import {
   CONTENT_TYPE_JSON,
   HTTP_STATUS_NOT_FOUND,
@@ -45,6 +46,18 @@ export interface ResponseCorrelation {
   keyOfResponse(bytes: Buffer): string | null
 }
 
+/**
+ * How a session's progress reaches the POST that asked for it (decision M36,
+ * phase B). Raw bytes in, opaque keys out, exactly like `ResponseCorrelation`:
+ * the manager only compares the strings.
+ */
+export interface ProgressCorrelation {
+  /** Key of the progress an outgoing request asks for (its token), or `null` when it asks for none. */
+  keyOfRequest(bytes: Buffer): string | null
+  /** Key of the progress an inbound payload reports, or `null` when it reports none. */
+  keyOfNotification(bytes: Buffer): string | null
+}
+
 /** A live upstream conversation produced by the injected factory. */
 export interface OpenedSession {
   readonly sink: MessageSink
@@ -54,6 +67,13 @@ export interface OpenedSession {
    * means today's positional pairing, unchanged.
    */
   readonly correlate?: ResponseCorrelation
+  /**
+   * The agent stopped waiting for this request without a cancel: its HTTP
+   * request closed before the answer (decision M36, phase B). Semantics-free
+   * here — the manager only hands back the bytes the agent POSTed; the
+   * injector decides what that means (a call held for a human is withdrawn).
+   */
+  abandon?(requestBytes: Buffer): void
   close(): Promise<void>
 }
 
@@ -92,6 +112,10 @@ export interface ResponsePlan {
 export interface SessionManagerOptions {
   readonly openSession: OpenSession
   readonly detectInitialize?: DetectInitialize
+  /** Routes a request's progress onto its own POST stream; absent — no message is related to a POST. */
+  readonly progress?: ProgressCorrelation
+  /** How long a POST answers with JSON before it becomes an SSE stream; default `POST_STREAM_AFTER_MS`. */
+  readonly postStreamAfterMs?: number
   readonly validateStatelessHeaders?: ValidateStatelessHeaders
   readonly expectsResponse?: ExpectsResponse
   readonly maxSessions?: number
@@ -139,17 +163,24 @@ export interface SessionManagerOptions {
 
 /** Per-request knobs a caller may attach to one POST. */
 export interface PostOptions {
-  /** Aborted when the agent's own socket goes away; releases the upstream. */
+  /**
+   * Aborted when the agent's own socket goes away. A one-shot exchange
+   * releases its upstream; on a session the request is abandoned (M36 phase
+   * B: a call held for a human is withdrawn).
+   */
   readonly signal?: AbortSignal
+  /** Opens this POST's response as an SSE stream; given only when the client accepts SSE. */
+  readonly openStream?: OpenPostStream
 }
 
 export interface SessionManager {
+  /** `STREAMED` when the answer went out on the POST's own SSE stream: nothing is left to write. */
   handlePost(
     ctx: SessionContext,
     headers: IncomingHttpHeaders,
     body: Buffer,
     options?: PostOptions,
-  ): Promise<ResponsePlan>
+  ): Promise<ResponsePlan | Streamed>
   /** Returns `'attached'` when the response became a live SSE stream. */
   handleGet(
     ctx: SessionContext,

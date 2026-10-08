@@ -139,6 +139,8 @@ export interface GateRouter {
    * cancel that arrived before its call was even queued (M36).
    */
   cancelReasonOf(idKey: string): string | undefined
+  /** The agent stopped waiting for `idKey` without a cancel; see `CancelTracker.abandon`. */
+  abandonRequest(idKey: string, reason: string): void
 }
 
 export function createGateRouter(deps: GateRouterDeps): GateRouter {
@@ -368,7 +370,12 @@ export function createGateRouter(deps: GateRouterDeps): GateRouter {
     }
   }
 
-  return { gateClientMessage, gateServerMessage, cancelReasonOf: cancels.cancelReasonOf }
+  return {
+    gateClientMessage,
+    gateServerMessage,
+    cancelReasonOf: cancels.cancelReasonOf,
+    abandonRequest: cancels.abandon,
+  }
 }
 
 /**

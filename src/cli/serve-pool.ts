@@ -356,6 +356,7 @@ export function createPoolSessionFactory(deps: PoolSessionDeps): OpenSession {
       // Several of this agent's calls may be in flight at once — that is the
       // whole point of a pool (plan decision P1).
       correlate: deps.correlate,
+      abandon: (requestBytes) => mux.abandonAgentRequest(requestBytes),
       close,
     }
   }
