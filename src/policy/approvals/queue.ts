@@ -120,7 +120,8 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
   const holder = opts.holder ?? currentHolder()
   const liveness = opts.holderLiveness ?? probeHolderLiveness
   const { moveToResolvedBatch, moveToResolved } = createQueueResolver(baseDir, clock)
-  const isLostAt = (hold: HoldRecord | undefined, nowMs: number): boolean => isHolderLost(hold, nowMs, liveness)
+  const isLostAt = (approvalId: string, hold: HoldRecord | undefined, nowMs: number): boolean =>
+    isHolderLost(approvalId, hold, nowMs, liveness)
 
   async function enqueue(req: EnqueueRequest): Promise<EnqueueResult> {
     const approvalId = ulid()
@@ -160,7 +161,7 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
       nowMs,
       markExpiredBatch,
       staleBeforeIso: new Date(nowMs - APPROVAL_HEARTBEAT_STALE_MS).toISOString(),
-      isLost: (hold) => isLostAt(hold, nowMs),
+      isLost: (approvalId, hold) => isLostAt(approvalId, hold, nowMs),
       withdrawLostBatch,
     })
   }
@@ -180,7 +181,7 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
       if (record === null) return []
       const expired = isExpiredAt(record.expiresAt, nowMs)
       if (row.hold === undefined) return [{ ...record, expired }]
-      return [{ ...record, expired, agentConnected: isHoldLive(row.hold, nowMs) }]
+      return [{ ...record, expired, agentConnected: isHoldLive(record.approvalId, row.hold, nowMs) }]
     })
   }
 
@@ -196,8 +197,8 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
   }
 
   /** Held right now: a fresh heartbeat, or a holder that still runs (a stale beat after sleep, R3). */
-  function isHoldLive(hold: HoldRecord, nowMs: number): boolean {
-    return isFreshHeartbeat(hold.heartbeatAt, nowMs) || liveness(hold.holder) === 'alive'
+  function isHoldLive(approvalId: string, hold: HoldRecord, nowMs: number): boolean {
+    return isFreshHeartbeat(hold.heartbeatAt, nowMs) || liveness(hold.holder, approvalId) === 'alive'
   }
 
   /** The heartbeat sweep's write: requests whose holder died, withdrawn as `process-lost`. */
@@ -235,7 +236,7 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
     // happens under the held lock, in the same instant as `resolvedAt`.
     const result = await moveToResolved(approvalId, (pending, hold) => {
       const nowMs = clock()
-      if (isLostAt(hold, nowMs)) return { outcome: 'withdrawn', reason: WITHDRAW_REASON_PROCESS_LOST }
+      if (isLostAt(pending.approvalId, hold, nowMs)) return { outcome: 'withdrawn', reason: WITHDRAW_REASON_PROCESS_LOST }
       const outcome: ResolutionOutcome =
         isPastDelivery(pending, nowMs) && resolution.outcome === 'approved' ? 'expired' : resolution.outcome
       return {

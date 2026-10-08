@@ -66,6 +66,8 @@ export interface FakeSessionControl {
   end(): void
   isClosed(): boolean
   isDisposed(): boolean
+  /** Every write from now on rejects with `error`. */
+  failWrites(error: Error): void
 }
 
 export interface FakeFactoryOptions {
@@ -77,6 +79,10 @@ export interface FakeFactoryOptions {
   readonly throwError?: Error
   /** Opt into id correlation, the way a pool session does (plan P1). */
   readonly correlate?: ResponseCorrelation
+  /** Each write settles only after this long (a busy upstream pipe). */
+  readonly writeDelayMs?: number
+  /** Each write rejects with this error (after `writeDelayMs`). */
+  readonly writeError?: Error
 }
 
 export interface FakeSessionFactory {
@@ -104,6 +110,7 @@ export function createFakeSessionFactory(options: FakeFactoryOptions = {}): Fake
     let isClosed = false
     const written: Buffer[] = []
     const abandoned: Buffer[] = []
+    let writeError = options.writeError
 
     const emit = (text: string): void => {
       if (!isDisposed) {
@@ -118,7 +125,11 @@ export function createFakeSessionFactory(options: FakeFactoryOptions = {}): Fake
         if (reply !== null) {
           queueMicrotask(() => emit(reply))
         }
-        return Promise.resolve()
+        const { writeDelayMs } = options
+        if (writeDelayMs === undefined && writeError === undefined) return Promise.resolve()
+        return new Promise<void>((resolve, reject) =>
+          setTimeout(() => (writeError !== undefined ? reject(writeError) : resolve()), writeDelayMs ?? 0),
+        )
       },
       dispose: () => undefined,
     }
@@ -149,6 +160,9 @@ export function createFakeSessionFactory(options: FakeFactoryOptions = {}): Fake
       end: () => onEnd?.(),
       isClosed: () => isClosed,
       isDisposed: () => isDisposed,
+      failWrites: (error) => {
+        writeError = error
+      },
     }
     handles.push(control)
 

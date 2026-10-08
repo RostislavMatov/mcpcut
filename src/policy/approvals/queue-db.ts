@@ -92,7 +92,7 @@ const INSERT_PENDING =
 /** The pending page, each row with its hold when it has one (M36, `queue-holds-db.ts`). */
 const SELECT_PENDING_DOCS =
   'SELECT a.doc AS doc, h.heartbeat_at AS heartbeat_at, h.holder_pid AS holder_pid, ' +
-  'h.holder_host AS holder_host FROM approvals a ' +
+  'h.holder_host AS holder_host, h.holder_nonce AS holder_nonce FROM approvals a ' +
   'LEFT JOIN approval_holds h ON h.approval_id = a.approval_id ' +
   "WHERE a.status = 'pending' ORDER BY a.requested_at, a.approval_id LIMIT ?"
 const SELECT_PENDING_DOC =

@@ -114,6 +114,8 @@ export interface SessionManagerOptions {
   readonly detectInitialize?: DetectInitialize
   /** Routes a request's progress onto its own POST stream; absent — no message is related to a POST. */
   readonly progress?: ProgressCorrelation
+  /** Semantic hook: is this the server's own notification or request? Given, it never settles a positional POST. */
+  readonly isServerInitiated?: (bytes: Buffer) => boolean
   /** How long a POST answers with JSON before it becomes an SSE stream; default `POST_STREAM_AFTER_MS`. */
   readonly postStreamAfterMs?: number
   readonly validateStatelessHeaders?: ValidateStatelessHeaders
@@ -320,61 +322,6 @@ export function abandonedRequestPlan(error: unknown): ResponsePlan {
     return jsonPlan(HTTP_STATUS_GATEWAY_TIMEOUT, BODY_UPSTREAM_TIMEOUT)
   }
   throw error
-}
-
-/** A pending wait for the single message a one-shot session owes a request. */
-export interface FirstMessageWait {
-  readonly promise: Promise<Buffer>
-  /** Ends the wait with `error` unless it already settled. */
-  fail(error: unknown): void
-  /** Releases the timer and the abort listener. Idempotent. */
-  cancel(): void
-}
-
-export interface FirstMessageOptions {
-  readonly timeoutMs: number
-  readonly signal?: AbortSignal | undefined
-}
-
-/**
- * Waits for the first message `source` produces, bounded on every side a
- * one-shot exchange can fail on: an error, the source ending without an
- * answer, the timeout, and the agent going away. The timer is unref'ed —
- * a pending stateless request must not keep the process alive.
- */
-export function awaitFirstMessage(
-  source: MessageSource,
-  opts: FirstMessageOptions,
-): FirstMessageWait {
-  const deferred = createDeferred<Buffer>()
-  // Marks the promise handled the moment it exists: it may reject before
-  // the caller awaits it (an already-dead upstream ends synchronously),
-  // and an unhandled rejection would take the process down.
-  void deferred.promise.catch(() => undefined)
-
-  source.onMessage((message) => deferred.resolve(message.bytes))
-  source.onError((error: unknown) => deferred.reject(error))
-  source.onEnd(() => deferred.reject(new SessionTornDownError()))
-
-  const timer = setTimeout(() => deferred.reject(new UpstreamTimeoutError()), opts.timeoutMs)
-  timer.unref()
-  const onAbort = (): void => deferred.reject(new RequestAbortedError())
-  opts.signal?.addEventListener('abort', onAbort, { once: true })
-  if (opts.signal?.aborted === true) {
-    onAbort()
-  }
-
-  let isCancelled = false
-  return Object.freeze({
-    promise: deferred.promise,
-    fail: (error: unknown) => deferred.reject(error),
-    cancel: (): void => {
-      if (isCancelled) return
-      isCancelled = true
-      clearTimeout(timer)
-      opts.signal?.removeEventListener('abort', onAbort)
-    },
-  })
 }
 
 export { createSlotCounter, type SessionSlot, type SlotCounter } from './session-slots.js'

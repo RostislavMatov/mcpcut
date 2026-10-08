@@ -68,7 +68,7 @@ export interface SweepPendingDeps {
   /** Heartbeats older than this instant (ISO-8601 UTC) are stale. */
   readonly staleBeforeIso: string
   /** Whether a stale request's holder is gone (`isHolderLost` with the queue's probe). */
-  readonly isLost: (hold: HoldRecord) => boolean
+  readonly isLost: (approvalId: string, hold: HoldRecord) => boolean
   /** The queue's `withdrawLostBatch`: withdraws a batch as `process-lost`, answering how many it settled. */
   readonly withdrawLostBatch: (approvalIds: readonly string[]) => Promise<number>
 }
@@ -139,11 +139,11 @@ async function settleCandidates(
 async function lostHolderIds(
   baseDir: string,
   staleBeforeIso: string,
-  isLost: (hold: HoldRecord) => boolean,
+  isLost: (approvalId: string, hold: HoldRecord) => boolean,
 ): Promise<string[]> {
   const db = await openApprovalsDb(baseDir)
   return selectStaleHoldRows(db.handle.db, staleBeforeIso, SWEEP_MAX_ROWS)
-    .filter((row) => isLost(row.hold) && parseDoc(row.doc, isPendingApprovalFile) !== null)
+    .filter((row) => isLost(row.approvalId, row.hold) && parseDoc(row.doc, isPendingApprovalFile) !== null)
     .map((row) => row.approvalId)
 }
 

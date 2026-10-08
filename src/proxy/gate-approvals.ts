@@ -1,5 +1,6 @@
 import type { ApprovalQueue } from '../policy/approvals/queue.js'
 import type { ApprovalWaiter, WaitResult } from '../policy/approvals/waiter.js'
+import { noteHeld, noteReleased } from '../policy/approvals/holder.js'
 import { WITHDRAW_REASON_DISCONNECTED } from '../policy/approvals/withdraw.js'
 import { APPROVAL_REQUEST_MAX_AGE_MS, MAX_HELD_CALLS_PER_SESSION } from '../policy/constants.js'
 import type { PolicyDecision } from '../policy/decide.js'
@@ -255,6 +256,7 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
       ticker.stop()
       answerGuard.endWait(entry.idKey)
       held.delete(entry)
+      noteReleased(entry.approvalId)
       syncHeartbeat()
     }
   }
@@ -288,6 +290,7 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
     const idKey = call.id !== null ? idKeyOf(call.id) : ''
     const entry: HeldCall = { idKey, approvalId, controller: new AbortController(), leftReason: undefined }
     held.add(entry)
+    noteHeld(approvalId)
     syncHeartbeat()
     // The agent may already have left while the request was being queued.
     const earlyReason = isClosed ? WITHDRAW_REASON_DISCONNECTED : deps.cancelReasonOf(idKey)

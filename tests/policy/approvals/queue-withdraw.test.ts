@@ -59,7 +59,7 @@ async function heartbeatRows(): Promise<{ approval_id: string; heartbeat_at: str
 }
 
 /** A holder process the probe below reports as `liveness` (R3), so no test needs a real dead pid. */
-const HOLDER: HolderIdentity = { pid: 424242, host: 'this-host' }
+const HOLDER: HolderIdentity = { pid: 424242, host: 'this-host', nonce: 'nonce-1' }
 
 function holderOptions(liveness: HolderLiveness = 'gone') {
   return { holder: HOLDER, holderLiveness: () => liveness }
@@ -367,9 +367,9 @@ describe('review R3: a stale heartbeat alone is not a lost holder', () => {
 
     const db = await openApprovalsDb(baseDir)
     const row = db.handle.db
-      .prepare('SELECT holder_pid, holder_host FROM approval_holds WHERE approval_id = ?')
+      .prepare('SELECT holder_pid, holder_host, holder_nonce FROM approval_holds WHERE approval_id = ?')
       .get(approvalId)
-    expect(row).toEqual({ holder_pid: HOLDER.pid, holder_host: HOLDER.host })
+    expect(row).toEqual({ holder_pid: HOLDER.pid, holder_host: HOLDER.host, holder_nonce: HOLDER.nonce })
   })
 
   test.each(['alive', 'unknown'] as const)(
@@ -388,13 +388,32 @@ describe('review R3: a stale heartbeat alone is not a lost holder', () => {
     },
   )
 
-  test('the real probe: this process is alive, a host elsewhere is unknown', async () => {
-    const { probeHolderLiveness } = await import('../../../src/policy/approvals/holder.js')
-    const { hostname } = await import('node:os')
+  test('the real probe: this process is alive only for what it holds; elsewhere is unknown', async () => {
+    const { currentHolder, noteHeld, noteReleased, probeHolderLiveness } = await import(
+      '../../../src/policy/approvals/holder.js'
+    )
+    const self = currentHolder()
 
-    expect(probeHolderLiveness({ pid: process.pid, host: hostname() })).toBe('alive')
-    expect(probeHolderLiveness({ pid: process.pid, host: `${hostname()}-elsewhere` })).toBe('unknown')
-    expect(probeHolderLiveness({ pid: 0, host: hostname() })).toBe('unknown')
+    noteHeld('01HELD')
+    expect(probeHolderLiveness(self, '01HELD')).toBe('alive')
+    // Its own row it no longer waits on (a withdrawal that failed): gone (security review L2).
+    noteReleased('01HELD')
+    expect(probeHolderLiveness(self, '01HELD')).toBe('gone')
+    // This pid in another incarnation (a restarted container) cannot be told apart.
+    expect(probeHolderLiveness({ ...self, nonce: 'earlier-run' }, '01HELD')).toBe('unknown')
+    expect(probeHolderLiveness({ ...self, host: `${self.host}-elsewhere` }, '01HELD')).toBe('unknown')
+    expect(probeHolderLiveness({ ...self, pid: 0 }, '01HELD')).toBe('unknown')
+  })
+
+  test('a live process\'s own row it stopped holding is withdrawn once its heartbeat is stale', async () => {
+    let nowMs = Date.UTC(2026, 9, 8, 12)
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs }) // the real holder and probe
+    const { approvalId } = await queue.enqueue(request())
+
+    nowMs += APPROVAL_HEARTBEAT_STALE_MS + 1
+
+    await expect(queue.countPending()).resolves.toBe(0)
+    await expect(queue.readResolution(approvalId)).resolves.toMatchObject({ outcome: 'withdrawn', reason: 'process-lost' })
   })
 })
 
@@ -450,8 +469,10 @@ describe('review R9: holds an older build left behind are pruned', () => {
     // An older build resolves without knowing the hold table, and a hold can outlive its row.
     db.handle.db.prepare("UPDATE approvals SET status = 'resolved' WHERE approval_id = ?").run(settled)
     db.handle.db
-      .prepare('INSERT INTO approval_holds (approval_id, heartbeat_at, holder_pid, holder_host) VALUES (?, ?, 1, ?)')
-      .run('01GONE', new Date().toISOString(), 'h')
+      .prepare(
+        'INSERT INTO approval_holds (approval_id, heartbeat_at, holder_pid, holder_host, holder_nonce) VALUES (?, ?, 1, ?, ?)',
+      )
+      .run('01GONE', new Date().toISOString(), 'h', 'n')
 
     const { approvalId: fresh } = await queue.enqueue(request())
 
@@ -468,5 +489,23 @@ describe('review R9: holds an older build left behind are pruned', () => {
       .map((row) => row.name)
     expect(tables).toContain('approval_holds')
     expect(tables).not.toContain('approval_heartbeats')
+  })
+})
+
+describe('a hold table of an unreleased development build (no nonce) is replaced on open', () => {
+  test('its rows go, and holds are written again in the current shape', async () => {
+    const legacy = await openStateDbShared(approvalsDbPath(baseDir))
+    legacy.db.exec(
+      'CREATE TABLE IF NOT EXISTS approval_holds (approval_id TEXT PRIMARY KEY, heartbeat_at TEXT NOT NULL, ' +
+        'holder_pid INTEGER NOT NULL, holder_host TEXT NOT NULL) STRICT',
+    )
+
+    const queue = createApprovalQueue({ baseDir, ...holderOptions('alive') })
+    const { approvalId } = await queue.enqueue(request())
+
+    const columns = (legacy.db.prepare("SELECT name FROM pragma_table_info('approval_holds')").all() as { name: string }[])
+      .map((row) => row.name)
+    expect(columns).toContain('holder_nonce')
+    expect((await heartbeatRows()).map((row) => row.approval_id)).toEqual([approvalId])
   })
 })

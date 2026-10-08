@@ -135,6 +135,17 @@ export function expectsResponse(bytes: Buffer): boolean {
 }
 
 /**
+ * Whether a server payload is the server's own notification or request. Such
+ * a message never settles a per-server (positional) POST: arriving while a
+ * call is held, it goes to the GET stream instead of ending that POST as if
+ * it were the call's answer (security review of M36 phase B, L3).
+ */
+export function isServerInitiated(bytes: Buffer): boolean {
+  const kind = classify(bytes.toString('utf8')).kind
+  return kind === 'notification' || kind === 'request'
+}
+
+/**
  * How the front pairs a POOL session's replies with its requests (ADR-0015
  * phase 3, plan decision P1). Lives here for the same reason every other hook
  * does: the key is a JSON-RPC `id`, and the transport must not learn what that

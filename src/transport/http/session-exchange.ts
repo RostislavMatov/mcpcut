@@ -73,6 +73,12 @@ export interface PairedSession {
   readonly abandoned: Set<string>
   /** Ends the session; a positional one cannot survive an abandoned request. */
   readonly end: () => void
+  /**
+   * Waits backed by a live POST (one with an abort signal) — what keeps the
+   * session off the idle sweeper. A handshake has no signal and is not
+   * counted, so a server hung in `initialize` is swept as before.
+   */
+  liveWaits: number
 }
 
 export interface ExchangeRulesDeps {
@@ -88,6 +94,13 @@ export interface ExchangeRulesDeps {
   readonly progress: ProgressCorrelation | undefined
   /** How long a POST answers with JSON before it becomes an SSE stream. */
   readonly postStreamAfterMs: number
+  /**
+   * Whether a payload is the server's own notification or request. When
+   * given, such a message never settles a positional POST: a log or a
+   * `list_changed` sent while a call is held goes to the GET stream instead
+   * of ending that POST as if it were the call's answer.
+   */
+  readonly isServerInitiated: ((bytes: Buffer) => boolean) | undefined
 }
 
 /** What answering one POST came to: a plan for the front to write, or an answer already streamed. */
@@ -98,7 +111,7 @@ export interface ExchangeRules {
   post(session: PairedSession, body: Buffer, options?: PostOptions): Promise<PostOutcome>
   /** Writes `body` and answers with the session's next message (the handshake path). */
   exchange(session: PairedSession, body: Buffer): Promise<ResponsePlan>
-  /** Delivers one server-origin payload: waiter > abandoned > related POST > in-flight > stream > buffer. */
+  /** Delivers one server-origin payload: waiter > abandoned > related POST > in-flight (not server-initiated) > stream > buffer. */
   deliver(session: PairedSession, payload: Buffer): void
 }
 
@@ -157,9 +170,20 @@ export function createExchangeRules(deps: ExchangeRulesDeps): ExchangeRules {
    */
   async function awaitAnswer(wait: AnswerWait): Promise<PostOutcome> {
     const { session, body, pending, options } = wait
+    const signal = options?.signal
+    if (signal?.aborted === true) {
+      // The agent is gone before anything was sent: send nothing at all.
+      wait.unregister()
+      return abandonedRequestPlan(new RequestAbortedError())
+    }
+    // The abort may reject `pending` while the write is still in flight —
+    // before anybody awaits it (review H1): handled from the start.
+    void pending.promise.catch(() => undefined)
     const stream = startPostStream({ open: options?.openStream, upgradeAfterMs: deps.postStreamAfterMs })
     const releaseRelated = relate(session, body, stream)
-    const releaseAbort = onAbort(options?.signal, () => pending.reject(new RequestAbortedError()))
+    const releaseAbort = onAbort(signal, () => pending.reject(new RequestAbortedError()))
+    const isLive = signal !== undefined
+    if (isLive) session.liveWaits += 1
     try {
       await session.handle.sink.write(clientMessage(body))
       const payload = await pending.promise
@@ -168,14 +192,16 @@ export function createExchangeRules(deps: ExchangeRulesDeps): ExchangeRules {
       wait.unregister()
       if (error instanceof RequestAbortedError) wait.abandon()
       const streamed = stream.abort()
-      if (streamed !== null) return streamed
       if (error instanceof SessionTornDownError) {
-        return jsonPlan(HTTP_STATUS_NOT_FOUND, BODY_SESSION_NOT_FOUND)
+        return streamed ?? jsonPlan(HTTP_STATUS_NOT_FOUND, BODY_SESSION_NOT_FOUND)
       }
       // Nobody reads it; the plan only completes the handler's contract.
-      if (error instanceof RequestAbortedError) return abandonedRequestPlan(error)
+      if (error instanceof RequestAbortedError) return streamed ?? abandonedRequestPlan(error)
+      // Anything else is a bug and goes to the front's 500 path, which reports
+      // it — an open stream is cut there, never ended as if all went well (M1).
       throw error
     } finally {
+      if (isLive) session.liveWaits -= 1
       releaseRelated()
       releaseAbort()
     }
@@ -241,6 +267,10 @@ export function createExchangeRules(deps: ExchangeRulesDeps): ExchangeRules {
     if (registered.kind === 'at-capacity') {
       return jsonPlan(HTTP_STATUS_TOO_MANY_REQUESTS, BODY_TOO_MANY_REQUESTS_IN_FLIGHT)
     }
+    // The key belongs to this request now: a late answer to an abandoned one
+    // under the same id can no longer be told apart, and must not make this
+    // request's own answer vanish (review M4).
+    session.abandoned.delete(registered.key)
     return awaitAnswer({
       session,
       body,
@@ -315,7 +345,7 @@ export function createExchangeRules(deps: ExchangeRulesDeps): ExchangeRules {
       }
       if (correlate !== undefined && dropAbandoned(session, correlate, payload)) return
       if (deliverRelated(session, payload)) return
-      if (session.inFlight !== null) {
+      if (session.inFlight !== null && deps.isServerInitiated?.(payload) !== true) {
         const pending = session.inFlight
         session.inFlight = null
         session.lastActivityMs = deps.now()

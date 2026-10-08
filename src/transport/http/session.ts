@@ -18,6 +18,7 @@ import {
   MAX_BUFFERED_SERVER_MESSAGES,
   MAX_CONCURRENT_SESSIONS,
   MAX_CORRELATED_IN_FLIGHT,
+  MAX_REQUEST_WAIT_MS,
   POST_STREAM_AFTER_MS,
   SESSION_IDLE_TTL_MS,
   SESSION_SWEEP_INTERVAL_MS,
@@ -153,6 +154,7 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
     maxCorrelatedInFlight,
     now,
     progress: opts.progress,
+    isServerInitiated: opts.isServerInitiated,
     postStreamAfterMs: opts.postStreamAfterMs ?? POST_STREAM_AFTER_MS,
     buffer: (current, payload) => appendBuffered(current, payload, maxBuffered, maxBufferedBytes),
     // The hooks belong to a session's FACTORY, not to one request, so no
@@ -178,11 +180,12 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
     const cutoff = now() - idleTtlMs
     for (const session of sessions.values()) {
       const hasOpenStream = session.stream !== null && session.stream.isOpen()
-      // A request in flight is an agent waiting on an open POST (M36: a call
-      // held for a human may wait for hours); if that POST closes, the
-      // abandonment ends or releases it — never the idle clock.
-      const hasRequestInFlight = session.inFlight !== null || session.waiting.size > 0
-      if (!hasOpenStream && !hasRequestInFlight && session.lastActivityMs < cutoff) {
+      // A POST waiting on its answer is an agent still there (M36: a call held
+      // for a human may wait for hours); if that POST closes, the abandonment
+      // ends or releases it. Only a wait a live POST backs counts — a hung
+      // handshake has none — and never past `MAX_REQUEST_WAIT_MS`.
+      const isWaiting = session.liveWaits > 0 && session.lastActivityMs >= now() - MAX_REQUEST_WAIT_MS
+      if (!hasOpenStream && !isWaiting && session.lastActivityMs < cutoff) {
         void teardownSession(session)
       }
     }
@@ -235,6 +238,7 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
       related: new Map(),
       abandoned: new Set(),
       end: () => void teardownSession(session),
+      liveWaits: 0,
     }
     sessions.set(session.id, session)
     handle.source.onMessage((message) => rules.deliver(session, message.bytes))

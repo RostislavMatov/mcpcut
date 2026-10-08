@@ -35,7 +35,7 @@ import { parseServeFlags, type ServeFlags } from './serve-flags.js'
 import { describeBindFailure } from './bind-failure.js'
 import type { ChildSessionDeps } from './serve-child.js'
 import { requestBudgetFor } from './serve-budget.js'
-import { createServeHooks, progressCorrelation } from './serve-hooks.js'
+import { createServeHooks, isServerInitiated, progressCorrelation } from './serve-hooks.js'
 import { createPoolWiring } from './serve-pool-wiring.js'
 import { createServeSessionFactory } from './serve-runtime.js'
 import { waitForShutdown, type ServeRuntime } from './serve-shutdown.js'
@@ -281,6 +281,7 @@ function buildFront(
     validateStatelessHeaders: hooks.validateStatelessHeaders,
     expectsResponse: hooks.expectsResponse,
     progress: progressCorrelation,
+    isServerInitiated,
     allowedOrigins: flags.allowedOrigins,
     allowedHosts: flags.allowedHosts,
     stderr: io.stderr,

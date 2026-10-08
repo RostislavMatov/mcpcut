@@ -106,6 +106,14 @@ export const SSE_HEARTBEAT_INTERVAL_MS = 15_000
 export const POST_STREAM_AFTER_MS = 10_000
 
 /**
+ * How long a POST waiting on its answer keeps its session off the idle
+ * sweeper (decision M36, phase B). A call held for a human waits at most a day
+ * (the approval's own cap), so a request quiet for longer than this is stuck,
+ * not held, and the session is swept as an idle one would be.
+ */
+export const MAX_REQUEST_WAIT_MS = 25 * 60 * 60_000
+
+/**
  * Max server-initiated messages buffered per session while no GET stream is
  * open. Past the cap the OLDEST buffered message is dropped: undelivered
  * server-initiated messages are declared lost by decision §4.1 of the spec

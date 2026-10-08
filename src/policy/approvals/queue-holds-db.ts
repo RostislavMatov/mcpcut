@@ -25,7 +25,12 @@ const CREATE_HOLDS_TABLE =
   'approval_id TEXT PRIMARY KEY, ' +
   'heartbeat_at TEXT NOT NULL, ' +
   'holder_pid INTEGER NOT NULL, ' +
-  'holder_host TEXT NOT NULL) STRICT'
+  'holder_host TEXT NOT NULL, ' +
+  'holder_nonce TEXT NOT NULL) STRICT'
+
+/** A development shape of the hold table (no nonce): unreleased, transient rows, so it is replaced. */
+const HOLDS_COLUMNS = "SELECT name FROM pragma_table_info('approval_holds')"
+const DROP_HOLDS_TABLE = 'DROP TABLE IF EXISTS approval_holds'
 
 /**
  * The heartbeat-only table of unreleased development builds of M36 phase A,
@@ -39,7 +44,8 @@ const CREATE_HEARTBEAT_AT_INDEX =
   'CREATE INDEX IF NOT EXISTS idx_approval_holds_heartbeat ON approval_holds(heartbeat_at)'
 
 const INSERT_HOLD =
-  'INSERT OR REPLACE INTO approval_holds (approval_id, heartbeat_at, holder_pid, holder_host) VALUES (?, ?, ?, ?)'
+  'INSERT OR REPLACE INTO approval_holds (approval_id, heartbeat_at, holder_pid, holder_host, holder_nonce) ' +
+  'VALUES (?, ?, ?, ?, ?)'
 
 /**
  * Refreshes the heartbeats of a whole session's held requests in ONE statement
@@ -53,7 +59,8 @@ const REFRESH_HEARTBEATS =
 
 const DELETE_HOLD = 'DELETE FROM approval_holds WHERE approval_id = ?'
 
-const SELECT_HOLD = 'SELECT heartbeat_at, holder_pid, holder_host FROM approval_holds WHERE approval_id = ?'
+const SELECT_HOLD =
+  'SELECT heartbeat_at, holder_pid, holder_host, holder_nonce FROM approval_holds WHERE approval_id = ?'
 
 /**
  * Candidates for the stale-heartbeat sweep, stalest first. Exported so the
@@ -69,7 +76,8 @@ const SELECT_HOLD = 'SELECT heartbeat_at, holder_pid, holder_host FROM approval_
  */
 export const SELECT_STALE_HOLDS =
   'SELECT a.approval_id AS approval_id, a.doc AS doc, h.heartbeat_at AS heartbeat_at, ' +
-  'h.holder_pid AS holder_pid, h.holder_host AS holder_host FROM approval_holds h ' +
+  'h.holder_pid AS holder_pid, h.holder_host AS holder_host, h.holder_nonce AS holder_nonce ' +
+  'FROM approval_holds h ' +
   'CROSS JOIN approvals a ON a.approval_id = h.approval_id ' +
   "WHERE h.heartbeat_at < ? AND a.status = 'pending' ORDER BY h.heartbeat_at LIMIT ?"
 
@@ -86,6 +94,8 @@ const DELETE_ORPHAN_HOLDS =
 /** Idempotent schema setup, run once per connection by `openApprovalsDb`. */
 export function prepareHoldsSchema(database: StateDatabase): void {
   database.exec(DROP_DEVELOPMENT_HEARTBEATS_TABLE)
+  const columns = database.prepare(HOLDS_COLUMNS).all().map((row) => (row as { name?: unknown }).name)
+  if (columns.length > 0 && !columns.includes('holder_nonce')) database.exec(DROP_HOLDS_TABLE)
   database.exec(CREATE_HOLDS_TABLE)
   database.exec(CREATE_HEARTBEAT_AT_INDEX)
 }
@@ -97,7 +107,7 @@ export function insertHold(
   atIso: string,
   holder: HolderIdentity,
 ): void {
-  database.prepare(INSERT_HOLD).run(approvalId, atIso, holder.pid, holder.host)
+  database.prepare(INSERT_HOLD).run(approvalId, atIso, holder.pid, holder.host, holder.nonce)
 }
 
 /** Moves the heartbeats of the still-pending requests among `approvalIds` to `atIso`; others are untouched. */
@@ -150,14 +160,15 @@ export function deleteOrphanHolds(database: StateDatabase, limit: number): numbe
 }
 
 /**
- * The hold columns of a row (`heartbeat_at`, `holder_pid`, `holder_host`), or
- * `undefined` when any is missing or mistyped — a LEFT JOIN that found no
- * hold, or a foreign table of the same name.
+ * The hold columns of a row (`heartbeat_at`, `holder_pid`, `holder_host`,
+ * `holder_nonce`), or `undefined` when any is missing or mistyped — a LEFT
+ * JOIN that found no hold, or a foreign table of the same name.
  */
 export function holdOf(row: unknown): HoldRecord | undefined {
   if (typeof row !== 'object' || row === null) return undefined
-  const { heartbeat_at: heartbeatAt, holder_pid: pid, holder_host: host } = row as Record<string, unknown>
-  if (typeof heartbeatAt !== 'string' || typeof host !== 'string') return undefined
+  const fields = row as Record<string, unknown>
+  const { heartbeat_at: heartbeatAt, holder_pid: pid, holder_host: host, holder_nonce: nonce } = fields
+  if (typeof heartbeatAt !== 'string' || typeof host !== 'string' || typeof nonce !== 'string') return undefined
   if (typeof pid !== 'number' && typeof pid !== 'bigint') return undefined
-  return { heartbeatAt, holder: { pid: Number(pid), host } }
+  return { heartbeatAt, holder: { pid: Number(pid), host, nonce } }
 }

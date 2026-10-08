@@ -16,6 +16,7 @@ import {
   testDetectInitialize,
   testExpectsResponse,
   INITIALIZE_BODY,
+  type FakeFactoryOptions,
   type FakeRes,
   type FakeSessionFactory,
 } from './front-harness.js'
@@ -87,8 +88,16 @@ afterEach(async () => {
   await Promise.all(managers.splice(0).map((managed) => managed.manager.close()))
 })
 
-function createManager(overrides: Partial<SessionManagerOptions> = {}, correlate?: ResponseCorrelation): Managed {
-  const factory = createFakeSessionFactory({ respond: () => null, ...(correlate !== undefined ? { correlate } : {}) })
+function createManager(
+  overrides: Partial<SessionManagerOptions> = {},
+  correlate?: ResponseCorrelation,
+  factoryOptions: FakeFactoryOptions = {},
+): Managed {
+  const factory = createFakeSessionFactory({
+    respond: () => null,
+    ...(correlate !== undefined ? { correlate } : {}),
+    ...factoryOptions,
+  })
   const manager = createSessionManager({
     openSession: factory.openSession,
     detectInitialize: testDetectInitialize,
@@ -217,6 +226,26 @@ describe('a POST becomes an SSE stream when its call is held', () => {
   })
 })
 
+describe('a positional POST is never settled by the server\'s own messages (security review L3)', () => {
+  test('a server notification while the call waits goes to the GET stream, not into the POST', async () => {
+    const isServerInitiated = (bytes: Buffer): boolean => parsedObject(bytes)?.['method'] !== undefined
+    const managed = createManager({ isServerInitiated })
+    const sid = await openSession(managed)
+    const control = managed.factory.handles[0]!
+    const get = createFakeRes()
+    expect(managed.manager.handleGet(CTX, { 'mcp-session-id': sid }, get.res)).toBe('attached')
+
+    const outcome = managed.manager.handlePost(CTX, { 'mcp-session-id': sid }, call(50))
+    await waitUntil(() => control.written.length === 2)
+    const log = JSON.stringify({ jsonrpc: '2.0', method: 'notifications/message', params: { level: 'info', data: 'x' } })
+    control.push(log)
+    control.push(reply(50))
+
+    expect(((await outcome) as ResponsePlan).body?.toString('utf8')).toBe(reply(50))
+    expect(events(get)).toEqual([JSON.parse(log)])
+  })
+})
+
 describe('the agent abandons a POST before its answer (M36 phase B, review R1)', () => {
   test('on a correlating session the request is reported abandoned and its late answer dropped', async () => {
     const managed = createManager({}, BY_ID)
@@ -271,14 +300,111 @@ describe('the agent abandons a POST before its answer (M36 phase B, review R1)',
   })
 })
 
+describe('review of phase B: the edges of an abandoned or failing POST', () => {
+  test('a hang-up while the request is still being written leaves no unhandled rejection (H1)', async () => {
+    // Every write takes 30 ms: the hang-up lands inside it.
+    const slow = createManager({}, BY_ID, { writeDelayMs: 30 })
+    const slowSid = await openSession(slow, POOL_CTX)
+    const control = slow.factory.handles[0]!
+    const post = streamingPost()
+    const rejections: unknown[] = []
+    const onRejection = (reason: unknown): void => {
+      rejections.push(reason)
+    }
+    process.on('unhandledRejection', onRejection)
+    try {
+      const outcome = slow.manager.handlePost(POOL_CTX, { 'mcp-session-id': slowSid }, call(40), post)
+      await waitUntil(() => control.written.length === 2)
+      post.abort()
+      await outcome
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    } finally {
+      process.off('unhandledRejection', onRejection)
+    }
+
+    expect(rejections).toEqual([])
+    expect(control.abandoned).toHaveLength(1)
+  })
+
+  test('a POST whose agent is already gone writes nothing upstream', async () => {
+    const managed = createManager({}, BY_ID)
+    const sid = await openSession(managed, POOL_CTX)
+    const control = managed.factory.handles[0]!
+    const post = streamingPost()
+    post.abort()
+
+    const outcome = (await managed.manager.handlePost(POOL_CTX, { 'mcp-session-id': sid }, call(41), post)) as ResponsePlan
+
+    expect(outcome.status).toBe(504)
+    expect(control.written).toHaveLength(1) // the handshake only
+    expect(control.abandoned).toEqual([])
+  })
+
+  test('a failure after the stream opened is not swallowed: it reaches the front, which reports it (M1)', async () => {
+    const failing = createManager({ postStreamAfterMs: 1 }, BY_ID, { writeDelayMs: 30 })
+    const sid = await openSession(failing, POOL_CTX)
+    failing.factory.handles[0]!.failWrites(new Error('pipe broke'))
+    const post = streamingPost()
+
+    const outcome = failing.manager.handlePost(POOL_CTX, { 'mcp-session-id': sid }, call(42), post)
+
+    await expect(outcome).rejects.toThrow('pipe broke')
+    expect(post.fake.isEnded()).toBe(true)
+  })
+
+  test('an id reused after it was abandoned gets its own answer, not a silent drop (M4)', async () => {
+    const managed = createManager({}, BY_ID)
+    const sid = await openSession(managed, POOL_CTX)
+    const control = managed.factory.handles[0]!
+    const first = streamingPost()
+    const abandoned = managed.manager.handlePost(POOL_CTX, { 'mcp-session-id': sid }, call(43), first)
+    await waitUntil(() => control.written.length === 2)
+    first.abort()
+    await abandoned
+
+    const again = managed.manager.handlePost(POOL_CTX, { 'mcp-session-id': sid }, call(43))
+    await waitUntil(() => control.written.length === 3)
+    control.push(reply(43))
+
+    expect(((await again) as ResponsePlan).body?.toString('utf8')).toBe(reply(43))
+  })
+})
+
 describe('the idle sweeper never ends a session that waits on a request', () => {
+  test('…but a handshake that never completes is swept as before (security review M1)', async () => {
+    let nowMs = 1_000_000
+    const managed = createManager({ now: () => nowMs, idleTtlMs: 1_000, sweepIntervalMs: 5 })
+    const pending = managed.manager.handlePost(CTX, {}, Buffer.from(INITIALIZE_BODY))
+    await waitUntil(() => managed.factory.handles.length === 1)
+    // The server never answers `initialize`.
+    nowMs += 60_000
+
+    await waitUntil(() => managed.factory.handles[0]!.isClosed())
+    expect(((await pending) as ResponsePlan).status).toBe(404)
+  })
+
+  test('…but a request waiting past the longest hold no longer keeps its session (M3)', async () => {
+    let nowMs = 1_000_000
+    const managed = createManager({ now: () => nowMs, idleTtlMs: 1_000, sweepIntervalMs: 5 }, BY_ID)
+    const sid = await openSession(managed, POOL_CTX)
+    const control = managed.factory.handles[0]!
+
+    const outcome = managed.manager.handlePost(POOL_CTX, { 'mcp-session-id': sid }, call(31), streamingPost())
+    await waitUntil(() => control.written.length === 2)
+    nowMs += 26 * 60 * 60_000
+
+    await waitUntil(() => control.isClosed())
+    expect(((await outcome) as ResponsePlan).status).toBe(404)
+  })
+
   test('a held POST outlives the idle TTL; the session goes once it is answered and idle again', async () => {
     let nowMs = 1_000_000
     const managed = createManager({ now: () => nowMs, idleTtlMs: 1_000, sweepIntervalMs: 5 }, BY_ID)
     const sid = await openSession(managed, POOL_CTX)
     const control = managed.factory.handles[0]!
 
-    const outcome = managed.manager.handlePost(POOL_CTX, { 'mcp-session-id': sid }, call(30))
+    // The front gives every POST the signal of its socket: that is what makes the wait a live one.
+    const outcome = managed.manager.handlePost(POOL_CTX, { 'mcp-session-id': sid }, call(30), streamingPost())
     await waitUntil(() => control.written.length === 2)
     nowMs += 60_000
     await new Promise((resolve) => setTimeout(resolve, 30))

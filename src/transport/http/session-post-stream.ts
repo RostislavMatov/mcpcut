@@ -47,10 +47,18 @@ export function startPostStream(opts: PostStreamOptions): PostStream {
   const { open } = opts
   let stream: SseStream | null = null
   let isDone = false
+  let cannotOpen = open === undefined
 
   function ensureOpen(): SseStream | null {
-    if (isDone || open === undefined) return null
-    stream ??= open()
+    if (isDone || cannotOpen || open === undefined) return null
+    try {
+      stream ??= open()
+    } catch {
+      // The response is already gone (a destroyed socket): this POST answers
+      // as JSON, or not at all — the abort path tells the session.
+      cannotOpen = true
+      return null
+    }
     return stream
   }
 
