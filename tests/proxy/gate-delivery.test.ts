@@ -445,3 +445,48 @@ describe('a held call its agent left is announced as never to be answered (S-L1)
     expect(dropped).toEqual([])
   })
 })
+
+describe('review fixes of phase C', () => {
+  test('a cancel frees the tool use at once: a server that honours it cannot pin it (M4)', async () => {
+    const { gate } = createHarness()
+    await settled(gate.gateClientMessage(toolCall(1, 'toolu_K')))
+    await settled(gate.gateClientMessage(cancelOf(1)))
+
+    expect(await settled(gate.gateClientMessage(toolCall(2, 'toolu_K')))).toEqual({ action: 'forward' })
+  })
+
+  test('once a session settles, a late forward is neither tracked nor left claimed (M2)', async () => {
+    const answers = createToolUseAnswers()
+    const { gate } = createHarness({ answers })
+    expect(await gate.settleForwarded(0, 'server-ended')).toBe(0)
+
+    await settled(gate.gateClientMessage(toolCall(1, 'toolu_L')))
+
+    expect(await gate.settleForwarded(0, 'server-ended')).toBe(0)
+    expect(answers.claim('', 'toolu_L')).not.toBeNull()
+  })
+
+  test('the grace stops waiting the moment it is told the server is gone (M1)', async () => {
+    const { gate } = createHarness()
+    await settled(gate.gateClientMessage(toolCall(1, 'toolu_M')))
+    await gate.agentLeft()
+    const stop = new AbortController()
+
+    const startedAt = Date.now()
+    const settling = gate.settleForwarded(60_000, 'closed', stop.signal)
+    stop.abort()
+
+    expect(await settling).toBe(1)
+    expect(Date.now() - startedAt).toBeLessThan(1_000)
+  })
+
+  test('the records of a call carry no arguments of their own: its allow record has them (security M3)', async () => {
+    const { gate } = createHarness()
+    await settled(gate.gateClientMessage(toolCall(1, 'toolu_N', { secretish: 'payload' })))
+    gate.abandonRequest(1)
+    gate.gateServerMessage(resultOf(1))
+
+    const undelivered = (await decisions()).find((record) => record.decision?.outcome === 'undelivered')
+    expect(JSON.stringify(undelivered?.payload ?? null)).not.toContain('payload')
+  })
+})

@@ -34,6 +34,11 @@ import {
  *  - **Teardown** (`agentLeft`, then `settle`): what the server has not
  *    answered within the grace is journaled `unanswered`. A call the agent
  *    cancelled is not counted: a server need not answer a cancelled request.
+ *
+ * A tracked call keeps only what its records need — facts, tool-use id,
+ * claim, departure — never its arguments: an unanswered call must not pin its
+ * payload (security review of phase C, M3); its `allow`/`approved` record
+ * already carries them, linked by `argsHash`.
  */
 
 /** A resend answered with the first result. */
@@ -87,12 +92,16 @@ export interface GateDelivery {
   observeAnswer(idKey: string, raw: string): void
   /** The agent is gone: every forwarded call left, and nothing forwarded from now on is tracked. */
   agentLeft(): void
-  /** Waits up to `graceMs` for the answers still owed, journals the rest; resolves to how many were journaled. */
-  settle(graceMs: number, reason: string): Promise<number>
+  /**
+   * Waits up to `graceMs` for the answers still owed — less, once `stop`
+   * aborts (the server is gone) — then journals the rest; resolves to how many
+   * were journaled. From the first call on, nothing newly forwarded is tracked.
+   */
+  settle(graceMs: number, reason: string, stop?: AbortSignal): Promise<number>
 }
 
 interface ForwardedCall {
-  readonly call: ParsedToolCall
+  readonly toolUseId?: string
   readonly facts: CallFacts
   readonly claim: ToolUseClaim | null
   readonly forwardedAtMs: number
@@ -119,15 +128,16 @@ function parseKeptResponse(response: string): Record<string, unknown> | null {
   }
 }
 
-function toolUseExtra(call: ParsedToolCall): Pick<DecisionExtras, 'toolUseId'> {
-  return call.toolUseId !== undefined ? { toolUseId: call.toolUseId } : {}
+function toolUseExtra(subject: { readonly toolUseId?: string }): Pick<DecisionExtras, 'toolUseId'> {
+  return subject.toolUseId !== undefined ? { toolUseId: subject.toolUseId } : {}
 }
 
 export function createGateDelivery(deps: GateDeliveryDeps): GateDelivery {
   const { scope, answers, clock, writeDecision, settleJournal, answerLocally } = deps
   const forwarded = new Map<string, ForwardedCall>()
   let isLeaving = false
-  let onOwedSettled: (() => void) | null = null
+  /** Settles waiting for the answers still owed; more than one `settle` may wait. */
+  const owedWaiters = new Set<() => void>()
 
   /** Answers still owed: a call the agent cancelled is owed nothing. */
   function owedCount(): number {
@@ -139,7 +149,7 @@ export function createGateDelivery(deps: GateDeliveryDeps): GateDelivery {
   function forget(idKey: string, entry: ForwardedCall): void {
     forwarded.delete(idKey)
     entry.claim?.release()
-    if (onOwedSettled !== null && owedCount() === 0) onOwedSettled()
+    if (owedWaiters.size > 0 && owedCount() === 0) for (const wake of [...owedWaiters]) wake()
   }
 
   async function replay(call: ParsedToolCall, facts: CallFacts, response: Record<string, unknown>): Promise<Verdict> {
@@ -180,21 +190,36 @@ export function createGateDelivery(deps: GateDeliveryDeps): GateDelivery {
       forget(oldestKey, oldest)
     }
     const departure = deps.departureOf(idKey)
-    forwarded.set(idKey, Object.freeze({ call, facts, claim, forwardedAtMs: clock(), ...(departure !== undefined ? { departure } : {}) }))
+    // A call its agent cancelled is owed nothing: its tool use is free again
+    // at once, so a server that honours the cancel cannot pin it (review M4).
+    if (departure?.kind === 'cancel') claim?.release()
+    const entry: ForwardedCall = {
+      ...toolUseExtra(call),
+      facts,
+      claim,
+      forwardedAtMs: clock(),
+      ...(departure !== undefined ? { departure } : {}),
+    }
+    forwarded.set(idKey, Object.freeze(entry))
+  }
+
+  /** Registers or releases; a fault here must not leave the tool use claimed (review L3). */
+  function settleVerdict(call: ParsedToolCall, facts: CallFacts, claim: ToolUseClaim | null, verdict: Verdict): Verdict {
+    try {
+      register(call, facts, claim, verdict)
+    } catch (error: unknown) {
+      claim?.release()
+      throw error
+    }
+    return verdict
   }
 
   function track(
     call: ParsedToolCall, facts: CallFacts, claim: ToolUseClaim | null, verdict: Verdict | Promise<Verdict>,
   ): Verdict | Promise<Verdict> {
-    if (!isPromiseVerdict(verdict)) {
-      register(call, facts, claim, verdict)
-      return verdict
-    }
+    if (!isPromiseVerdict(verdict)) return settleVerdict(call, facts, claim, verdict)
     return verdict.then(
-      (settled) => {
-        register(call, facts, claim, settled)
-        return settled
-      },
+      (settled) => settleVerdict(call, facts, claim, settled),
       (error: unknown) => {
         claim?.release()
         throw error
@@ -204,7 +229,7 @@ export function createGateDelivery(deps: GateDeliveryDeps): GateDelivery {
 
   /** Keeps the answer for a resend when the call carried a tool-use id; says what became of it. */
   function keepAnswer(entry: ForwardedCall, raw: string): KeepResult {
-    const toolUseId = entry.call.toolUseId
+    const toolUseId = entry.toolUseId
     if (toolUseId === undefined) return ANSWER_NOT_KEPT_RULE
     const delivered = entry.departure === undefined
     const identity = identityOf(entry.facts)
@@ -229,14 +254,15 @@ export function createGateDelivery(deps: GateDeliveryDeps): GateDelivery {
     const extras: DecisionExtras = {
       reason: entry.departure.reason,
       latencyMs: clock() - entry.forwardedAtMs,
-      ...toolUseExtra(entry.call),
+      ...toolUseExtra(entry),
     }
-    writeDecision(decisionInfoOf(entry.facts, 'undelivered', kept, extras), entry.call.args)
+    writeDecision(decisionInfoOf(entry.facts, 'undelivered', kept, extras))
   }
 
   function departed(idKey: string, departure: Departure): void {
     const entry = forwarded.get(idKey)
     if (entry === undefined || entry.departure !== undefined) return
+    if (departure.kind === 'cancel') entry.claim?.release()
     forwarded.set(idKey, Object.freeze({ ...entry, departure }))
   }
 
@@ -247,21 +273,27 @@ export function createGateDelivery(deps: GateDeliveryDeps): GateDelivery {
     }
   }
 
-  function waitOwed(graceMs: number): Promise<void> {
-    if (graceMs <= 0 || owedCount() === 0) return Promise.resolve()
+  /** Until nothing is owed, `graceMs` ran out, or `stop` aborted — whichever comes first. */
+  function waitOwed(graceMs: number, stop?: AbortSignal): Promise<void> {
+    if (graceMs <= 0 || owedCount() === 0 || stop?.aborted === true) return Promise.resolve()
     return new Promise((resolve) => {
       const timer = setTimeout(done, graceMs)
+      stop?.addEventListener('abort', done, { once: true })
       function done(): void {
         clearTimeout(timer)
-        onOwedSettled = null
+        stop?.removeEventListener('abort', done)
+        owedWaiters.delete(done)
         resolve()
       }
-      onOwedSettled = done
+      owedWaiters.add(done)
     })
   }
 
-  async function settle(graceMs: number, reason: string): Promise<number> {
-    await waitOwed(graceMs)
+  async function settle(graceMs: number, reason: string, stop?: AbortSignal): Promise<number> {
+    // Whatever ending this is, nothing forwarded from now on is tracked: it
+    // could only ever be settled by a second `settle` (review M2).
+    isLeaving = true
+    await waitOwed(graceMs, stop)
     let unanswered = 0
     for (const [idKey, entry] of [...forwarded]) {
       forget(idKey, entry)
@@ -270,9 +302,9 @@ export function createGateDelivery(deps: GateDeliveryDeps): GateDelivery {
       const extras: DecisionExtras = {
         reason: entry.departure?.reason ?? reason,
         latencyMs: clock() - entry.forwardedAtMs,
-        ...toolUseExtra(entry.call),
+        ...toolUseExtra(entry),
       }
-      writeDecision(decisionInfoOf(entry.facts, 'unanswered', SESSION_ENDED_RULE, extras), entry.call.args)
+      writeDecision(decisionInfoOf(entry.facts, 'unanswered', SESSION_ENDED_RULE, extras))
     }
     return unanswered
   }

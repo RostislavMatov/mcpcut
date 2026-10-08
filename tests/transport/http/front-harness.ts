@@ -83,6 +83,8 @@ export interface FakeFactoryOptions {
   readonly writeDelayMs?: number
   /** Each write rejects with this error (after `writeDelayMs`). */
   readonly writeError?: Error
+  /** `close()` settles only once this does (a session draining its upstream, M36 phase C). */
+  readonly closeGate?: Promise<void>
 }
 
 export interface FakeSessionFactory {
@@ -175,7 +177,7 @@ export function createFakeSessionFactory(options: FakeFactoryOptions = {}): Fake
       },
       close: () => {
         isClosed = true
-        return Promise.resolve()
+        return options.closeGate ?? Promise.resolve()
       },
     }
     return Promise.resolve(opened)

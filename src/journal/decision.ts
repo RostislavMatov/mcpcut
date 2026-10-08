@@ -56,6 +56,8 @@ export function buildDecisionRecord(input: BuildDecisionRecordInput): JournalRec
       : {}),
     // `reason` of an `agent-gone` record is the client's own cancel text: traffic.
     ...(input.decision.reason !== undefined ? { reason: redactString(input.decision.reason) } : {}),
+    // `toolUseId` (M36 phase C) is the client's own `_meta` value: traffic too.
+    ...(input.decision.toolUseId !== undefined ? { toolUseId: redactString(input.decision.toolUseId) } : {}),
   })
 
   const record: JournalRecord = {

@@ -43,6 +43,7 @@ function fakeSession(id: string): FakeSession {
       sink: pipe.front.sink,
       source: pipe.front.source,
       endReason: () => reason,
+      onRequestDropped: () => undefined,
       close: () => {
         if (!closed) {
           closed = true

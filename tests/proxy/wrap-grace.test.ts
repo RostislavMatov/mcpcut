@@ -13,9 +13,10 @@ import { createClientHarness, readJournalRecords, waitUntil, type ClientHarness 
  * Decision M36, phase C, on `wrap`: when the client's stdin ends while a call
  * it sent is still running, the server does not see the end of ITS stdin at
  * once — most stdio servers exit on it and drop the call. It sees it once it
- * has answered every call already sent (each answer journaled `undelivered`),
- * or once the grace runs out; then what it still owed is journaled
- * `unanswered` and the operator is told, with the command that shows it.
+ * has answered every call already sent, or once the grace runs out; then what
+ * it still owed is journaled `unanswered` and the operator is told, with the
+ * command that shows it. The client's stdout may still be read (a one-shot
+ * `printf … | mcpcut wrap`), so an answer in the grace is delivered as usual.
  */
 
 const SLOW_SERVER_PATH = join(dirname(fileURLToPath(import.meta.url)), '../fixtures/slow-answer-server.mjs')
@@ -61,7 +62,7 @@ async function decisionsOf(sessionId: string): Promise<JournalRecord[]> {
 }
 
 describe('wrap: the teardown grace for calls already sent', () => {
-  test('the client leaves mid-call: the server still finishes, and its answer is journaled undelivered', async () => {
+  test('the client ends its input mid-call: the server still finishes, and the answer reaches the client', async () => {
     const harness = createClientHarness()
     const sessionId = ulid()
     const running = runWith(harness, sessionId, 10_000)
@@ -72,7 +73,9 @@ describe('wrap: the teardown grace for calls already sent', () => {
 
     expect(await running).toBe(0)
     const outcomes = (await decisionsOf(sessionId)).map((record) => record.decision?.outcome)
-    expect(outcomes).toEqual(['allow', 'undelivered'])
+    expect(outcomes).toEqual(['allow'])
+    const answer = JSON.parse(Buffer.concat(harness.clientInboxChunks).toString('utf8').trim()) as Record<string, any>
+    expect(answer).toMatchObject({ id: 1, result: { content: [{ text: 'answered after 300 ms' }] } })
     expect(harness.receivedStderrText()).not.toContain('UNANSWERED')
   })
 
@@ -88,7 +91,7 @@ describe('wrap: the teardown grace for calls already sent', () => {
     expect(await running).toBe(0)
     const unanswered = (await decisionsOf(sessionId)).filter((record) => record.decision?.outcome === 'unanswered')
     expect(unanswered).toHaveLength(1)
-    expect(unanswered[0]?.decision?.reason).toBe('disconnected')
+    expect(unanswered[0]?.decision?.reason).toBe('client-ended')
     expect(harness.receivedStderrText()).toContain(`UNANSWERED slow 1 ${sessionId}`)
   })
 })

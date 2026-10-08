@@ -373,7 +373,7 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     gateServerMessage: router.gateServerMessage,
     cancelPending,
     agentLeft,
-    settleForwarded: (graceMs, reason) => delivery.settle(graceMs, reason),
+    settleForwarded: (graceMs, reason, stop) => delivery.settle(graceMs, reason, stop),
     abandonRequest: (id) => {
       if (id !== null) router.abandonRequest(idKeyOf(id), WITHDRAW_REASON_DISCONNECTED)
     },

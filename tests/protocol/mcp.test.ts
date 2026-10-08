@@ -37,12 +37,18 @@ describe('parseToolCall: the toolUseId that names one tool use of the model (M36
     expect(call?.progressToken).toBe(2)
   })
 
-  test('an empty, overlong, non-string or control-character id names nothing, and the key stays absent', () => {
-    const rejected = ['', 'x'.repeat(257), 7, null, { a: 1 }, 'toolu_\u0007bell', 'toolu_\nline']
+  test('an empty, overlong, non-string, control, bidi or other non-ASCII id names nothing, and the key stays absent', () => {
+    const rejected = ['', 'x'.repeat(257), 7, null, { a: 1 }, 'toolu_\u0007bell', 'toolu_\nline', 'toolu_\u202eevil', 'toolu_\u0085', 'toolu id']
     for (const value of rejected) {
       const call = parseToolCall(classify(callWithMeta({ 'claudecode/toolUseId': value })))
       expect(call).not.toBeNull()
       expect(call).not.toHaveProperty('toolUseId')
+    }
+  })
+
+  test('a UUID or a dotted, colon-separated id is accepted', () => {
+    for (const id of ['3f2b8c1e-7a4d-4e5f-9b0a-1c2d3e4f5a6b', 'call.42:retry']) {
+      expect(parseToolCall(classify(callWithMeta({ 'claudecode/toolUseId': id })))?.toolUseId).toBe(id)
     }
   })
 

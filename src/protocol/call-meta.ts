@@ -18,8 +18,13 @@ export const CLAUDE_CODE_TOOL_USE_ID_META_KEY = 'claudecode/toolUseId'
 /** Longest tool-use id accepted; Claude Code's are ~30 characters. */
 export const MAX_TOOL_USE_ID_CHARS = 256
 
-/** C0 controls and DEL: an id carrying one is not an id this gate keys anything by. */
-const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/
+/**
+ * What a tool-use id may be made of: Claude Code's are `toolu_` plus base62,
+ * and a UUID or a dotted/colon-separated id fits too. Anything else — control,
+ * bidi or other non-ASCII characters — is not an id this gate keys anything by
+ * or writes to a journal (security review of phase C, M1).
+ */
+const TOOL_USE_ID_PATTERN = /^[A-Za-z0-9._:-]+$/
 
 export interface CallMeta {
   readonly progressToken?: string | number
@@ -40,8 +45,8 @@ function progressTokenOf(meta: Record<string, unknown>): string | number | undef
 /** The tool-use id of a request's `_meta`, if it is one the gate may key a call by. */
 function toolUseIdOf(meta: Record<string, unknown>): string | undefined {
   const id = meta[CLAUDE_CODE_TOOL_USE_ID_META_KEY]
-  if (typeof id !== 'string' || id.length === 0 || id.length > MAX_TOOL_USE_ID_CHARS) return undefined
-  return CONTROL_CHARACTER.test(id) ? undefined : id
+  if (typeof id !== 'string' || id.length > MAX_TOOL_USE_ID_CHARS) return undefined
+  return TOOL_USE_ID_PATTERN.test(id) ? id : undefined
 }
 
 /** Reads `params._meta`; every field is absent (not `undefined`) when the meta does not carry a usable one. */

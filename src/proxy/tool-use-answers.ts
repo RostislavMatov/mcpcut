@@ -15,8 +15,9 @@
  *  - **Answers.** Every server answer to a call carrying a tool-use id is
  *    kept 24 h, delivered or not — a lost answer looks delivered to the plane.
  *    In memory only (owner, 2026-10-09): nothing written to disk, gone with
- *    the process. Bounded per answer and in all; past the total, delivered
- *    answers leave first, then the oldest.
+ *    the process. Bounded per answer, per agent and in all; past a bound,
+ *    delivered answers leave first, then the oldest — an agent past its own
+ *    share loses only its own.
  *  - **Claims.** While a call of a tool use is held for a human or running at
  *    its server, the same tool use is not decided again: a second call of it
  *    must neither ask twice nor run twice. A claim nobody released (a bug, a
@@ -33,11 +34,20 @@ export const MAX_KEPT_ANSWER_BYTES = 1024 * 1024
 export const MAX_KEPT_ANSWERS_BYTES = 64 * 1024 * 1024
 
 /**
+ * One agent's share of them: past it the agent loses its own oldest answers,
+ * so one busy agent cannot push another's out (security review of phase C, M2).
+ */
+export const MAX_KEPT_ANSWERS_PER_AGENT_BYTES = MAX_KEPT_ANSWERS_BYTES / 4
+
+/**
  * A claim older than this has outlived any call it could stand for: a held
  * call ends at the 24-hour request cap and a session's teardown grace is
  * seconds — 25 h is the same bound the HTTP front puts on one request's wait.
  */
 export const TOOL_USE_CLAIM_MAX_AGE_MS = 25 * 60 * 60 * 1000
+
+/** Past this many claims, lapsed ones are swept before the next is taken (review L6). */
+const CLAIMS_SWEEP_AT = 10_000
 
 /** The call a kept answer belongs to: the same tool-use id under another call is not a resend of it. */
 export interface CallIdentity {
@@ -75,9 +85,11 @@ export interface ToolUseAnswers {
 export interface ToolUseAnswersOptions {
   readonly clock?: () => number
   readonly maxTotalBytes?: number
+  readonly maxScopeBytes?: number
 }
 
 interface StoredAnswer extends KeptAnswer {
+  readonly scope: string
   readonly bytes: number
 }
 
@@ -100,48 +112,63 @@ function isSameCall(answer: CallIdentity, call: CallIdentity): boolean {
 export function createToolUseAnswers(options: ToolUseAnswersOptions = {}): ToolUseAnswers {
   const clock = options.clock ?? Date.now
   const maxTotalBytes = options.maxTotalBytes ?? MAX_KEPT_ANSWERS_BYTES
+  const maxScopeBytes = options.maxScopeBytes ?? MAX_KEPT_ANSWERS_PER_AGENT_BYTES
   /** Insertion-ordered, oldest first: a re-kept answer is deleted and set again. */
   const answers = new Map<string, StoredAnswer>()
   const claims = new Map<string, ClaimEntry>()
   let totalBytes = 0
+  const scopeBytes = new Map<string, number>()
+
+  function bytesOf(scope: string): number {
+    return scopeBytes.get(scope) ?? 0
+  }
 
   function forget(key: string): void {
     const stored = answers.get(key)
     if (stored === undefined) return
     answers.delete(key)
     totalBytes -= stored.bytes
+    const left = bytesOf(stored.scope) - stored.bytes
+    if (left > 0) scopeBytes.set(stored.scope, left)
+    else scopeBytes.delete(stored.scope)
   }
 
   function isExpired(stored: StoredAnswer, now: number): boolean {
     return now - stored.keptAtMs >= TOOL_USE_ANSWER_TTL_MS
   }
 
-  /** Expired first, then delivered oldest-first, then anything oldest-first, until `incoming` fits. */
-  function makeRoom(incoming: number, now: number): void {
+  /** Delivered oldest-first, then anything oldest-first, among `candidates`, until `fits()`. */
+  function evictUntil(fits: () => boolean, candidates: (stored: StoredAnswer) => boolean): void {
+    for (const [key, stored] of [...answers]) {
+      if (fits()) return
+      if (candidates(stored) && stored.delivered) forget(key)
+    }
+    for (const [key, stored] of [...answers]) {
+      if (fits()) return
+      if (candidates(stored)) forget(key)
+    }
+  }
+
+  /** Expired first; then the agent's own share; then the process's total — until `incoming` fits both. */
+  function makeRoom(scope: string, incoming: number, now: number): void {
     for (const [key, stored] of [...answers]) {
       if (isExpired(stored, now)) forget(key)
     }
-    const fits = (): boolean => totalBytes + incoming <= maxTotalBytes
-    for (const [key, stored] of [...answers]) {
-      if (fits()) return
-      if (stored.delivered) forget(key)
-    }
-    for (const key of [...answers.keys()]) {
-      if (fits()) return
-      forget(key)
-    }
+    evictUntil(() => bytesOf(scope) + incoming <= maxScopeBytes, (stored) => stored.scope === scope)
+    evictUntil(() => totalBytes + incoming <= maxTotalBytes, () => true)
   }
 
   return {
     keep(scope, toolUseId, answer) {
       const bytes = Buffer.byteLength(answer.response, 'utf8')
-      if (bytes > MAX_KEPT_ANSWER_BYTES || bytes > maxTotalBytes) return 'too-large'
+      if (bytes > MAX_KEPT_ANSWER_BYTES || bytes > maxScopeBytes || bytes > maxTotalBytes) return 'too-large'
       const key = keyOf(scope, toolUseId)
       const now = clock()
       forget(key)
-      makeRoom(bytes, now)
-      answers.set(key, Object.freeze({ ...answer, keptAtMs: now, bytes }))
+      makeRoom(scope, bytes, now)
+      answers.set(key, Object.freeze({ ...answer, keptAtMs: now, scope, bytes }))
       totalBytes += bytes
+      scopeBytes.set(scope, bytesOf(scope) + bytes)
       return 'kept'
     },
 
@@ -154,13 +181,18 @@ export function createToolUseAnswers(options: ToolUseAnswersOptions = {}): ToolU
         return null
       }
       if (!isSameCall(stored, call)) return null
-      const { bytes: _bytes, ...kept } = stored
+      const { bytes: _bytes, scope: _scope, ...kept } = stored
       return kept
     },
 
     claim(scope, toolUseId) {
       const key = keyOf(scope, toolUseId)
       const now = clock()
+      if (claims.size >= CLAIMS_SWEEP_AT) {
+        for (const [held, entry] of [...claims]) {
+          if (now - entry.claimedAtMs >= TOOL_USE_CLAIM_MAX_AGE_MS) claims.delete(held)
+        }
+      }
       const held = claims.get(key)
       if (held !== undefined && now - held.claimedAtMs < TOOL_USE_CLAIM_MAX_AGE_MS) return null
       const entry: ClaimEntry = Object.freeze({ claimedAtMs: now })

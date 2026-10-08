@@ -108,6 +108,8 @@ export function createSession(deps: CreateSessionDeps): SessionHandle {
   const pending = new Set<Promise<void>>()
   /** The teardown grace: the server is still read (journaled, gated), the client is gone. */
   let isDraining = false
+  /** Aborted when the server goes during the grace: nothing more can come (review M1). */
+  const serverGone = new AbortController()
 
   const watch: AgentWatch | null =
     deps.agent !== undefined
@@ -206,7 +208,8 @@ export function createSession(deps: CreateSessionDeps): SessionHandle {
   ): void {
     if (endedReason !== null && !(isDraining && direction === 'server→client')) return
     if (isBlankMessage(message)) {
-      trackPending(sink.write(message))
+      // Nothing reaches the client once the session ended, a blank line neither (review L1).
+      if (endedReason === null) trackPending(sink.write(message))
       return
     }
     tap(message, direction)
@@ -273,7 +276,8 @@ export function createSession(deps: CreateSessionDeps): SessionHandle {
       if (!isAgentGone) return await gate.settleForwarded(0, reason)
       isDraining = true
       await gate.agentLeft()
-      return await gate.settleForwarded(deps.forwardedAnswerGraceMs ?? FORWARDED_ANSWER_GRACE_MS, reason)
+      const graceMs = deps.forwardedAnswerGraceMs ?? FORWARDED_ANSWER_GRACE_MS
+      return await gate.settleForwarded(graceMs, reason, serverGone.signal)
     } catch (error: unknown) {
       onError(error)
       return 0
@@ -346,9 +350,11 @@ export function createSession(deps: CreateSessionDeps): SessionHandle {
   })
   server.source.onError((error) => {
     onError(error)
+    serverGone.abort()
     void endSession('server-ended')
   })
   server.source.onEnd(() => {
+    serverGone.abort()
     void endSession('server-ended')
   })
 

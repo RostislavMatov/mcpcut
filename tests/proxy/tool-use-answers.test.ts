@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'vitest'
 import {
   MAX_KEPT_ANSWER_BYTES,
+  MAX_KEPT_ANSWERS_BYTES,
+  MAX_KEPT_ANSWERS_PER_AGENT_BYTES,
   TOOL_USE_ANSWER_TTL_MS,
   TOOL_USE_CLAIM_MAX_AGE_MS,
   createToolUseAnswers,
@@ -89,6 +91,29 @@ describe('tool-use answers: the server answer a resend of the same tool use gets
     answers.keep('bot', 'toolu_1', { ...IDENTITY, response: '{"jsonrpc":"2.0","id":8,"result":{}}', delivered: true })
 
     expect(answers.find('bot', 'toolu_1', IDENTITY)).toMatchObject({ response: '{"jsonrpc":"2.0","id":8,"result":{}}', delivered: true })
+  })
+})
+
+describe('tool-use answers: one agent cannot push another\'s answers out (security review M2)', () => {
+  test('past its own share an agent loses its own oldest answers, never another agent\'s', () => {
+    // Arrange: each agent may hold two answers of this size; all of them fit in the total.
+    const size = Buffer.byteLength(RESPONSE)
+    const answers = createToolUseAnswers({ clock: clockAt().now, maxScopeBytes: size * 2, maxTotalBytes: size * 100 })
+    answers.keep('victim', 'toolu_v', { ...IDENTITY, response: RESPONSE, delivered: true })
+    answers.keep('noisy', 'toolu_1', { ...IDENTITY, response: RESPONSE, delivered: false })
+    answers.keep('noisy', 'toolu_2', { ...IDENTITY, response: RESPONSE, delivered: false })
+
+    // Act
+    answers.keep('noisy', 'toolu_3', { ...IDENTITY, response: RESPONSE, delivered: false })
+
+    // Assert
+    expect(answers.find('noisy', 'toolu_1', IDENTITY)).toBeNull()
+    expect(answers.find('noisy', 'toolu_3', IDENTITY)).not.toBeNull()
+    expect(answers.find('victim', 'toolu_v', IDENTITY)).not.toBeNull()
+  })
+
+  test('the default share per agent is a quarter of the total', () => {
+    expect(MAX_KEPT_ANSWERS_PER_AGENT_BYTES * 4).toBe(MAX_KEPT_ANSWERS_BYTES)
   })
 })
 

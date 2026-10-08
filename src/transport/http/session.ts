@@ -168,8 +168,14 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
     timeoutMs: statelessTimeoutMs,
     onOpenAbandoned: opts.onOpenAbandoned,
   })
-  /** Registered sessions plus whatever else shares this manager's budget (P5). */
-  const countRegistered = (): number => sessions.size + (opts.extraSessions?.() ?? 0)
+  /**
+   * Sessions torn down whose close has not settled: a closing session may
+   * still hold its upstream for the teardown grace (M36 phase C), so it keeps
+   * its slot until it lets go (security review of phase C, M4).
+   */
+  let closingSessions = 0
+  /** Registered and closing sessions plus whatever else shares this manager's budget (P5). */
+  const countRegistered = (): number => sessions.size + closingSessions + (opts.extraSessions?.() ?? 0)
   const slots = createSlotCounter(maxSessions, countRegistered, opts.reclaimSessions)
   let isManagerClosed = false
 
@@ -204,10 +210,13 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
     session.stream?.close()
     session.stream = null
     session.handle.source.dispose()
+    closingSessions += 1
     try {
       await session.handle.close()
     } catch (error: unknown) {
       opts.onSessionError?.(session.id, error)
+    } finally {
+      closingSessions -= 1
     }
   }
 

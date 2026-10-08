@@ -144,9 +144,10 @@ export interface MessagePolicyGate {
    * Waits up to `graceMs` for the server's answers to forwarded calls, then
    * journals each still missing as `unanswered` (with `reason` when its agent
    * had not left) and resolves to how many there were. A call the agent
-   * cancelled is not counted: a server need not answer it.
+   * cancelled is not counted: a server need not answer it. `stop` ends the
+   * wait early (the server is gone: nothing more can come).
    */
-  settleForwarded(graceMs: number, reason: string): Promise<number>
+  settleForwarded(graceMs: number, reason: string, stop?: AbortSignal): Promise<number>
   /**
    * The agent stopped waiting for request `id` without a cancel — its HTTP
    * request closed (phase B of M36). A call held for an approval or a

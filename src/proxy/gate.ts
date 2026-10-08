@@ -59,7 +59,7 @@ export interface PolicyGate {
   /** The agent is gone, the server still runs (see `MessagePolicyGate.agentLeft`). */
   agentLeft(): Promise<void>
   /** See `MessagePolicyGate.settleForwarded`. */
-  settleForwarded(graceMs: number, reason: string): Promise<number>
+  settleForwarded(graceMs: number, reason: string, stop?: AbortSignal): Promise<number>
 }
 
 /** Reattaches the line framing the message-level core deliberately omits. */
@@ -98,6 +98,6 @@ export function createPolicyGate(deps: PolicyGateDeps): PolicyGate {
     cancelPending: () => core.cancelPending(),
     abandonRequest: (id) => core.abandonRequest(id),
     agentLeft: () => core.agentLeft(),
-    settleForwarded: (graceMs, reason) => core.settleForwarded(graceMs, reason),
+    settleForwarded: (graceMs, reason, stop) => core.settleForwarded(graceMs, reason, stop),
   }
 }

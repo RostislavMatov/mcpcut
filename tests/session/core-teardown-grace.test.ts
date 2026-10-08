@@ -208,4 +208,20 @@ describe('teardown grace for calls already sent', () => {
 
     expect(outcomesOf(harness.records)).toEqual(['allow', 'undelivered'])
   })
+
+  test('the server dying during the grace ends it at once: nothing more can come (review M1)', async () => {
+    const harness = createHarness(60_000)
+    harness.clientSource.emit(callOf(1))
+    await waitUntil(() => harness.serverSink.written.length === 1)
+
+    const startedAt = Date.now()
+    harness.clientSource.end()
+    await sleep(20)
+    harness.serverSource.end()
+    await harness.session.ended
+
+    expect(Date.now() - startedAt).toBeLessThan(1_000)
+    expect(outcomesOf(harness.records)).toEqual(['allow', 'unanswered'])
+    expect(harness.unanswered).toEqual([1])
+  })
 })

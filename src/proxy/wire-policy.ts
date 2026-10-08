@@ -212,14 +212,15 @@ export function wirePolicyRelay(args: PolicyRelayArgs): RelayWiring {
   }
 
   /**
-   * The client is gone (M36 phase C): held calls are withdrawn at once, but
-   * the server keeps its stdin — and the answers it still owes are read and
-   * journaled `undelivered` — until it has answered every call already sent
-   * or the grace runs out. Only then does it see the end of its input.
+   * The client's stdin ended (M36 phase C). Its stdout may still be read — a
+   * one-shot `printf … | mcpcut wrap` reads its answers after its last line —
+   * so this is NOT the agent leaving: answers keep their usual path (review
+   * M3). What changes is the server's stdin: it ends once every call already
+   * sent is answered, or the grace runs out, instead of at once — most stdio
+   * servers exit on it and drop what they were doing.
    */
   async function endServerStdinAfterGrace(): Promise<void> {
     try {
-      await gate.agentLeft()
       const graceMs = args.forwardedAnswerGraceMs ?? FORWARDED_ANSWER_GRACE_MS
       reportUnanswered(await gate.settleForwarded(graceMs, 'client-ended'))
     } catch (error: unknown) {

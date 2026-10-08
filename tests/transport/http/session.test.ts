@@ -175,6 +175,28 @@ describe('sessionful model', () => {
     expect(bodyText(plan)).toBe('{"error":"too-many-sessions"}')
   })
 
+  test('a session still closing keeps its slot until its close settles (M36 phase C, security review M4)', async () => {
+    // Arrange: one slot; the session's close takes a while (the teardown grace).
+    let finishClose: () => void = () => undefined
+    const closeGate = new Promise<void>((resolve) => {
+      finishClose = resolve
+    })
+    const managed = createManager({ maxSessions: 1 }, { closeGate })
+    const id = await openSessionfulSession(managed)
+
+    // Act: the agent ends it; the close is still running.
+    const deleting = managed.manager.handleDelete(CTX, { 'mcp-session-id': id })
+    const whileClosing = await managed.manager.handlePost(CTX, {}, Buffer.from(INITIALIZE_BODY))
+
+    // Assert: no new session while the old one still holds its upstream...
+    expect(whileClosing.status).toBe(429)
+    finishClose()
+    await deleting
+    // ...and one as soon as it let go.
+    const after = await managed.manager.handlePost(CTX, {}, Buffer.from(INITIALIZE_BODY))
+    expect(after.status).toBe(200)
+  })
+
   test('the upstream ending its source tears the session down', async () => {
     const managed = createManager()
     const id = await openSessionfulSession(managed)
