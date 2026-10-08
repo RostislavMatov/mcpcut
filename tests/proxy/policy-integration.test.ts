@@ -7,6 +7,7 @@ import { createAdminStore } from '../../src/admin/store.js'
 import { runApprovals, type ApprovalsCliOptions } from '../../src/cli/approvals-cmd.js'
 import { runQuarantine } from '../../src/cli/quarantine-cmd.js'
 import type { JournalRecord } from '../../src/journal/record.js'
+import { createApprovalQueue } from '../../src/policy/approvals/queue.js'
 import { INVENTORY_FILE_NAME } from '../../src/policy/inventory.js'
 import { parsePolicy, type Policy } from '../../src/policy/schema.js'
 import {
@@ -380,8 +381,9 @@ describe('runWrap: a late CLI approval after a timeout is refused, and the ident
     started.harness.clientOutbox.write(requestLine(1, 'tools/call', { name: 'echo', arguments: {} }))
 
     await waitUntil(() => receivedMessagesOf(started.harness).some((m) => m.id === 1))
-    const timedOut = receivedMessagesOf(started.harness).find((m) => m.id === 1)
-    firstApprovalId = ((timedOut?.error as { data: { approvalId: string } }).data).approvalId
+    // The timeout names no approval id (R7): the operator's side has it.
+    const [closed] = await createApprovalQueue({ baseDir: join(journalDir(), 'approvals') }).listResolved({ limit: 1 })
+    firstApprovalId = closed!.approvalId
 
     const adminOpts = await approveAsAdminOpts(journalDir())
     const lateIo = createCliCapture()
@@ -398,14 +400,15 @@ describe('runWrap: a late CLI approval after a timeout is refused, and the ident
     session = await finishProxySession(started, journalDir())
   })
 
-  test('the first call times out carrying the approval id in `data`, never in the message', () => {
+  test('the first call times out naming no approval id, in `data` or in the message', () => {
     const timedOut = session.messages.find((message) => message.id === 1)
 
     expect((timedOut?.error as { code: number }).code).toBe(ERROR_CODE_APPROVAL)
-    // Correlation belongs in the structured payload. The prose the agent reads
-    // must not hand it the id (nor the CLI command that takes one): the party
-    // being gated is the one party that must not be told how to lift the gate.
-    expect((timedOut?.error as { data: { approvalId: string } }).data.approvalId).toBe(firstApprovalId)
+    // The prose the agent reads must not hand it the id (nor the CLI command
+    // that takes one): the party being gated is the one party that must not be
+    // told how to lift the gate. And since M36 the request closed with this
+    // answer, so `data` carries no id either (R7).
+    expect((timedOut?.error as { data: Record<string, unknown> }).data).not.toHaveProperty('approvalId')
     const message = (timedOut?.error as { message: string }).message
     expect(message).not.toContain(firstApprovalId)
     expect(message).not.toContain('mcpcut')

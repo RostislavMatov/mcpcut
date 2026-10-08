@@ -75,34 +75,53 @@ export function denialError(id: SynthesizableId, info: DenialErrorInfo): Buffer 
 
 export interface ApprovalTimeoutErrorInfo {
   readonly toolName: string
-  readonly approvalId: string
 }
 
 /**
  * A `tools/call` that required human approval, and timed out waiting for
- * one. The message prompts a retry once a human operator approves the
- * pending request — but deliberately does not tell the agent *how* to make
- * that happen: the approve command belongs to the human, who already sees
- * the pending request in the admin UI and `approvals list`, not to the
- * blocked party reading this string. Handing the agent a ready-to-run
- * self-approval command through the one channel it reads and trusts by
- * default would make the human-in-the-loop guarantee rest on the agent's
- * unwillingness to run it, not on any mechanism.
+ * one. The message deliberately does not tell the agent *how* to get it
+ * approved: the approve command belongs to the human, who already sees the
+ * request in the admin UI and `approvals list`, not to the blocked party
+ * reading this string. Handing the agent a ready-to-run self-approval command
+ * through the one channel it reads and trusts by default would make the
+ * human-in-the-loop guarantee rest on the agent's unwillingness to run it,
+ * not on any mechanism.
  *
- * `approvalId` stays out of the prose for the same reason — pairing it with
- * free text an agent parses is what turns a fact into an instruction it can
- * act on — but it remains in `data.approvalId` for legitimate structured
- * correlation (e.g. tooling matching this refusal to a queue entry), which
- * the human-facing surfaces already have without needing it echoed back.
+ * Since decision M36 the request closes with this answer — an approval covers
+ * the one call it was given for, and there is no grant window — so the
+ * message says nothing was sent and that calling again asks anew, and the
+ * approval id is gone from `data` as well as from the prose: it names a
+ * request no approval can reach any more (review R7).
  */
 export function approvalTimeoutError(id: SynthesizableId, info: ApprovalTimeoutErrorInfo): Buffer {
   return synthesizeError(id, {
     code: ERROR_CODE_APPROVAL,
     message:
       `Call to tool "${info.toolName}" requires human approval and timed out waiting for one. ` +
-      'A human operator needs to approve the pending request before this call can proceed; ' +
-      'retry once they do.',
-    data: { reason: 'approval_timeout', toolName: info.toolName, approvalId: info.approvalId },
+      'Nothing was sent to the server; calling it again asks for a new approval.',
+    data: { reason: 'approval_timeout', toolName: info.toolName },
+  })
+}
+
+export interface ApprovalHoldLimitErrorInfo {
+  readonly toolName: string
+  /** The per-session cap the call ran into. */
+  readonly limit: number
+}
+
+/**
+ * A `tools/call` that needs human approval, refused because its session
+ * already holds the most calls it may (M36, review R2). Nothing was queued,
+ * so the message says what to do instead of naming a request.
+ */
+export function approvalHoldLimitError(id: SynthesizableId, info: ApprovalHoldLimitErrorInfo): Buffer {
+  return synthesizeError(id, {
+    code: ERROR_CODE_APPROVAL,
+    message:
+      `Call to tool "${info.toolName}" requires human approval, and this session already has ` +
+      `${info.limit} calls waiting for one. Nothing was sent to the server; call it again once ` +
+      'one of them is answered.',
+    data: { reason: 'approval_hold_limit', toolName: info.toolName, limit: info.limit },
   })
 }
 

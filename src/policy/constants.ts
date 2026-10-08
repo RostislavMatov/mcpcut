@@ -46,6 +46,15 @@ export const APPROVAL_HEARTBEAT_STALE_MS = 2 * 60_000
 export const APPROVAL_PROGRESS_INTERVAL_MS = 60_000
 
 /**
+ * How many calls one session may hold for an approval at once (decision M36,
+ * review R2). Each held call costs a queue row, a 300 ms poll, a progress
+ * timer and a share of the heartbeat write, for up to a day; an agent with
+ * more than this many calls waiting on a human is not waiting, it is
+ * flooding — the call over the cap is refused at once and nothing is queued.
+ */
+export const MAX_HELD_CALLS_PER_SESSION = 16
+
+/**
  * Max characters of the reason a withdrawn request records. The reason of a
  * cancel is chosen by the client (`params.reason`), so it is untrusted text
  * that lands in the queue, the journal and the operator's terminal.

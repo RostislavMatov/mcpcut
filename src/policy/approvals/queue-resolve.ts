@@ -15,7 +15,8 @@ import {
   type PendingApprovalFile,
   type ResolvedApprovalFile,
 } from './queue-file.js'
-import { deleteHeartbeat } from './queue-heartbeat-db.js'
+import type { HoldRecord } from './holder.js'
+import { deleteHold, selectHold } from './queue-holds-db.js'
 
 /**
  * The one write that settles a pending request, shared by every resolver of
@@ -64,8 +65,16 @@ export function isValidApprovalId(approvalId: string): boolean {
   return APPROVAL_ID_PATTERN.test(approvalId)
 }
 
-/** Builds the resolution half of a record from the pending one, inside the write transaction. */
-export type BuildResolution = (pending: PendingApprovalFile) => Omit<ApprovalResolution, 'resolvedAt'>
+/**
+ * Builds the resolution half of a record from the pending one and its hold
+ * (absent for a row an older build enqueued), inside the write transaction —
+ * so whether anybody can still be delivered the answer is judged under the
+ * same lock as the write (review R5).
+ */
+export type BuildResolution = (
+  pending: PendingApprovalFile,
+  hold: HoldRecord | undefined,
+) => Omit<ApprovalResolution, 'resolvedAt'>
 
 export interface QueueResolver {
   /** Settles a whole batch in ONE transaction, in order, with a result per valid input id. */
@@ -82,11 +91,16 @@ function refusalFor(database: StateDatabase, approvalId: string): ResolveResult 
   const text = selectResolvedDoc(database, approvalId)
   const settled = text === null ? null : parseDoc(text, isResolvedApprovalFile)
   if (settled === null || settled.resolution.outcome !== 'withdrawn') return NOT_RESOLVABLE
+  return withdrawnRefusal(settled)
+}
+
+/** The refusal an operator gets for a request whose agent stopped waiting: when, and why. */
+export function withdrawnRefusal(record: ResolvedApprovalFile): ResolveResult {
   return {
     ok: false,
     reason: 'withdrawn',
-    withdrawnAt: settled.resolvedAt,
-    withdrawnReason: settled.resolution.reason ?? '',
+    withdrawnAt: record.resolvedAt,
+    withdrawnReason: record.resolution.reason ?? '',
   }
 }
 
@@ -133,7 +147,8 @@ function settleOne(
   // never be listed, approved, or downgraded.
   if (pending === null) return text === null ? refusalFor(database, approvalId) : NOT_RESOLVABLE
 
-  const record: ResolvedApprovalFile = { ...pending, resolution: build(pending), resolvedAt }
+  const resolution = build(pending, selectHold(database, approvalId))
+  const record: ResolvedApprovalFile = { ...pending, resolution, resolvedAt }
   const won = resolvePendingRow(database, {
     approvalId,
     doc: JSON.stringify(record),
@@ -144,6 +159,6 @@ function settleOne(
   // Unreachable while the row is read and written under one write lock; kept
   // as the defence in depth that owns the "one winner" invariant.
   if (!won) return NOT_RESOLVABLE
-  deleteHeartbeat(database, approvalId)
+  deleteHold(database, approvalId)
   return { ok: true, record }
 }

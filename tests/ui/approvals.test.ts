@@ -307,6 +307,26 @@ describe('approving a request whose agent stopped waiting (M36)', () => {
   })
 })
 
+describe('approving after the agent\'s capped wait ran out (review R5)', () => {
+  test('is a 409 that says it was too late and nothing was sent, and the request is expired', async () => {
+    const handlers = createApprovalsHandlers({ queue, clock: () => now })
+    const approvalId = await enqueueSample({ timeoutMs: 300_000, waitTimeoutMs: 60_000 })
+    now += 61_000
+
+    const result = await handlers.approvalsApprove(makeCtx({ method: 'POST', params: { id: approvalId } }))
+
+    if (result.kind !== 'response') throw new Error('expected a response')
+    expect(result.status).toBe(409)
+    const body = JSON.parse(bodyText(result)) as { status: string; message: string }
+    expect(body.status).toBe('expired')
+    expect(body.message).toBe(
+      `Too late: the agent stopped waiting at ${new Date(T0 + 60_000).toISOString()}, so nothing was sent. ` +
+        'If it asks again, a new request appears here.',
+    )
+    await expect(queue.readResolution(approvalId)).resolves.toMatchObject({ outcome: 'expired' })
+  })
+})
+
 describe('a bounded read never reads as a drained queue', () => {
   /**
    * Truncation must be a property of THIS read hitting its own row bound

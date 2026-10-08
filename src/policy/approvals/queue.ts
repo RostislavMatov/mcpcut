@@ -2,24 +2,29 @@ import { join } from 'node:path'
 import { ulid } from 'ulid'
 import { APPROVALS_LIST_MAX_ROWS, JOURNAL_DIR } from '../../config.js'
 import { redact } from '../../redact/redact.js'
-import { APPROVAL_HEARTBEAT_STALE_MS, RESOLVED_FILE_RETENTION_MS } from '../constants.js'
+import { APPROVAL_HEARTBEAT_STALE_MS } from '../constants.js'
 import { canonicalJson, sha256Hex } from '../hash.js'
 import {
   bumpChangeSeq,
-  deleteResolvedOlderThan,
   insertPendingRow,
   openApprovalsDb,
   runWriteTransaction,
   countPendingRows,
-  selectChangesSince,
-  selectLatestChangeSeq,
   selectNewestResolvedDocs,
   selectPendingDocs,
   selectResolvedDoc,
-  type ApprovalsDb,
 } from './queue-db.js'
-import { insertHeartbeat, refreshHeartbeat } from './queue-heartbeat-db.js'
-import { createQueueResolver, isValidApprovalId, type ResolveResult } from './queue-resolve.js'
+import {
+  currentHolder,
+  isFreshHeartbeat,
+  isHolderLost,
+  probeHolderLiveness,
+  type HoldRecord,
+} from './holder.js'
+import { readChangesSince } from './queue-changes.js'
+import { insertHold, refreshHeartbeats } from './queue-holds-db.js'
+import { createQueueResolver, isValidApprovalId, withdrawnRefusal, type ResolveResult } from './queue-resolve.js'
+import { pruneRetention } from './queue-retention.js'
 
 /**
  * The approvals queue: one row per request in the `approvals` table of
@@ -50,6 +55,7 @@ const APPROVALS_SUBDIR = 'approvals'
 // (split for the <400-line file rule); re-exported so importers see one module.
 export {
   RESOLVE_OUTCOME_VALUES,
+  deliveryEndsAt,
   RESOLUTION_OUTCOME_VALUES,
   isPendingApprovalFile,
   isResolvedApprovalFile,
@@ -64,6 +70,7 @@ export { isValidApprovalId, type ResolveResult } from './queue-resolve.js'
 import { sweepPending } from './queue-sweep.js'
 import {
   assertStorableActor,
+  deliveryEndsAt,
   isExpiredAt,
   isPendingApprovalFile,
   isResolvedApprovalFile,
@@ -75,12 +82,6 @@ import {
   type ResolvedApprovalFile,
 } from './queue-file.js'
 import { WITHDRAW_REASON_PROCESS_LOST } from './withdraw.js'
-
-/**
- * Max resolved rows one `enqueue` deletes for retention. Bounds the cleanup
- * cost per call so it amortizes over many calls instead of one long delete.
- */
-const RETENTION_CLEANUP_BATCH = 200
 
 export type {
   ApprovalChanges,
@@ -116,7 +117,10 @@ function boundedLimit(requested: number | undefined): number {
 export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQueue {
   const baseDir = opts.baseDir ?? join(JOURNAL_DIR, APPROVALS_SUBDIR)
   const clock = opts.clock ?? Date.now
+  const holder = opts.holder ?? currentHolder()
+  const liveness = opts.holderLiveness ?? probeHolderLiveness
   const { moveToResolvedBatch, moveToResolved } = createQueueResolver(baseDir, clock)
+  const isLostAt = (hold: HoldRecord | undefined, nowMs: number): boolean => isHolderLost(hold, nowMs, liveness)
 
   async function enqueue(req: EnqueueRequest): Promise<EnqueueResult> {
     const approvalId = ulid()
@@ -139,10 +143,10 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
         expiresAt: record.expiresAt,
         changeSeq: bumpChangeSeq(database),
       })
-      // The request is held from this instant (M36): its heartbeat starts with it.
-      insertHeartbeat(database, approvalId, record.requestedAt)
+      // The request is held from this instant (M36), by this process (R3).
+      insertHold(database, approvalId, record.requestedAt, holder)
     })
-    pruneOldResolvedRows(db, nowMs)
+    pruneRetention(db, nowMs)
     return { approvalId, argsHash }
   }
 
@@ -156,6 +160,7 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
       nowMs,
       markExpiredBatch,
       staleBeforeIso: new Date(nowMs - APPROVAL_HEARTBEAT_STALE_MS).toISOString(),
+      isLost: (hold) => isLostAt(hold, nowMs),
       withdrawLostBatch,
     })
   }
@@ -174,8 +179,8 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
       const record = parseDoc(row.doc, isPendingApprovalFile)
       if (record === null) return []
       const expired = isExpiredAt(record.expiresAt, nowMs)
-      if (row.heartbeatAt === undefined) return [{ ...record, expired }]
-      return [{ ...record, expired, agentConnected: isFreshHeartbeat(row.heartbeatAt, nowMs) }]
+      if (row.hold === undefined) return [{ ...record, expired }]
+      return [{ ...record, expired, agentConnected: isHoldLive(row.hold, nowMs) }]
     })
   }
 
@@ -190,6 +195,11 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
     return results.filter((result) => result.ok).length
   }
 
+  /** Held right now: a fresh heartbeat, or a holder that still runs (a stale beat after sleep, R3). */
+  function isHoldLive(hold: HoldRecord, nowMs: number): boolean {
+    return isFreshHeartbeat(hold.heartbeatAt, nowMs) || liveness(hold.holder) === 'alive'
+  }
+
   /** The heartbeat sweep's write: requests whose holder died, withdrawn as `process-lost`. */
   async function withdrawLostBatch(approvalIds: readonly string[]): Promise<number> {
     const results = await moveToResolvedBatch(approvalIds, () => ({
@@ -200,12 +210,17 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
   }
 
   /**
-   * Records an operator resolution. Time-aware for `approved`: a request past
-   * its `expiresAt` (the 24-hour cap, or the policy's shorter wait) can no
-   * longer reach anybody, so a late `approved` is DOWNGRADED to `expired` (the
-   * operator's `actor`/`reason` are preserved for the audit trail) and no
-   * `approved` resolution is ever persisted past expiry. A `denied` on a stale
-   * request is harmless and is recorded as-is.
+   * Records an operator resolution, judged against what can still be
+   * delivered (review R5), under the write lock:
+   *
+   *  - the holder is gone (stale heartbeat, dead pid): nobody can be answered,
+   *    so the row settles as `withdrawn`/`process-lost` and the operator gets
+   *    the same refusal a withdrawal by the agent gives;
+   *  - an `approved` past the request's `expiresAt` (the 24-hour cap) or past
+   *    the agent's capped wait (`waitExpiresAt`) is DOWNGRADED to `expired`
+   *    (the operator's `actor`/`reason` are preserved for the audit trail), so
+   *    no `approved` resolution is ever persisted that nothing will deliver. A
+   *    `denied` on such a request is harmless and is recorded as-is.
    */
   // `async` so the guard below REJECTS rather than throwing synchronously out
   // of a `Promise`-returning function: every other failure of this API is
@@ -218,16 +233,18 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
     assertStorableActor(resolution.actor)
     // `buildResolution` runs inside the write transaction, so this clock read
     // happens under the held lock, in the same instant as `resolvedAt`.
-    return moveToResolved(approvalId, (pending) => {
-      const expired = isExpiredAt(pending.expiresAt, clock())
+    const result = await moveToResolved(approvalId, (pending, hold) => {
+      const nowMs = clock()
+      if (isLostAt(hold, nowMs)) return { outcome: 'withdrawn', reason: WITHDRAW_REASON_PROCESS_LOST }
       const outcome: ResolutionOutcome =
-        expired && resolution.outcome === 'approved' ? 'expired' : resolution.outcome
+        isPastDelivery(pending, nowMs) && resolution.outcome === 'approved' ? 'expired' : resolution.outcome
       return {
         outcome,
         ...(resolution.actor !== undefined ? { actor: resolution.actor } : {}),
         ...(resolution.reason !== undefined ? { reason: resolution.reason } : {}),
       }
     })
+    return result.ok && result.record.resolution.outcome === 'withdrawn' ? withdrawnRefusal(result.record) : result
   }
 
   function markExpired(approvalId: string): Promise<ResolveResult> {
@@ -238,11 +255,12 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
     return moveToResolved(approvalId, () => ({ outcome: 'withdrawn', reason }))
   }
 
-  async function heartbeat(approvalId: string): Promise<void> {
-    if (!isValidApprovalId(approvalId)) return
+  async function heartbeat(approvalIds: readonly string[]): Promise<void> {
+    const valid = approvalIds.filter(isValidApprovalId)
+    if (valid.length === 0) return
     const db = await openApprovalsDb(baseDir)
     const atIso = new Date(clock()).toISOString()
-    await runWriteTransaction(db, (database) => refreshHeartbeat(database, approvalId, atIso))
+    await runWriteTransaction(db, (database) => refreshHeartbeats(database, valid, atIso))
   }
 
   async function readResolution(approvalId: string): Promise<ApprovalResolution | null> {
@@ -283,53 +301,13 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
     return countPendingRows(db.handle.db)
   }
 
-  /** See `ApprovalQueue.changesSince`. */
+  /** See `ApprovalQueue.changesSince` (`queue-changes.ts`). */
   async function changesSince(
     sinceSeq: number | null,
     changeOpts: BoundedReadOptions = {},
   ): Promise<ApprovalChanges> {
     const db = await openApprovalsDb(baseDir)
-    const database = db.handle.db
-    // Watermark first, rows second: see `selectChangesSince` — this order can
-    // only ever re-deliver a change, never lose one.
-    const latestSeq = selectLatestChangeSeq(database)
-    if (sinceSeq === null) return { latestSeq, truncated: false, newPending: [], resolvedIds: [] }
-
-    // One row over the bound, so "is there more" is answered by the same read
-    // rather than by a second query against a moving table.
-    const limit = boundedLimit(changeOpts.limit)
-    const page = selectChangesSince(database, sinceSeq, limit + 1)
-    // Truncation is decided by what SQL returned, not by what survived parsing:
-    // a malformed row dropped on the way would otherwise make a full page look
-    // partial and stall the drain one page short.
-    const truncated = page.fetched > limit
-    const delivered = truncated ? page.rows.slice(0, limit) : page.rows
-
-    const nowMs = clock()
-    const newPending: PendingApproval[] = []
-    const resolvedIds: string[] = []
-    for (const row of delivered) {
-      if (row.status === 'resolved') {
-        resolvedIds.push(row.approvalId)
-        continue
-      }
-      const record = parseDoc(row.doc, isPendingApprovalFile)
-      if (record === null) continue // malformed content: skip, as `list()` does
-      newPending.push({ ...record, expired: isExpiredAt(record.expiresAt, nowMs) })
-    }
-    // A truncated page stops the watermark at the last change it delivered —
-    // the global one would skip the remainder outright. When the page hit its
-    // bound but every row was dropped as malformed there is no last delivered
-    // change, and the fallback is `sinceSeq`, NOT the global sequence: the
-    // caller re-asks from where it was, which re-delivers (allowed) instead of
-    // skipping every change between this page and the head (forbidden).
-    const lastDelivered = delivered.at(-1)
-    return {
-      latestSeq: truncated ? (lastDelivered?.changeSeq ?? sinceSeq) : latestSeq,
-      truncated,
-      newPending,
-      resolvedIds,
-    }
+    return readChangesSince(db.handle.db, sinceSeq, boundedLimit(changeOpts.limit), clock())
   }
 
   return {
@@ -374,26 +352,7 @@ function pendingRecordOf(
   }
 }
 
-/** A heartbeat younger than the stale limit; the limit itself is still live (the sweep takes only older ones). */
-function isFreshHeartbeat(heartbeatAt: string, nowMs: number): boolean {
-  const atMs = Date.parse(heartbeatAt)
-  return !Number.isNaN(atMs) && nowMs - atMs <= APPROVAL_HEARTBEAT_STALE_MS
-}
-
-/**
- * Best-effort retention: deletes up to `RETENTION_CLEANUP_BATCH` of the oldest
- * records settled longer than `RESOLVED_FILE_RETENTION_MS` ago, so resolved
- * history cannot grow without bound across a long-lived session. ONE
- * transaction attempt, bounded by the statement busy timeout — never the
- * busy-retry loop the queue's own writes use: a contended writer is somebody
- * else's decision landing, so this call simply skips the cleanup and a later
- * enqueue retries it. Never throws.
- */
-function pruneOldResolvedRows(db: ApprovalsDb, nowMs: number): void {
-  const cutoffIso = new Date(nowMs - RESOLVED_FILE_RETENTION_MS).toISOString()
-  try {
-    db.handle.transaction((database) => deleteResolvedOlderThan(database, cutoffIso, RETENTION_CLEANUP_BATCH))
-  } catch {
-    // Locked, or gone: retention is opportunistic and never fails an enqueue.
-  }
+/** Past the request's own expiry, or past the agent's capped wait: an approval reaches nobody. */
+function isPastDelivery(pending: PendingApprovalFile, nowMs: number): boolean {
+  return isExpiredAt(deliveryEndsAt(pending), nowMs)
 }

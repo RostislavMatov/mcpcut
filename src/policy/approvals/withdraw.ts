@@ -1,4 +1,5 @@
 import { stripControlChars } from '../../journal/format.js'
+import { redactString } from '../../redact/redact.js'
 import { MAX_WITHDRAW_REASON_CHARS } from '../constants.js'
 
 /**
@@ -21,13 +22,24 @@ export const WITHDRAW_REASON_PROCESS_LOST = 'process-lost'
 export const WITHDRAW_REASON_CANCELLED = 'cancelled'
 
 /**
- * The client-chosen reason of a cancel, made safe to store: control and
- * invisible characters removed, length capped. Anything that is not a
- * non-empty string after cleaning reads as `cancelled` — the cancel itself is
- * the fact, its wording only a detail.
+ * How much of a client-chosen reason is looked at before redaction: a bound on
+ * the work, generous enough that redaction (which may shorten a long secret to
+ * a short marker) cannot pull text from past this point into the stored cap.
+ */
+const REASON_SCAN_CHARS = MAX_WITHDRAW_REASON_CHARS * 16
+
+/**
+ * The client-chosen reason of a cancel, made safe to store and to show:
+ * control and invisible characters removed, secrets redacted (the queue and
+ * the CLI show it, not only the journal — review R8), length capped. The cap
+ * comes AFTER redaction, so it can never cut a secret into a fragment the
+ * patterns no longer recognize. Anything that is not a non-empty string after
+ * cleaning reads as `cancelled` — the cancel itself is the fact, its wording
+ * only a detail.
  */
 export function cleanWithdrawReason(raw: unknown): string {
   if (typeof raw !== 'string') return WITHDRAW_REASON_CANCELLED
-  const cleaned = stripControlChars(raw).slice(0, MAX_WITHDRAW_REASON_CHARS).trim()
+  const visible = stripControlChars(raw.slice(0, REASON_SCAN_CHARS))
+  const cleaned = redactString(visible).slice(0, MAX_WITHDRAW_REASON_CHARS).trim()
   return cleaned === '' ? WITHDRAW_REASON_CANCELLED : cleaned
 }

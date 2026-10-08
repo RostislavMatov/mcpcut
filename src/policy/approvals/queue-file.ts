@@ -238,6 +238,16 @@ export function isExpiredAt(expiresAt: string, nowMs: number): boolean {
   return Number.isNaN(expiresAtMs) || nowMs >= expiresAtMs
 }
 
+/**
+ * When nothing could deliver an approval of this request any more: the agent's
+ * capped wait (`waitExpiresAt`) or the request's own cap, whichever is first.
+ * Fixed-width UTC ISO timestamps, so string order is time order.
+ */
+export function deliveryEndsAt(record: PendingApprovalFile): string {
+  const { waitExpiresAt, expiresAt } = record
+  return waitExpiresAt !== undefined && waitExpiresAt < expiresAt ? waitExpiresAt : expiresAt
+}
+
 /** Parses one stored record, returning `null` for anything the validators reject. */
 export function parseDoc<T>(text: string, isShape: (raw: unknown) => raw is T): T | null {
   let raw: unknown

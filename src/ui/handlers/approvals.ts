@@ -1,5 +1,6 @@
 import { APPROVALS_LIST_MAX_ROWS } from '../../config.js'
 import {
+  deliveryEndsAt,
   isValidApprovalId,
   type ApprovalQueue,
   type ResolveOutcome,
@@ -254,7 +255,17 @@ async function resolveAction(
       message: 'This request was already resolved (first resolve wins).',
     })
   }
-  return jsonResult(HTTP_STATUS_OK, { status: 'ok', outcome: result.record.resolution.outcome })
+  const { record } = result
+  if (record.resolution.outcome === 'expired') {
+    // R5: the approval came after the agent's wait ran out; nothing was sent.
+    return jsonResult(HTTP_STATUS_CONFLICT, {
+      status: 'expired',
+      message:
+        `Too late: the agent stopped waiting at ${deliveryEndsAt(record)}, so nothing was sent. ` +
+        'If it asks again, a new request appears here.',
+    })
+  }
+  return jsonResult(HTTP_STATUS_OK, { status: 'ok', outcome: record.resolution.outcome })
 }
 
 /** Extracts an optional operator `reason` from the request body. */

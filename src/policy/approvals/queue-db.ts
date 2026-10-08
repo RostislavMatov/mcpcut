@@ -10,12 +10,13 @@ import {
 // helpers, this module needs its first-touch import. Both sides only ever call
 // the other's (hoisted) functions, never read a binding while loading.
 import { importLegacyApprovals } from './queue-import.js'
-import { prepareHeartbeatSchema } from './queue-heartbeat-db.js'
+import type { HoldRecord } from './holder.js'
+import { holdOf, prepareHoldsSchema } from './queue-holds-db.js'
 
 /**
  * The storage substrate of the approvals queue: schema, statements and write
- * pacing. Every piece of SQL the queue runs lives here (and, for the heartbeat
- * side table, in `queue-heartbeat-db.ts`), so `queue.ts` stays pure record
+ * pacing. Every piece of SQL the queue runs lives here (and, for the hold side
+ * table and the change feed, in `queue-holds-db.ts` and `queue-changes.ts`), so `queue.ts` stays pure record
  * logic and `node:sqlite` keeps exactly one entry point in the process
  * (`src/store/sqlite.ts`, ADR-0006).
  *
@@ -88,10 +89,11 @@ const INSERT_PENDING =
   'INSERT INTO approvals (approval_id, status, doc, server_name, tool_name, args_hash, ' +
   "requested_at, expires_at, change_seq) VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?)"
 
-/** The pending page, each row with its heartbeat when it has one (M36, `queue-heartbeat-db.ts`). */
+/** The pending page, each row with its hold when it has one (M36, `queue-holds-db.ts`). */
 const SELECT_PENDING_DOCS =
-  'SELECT a.doc AS doc, h.heartbeat_at AS heartbeat_at FROM approvals a ' +
-  'LEFT JOIN approval_heartbeats h ON h.approval_id = a.approval_id ' +
+  'SELECT a.doc AS doc, h.heartbeat_at AS heartbeat_at, h.holder_pid AS holder_pid, ' +
+  'h.holder_host AS holder_host FROM approvals a ' +
+  'LEFT JOIN approval_holds h ON h.approval_id = a.approval_id ' +
   "WHERE a.status = 'pending' ORDER BY a.requested_at, a.approval_id LIMIT ?"
 const SELECT_PENDING_DOC =
   "SELECT doc FROM approvals WHERE approval_id = ? AND status = 'pending'"
@@ -119,22 +121,7 @@ export const SELECT_EXPIRED_PENDING =
   "SELECT approval_id, doc FROM approvals WHERE status = 'pending' AND expires_at <= ? " +
   'ORDER BY expires_at LIMIT ?'
 
-/**
- * Retention: a bounded delete of the oldest settled requests. `resolved_at`
- * holds a fixed-width UTC ISO timestamp, so string comparison IS chronological
- * comparison and the cutoff needs no parsing. The inner SELECT keeps one call's
- * cost bounded, exactly as the file sweep it replaces was.
- */
-const DELETE_OLD_RESOLVED =
-  'DELETE FROM approvals WHERE approval_id IN (SELECT approval_id FROM approvals ' +
-  "WHERE status = 'resolved' AND resolved_at < ? ORDER BY resolved_at LIMIT ?)"
-
-const SELECT_LATEST_SEQ = 'SELECT change_seq FROM approvals_meta WHERE id = 1'
 const COUNT_PENDING = "SELECT COUNT(*) AS n FROM approvals WHERE status = 'pending'"
-/** Every row touched after `?`, oldest change first, so a reader can replay in order. */
-const SELECT_CHANGES_SINCE =
-  'SELECT approval_id, status, doc, change_seq FROM approvals WHERE change_seq > ? ' +
-  'ORDER BY change_seq LIMIT ?'
 
 const RESOLVE_PENDING =
   "UPDATE approvals SET status = 'resolved', doc = ?, outcome = ?, resolved_at = ?, " +
@@ -212,7 +199,7 @@ async function prepare(db: ApprovalsDb): Promise<void> {
   database.exec(CREATE_STATUS_EXPIRES_INDEX)
   database.exec(CREATE_APPROVALS_META_TABLE)
   database.exec(SEED_APPROVALS_META)
-  prepareHeartbeatSchema(database)
+  prepareHoldsSchema(database)
   // First touch of the process also picks up whatever an M4 build left in
   // `pending/`/`resolved/` — see `queue-import.ts` for the marker rules.
   await importLegacyApprovals(db)
@@ -308,15 +295,15 @@ export function resolvePendingRow(database: StateDatabase, row: ResolveRowInput)
   return Number(changes) === 1
 }
 
-/** One pending record's JSON text, with its heartbeat when it has one. */
+/** One pending record's JSON text, with its hold when it has one. */
 export interface PendingDocRow {
   readonly doc: string
-  readonly heartbeatAt?: string
+  readonly hold?: HoldRecord
 }
 
 /**
  * At most `limit` pending records, oldest request first, each with its
- * heartbeat (absent for a row an older build enqueued).
+ * hold (absent for a row an older build enqueued).
  *
  * The bound is not an optimisation: without it every UI poll read the entire
  * pending set, so a queue nobody drains turned each poll into a full scan.
@@ -330,8 +317,8 @@ export function selectPendingDocs(database: StateDatabase, limit: number): Pendi
     .flatMap((row): PendingDocRow[] => {
       const doc = docText(row)
       if (doc === null) return []
-      const heartbeatAt = (row as { heartbeat_at?: unknown }).heartbeat_at
-      return [typeof heartbeatAt === 'string' ? { doc, heartbeatAt } : { doc }]
+      const hold = holdOf(row)
+      return [hold !== undefined ? { doc, hold } : { doc }]
     })
 }
 
@@ -388,84 +375,6 @@ export function selectResolvedDoc(database: StateDatabase, approvalId: string): 
 /** The `limit` newest resolved records, newest first; the read never exceeds `limit` rows. */
 export function selectNewestResolvedDocs(database: StateDatabase, limit: number): string[] {
   return docTexts(database.prepare(SELECT_NEWEST_RESOLVED_DOCS).all(limit))
-}
-
-/**
- * Deletes up to `limit` resolved rows settled before `cutoffIso` (an ISO-8601
- * UTC instant). Returns how many rows went, so a caller can tell "nothing was
- * old enough" from "the batch was full".
- */
-export function deleteResolvedOlderThan(
-  database: StateDatabase,
-  cutoffIso: string,
-  limit: number,
-): number {
-  return Number(database.prepare(DELETE_OLD_RESOLVED).run(cutoffIso, limit).changes)
-}
-
-/**
- * The counter as it stands, which is the watermark a change reader carries
- * between polls. It is read from the meta row rather than from `MAX(change_seq)`
- * so retention deleting the newest resolved row can never rewind the watermark
- * and replay the whole table.
- */
-export function selectLatestChangeSeq(database: StateDatabase): number {
-  const row = database.prepare(SELECT_LATEST_SEQ).get() as { change_seq?: unknown } | undefined
-  const latest = row?.change_seq
-  return typeof latest === 'number' && Number.isInteger(latest) ? latest : 0
-}
-
-/** One changed row as a change reader sees it; `doc` still carries the whole record. */
-export interface ApprovalChangeRow {
-  readonly approvalId: string
-  readonly status: string
-  readonly doc: string
-  /** This row's change sequence — the watermark a truncated page stops at. */
-  readonly changeSeq: number
-}
-
-/**
- * Every row whose change sequence is past `sinceSeq`. Callers MUST read the
- * watermark (`selectLatestChangeSeq`) BEFORE this query: a write committing
- * between the two then shows up in this result while staying above the reported
- * watermark, so it is delivered again on the next poll — at-least-once, which a
- * caller can deduplicate. The other order would drop it silently.
- */
-export function selectChangesSince(
-  database: StateDatabase,
-  sinceSeq: number,
-  limit: number,
-): ChangePage {
-  const rows = database.prepare(SELECT_CHANGES_SINCE).all(sinceSeq, limit)
-  return {
-    // `fetched` counts what SQL returned, BEFORE malformed rows are dropped.
-    // The caller decides truncation by comparing it to the limit, and a dropped
-    // row must not make a full page look like a partial one.
-    fetched: rows.length,
-    rows: rows.map(changeRow).filter((row): row is ApprovalChangeRow => row !== null),
-  }
-}
-
-/** One page of the change feed: the usable rows plus how many SQL actually returned. */
-export interface ChangePage {
-  readonly rows: readonly ApprovalChangeRow[]
-  readonly fetched: number
-}
-
-function changeRow(row: unknown): ApprovalChangeRow | null {
-  if (typeof row !== 'object' || row === null) return null
-  const { approval_id: approvalId, status, doc, change_seq: changeSeq } = row as Record<string, unknown>
-  if (typeof approvalId !== 'string' || typeof status !== 'string') return null
-  if (typeof changeSeq !== 'number' && typeof changeSeq !== 'bigint') return null
-  // A malformed `doc` is kept as an empty string rather than dropping the row:
-  // the id and status are still the truth about WHAT changed, and the record
-  // parser above this layer skips the unusable content (MALFORMED_SKIP).
-  return {
-    approvalId,
-    status,
-    doc: typeof doc === 'string' ? doc : '',
-    changeSeq: Number(changeSeq),
-  }
 }
 
 /**

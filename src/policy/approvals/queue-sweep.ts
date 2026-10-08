@@ -1,7 +1,8 @@
 import { APPROVALS_LIST_MAX_ROWS } from '../../config.js'
 import { openApprovalsDb, selectExpiredPendingRows } from './queue-db.js'
 import { isExpiredAt, isPendingApprovalFile, parseDoc } from './queue-file.js'
-import { selectStaleHeartbeatRows } from './queue-heartbeat-db.js'
+import type { HoldRecord } from './holder.js'
+import { selectStaleHoldRows } from './queue-holds-db.js'
 
 /**
  * The lazy sweeps of the approvals queue: expiry, and (decision M36) the
@@ -10,10 +11,12 @@ import { selectStaleHeartbeatRows } from './queue-heartbeat-db.js'
  * The heartbeat pass is the crash backstop: the gate holding a call refreshes
  * the request's heartbeat while its agent waits, and withdraws the request
  * itself when the agent leaves. A process that died without tearing down does
- * neither, so a pending request whose heartbeat went stale is withdrawn here as
- * `process-lost` — otherwise it would stay approvable until its 24-hour cap,
- * and an approval of it could reach nobody. It runs AFTER the expiry pass, so a
- * request that is both expired and stale keeps the older fact, `expired`.
+ * neither, so a pending request whose heartbeat went stale AND whose holder is
+ * provably gone (`holder.ts`, review R3 — a stale heartbeat alone may be a
+ * laptop that slept) is withdrawn here as `process-lost` — otherwise it would
+ * stay approvable until its 24-hour cap, and an approval of it could reach
+ * nobody. It runs AFTER the expiry pass, so a request that is both expired and
+ * lost keeps the older fact, `expired`.
  *
  * Until the expiry pass existed, expiry depended on SESSION LIFETIME: a
  * request no human resolved left `pending` only when `cancelPending()`
@@ -64,6 +67,8 @@ export interface SweepPendingDeps {
   readonly markExpiredBatch: (approvalIds: readonly string[]) => Promise<number>
   /** Heartbeats older than this instant (ISO-8601 UTC) are stale. */
   readonly staleBeforeIso: string
+  /** Whether a stale request's holder is gone (`isHolderLost` with the queue's probe). */
+  readonly isLost: (hold: HoldRecord) => boolean
   /** The queue's `withdrawLostBatch`: withdraws a batch as `process-lost`, answering how many it settled. */
   readonly withdrawLostBatch: (approvalIds: readonly string[]) => Promise<number>
 }
@@ -72,7 +77,7 @@ export interface SweepPendingDeps {
 export async function sweepPending(deps: SweepPendingDeps): Promise<number> {
   const expired = await sweepExpiredPending(deps)
   const lost = await settleCandidates(
-    () => staleHeartbeatIds(deps.baseDir, deps.staleBeforeIso),
+    () => lostHolderIds(deps.baseDir, deps.staleBeforeIso, deps.isLost),
     deps.withdrawLostBatch,
   )
   return expired + lost
@@ -126,14 +131,19 @@ async function settleCandidates(
 }
 
 /**
- * The ids of pending rows whose heartbeat is stale. A record that does not
- * parse is unresolvable, not lost: left alone exactly as the expiry pass
- * leaves it.
+ * The ids of pending rows whose heartbeat is stale and whose holder is gone. A
+ * stale row whose holder lives (or cannot be checked) is left pending: only
+ * its own expiry settles it. A record that does not parse is unresolvable,
+ * not lost: left alone exactly as the expiry pass leaves it.
  */
-async function staleHeartbeatIds(baseDir: string, staleBeforeIso: string): Promise<string[]> {
+async function lostHolderIds(
+  baseDir: string,
+  staleBeforeIso: string,
+  isLost: (hold: HoldRecord) => boolean,
+): Promise<string[]> {
   const db = await openApprovalsDb(baseDir)
-  return selectStaleHeartbeatRows(db.handle.db, staleBeforeIso, SWEEP_MAX_ROWS)
-    .filter((row) => parseDoc(row.doc, isPendingApprovalFile) !== null)
+  return selectStaleHoldRows(db.handle.db, staleBeforeIso, SWEEP_MAX_ROWS)
+    .filter((row) => isLost(row.hold) && parseDoc(row.doc, isPendingApprovalFile) !== null)
     .map((row) => row.approvalId)
 }
 

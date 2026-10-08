@@ -9,7 +9,8 @@ import {
 } from '../../../src/policy/constants.js'
 import { createApprovalQueue } from '../../../src/policy/approvals/queue.js'
 import { approvalsDbPath, openApprovalsDb } from '../../../src/policy/approvals/queue-db.js'
-import { SELECT_STALE_HEARTBEATS } from '../../../src/policy/approvals/queue-heartbeat-db.js'
+import { SELECT_STALE_HOLDS } from '../../../src/policy/approvals/queue-holds-db.js'
+import type { HolderIdentity, HolderLiveness } from '../../../src/policy/approvals/holder.js'
 import {
   WITHDRAW_REASON_PROCESS_LOST,
   cleanWithdrawReason,
@@ -53,8 +54,15 @@ function request(overrides: Record<string, unknown> = {}) {
 async function heartbeatRows(): Promise<{ approval_id: string; heartbeat_at: string }[]> {
   const db = await openApprovalsDb(baseDir)
   return db.handle.db
-    .prepare('SELECT approval_id, heartbeat_at FROM approval_heartbeats ORDER BY approval_id')
+    .prepare('SELECT approval_id, heartbeat_at FROM approval_holds ORDER BY approval_id')
     .all() as { approval_id: string; heartbeat_at: string }[]
+}
+
+/** A holder process the probe below reports as `liveness` (R3), so no test needs a real dead pid. */
+const HOLDER: HolderIdentity = { pid: 424242, host: 'this-host' }
+
+function holderOptions(liveness: HolderLiveness = 'gone') {
+  return { holder: HOLDER, holderLiveness: () => liveness }
 }
 
 describe('withdraw: the agent stopped waiting', () => {
@@ -151,6 +159,13 @@ describe('cleanWithdrawReason: the client chose the text', () => {
     expect(cleaned.length).toBe(MAX_WITHDRAW_REASON_CHARS)
   })
 
+  test('a secret in the reason is redacted before it is stored or shown (R8)', () => {
+    const cleaned = cleanWithdrawReason('AbortError: token ghp_abcdefghijklmnopqrstuvwxyz0123456789 expired')
+
+    expect(cleaned).not.toContain('ghp_abcdefghijklmnopqrstuvwxyz0123456789')
+    expect(cleaned.startsWith('AbortError: token ')).toBe(true)
+  })
+
   test('a missing, empty or non-string reason reads as "cancelled"', () => {
     expect(cleanWithdrawReason(undefined)).toBe('cancelled')
     expect(cleanWithdrawReason('')).toBe('cancelled')
@@ -173,9 +188,9 @@ describe('heartbeat: the crash backstop', () => {
     ])
   })
 
-  test('a request whose heartbeat went stale is withdrawn as process-lost by the next read', async () => {
+  test('a request whose heartbeat went stale and whose holder is gone is withdrawn as process-lost by the next read', async () => {
     let nowMs = Date.UTC(2026, 9, 8, 12)
-    const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs, ...holderOptions('gone') })
     const { approvalId } = await queue.enqueue(request())
 
     nowMs += APPROVAL_HEARTBEAT_STALE_MS + 1
@@ -191,12 +206,12 @@ describe('heartbeat: the crash backstop', () => {
 
   test('a heartbeat refreshed on schedule keeps the request live for as long as it is held', async () => {
     let nowMs = Date.UTC(2026, 9, 8, 12)
-    const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs, ...holderOptions('gone') })
     const { approvalId } = await queue.enqueue(request())
 
     for (let tick = 0; tick < 40; tick += 1) {
       nowMs += APPROVAL_HEARTBEAT_INTERVAL_MS
-      await queue.heartbeat(approvalId)
+      await queue.heartbeat([approvalId])
       expect(await queue.countPending()).toBe(1)
     }
 
@@ -207,7 +222,7 @@ describe('heartbeat: the crash backstop', () => {
 
   test('the stale boundary is exclusive: a heartbeat exactly at the limit is still live', async () => {
     let nowMs = Date.UTC(2026, 9, 8, 12)
-    const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs, ...holderOptions('gone') })
     await queue.enqueue(request())
 
     nowMs += APPROVAL_HEARTBEAT_STALE_MS
@@ -220,7 +235,7 @@ describe('heartbeat: the crash backstop', () => {
     const { approvalId } = await queue.enqueue(request())
     await queue.resolve(approvalId, { outcome: 'denied', actor: 'cli:alice' })
 
-    await expect(queue.heartbeat(approvalId)).resolves.toBeUndefined()
+    await expect(queue.heartbeat([approvalId])).resolves.toBeUndefined()
 
     expect(await heartbeatRows()).toEqual([])
     await expect(queue.list()).resolves.toEqual([])
@@ -228,7 +243,7 @@ describe('heartbeat: the crash backstop', () => {
 
   test('a request past its own expiry is expired, not process-lost, even with a stale heartbeat', async () => {
     let nowMs = Date.UTC(2026, 9, 8, 12)
-    const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs, ...holderOptions('gone') })
     const { approvalId } = await queue.enqueue(request({ timeoutMs: 60_000 }))
 
     nowMs += APPROVAL_HEARTBEAT_STALE_MS + 1
@@ -239,10 +254,10 @@ describe('heartbeat: the crash backstop', () => {
 
   test('a row an older build enqueued has no heartbeat: only its own expiry settles it', async () => {
     let nowMs = Date.UTC(2026, 9, 8, 12)
-    const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs, ...holderOptions('gone') })
     const { approvalId } = await queue.enqueue(request())
     const db = await openApprovalsDb(baseDir)
-    db.handle.db.prepare('DELETE FROM approval_heartbeats WHERE approval_id = ?').run(approvalId)
+    db.handle.db.prepare('DELETE FROM approval_holds WHERE approval_id = ?').run(approvalId)
 
     nowMs += APPROVAL_HEARTBEAT_STALE_MS * 10
 
@@ -255,11 +270,11 @@ describe('heartbeat: the crash backstop', () => {
   test('the stale-heartbeat candidate query is index-served, with no scan and no temp sort', async () => {
     const db = await openApprovalsDb(baseDir)
 
-    const plan = (db.handle.db.prepare(`EXPLAIN QUERY PLAN ${SELECT_STALE_HEARTBEATS}`).all() as { detail: string }[])
+    const plan = (db.handle.db.prepare(`EXPLAIN QUERY PLAN ${SELECT_STALE_HOLDS}`).all() as { detail: string }[])
       .map((row) => row.detail)
       .join(' | ')
 
-    expect(plan).toContain('idx_approval_heartbeats_at')
+    expect(plan).toContain('idx_approval_holds_heartbeat')
     expect(plan).not.toContain('SCAN')
     expect(plan).not.toContain('TEMP B-TREE')
   })
@@ -342,5 +357,116 @@ describe('retention: resolved history does not grow without bound', () => {
     ).map((row) => row.approval_id)
     expect(ids).toHaveLength(4) // 202 stale - 200 deleted, the fresh one, the new request
     expect(ids).toEqual(expect.arrayContaining(['01FRESH', approvalId]))
+  })
+})
+
+describe('review R3: a stale heartbeat alone is not a lost holder', () => {
+  test('enqueue records which process holds the request', async () => {
+    const queue = createApprovalQueue({ baseDir, ...holderOptions('alive') })
+    const { approvalId } = await queue.enqueue(request())
+
+    const db = await openApprovalsDb(baseDir)
+    const row = db.handle.db
+      .prepare('SELECT holder_pid, holder_host FROM approval_holds WHERE approval_id = ?')
+      .get(approvalId)
+    expect(row).toEqual({ holder_pid: HOLDER.pid, holder_host: HOLDER.host })
+  })
+
+  test.each(['alive', 'unknown'] as const)(
+    'after a long sleep a holder that is %s keeps its request pending and connected-or-unknown',
+    async (liveness) => {
+      let nowMs = Date.UTC(2026, 9, 8, 12)
+      const queue = createApprovalQueue({ baseDir, clock: () => nowMs, ...holderOptions(liveness) })
+      const { approvalId } = await queue.enqueue(request())
+
+      nowMs += 60 * 60_000 // the laptop slept an hour: every heartbeat is stale
+
+      const [listed] = await queue.list()
+      expect(listed?.approvalId).toBe(approvalId)
+      expect(listed?.agentConnected).toBe(liveness === 'alive')
+      await expect(queue.readResolution(approvalId)).resolves.toBeNull()
+    },
+  )
+
+  test('the real probe: this process is alive, a host elsewhere is unknown', async () => {
+    const { probeHolderLiveness } = await import('../../../src/policy/approvals/holder.js')
+    const { hostname } = await import('node:os')
+
+    expect(probeHolderLiveness({ pid: process.pid, host: hostname() })).toBe('alive')
+    expect(probeHolderLiveness({ pid: process.pid, host: `${hostname()}-elsewhere` })).toBe('unknown')
+    expect(probeHolderLiveness({ pid: 0, host: hostname() })).toBe('unknown')
+  })
+})
+
+describe('review R5: an approval nothing can deliver is not recorded as approved', () => {
+  test('approving a request whose holder is gone is refused as withdrawn, and settles it so', async () => {
+    let nowMs = Date.UTC(2026, 9, 8, 12)
+    // The lister's probe would leave it; the approver's own read judges it at write time.
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs, ...holderOptions('gone') })
+    const { approvalId } = await queue.enqueue(request())
+    nowMs += APPROVAL_HEARTBEAT_STALE_MS + 1
+
+    const result = await queue.resolve(approvalId, { outcome: 'approved', actor: 'cli:alice' })
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'withdrawn',
+      withdrawnAt: new Date(nowMs).toISOString(),
+      withdrawnReason: WITHDRAW_REASON_PROCESS_LOST,
+    })
+    await expect(queue.readResolution(approvalId)).resolves.toMatchObject({ outcome: 'withdrawn' })
+  })
+
+  test('approving past the agent\'s capped wait settles as expired, keeping who approved', async () => {
+    let nowMs = Date.UTC(2026, 9, 8, 12)
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs, ...holderOptions('alive') })
+    const { approvalId } = await queue.enqueue(request({ waitTimeoutMs: 60_000 }))
+    nowMs += 60_001
+
+    const result = await queue.resolve(approvalId, { outcome: 'approved', actor: 'cli:alice' })
+
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.record.resolution).toEqual({ outcome: 'expired', actor: 'cli:alice' })
+    }
+  })
+
+  test('a live, fresh request is approved as before', async () => {
+    const queue = createApprovalQueue({ baseDir, ...holderOptions('alive') })
+    const { approvalId } = await queue.enqueue(request({ waitTimeoutMs: 60_000 }))
+
+    const result = await queue.resolve(approvalId, { outcome: 'approved', actor: 'cli:alice' })
+
+    expect(result.ok && result.record.resolution.outcome).toBe('approved')
+  })
+})
+
+describe('review R9: holds an older build left behind are pruned', () => {
+  test('an enqueue deletes holds whose request is resolved or gone, and keeps live ones', async () => {
+    const queue = createApprovalQueue({ baseDir, ...holderOptions('alive') })
+    const { approvalId: live } = await queue.enqueue(request())
+    const { approvalId: settled } = await queue.enqueue(request())
+    const db = await openApprovalsDb(baseDir)
+    // An older build resolves without knowing the hold table, and a hold can outlive its row.
+    db.handle.db.prepare("UPDATE approvals SET status = 'resolved' WHERE approval_id = ?").run(settled)
+    db.handle.db
+      .prepare('INSERT INTO approval_holds (approval_id, heartbeat_at, holder_pid, holder_host) VALUES (?, ?, 1, ?)')
+      .run('01GONE', new Date().toISOString(), 'h')
+
+    const { approvalId: fresh } = await queue.enqueue(request())
+
+    expect((await heartbeatRows()).map((row) => row.approval_id).sort()).toEqual([live, fresh].sort())
+  })
+
+  test('the development heartbeat table of phase A is dropped on open', async () => {
+    const legacy = await openStateDbShared(approvalsDbPath(baseDir))
+    legacy.db.exec('CREATE TABLE IF NOT EXISTS approval_heartbeats (approval_id TEXT PRIMARY KEY, heartbeat_at TEXT NOT NULL) STRICT')
+
+    await createApprovalQueue({ baseDir }).list()
+
+    const tables = (legacy.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[])
+      .map((row) => row.name)
+    expect(tables).toContain('approval_holds')
+    expect(tables).not.toContain('approval_heartbeats')
   })
 })

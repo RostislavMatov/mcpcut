@@ -7,7 +7,12 @@ import type { JournalRecord } from '../../src/journal/record.js'
 import { openApprovalsDb } from '../../src/policy/approvals/queue-db.js'
 import { createApprovalQueue, type ApprovalQueue, type PendingApproval } from '../../src/policy/approvals/queue.js'
 import { createApprovalWaiter } from '../../src/policy/approvals/waiter.js'
-import { APPROVAL_HEARTBEAT_INTERVAL_MS, APPROVAL_PROGRESS_INTERVAL_MS, MAX_WITHDRAW_REASON_CHARS } from '../../src/policy/constants.js'
+import {
+  APPROVAL_HEARTBEAT_INTERVAL_MS,
+  APPROVAL_PROGRESS_INTERVAL_MS,
+  MAX_HELD_CALLS_PER_SESSION,
+  MAX_WITHDRAW_REASON_CHARS,
+} from '../../src/policy/constants.js'
 import { createInventory } from '../../src/policy/inventory.js'
 import { parsePolicy, type Policy } from '../../src/policy/schema.js'
 import { createPolicyGate, type PolicyGate } from '../../src/proxy/gate.js'
@@ -117,7 +122,16 @@ interface Harness {
   readonly scheduler: ReturnType<typeof createManualScheduler>
 }
 
-function createHarness(opts: { policy?: Policy; progress?: boolean } = {}): Harness {
+interface HarnessOptions {
+  readonly policy?: Policy
+  readonly progress?: boolean
+  /** Stands in for the shared queue (a failing withdrawal, R4). */
+  readonly approvalQueue?: ApprovalQueue
+  /** The waiter's clock, to move its deadline without waiting (R6). */
+  readonly waiterClock?: () => number
+}
+
+function createHarness(opts: HarnessOptions = {}): Harness {
   const written: Buffer[] = []
   const scheduler = createManualScheduler()
   const gate = createPolicyGate({
@@ -125,8 +139,11 @@ function createHarness(opts: { policy?: Policy; progress?: boolean } = {}): Harn
     serverName: SERVER_NAME,
     sessionId: SESSION_ID,
     inventory: knownInventory(),
-    approvalQueue: queue,
-    approvalWaiter: createApprovalWaiter({ pollIntervalMs: POLL_INTERVAL_MS }),
+    approvalQueue: opts.approvalQueue ?? queue,
+    approvalWaiter: createApprovalWaiter({
+      pollIntervalMs: POLL_INTERVAL_MS,
+      ...(opts.waiterClock !== undefined ? { clock: opts.waiterClock } : {}),
+    }),
     sink,
     clientWriter: {
       writeMessage: (bytes: Buffer) => {
@@ -271,7 +288,7 @@ describe('hold while the agent holds: progress and heartbeat', () => {
     const verdict = gate.gateClientMessage(toolCall(9))
     const pending = await waitForPending()
     const db = await openApprovalsDb(approvalsDir)
-    db.handle.db.prepare("UPDATE approval_heartbeats SET heartbeat_at = '2000-01-01T00:00:00.000Z'").run()
+    db.handle.db.prepare("UPDATE approval_holds SET heartbeat_at = '2000-01-01T00:00:00.000Z'").run()
 
     scheduler.tick(APPROVAL_PROGRESS_INTERVAL_MS)
     scheduler.tick(APPROVAL_HEARTBEAT_INTERVAL_MS)
@@ -279,7 +296,7 @@ describe('hold while the agent holds: progress and heartbeat', () => {
 
     expect(written).toEqual([])
     const row = db.handle.db
-      .prepare('SELECT heartbeat_at FROM approval_heartbeats WHERE approval_id = ?')
+      .prepare('SELECT heartbeat_at FROM approval_holds WHERE approval_id = ?')
       .get(pending.approvalId) as { heartbeat_at: string }
     expect(row.heartbeat_at > '2000-01-01T00:00:00.000Z').toBe(true)
 
@@ -441,5 +458,128 @@ describe('the agent leaves: the request is withdrawn and nothing is sent', () =>
     expect(answer.error.code).toBe(ERROR_CODE_APPROVAL)
     expect(answer.error.data.reason).toBe('approval_timeout')
     expect((await decisions()).at(-1)?.decision?.outcome).toBe('timeout')
+  })
+})
+
+describe('review R4: a withdrawal that fails still ends the wait', () => {
+  test('a cancel whose withdrawal throws never lets a later approval send the call', async () => {
+    const failing: ApprovalQueue = {
+      ...queue,
+      withdraw: () => Promise.reject(new Error('disk gone')),
+    }
+    const { gate, written } = createHarness({ approvalQueue: failing })
+
+    const callVerdict = gate.gateClientMessage(toolCall(40))
+    const pending = await waitForPending()
+    await settled(gate.gateClientMessage(cancelOf(40, 'AbortError: user-cancel')))
+
+    expect(await settled(callVerdict)).toEqual({ action: 'drop' })
+    // The row is still pending in storage; an approval of it reaches nobody.
+    await queue.resolve(pending.approvalId, { outcome: 'approved', actor: 'operator' })
+    await sleep(POLL_INTERVAL_MS * 3)
+    expect(written).toEqual([])
+    expect((await decisions()).at(-1)?.decision).toMatchObject({ outcome: 'agent-gone', reason: 'AbortError: user-cancel' })
+    expect(errors).toEqual([new Error('disk gone')])
+    errors.length = 0
+  })
+})
+
+describe('review R6: the 24-hour cap is a timeout, not a human denial', () => {
+  test('a request the sweep expires at its cap answers the agent with a timeout', async () => {
+    const { gate, written } = createHarness()
+
+    const verdict = gate.gateClientMessage(toolCall(41))
+    const pending = await waitForPending()
+    // Another reader, a day later: its sweep settles the request as expired.
+    const later = createApprovalQueue({
+      baseDir: approvalsDir,
+      clock: () => Date.parse(pending.expiresAt) + 1,
+    })
+    await later.list()
+
+    expect(await settled(verdict)).toEqual({ action: 'drop' })
+    expect(parsed(written.at(-1)!).error.data.reason).toBe('approval_timeout')
+    const last = (await decisions()).at(-1)?.decision
+    expect(last?.outcome).toBe('timeout')
+    expect(last).not.toHaveProperty('actor')
+  })
+
+  test('without a policy cap the wait itself ends at 24 hours', async () => {
+    let nowMs = Date.now()
+    const { gate, written } = createHarness({ waiterClock: () => nowMs })
+
+    const verdict = gate.gateClientMessage(toolCall(42))
+    await waitForPending()
+    nowMs += 24 * 60 * 60_000
+
+    expect(await settled(verdict)).toEqual({ action: 'drop' })
+    expect(parsed(written.at(-1)!).error.data.reason).toBe('approval_timeout')
+    expect((await decisions()).at(-1)?.decision?.outcome).toBe('timeout')
+  })
+})
+
+describe('review R2: a session holds a bounded number of calls, and beats once for all of them', () => {
+  async function waitForCount(count: number): Promise<PendingApproval[]> {
+    for (let attempt = 0; attempt < 400; attempt += 1) {
+      const listed = await queue.list({ limit: 100 })
+      if (listed.length >= count) return listed
+      await sleep(POLL_INTERVAL_MS)
+    }
+    throw new Error(`fewer than ${count} approvals were enqueued`)
+  }
+
+  test('one call over the cap is refused at once: nothing is queued for it, the journal says why', async () => {
+    const { gate, written } = createHarness()
+    const heldVerdicts = Array.from({ length: MAX_HELD_CALLS_PER_SESSION }, (_, index) =>
+      gate.gateClientMessage(toolCall(100 + index, { n: index })),
+    )
+    await waitForCount(MAX_HELD_CALLS_PER_SESSION)
+
+    const over = gate.gateClientMessage(toolCall(200, { n: 'over' }))
+
+    expect(await settled(over)).toEqual({ action: 'drop' })
+    const answer = parsed(written.at(-1)!)
+    expect(answer.id).toBe(200)
+    expect(answer.error.code).toBe(ERROR_CODE_APPROVAL)
+    expect(answer.error.data).toEqual({
+      reason: 'approval_hold_limit',
+      toolName: 'write_file',
+      limit: MAX_HELD_CALLS_PER_SESSION,
+    })
+    expect(answer.error.message).toContain('Nothing was sent')
+    expect(await queue.countPending()).toBe(MAX_HELD_CALLS_PER_SESSION)
+    expect((await decisions()).at(-1)?.decision).toMatchObject({ outcome: 'deny', rule: 'held-calls-limit' })
+
+    // Room again once one of them is answered.
+    const [first] = await queue.list()
+    await queue.resolve(first!.approvalId, { outcome: 'denied', actor: 'operator' })
+    await sleep(POLL_INTERVAL_MS * 4)
+    const next = gate.gateClientMessage(toolCall(201, { n: 'next' }))
+    expect(next).toBeInstanceOf(Promise)
+    await waitForCount(MAX_HELD_CALLS_PER_SESSION)
+    await gate.cancelPending()
+    await Promise.all([...heldVerdicts, next].map(settled))
+  })
+
+  test('one heartbeat write per interval covers every held call of the session', async () => {
+    const calls: (readonly string[])[] = []
+    const counting: ApprovalQueue = {
+      ...queue,
+      heartbeat: (ids) => {
+        calls.push([...ids])
+        return queue.heartbeat(ids)
+      },
+    }
+    const { gate, scheduler } = createHarness({ approvalQueue: counting })
+    const verdicts = [gate.gateClientMessage(toolCall(300, { n: 1 })), gate.gateClientMessage(toolCall(301, { n: 2 }))]
+    const held = await waitForCount(2)
+
+    scheduler.tick(APPROVAL_HEARTBEAT_INTERVAL_MS)
+
+    expect(calls).toHaveLength(1)
+    expect([...calls[0]!].sort()).toEqual(held.map((entry) => entry.approvalId).sort())
+    await gate.cancelPending()
+    await Promise.all(verdicts.map(settled))
+    expect(scheduler.active()).toBe(0)
   })
 })

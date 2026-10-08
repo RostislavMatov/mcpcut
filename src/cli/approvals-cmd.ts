@@ -6,7 +6,9 @@ import { APPROVALS_LIST_MAX_ROWS } from '../config.js'
 import { formatReadableField } from '../journal/format.js'
 import {
   createApprovalQueue,
+  deliveryEndsAt,
   type ApprovalQueue,
+  type ResolvedApprovalFile,
   type ResolveOutcome,
   type ResolveResult,
 } from '../policy/approvals/queue.js'
@@ -349,10 +351,26 @@ async function runResolve(
   }
 
   const safeId = formatReadableField(approvalId)
+  // R5: an approval that landed after the agent's wait (or the request's
+  // 24-hour cap) ran out is recorded `expired` — saying "goes through" would
+  // be false, so the operator is told nothing was sent.
+  if (result.record.resolution.outcome === 'expired') {
+    io.stderr.write(tooLateMessage(safeId, result.record))
+    return 1
+  }
   // M36: an approval covers this one call, and the call is held while its
   // agent waits — so a pending request always has a call to deliver.
   io.stdout.write(outcome === 'approved' ? `Approved ${safeId}. The waiting call goes through now.\n` : `Denied ${safeId}.\n`)
   return 0
+}
+
+/** One line for an approval that came after the wait ended: when it ended, and the next step. */
+function tooLateMessage(safeId: string, record: ResolvedApprovalFile): string {
+  return (
+    `Too late: the agent stopped waiting for ${safeId} at ${formatReadableField(deliveryEndsAt(record))}, ` +
+    'so nothing was sent. ' +
+    `If it asks again, a new request appears in: ${cliCommand()} approvals list\n`
+  )
 }
 
 /**

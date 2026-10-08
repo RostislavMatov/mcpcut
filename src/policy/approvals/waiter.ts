@@ -32,10 +32,8 @@ export type WaitOutcome = 'approved' | 'denied' | 'timeout' | 'withdrawn'
  * agent left, M36) and an `expired` resolution (a capped wait and the lazy
  * sweep record a resolution no operator made). `expired` is excluded even when the stored record does
  * carry an actor: `resolve()` downgrades a stale `approved` to `expired`
- * while preserving that operator's name for the audit trail, and since the
- * waiter reports every non-`approved` resolution as a denial, attributing it
- * would produce a record reading "<operator> denied this call" about
- * somebody who approved it. An absent actor loses a detail; a wrong one is a
+ * while preserving that operator's name for the audit trail, and attributing
+ * it would put a name on an outcome that person did not choose. An absent actor loses a detail; a wrong one is a
  * false statement in signed evidence.
  */
 export interface WaitResult {
@@ -92,18 +90,19 @@ const TIMED_OUT: WaitResult = Object.freeze({ outcome: 'timeout' as const })
 const WITHDRAWN: WaitResult = Object.freeze({ outcome: 'withdrawn' as const })
 
 /**
- * Maps a persisted resolution to a wait result. `expired` counts as `denied`:
- * fail closed. `withdrawn` is its own result and, like `expired`, names
- * nobody. See `WaitResult` for why an `expired` record's actor is deliberately
- * not carried over.
+ * Maps a persisted resolution to a wait result. `expired` is a TIMEOUT, never
+ * a denial (review R6): the request ran past its cap — the 24-hour one, or a
+ * late approval `resolve()` downgraded — and no human decided against the
+ * call. Either way the call fails closed: a timeout is answered, nothing is
+ * sent. `withdrawn` is its own result and, like `expired`, names nobody. See
+ * `WaitResult` for why an `expired` record's actor is deliberately not
+ * carried over.
  */
 function toWaitResult(resolution: ApprovalResolution): WaitResult {
   if (resolution.outcome === 'withdrawn') return WITHDRAWN
+  if (resolution.outcome === 'expired') return TIMED_OUT
   const outcome: WaitOutcome = resolution.outcome === 'approved' ? 'approved' : 'denied'
-  const isHumanResolution = resolution.outcome !== 'expired'
-  return isHumanResolution && resolution.actor !== undefined
-    ? { outcome, actor: resolution.actor }
-    : { outcome }
+  return resolution.actor !== undefined ? { outcome, actor: resolution.actor } : { outcome }
 }
 
 /** One wait's polling loop: reads until a resolution, the deadline, or `stop()`. */

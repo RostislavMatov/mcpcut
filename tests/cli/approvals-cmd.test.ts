@@ -409,6 +409,25 @@ describe('runApprovals: approve', () => {
     await expect(queue.readResolution(approvalId)).resolves.toMatchObject({ outcome: 'withdrawn' })
   })
 
+  test('approving after the agent\'s capped wait ran out says it was too late and nothing was sent (R5)', async () => {
+    const { opts } = await createAdminToken('release-captain')
+    let nowMs = Date.UTC(2026, 9, 8, 12)
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
+    const { approvalId } = await queue.enqueue(baseRequest({ timeoutMs: 300_000, waitTimeoutMs: 60_000 }))
+    nowMs += 61_000
+    const io = fakeIo()
+
+    const exitCode = await runApprovals(['approve', approvalId], io, { ...opts, clock: () => nowMs })
+
+    expect(exitCode).toBe(1)
+    expect(io.out()).toBe('')
+    expect(io.err()).toBe(
+      `Too late: the agent stopped waiting for ${approvalId} at 2026-10-08T12:01:00.000Z, so nothing was sent. ` +
+        `If it asks again, a new request appears in: ${cliCommand()} approvals list\n`,
+    )
+    await expect(queue.readResolution(approvalId)).resolves.toMatchObject({ outcome: 'expired' })
+  })
+
   test('a withdrawal reason that reached storage is still printed terminal-safe', async () => {
     const { opts } = await createAdminToken('release-captain')
     const queue = createApprovalQueue({ baseDir })
@@ -777,7 +796,7 @@ describe('runApprovals: list shows how long a request has waited and that its ag
     nowMs += 70_000
     // The gate holding the call keeps its heartbeat fresh; here the test plays the gate.
     const db = await openApprovalsDb(baseDir)
-    db.handle.db.prepare('UPDATE approval_heartbeats SET heartbeat_at = ?').run(new Date(nowMs).toISOString())
+    db.handle.db.prepare('UPDATE approval_holds SET heartbeat_at = ?').run(new Date(nowMs).toISOString())
     const io = fakeIo()
 
     const exitCode = await runApprovals(['list'], io, { ...anonymousOpts(), clock: () => nowMs })
@@ -804,7 +823,7 @@ describe('runApprovals: list shows how long a request has waited and that its ag
     const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
     const { approvalId } = await queue.enqueue(baseRequest({ timeoutMs: 60_000 }))
     const db = await openApprovalsDb(baseDir)
-    db.handle.db.prepare('DELETE FROM approval_heartbeats WHERE approval_id = ?').run(approvalId)
+    db.handle.db.prepare('DELETE FROM approval_holds WHERE approval_id = ?').run(approvalId)
     const io = fakeIo()
 
     await runApprovals(['list'], io, { ...anonymousOpts(), clock: () => nowMs })

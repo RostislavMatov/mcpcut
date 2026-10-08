@@ -157,11 +157,12 @@ describe('createApprovalWaiter: wait', () => {
     expect(Object.hasOwn(await waitPromise, 'actor')).toBe(false)
   })
 
-  test('an expired resolution never attributes its actor, even when it has one', async () => {
+  test('an expired resolution is a timeout that names nobody, even when the record has an actor', async () => {
     // `resolve()` downgrades a stale `approved` to `expired` while KEEPING the
-    // operator's name for the audit trail. Since every non-approved resolution
-    // is reported as a denial, carrying that name over would produce a record
-    // reading "alice denied this call" about somebody who approved it.
+    // operator's name for the audit trail, and the lazy sweep expires a
+    // request at its 24-hour cap. Neither is a human denial (review R6): the
+    // journal must not say "denied-by-operator", nor "alice denied this call"
+    // about somebody who approved it.
     const waiter = createApprovalWaiter({ pollIntervalMs: POLL_INTERVAL_MS })
     const queue = createFakeQueue()
 
@@ -169,7 +170,7 @@ describe('createApprovalWaiter: wait', () => {
     queue.setResolution({ outcome: 'expired', actor: 'ui:alice', resolvedAt: new Date().toISOString() })
 
     const result = await waitPromise
-    expect(result.outcome).toBe('denied')
+    expect(result.outcome).toBe('timeout')
     expect(Object.hasOwn(result, 'actor')).toBe(false)
   })
 

@@ -1,4 +1,5 @@
 import type { ToolClass } from '../schema.js'
+import type { HolderIdentity, HolderLivenessProbe } from './holder.js'
 import type { ResolveOutcome } from './queue-file.js'
 import type { ResolveResult } from './queue-resolve.js'
 import type {
@@ -102,6 +103,13 @@ export interface ApprovalQueue {
    * counts only requests a decision could still act on.
    */
   countPending(): Promise<number>
+  /**
+   * Records an operator's decision. Judged against what can still be
+   * delivered (review R5): a request whose holder is gone settles as
+   * `withdrawn` (`process-lost`) and the call answers the `withdrawn`
+   * refusal; an `approved` past the request's expiry, or past the agent's
+   * capped wait (`waitExpiresAt`), settles as `expired` — nothing is sent.
+   */
   resolve(approvalId: string, resolution: ResolveInput): Promise<ResolveResult>
   /**
    * Records an unresolved approval as `expired` — a capped wait that ran out
@@ -114,8 +122,12 @@ export interface ApprovalQueue {
    * `resolve()` through the same conditional write: exactly one wins.
    */
   withdraw(approvalId: string, reason: string): Promise<ResolveResult>
-  /** Refreshes the heartbeat of a request the caller is still holding; a settled one is left alone. */
-  heartbeat(approvalId: string): Promise<void>
+  /**
+   * Refreshes the heartbeats of requests the caller is still holding, in one
+   * write (review R2: one statement per session, not one per held call); a
+   * settled or unknown id is left alone.
+   */
+  heartbeat(approvalIds: readonly string[]): Promise<void>
   /** `null` when the id is unknown or still pending. */
   readResolution(approvalId: string): Promise<ApprovalResolution | null>
   /**
@@ -142,4 +154,8 @@ export interface ApprovalQueueOptions {
   readonly baseDir?: string
   /** Injectable clock for deterministic tests. Defaults to `Date.now`. */
   readonly clock?: () => number
+  /** Who holds the requests this queue enqueues; defaults to this process (`currentHolder`). */
+  readonly holder?: HolderIdentity
+  /** Whether a holder still runs; defaults to `probeHolderLiveness` (pid on this host). */
+  readonly holderLiveness?: HolderLivenessProbe
 }

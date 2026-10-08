@@ -1,18 +1,24 @@
 import type { ApprovalQueue } from '../policy/approvals/queue.js'
 import type { ApprovalWaiter, WaitResult } from '../policy/approvals/waiter.js'
 import { WITHDRAW_REASON_DISCONNECTED } from '../policy/approvals/withdraw.js'
-import { APPROVAL_REQUEST_MAX_AGE_MS } from '../policy/constants.js'
+import { APPROVAL_REQUEST_MAX_AGE_MS, MAX_HELD_CALLS_PER_SESSION } from '../policy/constants.js'
 import type { PolicyDecision } from '../policy/decide.js'
 import type { Policy } from '../policy/schema.js'
 import type { JsonRpcId } from '../protocol/classify.js'
 import type { ParsedToolCall } from '../protocol/mcp.js'
 import type { Verdict } from './pipeline.js'
-import { approvalDeniedError, approvalTimeoutError, type SynthesizableId } from './synthesize.js'
-import { startHold, type HoldScheduler } from './approval-hold.js'
+import {
+  approvalDeniedError,
+  approvalHoldLimitError,
+  approvalTimeoutError,
+  type SynthesizableId,
+} from './synthesize.js'
+import { createHeartbeatTicker, startHold, type HoldScheduler } from './approval-hold.js'
 import type { PendingApprovalNotice } from './gate-types.js'
 import {
   ALREADY_ANSWERED_RULE,
   DROP,
+  HELD_CALLS_LIMIT_RULE,
   FORWARD,
   actorExtra,
   decisionInfoOf,
@@ -135,8 +141,27 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
   const { policy, serverName, approvalQueue, approvalWaiter, clock } = deps
   const { writeDecision, settleJournal, answerLocally, answerGuard } = deps
   const waitCapMs = policy.approval.timeoutMs
+  /**
+   * How long one call is held: the policy's cap when it sets one, never past
+   * the request's own 24-hour cap (review R6) — a wait that outlived its
+   * request could only ever end in a timeout anyway.
+   */
+  const holdLimitMs = Math.min(waitCapMs ?? APPROVAL_REQUEST_MAX_AGE_MS, APPROVAL_REQUEST_MAX_AGE_MS)
   const held = new Set<HeldCall>()
+  /**
+   * Calls between the cap check and the end of their wait, counted from the
+   * synchronous start of `requestApproval` — `held` only learns of a call
+   * after its enqueue resolves, so concurrent calls would all pass a check
+   * against it (review R2).
+   */
+  let admitted = 0
   let isClosed = false
+  const heartbeat = createHeartbeatTicker({
+    heartbeat: (approvalIds) => approvalQueue.heartbeat(approvalIds),
+    scheduler: deps.holdScheduler,
+    onError: deps.onError,
+  })
+  const syncHeartbeat = (): void => heartbeat.update(Array.from(held, (entry) => entry.approvalId))
 
   /** An announcement is a courtesy to the operator: its failure never decides the call. */
   function announcePending(notice: PendingApprovalNotice): void {
@@ -151,8 +176,10 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
    * The agent left: withdraw its request. If an operator resolved it first,
    * their decision stands and the wait settles on it — except at session
    * end, where nothing could be delivered any more, so the wait is ended
-   * either way (a request the withdrawal did not reach is left to the
-   * heartbeat sweep).
+   * either way. A withdrawal that FAILS ends the wait too (review R4): the
+   * agent is gone whatever storage says, and a wait left running would send
+   * the call the moment somebody approved the still-pending row. That row is
+   * left to the heartbeat sweep and the 24-hour cap.
    */
   async function leave(entry: HeldCall, reason: string): Promise<void> {
     if (entry.leftReason !== undefined) return
@@ -162,6 +189,7 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
       if (result.ok) entry.controller.abort()
     } catch (error: unknown) {
       deps.onError(error)
+      entry.controller.abort()
     }
     if (isClosed) entry.controller.abort()
   }
@@ -207,14 +235,13 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
     return approvalId
   }
 
-  /** Holds the call: heartbeat and progress run beside the wait, and stop with it. */
+  /** Holds the call: its progress and the session's heartbeat run beside the wait, and stop with it. */
   async function hold(call: ParsedToolCall, entry: HeldCall): Promise<WaitResult> {
     const ticker = startHold({
       approvalId: entry.approvalId,
       ...(call.progressToken !== undefined ? { progressToken: call.progressToken } : {}),
       ...(deps.heldCallProgress !== undefined ? { messageOf: deps.heldCallProgress } : {}),
       send: deps.notifyClient,
-      heartbeat: () => approvalQueue.heartbeat(entry.approvalId),
       scheduler: deps.holdScheduler,
       onError: deps.onError,
     })
@@ -223,11 +250,12 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
     // flood (M8).
     answerGuard.beginWait(entry.idKey)
     try {
-      return await approvalWaiter.wait(approvalQueue, entry.approvalId, waitCapMs, entry.controller.signal)
+      return await approvalWaiter.wait(approvalQueue, entry.approvalId, holdLimitMs, entry.controller.signal)
     } finally {
       ticker.stop()
       answerGuard.endWait(entry.idKey)
       held.delete(entry)
+      syncHeartbeat()
     }
   }
 
@@ -238,17 +266,43 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
     captured: ProvenanceSnapshot,
     base: DecisionExtras = {},
   ): Promise<Verdict> {
+    if (admitted >= MAX_HELD_CALLS_PER_SESSION) return refuseOverCap(call, facts, captured)
+    admitted += 1
+    try {
+      return await enqueueAndHold(call, facts, decision, captured, base)
+    } finally {
+      admitted -= 1
+    }
+  }
+
+  async function enqueueAndHold(
+    call: ParsedToolCall,
+    facts: CallFacts,
+    decision: PolicyDecision,
+    captured: ProvenanceSnapshot,
+    base: DecisionExtras,
+  ): Promise<Verdict> {
     const startedAtMs = clock()
     const approvalId = await enqueue(call, facts, decision, captured, base)
     // An id-less call never reaches here (`gate-call.ts` denies it first).
     const idKey = call.id !== null ? idKeyOf(call.id) : ''
     const entry: HeldCall = { idKey, approvalId, controller: new AbortController(), leftReason: undefined }
     held.add(entry)
+    syncHeartbeat()
     // The agent may already have left while the request was being queued.
     const earlyReason = isClosed ? WITHDRAW_REASON_DISCONNECTED : deps.cancelReasonOf(idKey)
     if (earlyReason !== undefined) void leave(entry, earlyReason)
     const result = await hold(call, entry)
     return finishApproval({ call, facts, rule: decision.rule, held: entry, startedAtMs, result, captured, base })
+  }
+
+  /** The session already holds all it may: refused at once, nothing queued (review R2). */
+  async function refuseOverCap(call: ParsedToolCall, facts: CallFacts, captured: ProvenanceSnapshot): Promise<Verdict> {
+    writeDecision(decisionInfoOf(facts, 'deny', HELD_CALLS_LIMIT_RULE), call.args, captured)
+    await settleJournal()
+    const toolName = facts.toolName
+    await answerLocally(call.id, (id) => approvalHoldLimitError(id, { toolName, limit: MAX_HELD_CALLS_PER_SESSION }))
+    return DROP
   }
 
   async function finishApproval(ctx: ApprovalContext): Promise<Verdict> {
@@ -302,7 +356,7 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
     writeDecision(decisionInfoOf(ctx.facts, 'timeout', ctx.rule, extras), ctx.call.args, ctx.captured)
     await settleJournal()
     const toolName = ctx.facts.toolName
-    await answerLocally(ctx.call.id, (id) => approvalTimeoutError(id, { toolName, approvalId }))
+    await answerLocally(ctx.call.id, (id) => approvalTimeoutError(id, { toolName }))
     return DROP
   }
 

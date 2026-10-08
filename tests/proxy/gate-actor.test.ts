@@ -314,8 +314,8 @@ describe('an outcome no human determined carries no actor', () => {
 
   test('an expired resolution (a capped wait, the expiry sweep) attributes nobody', async () => {
     // `markExpired()` records a resolution no operator made. The waiter
-    // reports it as a denial (fail closed), so the record exists — but it
-    // must not name anyone.
+    // reports it as a timeout (fail closed, and not a human denial — review
+    // R6), so the record exists — but it must not name anyone.
     const harness = createHarness()
 
     const verdict = harness.gate.gateClientMessage(toolCall(1, 'delete_repo'))
@@ -324,7 +324,7 @@ describe('an outcome no human determined carries no actor', () => {
     await verdict
 
     const terminal = decisionsOf(harness).at(-1)!
-    expect(terminal['outcome']).toBe('denied-by-operator')
+    expect(terminal['outcome']).toBe('timeout')
     expect(Object.hasOwn(terminal, 'actor')).toBe(false)
   })
 })

@@ -129,6 +129,8 @@ export const QUARANTINE_RULE = 'quarantine'
 export const GATE_ERROR_RULE = 'gate-error'
 /** `rule` recorded when an approval landed on an id the gate already answered. */
 export const ALREADY_ANSWERED_RULE = 'already-answered-locally'
+/** Rule recorded for a call refused because its session already holds the most calls it may (M36, R2). */
+export const HELD_CALLS_LIMIT_RULE = 'held-calls-limit'
 /** `rule` recorded when the server answered an id the gate had answered locally. */
 export const DUPLICATE_RESPONSE_RULE = 'duplicate-response-warning'
 /** `rule` recorded when a client frame could not be positively identified as safe and was dropped (C2). */

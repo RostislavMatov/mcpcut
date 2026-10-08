@@ -217,9 +217,12 @@ describe('approve says what happens to the call (0.2.3, stranger run of 0.2.2)',
 
     const exitCode = await runApprovals(['approve', approvalId], io, opts())
 
-    expect(exitCode).toBe(0)
-    expect(io.out()).not.toContain('retry')
-    expect(io.out()).not.toContain('grant')
+    // Review R5: past the agent's wait the approval reaches nobody — it is
+    // recorded expired and the operator is told it came too late.
+    expect(exitCode).toBe(1)
+    expect(io.err()).toContain('Too late')
+    expect(io.out() + io.err()).not.toContain('retry')
+    expect(io.out() + io.err()).not.toContain('grant')
   })
 
   test('the no-admins note comes only with an action that happened, never before an unknown-id error', async () => {

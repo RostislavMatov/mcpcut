@@ -626,7 +626,8 @@ describe('createPolicyGate: require-approval', () => {
     expect(answer.error.message.toLowerCase()).toContain('human')
     expect(answer.error.message).not.toContain('mcpcut')
     expect(answer.error.message).not.toContain(pending.approvalId)
-    expect(answer.error.data.approvalId).toBe(pending.approvalId)
+    // The request closed with this answer (R7): no id to correlate it to.
+    expect(answer.error.data).not.toHaveProperty('approvalId')
     expect((await readDecisions())[1]!.decision?.outcome).toBe('timeout')
 
     // Approving after the fact must not resurrect the already-answered call.
