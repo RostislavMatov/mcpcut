@@ -122,7 +122,7 @@ describe('wrap announces a held call to the operator', () => {
         params: {
           progressToken: 'p-8',
           progress: 1,
-          message: `waiting for approval ${pending!.approvalId} — mcpcut approvals approve ${pending!.approvalId}`,
+          message: 'waiting for a person to approve this call',
         },
       },
     ])

@@ -70,7 +70,7 @@ describe('connect holds a call for an admin while its agent waits', () => {
     expect(progress?.['params']).toEqual({
       progressToken: 7,
       progress: 1,
-      message: `waiting for approval ${pending!.approvalId} — mcpcut approvals approve ${pending!.approvalId}`,
+      message: 'waiting for a person to approve this call',
     })
     expect(stdio.messages().some((m) => m['id'] === 3)).toBe(false)
     await expect(queue.readResolution(pending!.approvalId)).resolves.toMatchObject({
