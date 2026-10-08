@@ -7,11 +7,9 @@ import { formatReadableField } from '../journal/format.js'
 import {
   createApprovalQueue,
   type ApprovalQueue,
-  type PendingApproval,
   type ResolveOutcome,
+  type ResolveResult,
 } from '../policy/approvals/queue.js'
-import type { ResolvedApprovalFile } from '../policy/approvals/queue-file.js'
-import { DEFAULT_GRANT_TTL_MS } from '../policy/constants.js'
 import { isExpectedAdminError } from './admin-cmd.js'
 import {
   adminStoreEmptiness,
@@ -77,7 +75,6 @@ It records WHICH admin resolved a request; listing needs no token. Until the
 first admin exists, approve and deny need none either.
 `
 
-const MS_PER_MINUTE = 60_000
 /** Prefix of the `actor` recorded by this CLI, mirroring the UI's `ui:<adminName>`. */
 const CLI_ACTOR_PREFIX = 'cli:'
 
@@ -347,32 +344,28 @@ async function runResolve(
   })
 
   if (!result.ok) {
-    io.stderr.write(`${NOT_FOUND_MESSAGE}\n${listApprovalsHint()}`)
+    io.stderr.write(refusalMessage(result))
     return 1
   }
 
   const safeId = formatReadableField(approvalId)
-  io.stdout.write(outcome === 'approved' ? approvedMessage(safeId, result.record) : `Denied ${safeId}.\n`)
+  // M36: an approval covers this one call, and the call is held while its
+  // agent waits — so a pending request always has a call to deliver.
+  io.stdout.write(outcome === 'approved' ? `Approved ${safeId}. The waiting call goes through now.\n` : `Denied ${safeId}.\n`)
   return 0
 }
 
 /**
- * What the approval does for the call (0.2.3, stranger run of 0.2.2): while
- * the agent still waits, its call goes through at once — the old wording
- * promised only a "retry", and the call went on by itself 0.3 s later.
- * After the wait, only a retry within the grant window passes. A request
- * with no recorded wait (queued before M4) gets both halves.
+ * Why nothing was resolved, in one line with the next step. A withdrawn
+ * request (M36) says when and why its agent stopped waiting — the fields come
+ * from storage and the reason from the client, so both are printed
+ * terminal-safe.
  */
-function approvedMessage(safeId: string, record: ResolvedApprovalFile): string {
-  const grantMinutes = Math.round(DEFAULT_GRANT_TTL_MS / MS_PER_MINUTE)
-  const retry =
-    `the agent's retry within ${grantMinutes} minute(s) of this approval ` +
-    `(default grant TTL; the active policy may override it) passes without a second approval`
-  const waitEndsAt = record.waitExpiresAt === undefined ? undefined : Date.parse(record.waitExpiresAt)
-  if (waitEndsAt === undefined || Number.isNaN(waitEndsAt)) {
-    return `Approved ${safeId}. A call still waiting goes through now; once its wait has ended, ${retry}.\n`
-  }
-  return Date.parse(record.resolvedAt) < waitEndsAt
-    ? `Approved ${safeId}. The waiting call goes through now.\n`
-    : `Approved ${safeId}. The agent's wait had already ended: ${retry}.\n`
+function refusalMessage(result: Exclude<ResolveResult, { ok: true }>): string {
+  if (result.reason !== 'withdrawn') return `${NOT_FOUND_MESSAGE}\n${listApprovalsHint()}`
+  return (
+    `The agent stopped waiting at ${formatReadableField(result.withdrawnAt)} ` +
+    `(${formatReadableField(result.withdrawnReason)}): nothing was sent. ` +
+    `If it asks again, a new request appears in: ${cliCommand()} approvals list\n`
+  )
 }

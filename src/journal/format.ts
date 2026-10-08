@@ -53,6 +53,11 @@ export function replaceControlChars(value: string): string {
   return value.replace(CONTROL_CHAR_PATTERN, CONTROL_CHAR_REPLACEMENT)
 }
 
+/** Removes every character `replaceControlChars` would mark, for a value stored rather than printed (a client's cancel reason). */
+export function stripControlChars(value: string): string {
+  return value.replace(CONTROL_CHAR_PATTERN, '')
+}
+
 function truncate(text: string, maxLength: number): string {
   return text.length > maxLength ? `${text.slice(0, maxLength)}${TRUNCATION_MARKER}` : text
 }

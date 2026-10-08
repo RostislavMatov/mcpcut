@@ -18,7 +18,6 @@ function input(overrides: Partial<DecideInput> & { policy: Policy }): DecideInpu
     toolName: 'search_index',
     toolClass: 'read',
     quarantineState: 'known',
-    hasActiveGrant: false,
     // Defaults chosen so the pre-existing precedence tests keep their meaning:
     // catalog not yet observed (so `unknown` still falls through to defaults,
     // never shadow-tool) and trusted (so catalog-untrusted never fires).
@@ -28,48 +27,55 @@ function input(overrides: Partial<DecideInput> & { policy: Policy }): DecideInpu
   }
 }
 
-describe('decide: step 1 -- active grant', () => {
-  test('an active grant allows, short-circuiting everything else', () => {
+/**
+ * Decision M36: there is no grant step. An approval covers the one call it was
+ * given for, so nothing about an earlier approval is an input of `decide()` —
+ * the old `hasActiveGrant` field, if a stale caller still passes it, changes
+ * nothing.
+ */
+describe('decide: no grant step (decision M36)', () => {
+  /** An input carrying the retired field, as a caller built before M36 would. */
+  function withStaleGrantField(base: DecideInput): DecideInput {
+    return { ...base, hasActiveGrant: true } as DecideInput
+  }
+
+  test('require-approval stays require-approval for a call identical to one just approved', () => {
     const result = decide(
-      input({
-        policy: policy({ version: 1, defaultDecision: 'deny' }),
-        hasActiveGrant: true,
-      }),
+      withStaleGrantField(input({ policy: policy({ version: 1, defaultDecision: 'require-approval' }) })),
     )
 
     expect(result).toEqual({
-      outcome: 'allow',
-      rule: 'grant',
-      reason: expect.stringContaining('grant'),
+      outcome: 'require-approval',
+      rule: 'defaultDecision',
+      reason: expect.any(String),
     })
   })
 
-  test('an active grant beats an explicit deny tool rule', () => {
+  test('an explicit deny tool rule is never overridden by an earlier approval', () => {
     const result = decide(
-      input({
-        policy: policy({
-          version: 1,
-          servers: { github: { tools: { search_index: 'deny' } } },
+      withStaleGrantField(
+        input({
+          policy: policy({ version: 1, servers: { github: { tools: { search_index: 'deny' } } } }),
         }),
-        hasActiveGrant: true,
-      }),
+      ),
     )
 
-    expect(result.outcome).toBe('allow')
-    expect(result.rule).toBe('grant')
+    expect(result.outcome).toBe('deny')
+    expect(result.rule).toBe('servers.github.tools.search_index')
   })
 
-  test('an active grant beats an enabled quarantine on a new tool', () => {
+  test('an enabled quarantine still holds a new tool', () => {
     const result = decide(
-      input({
-        policy: policy({ version: 1, quarantine: { enabled: true, onQuarantined: 'deny' } }),
-        hasActiveGrant: true,
-        quarantineState: 'new',
-      }),
+      withStaleGrantField(
+        input({
+          policy: policy({ version: 1, quarantine: { enabled: true, onQuarantined: 'deny' } }),
+          quarantineState: 'new',
+        }),
+      ),
     )
 
-    expect(result.outcome).toBe('allow')
-    expect(result.rule).toBe('grant')
+    expect(result.outcome).toBe('deny')
+    expect(result.rule).toBe('quarantine')
   })
 })
 
@@ -267,17 +273,14 @@ describe('decide: catalog-untrusted (fail closed)', () => {
     expect(result.outcome).not.toBe('allow')
   })
 
-  test('an active grant still beats an untrusted catalog', () => {
-    const result = decide(
-      input({
-        policy: policy({ version: 1, defaultDecision: 'allow' }),
-        catalogTrusted: false,
-        hasActiveGrant: true,
-      }),
-    )
+  test('an untrusted catalog is not allowed through by an earlier approval', () => {
+    const result = decide({
+      ...input({ policy: policy({ version: 1, defaultDecision: 'allow' }), catalogTrusted: false }),
+      hasActiveGrant: true,
+    } as DecideInput)
 
-    expect(result.rule).toBe('grant')
-    expect(result.outcome).toBe('allow')
+    expect(result.rule).toBe('catalog-untrusted')
+    expect(result.outcome).not.toBe('allow')
   })
 
   test('an explicit tool rule still beats an untrusted catalog', () => {
@@ -483,11 +486,6 @@ describe('decide: full precedence matrix (table-driven)', () => {
   })
 
   test.each([
-    {
-      name: 'grant beats everything',
-      overrides: { hasActiveGrant: true, toolName: 'delete_repo', quarantineState: 'new' as const },
-      expected: { outcome: 'allow', rule: 'grant' },
-    },
     {
       name: 'explicit tool rule beats quarantine and server default',
       overrides: { toolName: 'delete_repo', quarantineState: 'changed' as const },

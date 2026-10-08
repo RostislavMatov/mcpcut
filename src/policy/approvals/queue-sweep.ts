@@ -1,13 +1,23 @@
 import { APPROVALS_LIST_MAX_ROWS } from '../../config.js'
 import { openApprovalsDb, selectExpiredPendingRows } from './queue-db.js'
 import { isExpiredAt, isPendingApprovalFile, parseDoc } from './queue-file.js'
+import { selectStaleHeartbeatRows } from './queue-heartbeat-db.js'
 
 /**
- * The lazy expiry sweep of the approvals queue.
+ * The lazy sweeps of the approvals queue: expiry, and (decision M36) the
+ * heartbeat of a held request.
  *
- * Until this existed, expiry depended on SESSION LIFETIME: a request no human
- * resolved left `pending` only when `cancelPending()` (`proxy/gate-core.ts`)
- * marked it expired at teardown. A `wrap`/`connect` session in dogfood and
+ * The heartbeat pass is the crash backstop: the gate holding a call refreshes
+ * the request's heartbeat while its agent waits, and withdraws the request
+ * itself when the agent leaves. A process that died without tearing down does
+ * neither, so a pending request whose heartbeat went stale is withdrawn here as
+ * `process-lost` — otherwise it would stay approvable until its 24-hour cap,
+ * and an approval of it could reach nobody. It runs AFTER the expiry pass, so a
+ * request that is both expired and stale keeps the older fact, `expired`.
+ *
+ * Until the expiry pass existed, expiry depended on SESSION LIFETIME: a
+ * request no human resolved left `pending` only when `cancelPending()`
+ * (`proxy/gate-core.ts`) settled it at teardown. A `wrap`/`connect` session in dogfood and
  * pilot shape lives for hours, so abandoned requests accumulated for as long as
  * the process ran, and `countPending()` — which feeds the UI badge and the
  * "N of M pending" line — counted requests that could never yield a grant.
@@ -39,8 +49,8 @@ import { isExpiredAt, isPendingApprovalFile, parseDoc } from './queue-file.js'
  *    place.
  */
 
-/** What one sweep pass needs; the write is the queue's own, injected to keep this module free of its closure. */
-export interface SweepExpiredDeps {
+/** What one sweep needs; the writes are the queue's own, injected to keep this module free of its closure. */
+export interface SweepPendingDeps {
   /** The queue directory (`<journalDir>/approvals`), as `createApprovalQueue` resolved it. */
   readonly baseDir: string
   /** The instant the calling read is judging the queue at — its own clock, once. */
@@ -52,6 +62,20 @@ export interface SweepExpiredDeps {
    * decision and are not counted.
    */
   readonly markExpiredBatch: (approvalIds: readonly string[]) => Promise<number>
+  /** Heartbeats older than this instant (ISO-8601 UTC) are stale. */
+  readonly staleBeforeIso: string
+  /** The queue's `withdrawLostBatch`: withdraws a batch as `process-lost`, answering how many it settled. */
+  readonly withdrawLostBatch: (approvalIds: readonly string[]) => Promise<number>
+}
+
+/** Both passes, expiry first; returns how many rows they settled together. Never throws. */
+export async function sweepPending(deps: SweepPendingDeps): Promise<number> {
+  const expired = await sweepExpiredPending(deps)
+  const lost = await settleCandidates(
+    () => staleHeartbeatIds(deps.baseDir, deps.staleBeforeIso),
+    deps.withdrawLostBatch,
+  )
+  return expired + lost
 }
 
 /**
@@ -72,10 +96,18 @@ const SWEEP_MAX_ROWS = APPROVALS_LIST_MAX_ROWS
  * indexed SELECT (`idx_approvals_status_expires`) and takes no writer lock at
  * all: with nothing to expire, the render path pays one read.
  */
-export async function sweepExpiredPending(deps: SweepExpiredDeps): Promise<number> {
+export function sweepExpiredPending(deps: SweepPendingDeps): Promise<number> {
+  return settleCandidates(() => expiredPendingIds(deps.baseDir, deps.nowMs), deps.markExpiredBatch)
+}
+
+/** One bounded pass: find the candidates, settle them in one write; any failure leaves them pending. */
+async function settleCandidates(
+  find: () => Promise<readonly string[]>,
+  settle: (approvalIds: readonly string[]) => Promise<number>,
+): Promise<number> {
   let candidates: readonly string[]
   try {
-    candidates = await expiredPendingIds(deps.baseDir, deps.nowMs)
+    candidates = await find()
   } catch {
     // Nothing to hide here: the caller opens the same database one line later
     // and reports the classified storage failure itself.
@@ -84,13 +116,25 @@ export async function sweepExpiredPending(deps: SweepExpiredDeps): Promise<numbe
   if (candidates.length === 0) return 0
 
   try {
-    return await deps.markExpiredBatch(candidates)
+    return await settle(candidates)
   } catch {
     // A contended writer past its budget, or a storage failure: every row of
     // the batch stays pending — exactly the state it was already in — and the
     // next `list()`/`countPending()` sweeps it again. The read never sees this.
     return 0
   }
+}
+
+/**
+ * The ids of pending rows whose heartbeat is stale. A record that does not
+ * parse is unresolvable, not lost: left alone exactly as the expiry pass
+ * leaves it.
+ */
+async function staleHeartbeatIds(baseDir: string, staleBeforeIso: string): Promise<string[]> {
+  const db = await openApprovalsDb(baseDir)
+  return selectStaleHeartbeatRows(db.handle.db, staleBeforeIso, SWEEP_MAX_ROWS)
+    .filter((row) => parseDoc(row.doc, isPendingApprovalFile) !== null)
+    .map((row) => row.approvalId)
 }
 
 /**

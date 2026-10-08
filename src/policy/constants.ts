@@ -6,20 +6,51 @@
  */
 
 /**
- * Default time a `require-approval` decision waits for a human response
- * before resolving to `onTimeout` (deny). Chosen to sit comfortably below
- * common MCP client timeouts (research: Claude Code cuts calls off around
- * `MCP_TIMEOUT`, and >2 min calls move to background), so the operator has a
- * realistic window without the client giving up first.
+ * How long the person at the client has to answer a confirmation dialog
+ * (`confirmInClient`, ADR-0019) when the policy sets no `approval.timeoutMs`.
+ * The admin's approval holds without a limit by default (decision M36), but a
+ * dialog is a person sitting at the client: an unanswered one is refused after
+ * this, as before M36.
  */
-export const DEFAULT_APPROVAL_TIMEOUT_MS = 60_000
+export const DEFAULT_CLIENT_CONFIRM_TIMEOUT_MS = 60_000
 
 /**
- * Default lifetime of a grant created when an operator approves a call after
- * its timeout already fired. Lets an agent's retry succeed without a second
- * manual approval, without leaving the door open indefinitely.
+ * Hard cap on how long a request stays approvable after it was made (decision
+ * M36): `expires_at` of every request, whatever `approval.timeoutMs` says. The
+ * call itself is held while its agent holds the connection; this bounds what a
+ * process that never tore down could leave behind.
  */
-export const DEFAULT_GRANT_TTL_MS = 5 * 60_000
+export const APPROVAL_REQUEST_MAX_AGE_MS = 24 * 60 * 60_000
+
+/**
+ * How often the gate refreshes the heartbeat of a request it is holding. Well
+ * inside `APPROVAL_HEARTBEAT_STALE_MS`, so a few missed beats (a contended
+ * writer, a slow disk) never read as a crash.
+ */
+export const APPROVAL_HEARTBEAT_INTERVAL_MS = 30_000
+
+/**
+ * A pending request whose heartbeat is older than this is treated as withdrawn
+ * (`process-lost`) by the lazy sweep: the process holding it died without
+ * tearing down, so nothing an operator approves could reach anybody.
+ */
+export const APPROVAL_HEARTBEAT_STALE_MS = 2 * 60_000
+
+/**
+ * How often a held call tells its client it is still waiting
+ * (`notifications/progress`, when the call carried a `progressToken`). Claude
+ * Code resets its silence timer on progress and moves a call to the background
+ * after two minutes (smoke 2026-10-08), so once a minute keeps the call alive
+ * and the person informed without flooding the window.
+ */
+export const APPROVAL_PROGRESS_INTERVAL_MS = 60_000
+
+/**
+ * Max characters of the reason a withdrawn request records. The reason of a
+ * cancel is chosen by the client (`params.reason`), so it is untrusted text
+ * that lands in the queue, the journal and the operator's terminal.
+ */
+export const MAX_WITHDRAW_REASON_CHARS = 200
 
 /**
  * Polling interval for the approval waiter. M2 deliberately uses polling
@@ -125,13 +156,6 @@ export const MAX_QUARANTINED_TOOLS_PER_SERVER = 2000
 export const MAX_STORED_DESCRIPTOR_CHARS = 8192
 
 /**
- * Clock-skew tolerance (ms) for `checkRecentApproval` (grants.ts): a resolved
- * record whose `resolvedAt` is more than this far in the FUTURE is rejected, so
- * a forged/backdated record cannot mint a grant.
- */
-export const GRANT_CLOCK_SKEW_MS = 5_000
-
-/**
  * Max characters of an approval resolution's `actor` (`queue-file.ts`). The
  * two producers are short and bounded by construction — `cli` and
  * `ui:<adminName>`, where an admin name is at most 64 chars
@@ -147,9 +171,9 @@ export const GRANT_CLOCK_SKEW_MS = 5_000
 export const MAX_APPROVAL_ACTOR_CHARS = 128
 
 /**
- * Resolved-record retention: `checkRecentApproval` opportunistically deletes
- * resolved approvals settled longer ago than this (well past any grant TTL), so
- * the queue cannot grow without bound across a long-lived proxy session.
+ * Resolved-record retention: `enqueue` opportunistically deletes resolved
+ * approvals settled longer ago than this, so the queue cannot grow without
+ * bound across a long-lived proxy session.
  */
 export const RESOLVED_FILE_RETENTION_MS = 24 * 60 * 60_000
 

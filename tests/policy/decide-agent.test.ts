@@ -18,7 +18,6 @@ function input(overrides: Partial<DecideInput> & { policy: Policy }): DecideInpu
     toolName: 'search_index',
     toolClass: 'read',
     quarantineState: 'known',
-    hasActiveGrant: false,
     catalogObserved: false,
     catalogTrusted: true,
     ...overrides,
@@ -30,8 +29,8 @@ describe('decide: step 0 -- agent grant (not-granted denies before everything)',
 
   test.each([
     {
-      name: 'beats an active approvals grant',
-      overrides: { hasActiveGrant: true },
+      name: 'beats a global allow',
+      overrides: {},
       raw: { version: 1, defaultDecision: 'allow' },
     },
     {
@@ -116,11 +115,6 @@ describe('decide: agentGrant "granted" leaves the M2 chain untouched', () => {
 
   test.each([
     {
-      name: 'approvals grant still allows',
-      overrides: { hasActiveGrant: true, toolName: 'delete_repo', quarantineState: 'new' as const },
-      expected: { outcome: 'allow', rule: 'grant' },
-    },
-    {
       name: 'explicit tool rule still fires',
       overrides: { toolName: 'delete_repo', quarantineState: 'changed' as const },
       expected: { outcome: 'deny', rule: 'servers.github.tools.delete_repo' },
@@ -173,7 +167,6 @@ describe('decide: absent agentGrant is byte-for-byte M2 behavior', () => {
   })
 
   test.each([
-    { name: 'approvals grant', overrides: { hasActiveGrant: true } },
     { name: 'explicit tool rule', overrides: { toolName: 'delete_repo' } },
     { name: 'quarantined tool', overrides: { quarantineState: 'new' as const } },
     { name: 'server default', overrides: { toolClass: 'write' as const } },

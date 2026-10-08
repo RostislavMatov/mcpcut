@@ -289,6 +289,24 @@ describe('approval id validation at the handler boundary (LOW-2)', () => {
   })
 })
 
+describe('approving a request whose agent stopped waiting (M36)', () => {
+  test('is a 409 that says when and why the agent left and that nothing was sent', async () => {
+    const handlers = createApprovalsHandlers({ queue, clock: () => now })
+    const approvalId = await enqueueSample()
+    await queue.withdraw(approvalId, 'AbortError: user-cancel')
+
+    const result = await handlers.approvalsApprove(makeCtx({ method: 'POST', params: { id: approvalId } }))
+
+    if (result.kind !== 'response') throw new Error('expected a response')
+    expect(result.status).toBe(409)
+    const body = JSON.parse(bodyText(result)) as { status: string; message: string }
+    expect(body.status).toBe('withdrawn')
+    expect(body.message).toContain('The agent stopped waiting at')
+    expect(body.message).toContain('(AbortError: user-cancel)')
+    expect(body.message).toContain('nothing was sent')
+  })
+})
+
 describe('a bounded read never reads as a drained queue', () => {
   /**
    * Truncation must be a property of THIS read hitting its own row bound

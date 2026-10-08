@@ -7,7 +7,6 @@ import type { JournalRecord } from '../../src/journal/record.js'
 import { openApprovalsDb } from '../../src/policy/approvals/queue-db.js'
 import { createApprovalQueue, type ApprovalQueue, type PendingApproval } from '../../src/policy/approvals/queue.js'
 import { createApprovalWaiter } from '../../src/policy/approvals/waiter.js'
-import { createGrantRegistry } from '../../src/policy/approvals/grants.js'
 import { createInventory, type Inventory } from '../../src/policy/inventory.js'
 import { parsePolicy, type Policy } from '../../src/policy/schema.js'
 import { createPolicyGate, type PolicyGate } from '../../src/proxy/gate.js'
@@ -190,10 +189,8 @@ function createHarness(opts: HarnessOptions = {}): GateHarness {
     ...(opts.agentScope !== undefined ? { agentScope: opts.agentScope } : {}),
     approvalQueue: queue,
     approvalWaiter: createApprovalWaiter({ pollIntervalMs: POLL_INTERVAL_MS }),
-    grantRegistry: createGrantRegistry(),
     sink,
     clientWriter: writer,
-    approvalsBaseDir: approvalsDir,
     onError: (error) => errors.push(error),
   })
   return { gate, written, clientWriter: writer }
@@ -570,7 +567,7 @@ describe('createPolicyGate: require-approval', () => {
     approval: { timeoutMs: 10_000, grantTtlMs: 60_000 },
   } as const
 
-  test('an approved call is forwarded, journaled with latency, and leaves a reusable grant', async () => {
+  test('an approved call is forwarded, journaled with latency, and its identical repeat asks again (M36)', async () => {
     const { gate, written } = createHarness({ policy: policyOf(APPROVAL_POLICY) })
 
     const verdictPromise = gate.gateClientMessage(toolCall(1, 'write_file'))
@@ -588,10 +585,13 @@ describe('createPolicyGate: require-approval', () => {
     expect(decisions[0]!.decision?.approvalId).toBe(pending.approvalId)
     expect(decisions[1]!.decision?.latencyMs).toBeGreaterThanOrEqual(0)
 
-    // The in-memory grant makes the identical retry a synchronous allow.
+    // No grant window: the identical repeat is held for a human of its own.
     const retry = gate.gateClientMessage(toolCall(2, 'write_file'))
-    expect(retry).toEqual({ action: 'forward' })
-    expect((await readDecisions())[2]!.decision).toMatchObject({ outcome: 'allow', rule: 'grant' })
+    const second = await waitForOtherPendingApproval(pending.approvalId)
+    expect(second.argsHash).toBe(pending.argsHash)
+    await queue.resolve(second.approvalId, { outcome: 'denied', actor: 'operator' })
+    expect(await retry).toEqual({ action: 'drop' })
+    expect((await readDecisions())[2]!.decision).toMatchObject({ outcome: 'require-approval-pending' })
   })
 
   test('an operator denial answers the client and drops the call', async () => {
@@ -636,22 +636,25 @@ describe('createPolicyGate: require-approval', () => {
     expect(written).toHaveLength(1)
   })
 
-  test('a retry after a late approval is allowed by the on-disk grant, without a second prompt', async () => {
+  test('a late approval after a capped wait is refused, and the retry asks again (M36: no grant window)', async () => {
     const { gate, written } = createHarness({
       policy: policyOf({ ...APPROVAL_POLICY, approval: { timeoutMs: 30, grantTtlMs: 60_000 } }),
     })
 
     await gate.gateClientMessage(toolCall(3, 'write_file'))
-    const pending = await waitForPendingApproval()
-    await queue.resolve(pending.approvalId, { outcome: 'approved', actor: 'operator' })
+    const [timedOut] = await queue.listResolved({ limit: 1 })
+    expect(timedOut?.resolution.outcome).toBe('expired') // the wait ended, so did the request
+    const late = await queue.resolve(timedOut!.approvalId, { outcome: 'approved', actor: 'operator' })
+    expect(late.ok).toBe(false)
 
-    const retry = await gate.gateClientMessage(toolCall(4, 'write_file'))
+    const retry = gate.gateClientMessage(toolCall(4, 'write_file'))
+    const fresh = await waitForPendingApproval()
 
-    expect(retry).toEqual({ action: 'forward' })
-    expect(await queue.list()).toEqual([]) // no second approval was enqueued
+    expect(fresh.approvalId).not.toBe(timedOut!.approvalId)
+    await queue.resolve(fresh.approvalId, { outcome: 'approved', actor: 'operator' })
+    expect(await retry).toEqual({ action: 'forward' })
     expect(written).toHaveLength(1) // only the original timeout error
-    const last = (await readDecisions()).at(-1)
-    expect(last?.decision).toMatchObject({ outcome: 'allow', rule: 'grant' })
+    expect((await readDecisions()).some((record) => record.decision?.rule === 'grant')).toBe(false)
   })
 
   test('an approval that lands on an id already answered locally is dropped, never forwarded', async () => {
@@ -663,12 +666,11 @@ describe('createPolicyGate: require-approval', () => {
 
     // Attempt 1 times out, so id 5 is answered locally.
     await gate.gateClientMessage(toolCall(5, 'write_file', { a: 1 }))
-    const first = await waitForPendingApproval()
     expect(written).toHaveLength(1)
 
-    // Attempt 2 reuses id 5 with different args (no grant applies) and is approved.
+    // Attempt 2 reuses id 5 with different args and is approved.
     const verdictPromise = gate.gateClientMessage(toolCall(5, 'write_file', { a: 2 }))
-    const second = await waitForOtherPendingApproval(first.approvalId)
+    const second = await waitForPendingApproval()
     await queue.resolve(second.approvalId, { outcome: 'approved', actor: 'operator' })
 
     expect(await verdictPromise).toEqual({ action: 'drop' })
@@ -676,7 +678,7 @@ describe('createPolicyGate: require-approval', () => {
     expect((await readDecisions()).at(-1)?.decision?.rule).toBe('already-answered-locally')
   })
 
-  test('cancelPending settles an in-flight approval as a timeout and answers the client', async () => {
+  test('cancelPending withdraws an in-flight approval: the agent is gone, so nothing is answered (M36)', async () => {
     const { gate, written } = createHarness({
       policy: policyOf({ ...APPROVAL_POLICY, approval: { timeoutMs: 60_000, grantTtlMs: 60_000 } }),
     })
@@ -687,8 +689,8 @@ describe('createPolicyGate: require-approval', () => {
     await gate.cancelPending()
 
     expect(await verdictPromise).toEqual({ action: 'drop' })
-    expect(written).toHaveLength(1)
-    expect(parseWritten(written[0]!).error.data.reason).toBe('approval_timeout')
+    expect(written).toEqual([])
+    expect((await readDecisions()).at(-1)?.decision).toMatchObject({ outcome: 'agent-gone', reason: 'disconnected' })
   })
 })
 
@@ -699,7 +701,7 @@ describe('createPolicyGate: approval-queue metadata for the admin UI (M4)', () =
     approval: { timeoutMs: 10_000, grantTtlMs: 60_000 },
   } as const
 
-  test('the pending file carries agentName, decisionRule and a waitExpiresAt distinct from expiresAt', async () => {
+  test('the pending file carries agentName, decisionRule, the policy\'s wait cap and the 24-hour expiry', async () => {
     const { gate } = createHarness({
       policy: policyOf(M4_POLICY),
       agentScope: grantAllScope('research-bot'),
@@ -710,12 +712,11 @@ describe('createPolicyGate: approval-queue metadata for the admin UI (M4)', () =
 
     expect(pending.agentName).toBe('research-bot')
     expect(pending.decisionRule).toBe('defaultDecision')
-    // waitExpiresAt is the end of the AGENT'S WAIT (timeoutMs); expiresAt
-    // stays the end of the GRANT window (grantTtlMs). They must differ.
+    // waitExpiresAt is the end of the AGENT'S WAIT (the policy's cap,
+    // timeoutMs); expiresAt is the 24-hour hard cap (M36), never grantTtlMs.
     const requestedMs = Date.parse(pending.requestedAt)
     expect(pending.waitExpiresAt).toBe(new Date(requestedMs + 10_000).toISOString())
-    expect(pending.expiresAt).toBe(new Date(requestedMs + 60_000).toISOString())
-    expect(pending.waitExpiresAt).not.toBe(pending.expiresAt)
+    expect(pending.expiresAt).toBe(new Date(requestedMs + 24 * 60 * 60_000).toISOString())
 
     await queue.resolve(pending.approvalId, { outcome: 'denied', actor: 'operator' })
     await verdictPromise
@@ -761,27 +762,23 @@ describe('createPolicyGate: approval-queue metadata for the admin UI (M4)', () =
     expect(decisions[0]!.decision).not.toHaveProperty('agentName')
   })
 
-  test('an approval resolved after waitExpiresAt but before expiresAt still mints the grant for a retry', async () => {
+  test('once the capped wait ran out the request is closed: no approval of it can mint anything (M36)', async () => {
     const { gate } = createHarness({
       policy: policyOf({ ...M4_POLICY, approval: { timeoutMs: 30, grantTtlMs: 60_000 } }),
       agentScope: grantAllScope('research-bot'),
     })
 
-    // The wait times out (30ms), so waitExpiresAt has passed by the time the
-    // operator approves — but the grant window (60s) has not.
     await gate.gateClientMessage(toolCall(3, 'write_file'))
-    const pending = await waitForPendingApproval()
-    await queue.resolve(pending.approvalId, { outcome: 'approved', actor: 'operator' })
+    const [closed] = await queue.listResolved({ limit: 1 })
+    expect(closed?.resolution.outcome).toBe('expired')
+    expect((await queue.resolve(closed!.approvalId, { outcome: 'approved', actor: 'operator' })).ok).toBe(false)
 
-    // The resolution is 'approved', NOT downgraded: waitExpiresAt must play
-    // no part in resolve()'s expiry check (that is expiresAt's job).
-    const resolution = await queue.readResolution(pending.approvalId)
-    expect(resolution?.outcome).toBe('approved')
-
-    // And the on-disk grant admits the retry without a second prompt.
-    const retry = await gate.gateClientMessage(toolCall(4, 'write_file'))
-    expect(retry).toEqual({ action: 'forward' })
-    expect((await readDecisions()).at(-1)?.decision).toMatchObject({ outcome: 'allow', rule: 'grant' })
+    // The retry is a new request of its own.
+    const retry = gate.gateClientMessage(toolCall(4, 'write_file'))
+    const fresh = await waitForPendingApproval()
+    expect(fresh.agentName).toBe('research-bot')
+    await queue.resolve(fresh.approvalId, { outcome: 'denied', actor: 'operator' })
+    expect(await retry).toEqual({ action: 'drop' })
   })
 })
 
@@ -995,7 +992,6 @@ describe('createPolicyGate: internal errors fail closed', () => {
       inventory: brokenInventory(),
       approvalQueue: queue,
       approvalWaiter: createApprovalWaiter({ pollIntervalMs: POLL_INTERVAL_MS }),
-      grantRegistry: createGrantRegistry(),
       sink,
       clientWriter: {
         writeMessage: () => {
@@ -1003,7 +999,6 @@ describe('createPolicyGate: internal errors fail closed', () => {
         },
         dispose: () => undefined,
       },
-      approvalsBaseDir: approvalsDir,
       onError: (error) => errors.push(error),
     })
 
@@ -1068,10 +1063,8 @@ describe('createPolicyGate: internal errors fail closed', () => {
         inventory: brokenInventory(),
         approvalQueue: queue,
         approvalWaiter: createApprovalWaiter({ pollIntervalMs: POLL_INTERVAL_MS }),
-        grantRegistry: createGrantRegistry(),
         sink,
         clientWriter: writer,
-        approvalsBaseDir: approvalsDir,
       })
       await gate.gateClientMessage(toolCall(1, 'read_file'))
     } finally {
@@ -1144,22 +1137,35 @@ describe('createPolicyGate: cancellation ordering (TS-M2)', () => {
 
     const callVerdict = gate.gateClientMessage(toolCall(1, 'write_file'))
     const pending = await waitForPendingApproval()
+    // Approved before the cancel arrives: the approval wins (M36) and the
+    // cancel must follow the call it cancels, never overtake it.
+    await queue.resolve(pending.approvalId, { outcome: 'approved', actor: 'operator' })
 
     const cancelVerdict = gate.gateClientMessage(
       frameOf({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 1 } }),
     )
-    let cancelResolved = false
-    void Promise.resolve(cancelVerdict).then(() => {
-      cancelResolved = true
-    })
-    await sleep(POLL_INTERVAL_MS * 3)
+    const order: string[] = []
+    void Promise.resolve(callVerdict).then(() => order.push('call'))
+    void Promise.resolve(cancelVerdict).then(() => order.push('cancel'))
 
-    // The cancellation must not reach the server before the request it cancels.
-    expect(cancelResolved).toBe(false)
-
-    await queue.resolve(pending.approvalId, { outcome: 'approved', actor: 'operator' })
     expect(await callVerdict).toEqual({ action: 'forward' })
     expect(await cancelVerdict).toEqual({ action: 'forward' })
+    expect(order).toEqual(['call', 'cancel'])
+  })
+
+  test('a cancel of a call still held for approval withdraws it, and the cancel is not forwarded (M36)', async () => {
+    const { gate, written } = createHarness({ policy: policyOf(APPROVAL_ONLY_POLICY) })
+
+    const callVerdict = gate.gateClientMessage(toolCall(1, 'write_file'))
+    const pending = await waitForPendingApproval()
+    const cancelVerdict = gate.gateClientMessage(
+      frameOf({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 1 } }),
+    )
+
+    expect(await callVerdict).toEqual({ action: 'drop' })
+    expect(await cancelVerdict).toEqual({ action: 'drop' })
+    expect(written).toEqual([])
+    expect((await queue.resolve(pending.approvalId, { outcome: 'approved', actor: 'operator' })).ok).toBe(false)
   })
 
   test('notifications/cancelled forwards immediately when nothing is in flight for its requestId', () => {
@@ -1173,8 +1179,8 @@ describe('createPolicyGate: cancellation ordering (TS-M2)', () => {
   })
 })
 
-describe('createPolicyGate: teardown expires enqueued approvals (H6)', () => {
-  test('cancelPending marks every unresolved enqueued approval as expired on disk', async () => {
+describe('createPolicyGate: teardown withdraws enqueued approvals (H6, M36)', () => {
+  test('cancelPending marks every unresolved enqueued approval as withdrawn on disk', async () => {
     const { gate } = createHarness({
       policy: policyOf({
         ...APPROVAL_ONLY_POLICY,
@@ -1188,8 +1194,9 @@ describe('createPolicyGate: teardown expires enqueued approvals (H6)', () => {
     await gate.cancelPending()
     await verdictPromise
 
+    // A resolution landing after teardown is refused, with the reason.
     const resolution = await queue.readResolution(pending.approvalId)
-    expect(resolution?.outcome).toBe('expired')
+    expect(resolution).toMatchObject({ outcome: 'withdrawn', reason: 'disconnected' })
   })
 })
 

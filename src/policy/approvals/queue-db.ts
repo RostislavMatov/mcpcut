@@ -10,12 +10,14 @@ import {
 // helpers, this module needs its first-touch import. Both sides only ever call
 // the other's (hoisted) functions, never read a binding while loading.
 import { importLegacyApprovals } from './queue-import.js'
+import { prepareHeartbeatSchema } from './queue-heartbeat-db.js'
 
 /**
  * The storage substrate of the approvals queue: schema, statements and write
- * pacing. Every piece of SQL the queue runs lives here, so `queue.ts` and
- * `grants.ts` stay pure record logic and `node:sqlite` keeps exactly one entry
- * point in the process (`src/store/sqlite.ts`, ADR-0006).
+ * pacing. Every piece of SQL the queue runs lives here (and, for the heartbeat
+ * side table, in `queue-heartbeat-db.ts`), so `queue.ts` stays pure record
+ * logic and `node:sqlite` keeps exactly one entry point in the process
+ * (`src/store/sqlite.ts`, ADR-0006).
  *
  * The tables live in the SAME `state.db` as the document stores — the seam
  * wave 2 left open (`store-backend.ts`: "wave 3 adds its own tables to the
@@ -51,9 +53,12 @@ const CREATE_STATUS_SEQ_INDEX =
   'CREATE INDEX IF NOT EXISTS idx_approvals_status_seq ON approvals(status, change_seq)'
 const CREATE_SEQ_INDEX =
   'CREATE INDEX IF NOT EXISTS idx_approvals_change_seq ON approvals(change_seq)'
-/** The grant lookup on the gate's hot path (`checkRecentApproval`). */
-const CREATE_GRANT_INDEX =
-  'CREATE INDEX IF NOT EXISTS idx_approvals_grant ON approvals(server_name, tool_name, args_hash)'
+/**
+ * The grant lookup's index, left by builds before decision M36 (every approval
+ * now asks a human, so nothing reads it): dropped on open, because an unused
+ * index still costs every write.
+ */
+const DROP_GRANT_INDEX = 'DROP INDEX IF EXISTS idx_approvals_grant'
 /**
  * The lazy expiry sweep (`SELECT_EXPIRED_PENDING`), which both filters and
  * SORTS on `expires_at`. Column order matters: `status` first makes the
@@ -83,8 +88,11 @@ const INSERT_PENDING =
   'INSERT INTO approvals (approval_id, status, doc, server_name, tool_name, args_hash, ' +
   "requested_at, expires_at, change_seq) VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?)"
 
+/** The pending page, each row with its heartbeat when it has one (M36, `queue-heartbeat-db.ts`). */
 const SELECT_PENDING_DOCS =
-  "SELECT doc FROM approvals WHERE status = 'pending' ORDER BY requested_at, approval_id LIMIT ?"
+  'SELECT a.doc AS doc, h.heartbeat_at AS heartbeat_at FROM approvals a ' +
+  'LEFT JOIN approval_heartbeats h ON h.approval_id = a.approval_id ' +
+  "WHERE a.status = 'pending' ORDER BY a.requested_at, a.approval_id LIMIT ?"
 const SELECT_PENDING_DOC =
   "SELECT doc FROM approvals WHERE approval_id = ? AND status = 'pending'"
 const SELECT_RESOLVED_DOC =
@@ -92,11 +100,6 @@ const SELECT_RESOLVED_DOC =
 /** ULID primary keys: lexicographic DESC is chronological newest-first. */
 const SELECT_NEWEST_RESOLVED_DOCS =
   "SELECT doc FROM approvals WHERE status = 'resolved' ORDER BY approval_id DESC LIMIT ?"
-
-/** The gate's grant lookup: served by `idx_approvals_grant`, newest ULID first. */
-const SELECT_RESOLVED_FOR_GRANT =
-  "SELECT doc FROM approvals WHERE status = 'resolved' AND server_name = ? AND tool_name = ? " +
-  'AND args_hash = ? ORDER BY approval_id DESC LIMIT ?'
 
 /**
  * Candidates for the lazy expiry sweep, oldest expiry first. The `expires_at`
@@ -166,8 +169,8 @@ const preparedHandles = new WeakMap<SqliteHandle, Promise<void>>()
 
 /**
  * Opens (creating if needed) the queue's database and guarantees its schema.
- * Both `queue.ts` and `checkRecentApproval` come through here, so whatever
- * first-touch work is due happens on every entry path.
+ * Every entry path of the queue comes through here, so whatever first-touch
+ * work is due happens on all of them.
  */
 export async function openApprovalsDb(baseDir: string): Promise<ApprovalsDb> {
   const dbPath = approvalsDbPath(baseDir)
@@ -202,13 +205,14 @@ async function prepare(db: ApprovalsDb): Promise<void> {
   database.exec(CREATE_APPROVALS_TABLE)
   database.exec(CREATE_STATUS_SEQ_INDEX)
   database.exec(CREATE_SEQ_INDEX)
-  database.exec(CREATE_GRANT_INDEX)
+  database.exec(DROP_GRANT_INDEX)
   // `IF NOT EXISTS` is what makes this a migration and not just a creation:
   // an installation whose `approvals` table predates an index gets it on the
   // next open, without a version table and without touching a single row.
   database.exec(CREATE_STATUS_EXPIRES_INDEX)
   database.exec(CREATE_APPROVALS_META_TABLE)
   database.exec(SEED_APPROVALS_META)
+  prepareHeartbeatSchema(database)
   // First touch of the process also picks up whatever an M4 build left in
   // `pending/`/`resolved/` — see `queue-import.ts` for the marker rules.
   await importLegacyApprovals(db)
@@ -304,16 +308,31 @@ export function resolvePendingRow(database: StateDatabase, row: ResolveRowInput)
   return Number(changes) === 1
 }
 
+/** One pending record's JSON text, with its heartbeat when it has one. */
+export interface PendingDocRow {
+  readonly doc: string
+  readonly heartbeatAt?: string
+}
+
 /**
- * At most `limit` pending records' JSON text, oldest request first.
+ * At most `limit` pending records, oldest request first, each with its
+ * heartbeat (absent for a row an older build enqueued).
  *
  * The bound is not an optimisation: without it every UI poll read the entire
  * pending set, so a queue nobody drains turned each poll into a full scan.
- * Truncation keeps the OLDEST end — those are the requests closest to timing
- * out, and hiding them is the one loss an operator cannot recover from.
+ * Truncation keeps the OLDEST end — those are the requests that have waited
+ * longest, and hiding them is the one loss an operator cannot recover from.
  */
-export function selectPendingDocs(database: StateDatabase, limit: number): string[] {
-  return docTexts(database.prepare(SELECT_PENDING_DOCS).all(limit))
+export function selectPendingDocs(database: StateDatabase, limit: number): PendingDocRow[] {
+  return database
+    .prepare(SELECT_PENDING_DOCS)
+    .all(limit)
+    .flatMap((row): PendingDocRow[] => {
+      const doc = docText(row)
+      if (doc === null) return []
+      const heartbeatAt = (row as { heartbeat_at?: unknown }).heartbeat_at
+      return [typeof heartbeatAt === 'string' ? { doc, heartbeatAt } : { doc }]
+    })
 }
 
 /** How many requests are pending right now — the total a bounded list cannot show. */
@@ -369,30 +388,6 @@ export function selectResolvedDoc(database: StateDatabase, approvalId: string): 
 /** The `limit` newest resolved records, newest first; the read never exceeds `limit` rows. */
 export function selectNewestResolvedDocs(database: StateDatabase, limit: number): string[] {
   return docTexts(database.prepare(SELECT_NEWEST_RESOLVED_DOCS).all(limit))
-}
-
-/** The indexed key of a grant lookup; the same triple the gate hashes a call into. */
-export interface GrantLookupKey {
-  readonly serverName: string
-  readonly toolName: string
-  readonly argsHash: string
-}
-
-/**
- * The `limit` newest resolved records for one call triple, newest first. The
- * columns only NARROW the candidates — every criterion that decides a grant is
- * checked against `doc`, which stays the source of truth.
- */
-export function selectResolvedDocsForGrant(
-  database: StateDatabase,
-  key: GrantLookupKey,
-  limit: number,
-): string[] {
-  return docTexts(
-    database
-      .prepare(SELECT_RESOLVED_FOR_GRANT)
-      .all(key.serverName, key.toolName, key.argsHash, limit),
-  )
 }
 
 /**

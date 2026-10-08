@@ -15,6 +15,7 @@ import {
 import { INITIALIZE_METHOD, TOOLS_CALL_METHOD, isToolsListRequest, parseToolCall, type ParsedToolCall } from '../protocol/mcp.js'
 import type { McpMessage } from '../transport/message.js'
 import type { ClientConfirmer } from './client-confirm.js'
+import { createCancelTracker } from './gate-cancel.js'
 import { createMethodGrantRouter, type MethodFrame } from './gate-method-router.js'
 import type { Verdict } from './pipeline.js'
 import { methodNotGrantableError, methodNotGrantedError, type SynthesizableId } from './synthesize.js'
@@ -34,8 +35,6 @@ import {
   createBoundedIdSet,
   denialBytesFor,
   idKeyOf,
-  isPromiseVerdict,
-  parseCancelledRequestId,
   parseIdlessToolCall,
   recoverScalarId,
   trimTrailingNewline,
@@ -123,16 +122,23 @@ export interface GateRouterDeps {
    */
   readonly clientConfirmer?: Pick<ClientConfirmer, 'observeInitialize' | 'takeResponse'>
   /**
-   * Hears each `notifications/cancelled` from the client, before it is
-   * ordered behind its request: a call waiting for the person's confirmation
-   * must not run on a later Accept once the client gave it up (ADR-0019).
+   * Hears each `notifications/cancelled` from the client, with its cleaned
+   * reason, before it is ordered behind its request: a call waiting for the
+   * person's confirmation must not run on a later Accept once the client gave
+   * it up (ADR-0019), and a call held for an admin is withdrawn (M36).
    */
-  readonly onClientCancelled?: (idKey: string) => void
+  readonly onClientCancelled?: (idKey: string, reason: string) => void | Promise<void>
 }
 
 export interface GateRouter {
   gateClientMessage(message: McpMessage): Verdict | Promise<Verdict>
   gateServerMessage(message: McpMessage): Verdict | Promise<Verdict>
+  /**
+   * The reason of a cancel the client sent for `idKey` while that request's
+   * verdict is still in flight, or `undefined`. Lets the approval flow see a
+   * cancel that arrived before its call was even queued (M36).
+   */
+  cancelReasonOf(idKey: string): string | undefined
 }
 
 export function createGateRouter(deps: GateRouterDeps): GateRouter {
@@ -142,8 +148,12 @@ export function createGateRouter(deps: GateRouterDeps): GateRouter {
   const pendingToolsListIds = createBoundedIdSet(MAX_TRACKED_TOOLS_LIST_IDS, (evicted) => {
     writeDecision(bookkeepingDecisionInfo(serverName, TOOLS_LIST_OVERFLOW_RULE, TOOLS_LIST_TOOL_NAME, evicted))
   })
-  /** In-flight tool-call verdicts keyed by request id, so a cancellation can queue behind them (TS-M2). */
-  const verdictsByRequestId = new Map<string, Promise<Verdict>>()
+  /** In-flight verdicts by request id, and the cancels queued behind them (TS-M2, M36). */
+  const cancels = createCancelTracker({
+    track,
+    onError,
+    ...(deps.onClientCancelled !== undefined ? { onClientCancelled: deps.onClientCancelled } : {}),
+  })
 
   // -- client -> server --------------------------------------------------
 
@@ -222,18 +232,6 @@ export function createGateRouter(deps: GateRouterDeps): GateRouter {
     ...(methodGrants !== undefined ? { methodGrants } : {}),
   })
 
-  /** Records an in-flight tool-call verdict by request id, so a cancellation can queue behind it (TS-M2). */
-  function recordVerdict(id: JsonRpcId, verdict: Verdict | Promise<Verdict>): Verdict | Promise<Verdict> {
-    if (id === null || !isPromiseVerdict(verdict)) return verdict
-    const key = idKeyOf(id)
-    const settled = Promise.resolve(verdict)
-    verdictsByRequestId.set(key, settled)
-    void settled.finally(() => {
-      if (verdictsByRequestId.get(key) === settled) verdictsByRequestId.delete(key)
-    })
-    return verdict
-  }
-
   function gateClientRequest(msg: ClassifiedRequest): Verdict | Promise<Verdict> {
     // tools/call is intercepted by gateClientMessage before this fork runs
     // (C2/N1): every path that reaches here is some other request method.
@@ -247,16 +245,7 @@ export function createGateRouter(deps: GateRouterDeps): GateRouter {
     // A notification-shaped tools/call (id-less) is intercepted by
     // gateClientMessage before this fork runs (C2/N1); this only ever sees
     // an actual notification method.
-    if (msg.method !== 'notifications/cancelled') return FORWARD
-    const requestId = parseCancelledRequestId(msg.raw)
-    if (requestId === null) return FORWARD
-    deps.onClientCancelled?.(idKeyOf(requestId))
-    const pending = verdictsByRequestId.get(idKeyOf(requestId))
-    if (pending === undefined) return FORWARD
-    // Order the cancellation strictly behind the request it cancels: the
-    // server must see the tools/call before its cancellation to correlate
-    // them, so flush it only after that request's verdict settles (TS-M2).
-    return track(pending.then(() => FORWARD, () => FORWARD))
+    return msg.method === 'notifications/cancelled' ? cancels.gateCancel(msg.raw) : FORWARD
   }
 
   /**
@@ -274,7 +263,7 @@ export function createGateRouter(deps: GateRouterDeps): GateRouter {
     if (msg.kind === 'request') {
       const call = parseToolCall(msg)
       if (call === null) return denyUnsafeClientFrame(MALFORMED_TOOLS_CALL_RULE, msg.id)
-      return recordVerdict(call.id, track(guarded(call, () => gateToolCall(call))))
+      return cancels.recordVerdict(call.id, track(guarded(call, () => gateToolCall(call))))
     }
     const call = parseIdlessToolCall(raw)
     if (call === null) return denyUnsafeClientFrame(MALFORMED_TOOLS_CALL_RULE, null)
@@ -379,7 +368,7 @@ export function createGateRouter(deps: GateRouterDeps): GateRouter {
     }
   }
 
-  return { gateClientMessage, gateServerMessage }
+  return { gateClientMessage, gateServerMessage, cancelReasonOf: cancels.cancelReasonOf }
 }
 
 /**

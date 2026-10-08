@@ -1,6 +1,5 @@
 import type { RecordBuilder, ClientServerDirection } from '../journal/record.js'
 import type { JournalSink } from '../journal/sink.js'
-import type { GrantRegistry } from '../policy/approvals/grants.js'
 import type { ApprovalWaiter } from '../policy/approvals/waiter.js'
 import type { PolicyProvider } from '../policy/reload.js'
 import type { Policy } from '../policy/schema.js'
@@ -77,8 +76,6 @@ export interface SessionEndpoints {
 export interface SessionApprovals {
   readonly queue: GateApprovalQueue
   readonly waiter: ApprovalWaiter
-  /** Approvals root on disk; must match `queue`'s own (see gate-core). */
-  readonly baseDir?: string
 }
 
 /** Journal wiring: the record builder and sink are bound to this session id. */
@@ -109,7 +106,6 @@ export interface CreateSessionDeps {
   readonly policy: Policy | PolicyProvider
   readonly inventory: GateInventory
   readonly approvals: SessionApprovals
-  readonly grants: GrantRegistry
   readonly journal: SessionJournal
   /**
    * Exact values this session's upstream was handed (vault-resolved env and
@@ -133,6 +129,8 @@ export interface CreateSessionDeps {
    * there a call that needs the confirmation is refused.
    */
   readonly confirmInClient?: MessagePolicyGateDeps['confirmInClient']
+  /** Progress text of a call held for approval (M36); stdio `connect` only — over HTTP it would read as the answer. */
+  readonly heldCallProgress?: MessagePolicyGateDeps['heldCallProgress']
   /** Fired exactly once, after the session has fully ended. */
   readonly onSessionEnd?: (reason: SessionEndReason) => void
 }
@@ -217,13 +215,12 @@ export function createSession(deps: CreateSessionDeps): SessionHandle {
     inventory: deps.inventory,
     approvalQueue: deps.approvals.queue,
     approvalWaiter: deps.approvals.waiter,
-    grantRegistry: deps.grants,
     sink: journal.sink,
     clientSink: client.sink,
     provenance,
     ...(watch !== null ? { agentScope: watch.scope } : {}),
-    ...(deps.approvals.baseDir !== undefined ? { approvalsBaseDir: deps.approvals.baseDir } : {}),
     ...(deps.confirmInClient !== undefined ? { confirmInClient: deps.confirmInClient } : {}),
+    ...(deps.heldCallProgress !== undefined ? { heldCallProgress: deps.heldCallProgress } : {}),
     clock,
     onError,
   })

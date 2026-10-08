@@ -14,7 +14,6 @@ import {
 } from '../../src/policy/approvals/queue.js'
 import { openApprovalsDb } from '../../src/policy/approvals/queue-db.js'
 import { createApprovalWaiter, type ApprovalWaiter } from '../../src/policy/approvals/waiter.js'
-import { createGrantRegistry } from '../../src/policy/approvals/grants.js'
 import { grantsHashOf, policyHashOf } from '../../src/policy/provenance.js'
 import { parsePolicy, type Policy } from '../../src/policy/schema.js'
 import { createPolicyGate, type PolicyGate } from '../../src/proxy/gate.js'
@@ -187,10 +186,8 @@ function createHarness(opts: HarnessOptions = {}): GateHarness {
     ...(opts.agentScope !== undefined ? { agentScope: opts.agentScope } : {}),
     approvalQueue: queue,
     approvalWaiter: opts.approvalWaiter ?? createApprovalWaiter({ pollIntervalMs: 5 }),
-    grantRegistry: createGrantRegistry(),
     sink: capturingSink,
     clientWriter: writer,
-    approvalsBaseDir: approvalsDir,
     onError: (error: unknown) => errors.push(error),
     ...(opts.clock !== undefined ? { clock: opts.clock } : {}),
   })

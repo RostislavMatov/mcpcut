@@ -34,7 +34,7 @@ const ID_B = '01K6GZ7QX4S2V9C8B1N3M5P7RB'
 const ID_C = '01K6GZ7QX4S2V9C8B1N3M5P7RC'
 
 function rowOf(id: string, tool: string): string {
-  return `${id}  server=fs tool=${tool} class=write agent=cursor agent_wait_left=40s expires_in=4m args={"path":"a.txt"}`
+  return `${id}  server=fs tool=${tool} class=write agent=cursor waiting=40s agent_connected=yes args={"path":"a.txt"}`
 }
 
 const LIST_ARGV = ['approvals', 'list'] as const

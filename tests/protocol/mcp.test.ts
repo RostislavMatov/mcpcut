@@ -7,6 +7,25 @@ import {
   serializeToolsListResult,
 } from '../../src/protocol/mcp.js'
 
+describe('parseToolCall: the progressToken a held call is reported on (M36)', () => {
+  function callWithMeta(meta: unknown): string {
+    return JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 't', arguments: {}, _meta: meta } })
+  }
+
+  test('a string or finite-number token is carried', () => {
+    expect(parseToolCall(classify(callWithMeta({ progressToken: 'tok' })))?.progressToken).toBe('tok')
+    expect(parseToolCall(classify(callWithMeta({ progressToken: 2 })))?.progressToken).toBe(2)
+  })
+
+  test('anything else binds nothing, and the key stays absent', () => {
+    for (const meta of [{ progressToken: null }, { progressToken: { a: 1 } }, { progressToken: true }, 'x', null]) {
+      const call = parseToolCall(classify(callWithMeta(meta)))
+      expect(call).not.toBeNull()
+      expect(call).not.toHaveProperty('progressToken')
+    }
+  })
+})
+
 describe('parseToolCall', () => {
   test('parses a valid tools/call request', () => {
     const line =

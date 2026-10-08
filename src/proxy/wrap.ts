@@ -190,10 +190,15 @@ function failureExitCode(childExitCode: number): number {
 }
 
 /** The operator's line for a held call, on the stderr the client logs; nothing when unasked for. */
-function approvalNoticeOf(opts: RunWrapOptions, diagnostics: Writable): Pick<RelayArgs, 'onApprovalPending'> {
+function approvalNoticeOf(
+  opts: RunWrapOptions,
+  diagnostics: Writable,
+): Pick<RelayArgs, 'onApprovalPending' | 'heldCallProgress'> {
   const format = opts.approvalNotice
-  if (format === undefined) return {}
+  const progress = opts.heldCallProgress !== undefined ? { heldCallProgress: opts.heldCallProgress } : {}
+  if (format === undefined) return progress
   return {
+    ...progress,
     onApprovalPending: (notice) => {
       diagnostics.write(format(notice))
     },

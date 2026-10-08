@@ -7,7 +7,8 @@ import { ADMIN_TOKEN_ENV_VAR, ADMINS_FILE_NAME, type AdminRole } from '../../src
 import { createAdminStore } from '../../src/admin/store.js'
 import { ROUTE_TABLE } from '../../src/ui/authz.js'
 import { APPROVALS_LIST_MAX_ROWS } from '../../src/config.js'
-import { DEFAULT_GRANT_TTL_MS } from '../../src/policy/constants.js'
+import { openApprovalsDb } from '../../src/policy/approvals/queue-db.js'
+import { cliCommand } from '../../src/cli/next-step.js'
 import {
   createApprovalQueue,
   type ApprovalQueue,
@@ -328,7 +329,7 @@ describe('runApprovals: list', () => {
 })
 
 describe('runApprovals: approve', () => {
-  test('approves a pending request, confirms the retry window and names the admin who did it', async () => {
+  test('approves a pending request, says the waiting call goes through and names the admin who did it', async () => {
     // REWRITTEN (M5 wave 2, task 2.6). This test used to assert
     // `resolution.actor === 'cli'` — a constant. That expectation was wrong,
     // not merely outdated: it made every human who ever approved anything from
@@ -345,8 +346,8 @@ describe('runApprovals: approve', () => {
 
     expect(exitCode).toBe(0)
     expect(io.out()).toContain(approvalId)
-    const expectedMinutes = String(Math.round(DEFAULT_GRANT_TTL_MS / 60_000))
-    expect(io.out()).toContain(expectedMinutes)
+    // M36: no grant window, so no promise about a retry — an approval covers this one call.
+    expect(io.out()).toBe(`Approved ${approvalId}. The waiting call goes through now.\n`)
 
     const resolution = await queue.readResolution(approvalId)
     expect(resolution?.outcome).toBe('approved')
@@ -388,6 +389,37 @@ describe('runApprovals: approve', () => {
 
     expect(exitCode).toBe(1)
     expect(io.err()).toMatch(/already resolved or unknown id/)
+  })
+
+  test('approving a request whose agent stopped waiting is refused with when and why, in one line (M36)', async () => {
+    const { opts } = await createAdminToken('release-captain')
+    const queue = createApprovalQueue({ baseDir, clock: () => Date.UTC(2026, 9, 8, 12) })
+    const { approvalId } = await queue.enqueue(baseRequest())
+    await queue.withdraw(approvalId, 'AbortError: user-cancel')
+    const io = fakeIo()
+
+    const exitCode = await runApprovals(['approve', approvalId], io, opts)
+
+    expect(exitCode).toBe(1)
+    expect(io.out()).toBe('')
+    expect(io.err()).toBe(
+      'The agent stopped waiting at 2026-10-08T12:00:00.000Z (AbortError: user-cancel): nothing was sent. ' +
+        `If it asks again, a new request appears in: ${cliCommand()} approvals list\n`,
+    )
+    await expect(queue.readResolution(approvalId)).resolves.toMatchObject({ outcome: 'withdrawn' })
+  })
+
+  test('a withdrawal reason that reached storage is still printed terminal-safe', async () => {
+    const { opts } = await createAdminToken('release-captain')
+    const queue = createApprovalQueue({ baseDir })
+    const { approvalId } = await queue.enqueue(baseRequest())
+    await queue.withdraw(approvalId, 'evil\u001b[2Jreason')
+    const io = fakeIo()
+
+    await runApprovals(['deny', approvalId], io, opts)
+
+    expect(io.err()).not.toContain('\u001b')
+    expect(io.err()).toContain('evil?[2Jreason')
   })
 
   test('missing <id> prints usage and returns 1', async () => {
@@ -732,56 +764,29 @@ describe('runApprovals: unknown/missing subcommand', () => {
 })
 
 /**
- * The two clocks of one pending request (user-journey smoke 2026-09-18, UX-8).
- * `expires_in` is the GRANT window — how long a fresh approval stays usable —
- * and until this wave it was the only one the text view printed, so an
- * operator reading `expires_in=4m55s` had no way to see that the agent behind
- * the call gives up after 60 s. The web dashboard has shown both clocks since
- * M4 (`ui/pages/approval-queue.ts`); the CLI (and, through it, the console's
- * Approvals tab, which runs this very command) now says the same thing.
+ * Decision M36 retired both clocks of the old row (`agent_wait_left`, the
+ * grant window's `expires_in`): a request is held while its agent waits and
+ * closes when the agent leaves, so the row says how long it has been waiting
+ * and whether the process holding the call is still there.
  */
-describe('runApprovals: list shows the agent wait beside the grant window', () => {
-  test('a request whose agent is still waiting prints both clocks', async () => {
-    const nowMs = Date.UTC(2026, 0, 1)
-    const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
-    await queue.enqueue(baseRequest({ timeoutMs: 300_000, waitTimeoutMs: 60_000 }))
-    const io = fakeIo()
-
-    const exitCode = await runApprovals(['list'], io, { ...anonymousOpts(), clock: () => nowMs })
-
-    expect(exitCode).toBe(0)
-    expect(io.out()).toContain('agent_wait_left=1m0s')
-    expect(io.out()).toContain('expires_in=5m0s')
-  })
-
-  test('once the agent wait has passed the line says an approval only buys a retry', async () => {
+describe('runApprovals: list shows how long a request has waited and that its agent is connected', () => {
+  test('a held request prints its waiting time and agent_connected=yes', async () => {
     let nowMs = Date.UTC(2026, 0, 1)
     const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
-    await queue.enqueue(baseRequest({ timeoutMs: 300_000, waitTimeoutMs: 60_000 }))
-    nowMs += 90_000
+    await queue.enqueue(baseRequest({ timeoutMs: 24 * 60 * 60_000 }))
+    nowMs += 70_000
+    // The gate holding the call keeps its heartbeat fresh; here the test plays the gate.
+    const db = await openApprovalsDb(baseDir)
+    db.handle.db.prepare('UPDATE approval_heartbeats SET heartbeat_at = ?').run(new Date(nowMs).toISOString())
     const io = fakeIo()
 
     const exitCode = await runApprovals(['list'], io, { ...anonymousOpts(), clock: () => nowMs })
 
     expect(exitCode).toBe(0)
-    expect(io.out()).toContain('agent_wait=over(retry_passes_after_approve)')
-    // The grant window is still open: the entry is not expired.
-    expect(io.out()).toContain('expires_in=3m30s')
+    expect(io.out()).toContain(' waiting=1m10s agent_connected=yes ')
   })
 
-  test('a request enqueued without a wait window says so rather than guessing', async () => {
-    const nowMs = Date.UTC(2026, 0, 1)
-    const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
-    await queue.enqueue(baseRequest({ timeoutMs: 60_000 }))
-    const io = fakeIo()
-
-    const exitCode = await runApprovals(['list'], io, { ...anonymousOpts(), clock: () => nowMs })
-
-    expect(exitCode).toBe(0)
-    expect(io.out()).toContain('agent_wait=unknown')
-  })
-
-  test('the row never calls the remaining wait by the old, elapsed-sounding name', async () => {
+  test('the row carries neither old clock nor the retry promise', async () => {
     const nowMs = Date.UTC(2026, 0, 1)
     const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
     await queue.enqueue(baseRequest({ timeoutMs: 300_000, waitTimeoutMs: 60_000 }))
@@ -789,10 +794,25 @@ describe('runApprovals: list shows the agent wait beside the grant window', () =
 
     await runApprovals(['list'], io, { ...anonymousOpts(), clock: () => nowMs })
 
-    expect(io.out()).not.toContain('agent_waits')
+    expect(io.out()).not.toContain('agent_wait')
+    expect(io.out()).not.toContain('expires_in')
+    expect(io.out()).not.toContain('retry_passes_after_approve')
   })
 
-  test('--json keeps its exact shape: the new column is text-view only', async () => {
+  test('a request an older build enqueued (no heartbeat) says the connection is unknown', async () => {
+    const nowMs = Date.UTC(2026, 0, 1)
+    const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
+    const { approvalId } = await queue.enqueue(baseRequest({ timeoutMs: 60_000 }))
+    const db = await openApprovalsDb(baseDir)
+    db.handle.db.prepare('DELETE FROM approval_heartbeats WHERE approval_id = ?').run(approvalId)
+    const io = fakeIo()
+
+    await runApprovals(['list'], io, { ...anonymousOpts(), clock: () => nowMs })
+
+    expect(io.out()).toContain(' waiting=0s agent_connected=unknown ')
+  })
+
+  test('--json carries the derived agentConnected flag beside the stored record', async () => {
     const nowMs = Date.UTC(2026, 0, 1)
     const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
     await queue.enqueue(baseRequest({ timeoutMs: 300_000, waitTimeoutMs: 60_000 }))
@@ -802,7 +822,7 @@ describe('runApprovals: list shows the agent wait beside the grant window', () =
 
     expect(exitCode).toBe(0)
     const entry = JSON.parse(io.out()).approvals[0]
-    expect(Object.keys(entry)).not.toContain('agentWaits')
+    expect(entry.agentConnected).toBe(true)
     expect(entry.waitExpiresAt).toBe(new Date(nowMs + 60_000).toISOString())
   })
 })

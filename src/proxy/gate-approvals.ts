@@ -1,12 +1,14 @@
 import type { ApprovalQueue } from '../policy/approvals/queue.js'
 import type { ApprovalWaiter, WaitResult } from '../policy/approvals/waiter.js'
-import { checkRecentApproval, type GrantKey, type GrantRegistry } from '../policy/approvals/grants.js'
+import { WITHDRAW_REASON_DISCONNECTED } from '../policy/approvals/withdraw.js'
+import { APPROVAL_REQUEST_MAX_AGE_MS } from '../policy/constants.js'
 import type { PolicyDecision } from '../policy/decide.js'
 import type { Policy } from '../policy/schema.js'
 import type { JsonRpcId } from '../protocol/classify.js'
 import type { ParsedToolCall } from '../protocol/mcp.js'
 import type { Verdict } from './pipeline.js'
 import { approvalDeniedError, approvalTimeoutError, type SynthesizableId } from './synthesize.js'
+import { startHold, type HoldScheduler } from './approval-hold.js'
 import type { PendingApprovalNotice } from './gate-types.js'
 import {
   ALREADY_ANSWERED_RULE,
@@ -24,22 +26,45 @@ import {
 
 /**
  * The require-approval branch of the session policy gate: enqueue a pending
- * approval, wait it out, and translate the operator's answer (or the lack of
- * one) into a verdict. Split out of `gate.ts` by responsibility; the
- * exactly-one-outcome invariant documented there is enforced here through the
- * shared `answerGuard`/`answerLocally` collaborators.
+ * approval, hold the call while its agent waits, and translate the
+ * operator's answer — or the agent leaving — into a verdict. Split out of
+ * `gate.ts` by responsibility; the exactly-one-outcome invariant documented
+ * there is enforced here through the shared `answerGuard`/`answerLocally`
+ * collaborators.
+ *
+ * Decision M36: an approval covers the one call it was given for (there is no
+ * grant window, a repeat asks again); the call is held with no mcpcut-side
+ * limit unless the policy caps it (`approval.timeoutMs`); and an agent that
+ * leaves — a `notifications/cancelled` for the held id, or the connection
+ * ending — WITHDRAWS the request: the queue records why, the journal writes
+ * `agent-gone`, the call is never forwarded and its id is never answered. The
+ * withdrawal and an operator's approve race through the queue's one
+ * conditional write, so exactly one of them wins.
  */
 
 /** The subset of `ApprovalQueue` the gate needs (also satisfies the waiter's `ResolutionSource`). */
-export type GateApprovalQueue = Pick<ApprovalQueue, 'enqueue' | 'readResolution' | 'markExpired'>
+export type GateApprovalQueue = Pick<
+  ApprovalQueue,
+  'enqueue' | 'readResolution' | 'markExpired' | 'withdraw' | 'heartbeat'
+>
 
-/** Context carried through one require-approval flow. */
+/** One call held for approval, while its wait runs. */
+interface HeldCall {
+  /** The call's id as the router keys it; `null` never reaches here (id-less calls are denied). */
+  readonly idKey: string
+  readonly approvalId: string
+  /** Aborted once the request is withdrawn: settles the wait at once. */
+  readonly controller: AbortController
+  /** Set when the agent left (its cancel's reason, or `disconnected`); a mutable flag like `gate-confirm.ts`'s. */
+  leftReason: string | undefined
+}
+
+/** Context carried through one require-approval flow to the record that ends it. */
 interface ApprovalContext {
   readonly call: ParsedToolCall
   readonly facts: CallFacts
-  readonly grantKey: GrantKey
   readonly rule: string
-  readonly approvalId: string
+  readonly held: HeldCall
   readonly startedAtMs: number
   /** How the wait settled, and who settled it when a human did (M5 wave 2). */
   readonly result: WaitResult
@@ -47,13 +72,10 @@ interface ApprovalContext {
   readonly base: DecisionExtras
   /**
    * The provenance pair as of the instant this call was DECIDED, captured
-   * before the enqueue and carried to whichever record ends the flow. The
-   * gate waits out an operator for up to `approval.timeoutMs` while
-   * `agent-watch` re-polls the grant matrix every few seconds, so re-reading
-   * the live fingerprint here would let the terminal record — the one an
-   * auditor treats as authoritative — name a matrix that never authorized
-   * the call, and in the approve-then-narrow direction erase the evidence
-   * that a broad one did.
+   * before the enqueue and carried to whichever record ends the flow: the
+   * gate holds the call while `agent-watch` re-polls the grant matrix, so
+   * re-reading the live fingerprint here would let the terminal record name a
+   * matrix that never authorized the call.
    */
   readonly captured: ProvenanceSnapshot
 }
@@ -66,34 +88,22 @@ export interface ApprovalFlowDeps {
   readonly agentName?: string
   readonly approvalQueue: GateApprovalQueue
   readonly approvalWaiter: ApprovalWaiter
-  readonly grantRegistry: GrantRegistry
-  /** Root of the approvals queue on disk, for the late-approval fallback. */
-  readonly approvalsBaseDir: string
   readonly clock: () => number
   readonly writeDecision: DecisionWriter
   /** Resolves once decision records are durable — but only when fail-closed. */
   readonly settleJournal: () => Promise<void>
   /** Answers `id` locally and marks it as answered (see `gate.ts`); a `null` id is dropped. */
   readonly answerLocally: (id: JsonRpcId, build: (id: SynthesizableId) => Buffer) => Promise<void>
+  /** Writes a gate-authored notification to the client (the same path `answerLocally` uses). */
+  readonly notifyClient: (bytes: Buffer) => Promise<void>
+  /** The progress text for a held call; absent on paths that cannot carry notifications (HTTP). */
+  readonly heldCallProgress?: (approvalId: string) => string
+  readonly holdScheduler: HoldScheduler
+  /** The reason of a cancel that arrived for `idKey` before its call was queued, if any. */
+  readonly cancelReasonOf: (idKey: string) => string | undefined
   /** The shared exactly-one-outcome guard owned by `gate.ts`. */
   readonly answerGuard: AnswerGuard
-  /** Approval ids enqueued to disk that no operator has resolved yet (H6 teardown); owned by `gate.ts`. */
-  readonly enqueuedUnresolved: Set<string>
-  /** Runs `decide()` with the gate's own input assembly (see `decideInputOf` in `gate.ts`). */
-  readonly decideWithGrant: (facts: CallFacts, hasActiveGrant: boolean) => PolicyDecision
-  /**
-   * The gate's allow path: journal + (fail-closed) flush, preserving ordering.
-   * `extras` rides onto the decision record — the late-approval path uses it
-   * to name the approval and the operator that authorized the retry (M5 wave
-   * 2); every other caller omits it and records a plain policy allow.
-   */
-  readonly applyAllow: (
-    call: ParsedToolCall,
-    facts: CallFacts,
-    decision: PolicyDecision,
-    extras?: DecisionExtras,
-  ) => Verdict | Promise<Verdict>
-  /** Reports a failing `onApprovalPending`; the call's own flow goes on. */
+  /** Reports a failing announcement, heartbeat or withdrawal; the call's own flow goes on. */
   readonly onError: (error: unknown) => void
   /** Hears of each call queued for a human, once, before its wait starts. */
   readonly onApprovalPending?: (notice: PendingApprovalNotice) => void
@@ -101,30 +111,32 @@ export interface ApprovalFlowDeps {
 
 export interface ApprovalFlow {
   /**
-   * Runs one require-approval decision to its verdict.
-   *
-   * `captured` is the provenance pair as of the instant `decide()` produced
-   * `decision`, taken by the caller (`gate-core.ts`) in that same synchronous
-   * run. This flow deliberately has NO access to a `DecisionProvenance` of its
-   * own: it awaits storage before it writes anything, so any snapshot it could
-   * take would be a later instant than the decision it describes. Passing the
-   * pair in makes "the snapshot names the rules that produced this decision"
-   * a property of the type, not of statement order (M5 wave-2 review).
+   * Runs one require-approval decision to its verdict. `captured` is the
+   * provenance pair as of the instant `decide()` produced `decision`, taken by
+   * the caller in that same synchronous run (M5 wave-2 review): this flow
+   * awaits storage before it writes anything, so any snapshot it took itself
+   * would be a later instant than the decision it describes.
    */
   requestApproval(
     call: ParsedToolCall,
     facts: CallFacts,
-    grantKey: GrantKey,
     decision: PolicyDecision,
     captured: ProvenanceSnapshot,
     /** Extras every record of the flow carries (`confirmedBy`, ADR-0019). */
     base?: DecisionExtras,
   ): Promise<Verdict>
+  /** The client cancelled request `idKey`: a call held under it is withdrawn with `reason` (already cleaned). */
+  withdrawByClient(idKey: string, reason: string): Promise<void>
+  /** Session end: every held call is withdrawn as `disconnected`, and so is any call queued after this. */
+  withdrawAll(): Promise<void>
 }
 
 export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
-  const { policy, serverName, approvalQueue, approvalWaiter, grantRegistry, clock } = deps
-  const { writeDecision, settleJournal, answerLocally, answerGuard, enqueuedUnresolved } = deps
+  const { policy, serverName, approvalQueue, approvalWaiter, clock } = deps
+  const { writeDecision, settleJournal, answerLocally, answerGuard } = deps
+  const waitCapMs = policy.approval.timeoutMs
+  const held = new Set<HeldCall>()
+  let isClosed = false
 
   /** An announcement is a courtesy to the operator: its failure never decides the call. */
   function announcePending(notice: PendingApprovalNotice): void {
@@ -136,197 +148,189 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
   }
 
   /**
-   * Enqueues a human approval and returns a verdict promise the pipeline
-   * keeps flowing behind: later frames are read, gated and written while
-   * this one waits (head-of-line blocking is deliberately rejected).
+   * The agent left: withdraw its request. If an operator resolved it first,
+   * their decision stands and the wait settles on it — except at session
+   * end, where nothing could be delivered any more, so the wait is ended
+   * either way (a request the withdrawal did not reach is left to the
+   * heartbeat sweep).
    */
-  async function requestApproval(
+  async function leave(entry: HeldCall, reason: string): Promise<void> {
+    if (entry.leftReason !== undefined) return
+    entry.leftReason = reason
+    try {
+      const result = await approvalQueue.withdraw(entry.approvalId, reason)
+      if (result.ok) entry.controller.abort()
+    } catch (error: unknown) {
+      deps.onError(error)
+    }
+    if (isClosed) entry.controller.abort()
+  }
+
+  /** Enqueues the request and journals it as pending; the call is not held yet. */
+  async function enqueue(
     call: ParsedToolCall,
     facts: CallFacts,
-    grantKey: GrantKey,
     decision: PolicyDecision,
     captured: ProvenanceSnapshot,
-    base: DecisionExtras = {},
-  ): Promise<Verdict> {
-    const lateGrant = await resolveLateApproval(call, facts, grantKey, base)
-    if (lateGrant !== null) return lateGrant
-
-    const startedAtMs = clock()
-    // The pending file's expiry must cover the GRANT window, not the short
-    // wait: the agent's call unblocks after `approval.timeoutMs`, but an
-    // operator may still approve-for-retry within `approval.grantTtlMs`
-    // (>> timeoutMs). A time-aware `resolve()` downgrades an approval landing
-    // past `expiresAt` to `expired`, so `expiresAt` is derived from the grant
-    // window here; the short wait timeout is applied separately below.
-    // `waitTimeoutMs` persists the wait window too (as `waitExpiresAt`), so
-    // an operator UI can tell "approve delivers the call now" from "approve
-    // only grants a retry"; `agentName`/`decisionRule` answer "who is asking
-    // and which rule sent them here" (M4). `policyHash`/`grantsHash` pin the
-    // rules the request was made UNDER, so the operator's answer minutes
-    // later resolves against a known revision (M5).
-    //
+    base: DecisionExtras,
+  ): Promise<string> {
+    // `expiresAt` is the 24-hour hard cap (M36); the policy's cap, when it
+    // sets one, is the agent's own wait and rides as `waitExpiresAt`.
     // `captured` was taken by the CALLER at decision time and is reused for
-    // every artefact below — the pending row, the `require-approval-pending`
-    // record and whichever record ends the flow. It is never re-sampled here:
-    // by this line the flow has already awaited a storage read
-    // (`resolveLateApproval`) and is about to await an SQLite write, so any
-    // fresh read would be a later instant than the decision it describes.
+    // every artefact of the flow — never re-sampled after an await.
     const { approvalId } = await approvalQueue.enqueue({
       serverName,
       toolName: facts.toolName,
       toolClass: facts.toolClass,
       args: call.args,
       sessionId: deps.sessionId,
-      timeoutMs: policy.approval.grantTtlMs,
-      waitTimeoutMs: policy.approval.timeoutMs,
+      timeoutMs: APPROVAL_REQUEST_MAX_AGE_MS,
+      ...(waitCapMs !== undefined ? { waitTimeoutMs: waitCapMs } : {}),
       decisionRule: decision.rule,
       policyHash: captured.policyHash,
       ...(captured.grantsHash !== undefined ? { grantsHash: captured.grantsHash } : {}),
       ...(deps.agentName !== undefined ? { agentName: deps.agentName } : {}),
     })
-    enqueuedUnresolved.add(approvalId)
+    const agent = deps.agentName !== undefined ? { agentName: deps.agentName } : {}
     writeDecision(
-      decisionInfoOf(facts, 'require-approval-pending', decision.rule, {
-        ...base,
-        approvalId,
-        ...(deps.agentName !== undefined ? { agentName: deps.agentName } : {}),
-      }),
+      decisionInfoOf(facts, 'require-approval-pending', decision.rule, { ...base, approvalId, ...agent }),
       call.args,
       captured,
     )
     await settleJournal()
-    announcePending({ approvalId, toolName: facts.toolName, serverName, waitMs: policy.approval.timeoutMs })
+    announcePending({
+      approvalId,
+      toolName: facts.toolName,
+      serverName,
+      ...(waitCapMs !== undefined ? { waitMs: waitCapMs } : {}),
+    })
+    return approvalId
+  }
 
-    // Mark this id as having an in-flight approval wait, so if it is answered
-    // locally in the meantime (its own timeout, or a concurrent reuse) the
-    // exactly-one-outcome burn survives even a 10k-id LRU flood (M8).
-    const waitKey = call.id !== null ? idKeyOf(call.id) : null
-    if (waitKey !== null) answerGuard.beginWait(waitKey)
+  /** Holds the call: heartbeat and progress run beside the wait, and stop with it. */
+  async function hold(call: ParsedToolCall, entry: HeldCall): Promise<WaitResult> {
+    const ticker = startHold({
+      approvalId: entry.approvalId,
+      ...(call.progressToken !== undefined ? { progressToken: call.progressToken } : {}),
+      ...(deps.heldCallProgress !== undefined ? { messageOf: deps.heldCallProgress } : {}),
+      send: deps.notifyClient,
+      heartbeat: () => approvalQueue.heartbeat(entry.approvalId),
+      scheduler: deps.holdScheduler,
+      onError: deps.onError,
+    })
+    // Mark this id as having an in-flight wait, so if it is answered locally
+    // in the meantime the exactly-one-outcome burn survives even a 10k-id LRU
+    // flood (M8).
+    answerGuard.beginWait(entry.idKey)
     try {
-      const result = await approvalWaiter.wait(approvalQueue, approvalId, policy.approval.timeoutMs)
-      const ctx: ApprovalContext = {
-        call,
-        facts,
-        grantKey,
-        rule: decision.rule,
-        approvalId,
-        startedAtMs,
-        result,
-        captured,
-        base,
-      }
-      return await finishApproval(ctx)
+      return await approvalWaiter.wait(approvalQueue, entry.approvalId, waitCapMs, entry.controller.signal)
     } finally {
-      if (waitKey !== null) answerGuard.endWait(waitKey)
+      ticker.stop()
+      answerGuard.endWait(entry.idKey)
+      held.delete(entry)
     }
   }
 
-  /**
-   * Disk fallback for an operator who approved an identical call after its
-   * wait already timed out: the retry passes on that approval instead of
-   * prompting a second time. Only consulted on the require-approval path —
-   * an allowed call never pays for this I/O.
-   *
-   * The lookup names the requester (this session, and the agent when there
-   * is one) because the resolved rows are shared across every session on
-   * the installation: an approval is the human's answer to ONE requester,
-   * and a different agent's byte-identical call must raise its own prompt
-   * (security audit 2026-09-02, F1; the rule lives in `grants.ts`).
-   *
-   * The record written here names the approval and the operator behind it.
-   * Without them the journal showed a destructive call simply succeeding
-   * under `rule: 'grant'`, with the human approval that authorized it
-   * recorded nowhere on the one record an auditor reads for that retry (M5
-   * wave 2).
-   */
-  async function resolveLateApproval(
+  async function requestApproval(
     call: ParsedToolCall,
     facts: CallFacts,
-    grantKey: GrantKey,
-    base: DecisionExtras,
-  ): Promise<Verdict | null> {
-    const granted = await checkRecentApproval(deps.approvalsBaseDir, {
-      ...grantKey,
-      sessionId: deps.sessionId,
-      ...(deps.agentName !== undefined ? { agentName: deps.agentName } : {}),
-      ttlMs: policy.approval.grantTtlMs,
-      clock,
-    })
-    // Explicitly against `null`: the "no grant" answer is one value, never a
-    // falsy-but-present object, so a grant can never be lost to truthiness.
-    if (granted === null) return null
-    grantRegistry.grant(grantKey, policy.approval.grantTtlMs)
-    // DELIBERATELY not `requestApproval`'s captured pair, and deliberately not
-    // passed one. This is a SECOND, genuinely later decision: the retry is
-    // re-decided here, after the storage read, with the grant now in hand —
-    // so the rules that produce THIS verdict are the ones in force at THIS
-    // instant, and the record below must name them. `applyAllow` journals
-    // synchronously from here, so the writer's own default snapshot is that
-    // same instant. Do not "fix" this into reusing the caller's snapshot: the
-    // two are different decisions about different moments, and collapsing
-    // them would backdate this one's provenance (M5 wave-2 review).
-    const decision = deps.decideWithGrant(facts, true)
-    if (decision.outcome !== 'allow') return null
-    const extras: DecisionExtras = { ...base, approvalId: granted.approvalId, ...actorExtra(granted.actor) }
-    return await deps.applyAllow(call, facts, decision, extras)
+    decision: PolicyDecision,
+    captured: ProvenanceSnapshot,
+    base: DecisionExtras = {},
+  ): Promise<Verdict> {
+    const startedAtMs = clock()
+    const approvalId = await enqueue(call, facts, decision, captured, base)
+    // An id-less call never reaches here (`gate-call.ts` denies it first).
+    const idKey = call.id !== null ? idKeyOf(call.id) : ''
+    const entry: HeldCall = { idKey, approvalId, controller: new AbortController(), leftReason: undefined }
+    held.add(entry)
+    // The agent may already have left while the request was being queued.
+    const earlyReason = isClosed ? WITHDRAW_REASON_DISCONNECTED : deps.cancelReasonOf(idKey)
+    if (earlyReason !== undefined) void leave(entry, earlyReason)
+    const result = await hold(call, entry)
+    return finishApproval({ call, facts, rule: decision.rule, held: entry, startedAtMs, result, captured, base })
   }
 
   async function finishApproval(ctx: ApprovalContext): Promise<Verdict> {
-    const extras: DecisionExtras = { ...ctx.base, approvalId: ctx.approvalId, latencyMs: clock() - ctx.startedAtMs }
-    if (ctx.result.outcome === 'approved') return await finishApproved(ctx, extras)
+    const extras: DecisionExtras = {
+      ...ctx.base,
+      approvalId: ctx.held.approvalId,
+      latencyMs: clock() - ctx.startedAtMs,
+    }
+    const { outcome } = ctx.result
+    if (outcome === 'approved') return finishApproved(ctx, extras)
+    if (outcome === 'withdrawn' && ctx.held.leftReason !== undefined) {
+      return finishAgentGone(ctx, { ...extras, reason: ctx.held.leftReason })
+    }
+    if (outcome === 'denied') return finishDenied(ctx, extras)
+    // A capped wait that ran out — or a request withdrawn behind this live
+    // agent's back (the heartbeat sweep of another process judged it stale):
+    // either way the agent is still here and gets the timeout answer.
+    return finishTimedOut(ctx, extras)
+  }
 
-    const isDenied = ctx.result.outcome === 'denied'
-    // An operator denial resolves the approval; a plain timeout does not (a
-    // late approval may still land), so only the former stops it from being
-    // marked expired at session teardown (H6).
-    if (isDenied) enqueuedUnresolved.delete(ctx.approvalId)
-    const toolName = ctx.facts.toolName
-    // A denial is an operator's decision and names them; a timeout is the
-    // ABSENCE of a decision, so it names nobody — the waiter surfaces no
-    // actor for it and none is invented here.
-    writeDecision(
-      decisionInfoOf(
-        ctx.facts,
-        isDenied ? 'denied-by-operator' : 'timeout',
-        ctx.rule,
-        isDenied ? { ...extras, ...actorExtra(ctx.result.actor) } : extras,
-      ),
-      ctx.call.args,
-      ctx.captured,
-    )
+  /** The agent left: nothing is sent, nothing is answered, and the id can never be forwarded. */
+  async function finishAgentGone(ctx: ApprovalContext, extras: DecisionExtras): Promise<Verdict> {
+    writeDecision(decisionInfoOf(ctx.facts, 'agent-gone', ctx.rule, extras), ctx.call.args, ctx.captured)
     await settleJournal()
-    await answerLocally(ctx.call.id, (id) =>
-      isDenied
-        ? approvalDeniedError(id, { toolName })
-        : approvalTimeoutError(id, { toolName, approvalId: ctx.approvalId }),
-    )
+    answerGuard.markAnswered(ctx.held.idKey)
+    return DROP
+  }
+
+  /** An operator's denial names them. */
+  async function finishDenied(ctx: ApprovalContext, extras: DecisionExtras): Promise<Verdict> {
+    const record = { ...extras, ...actorExtra(ctx.result.actor) }
+    writeDecision(decisionInfoOf(ctx.facts, 'denied-by-operator', ctx.rule, record), ctx.call.args, ctx.captured)
+    await settleJournal()
+    const toolName = ctx.facts.toolName
+    await answerLocally(ctx.call.id, (id) => approvalDeniedError(id, { toolName }))
+    return DROP
+  }
+
+  /**
+   * A timeout is the ABSENCE of a decision, so it names nobody. The request
+   * leaves the queue with the answer: there is no grant window any more, so an
+   * approval of it could only ever reach nobody.
+   */
+  async function finishTimedOut(ctx: ApprovalContext, extras: DecisionExtras): Promise<Verdict> {
+    const { approvalId } = ctx.held
+    try {
+      await approvalQueue.markExpired(approvalId)
+    } catch (error: unknown) {
+      deps.onError(error)
+    }
+    writeDecision(decisionInfoOf(ctx.facts, 'timeout', ctx.rule, extras), ctx.call.args, ctx.captured)
+    await settleJournal()
+    const toolName = ctx.facts.toolName
+    await answerLocally(ctx.call.id, (id) => approvalTimeoutError(id, { toolName, approvalId }))
     return DROP
   }
 
   /**
    * The guard is a flag, not a hope: an approval racing an already-delivered
-   * timeout error must never reach the server after it.
+   * answer must never reach the server after it.
    */
   async function finishApproved(ctx: ApprovalContext, extras: DecisionExtras): Promise<Verdict> {
-    enqueuedUnresolved.delete(ctx.approvalId)
-    if (ctx.call.id !== null && answerGuard.isAnswered(idKeyOf(ctx.call.id))) {
-      writeDecision(
-        decisionInfoOf(ctx.facts, 'deny', ALREADY_ANSWERED_RULE, extras),
-        ctx.call.args,
-        ctx.captured,
-      )
+    if (answerGuard.isAnswered(ctx.held.idKey)) {
+      writeDecision(decisionInfoOf(ctx.facts, 'deny', ALREADY_ANSWERED_RULE, extras), ctx.call.args, ctx.captured)
       await settleJournal()
       return DROP
     }
-    grantRegistry.grant(ctx.grantKey, policy.approval.grantTtlMs)
-    writeDecision(
-      decisionInfoOf(ctx.facts, 'approved', ctx.rule, { ...extras, ...actorExtra(ctx.result.actor) }),
-      ctx.call.args,
-      ctx.captured,
-    )
+    const record = { ...extras, ...actorExtra(ctx.result.actor) }
+    writeDecision(decisionInfoOf(ctx.facts, 'approved', ctx.rule, record), ctx.call.args, ctx.captured)
     await settleJournal()
     return FORWARD
   }
 
-  return { requestApproval }
+  return {
+    requestApproval,
+    async withdrawByClient(idKey, reason) {
+      const matching = Array.from(held).filter((entry) => entry.idKey === idKey)
+      await Promise.all(matching.map((entry) => leave(entry, reason)))
+    },
+    async withdrawAll() {
+      isClosed = true
+      await Promise.all(Array.from(held).map((entry) => leave(entry, WITHDRAW_REASON_DISCONNECTED)))
+    },
+  }
 }

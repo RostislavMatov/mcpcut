@@ -3,7 +3,6 @@ import type { Readable, Writable } from 'node:stream'
 import { JOURNAL_DIR } from '../config.js'
 import type { ClientServerDirection, JournalDirection } from '../journal/record.js'
 import type { JournalSink } from '../journal/sink.js'
-import { createGrantRegistry } from '../policy/approvals/grants.js'
 import { createApprovalQueue } from '../policy/approvals/queue.js'
 import { createApprovalWaiter } from '../policy/approvals/waiter.js'
 import { canonicalJson, sha256Hex } from '../policy/hash.js'
@@ -111,6 +110,8 @@ export interface PolicyRelayArgs {
   readonly agentScope?: GateAgentScope
   /** Hears of each call queued for a human (see `MessagePolicyGateDeps`). */
   readonly onApprovalPending?: (notice: PendingApprovalNotice) => void
+  /** The progress text of a held call (M36); stdio carries the gate's notifications. */
+  readonly heldCallProgress?: (approvalId: string) => string
   /** The client channel for `confirmInClient` (ADR-0019); stdio `wrap` always has one. */
   readonly confirmInClient?: ConfirmInClientDeps
 }
@@ -174,12 +175,11 @@ export function wirePolicyRelay(args: PolicyRelayArgs): RelayWiring {
     inventory: createInventory(args.serverName, { storePath: inventoryStorePath, onError: onInternalError }),
     approvalQueue,
     approvalWaiter: createApprovalWaiter(),
-    grantRegistry: createGrantRegistry(),
     sink: args.sink,
     clientWriter,
-    approvalsBaseDir,
     ...(args.agentScope !== undefined ? { agentScope: args.agentScope } : {}),
     ...(args.onApprovalPending !== undefined ? { onApprovalPending: args.onApprovalPending } : {}),
+    ...(args.heldCallProgress !== undefined ? { heldCallProgress: args.heldCallProgress } : {}),
     ...(args.confirmInClient !== undefined ? { confirmInClient: args.confirmInClient } : {}),
     // A gate-internal failure is a proxy defect, not a broken stream: log it
     // (the gate has already failed the call closed) and keep the session up.

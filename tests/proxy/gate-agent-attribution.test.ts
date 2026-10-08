@@ -7,7 +7,6 @@ import type { JournalRecord } from '../../src/journal/record.js'
 import { matchesFilters } from '../../src/journal/search-filters.js'
 import { createApprovalQueue, type ApprovalQueue, type PendingApproval } from '../../src/policy/approvals/queue.js'
 import { createApprovalWaiter } from '../../src/policy/approvals/waiter.js'
-import { createGrantRegistry } from '../../src/policy/approvals/grants.js'
 import { parsePolicy, type Policy } from '../../src/policy/schema.js'
 import { createPolicyGate, type PolicyGate } from '../../src/proxy/gate.js'
 import { createDecisionProvenance, createDecisionWriter } from '../../src/proxy/gate-decision-writer.js'
@@ -104,10 +103,8 @@ function createHarness(policy: Policy, scope?: GateAgentScope): Harness {
     inventory: trustedInventory(),
     approvalQueue: queue,
     approvalWaiter: createApprovalWaiter({ pollIntervalMs: 5 }),
-    grantRegistry: createGrantRegistry(),
     sink: capturingSink,
     clientWriter: writer,
-    approvalsBaseDir: approvalsDir,
     ...(scope !== undefined ? { agentScope: scope } : {}),
   })
   return { gate, decisions: () => captured.filter((record) => record.kind === 'decision') }

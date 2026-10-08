@@ -3,7 +3,6 @@ import { createRecordBuilder } from '../journal/record.js'
 import { createJournalSink, type JournalSink, type JournalSinkOptions } from '../journal/sink.js'
 import { createApprovalQueue } from '../policy/approvals/queue.js'
 import { createApprovalWaiter } from '../policy/approvals/waiter.js'
-import { createGrantRegistry } from '../policy/approvals/grants.js'
 import { createInventory } from '../policy/inventory.js'
 import type { PolicyProvider } from '../policy/reload.js'
 import type { Policy } from '../policy/schema.js'
@@ -21,7 +20,7 @@ import { openUpstream, type OpenUpstreamDeps } from './serve-upstream.js'
 
 /**
  * Building ONE fully wired single-server session: journal sink and record
- * builder, inventory, approvals, grants, the upstream, and the memory pipe
+ * builder, inventory, approvals, the upstream, and the memory pipe
  * that joins it to whoever is driving it.
  *
  * Extracted from `serve-runtime.ts` unchanged when the pool arrived (ADR-0015
@@ -153,9 +152,7 @@ export function createChildSessionOpener(deps: ChildSessionDeps): ChildSessionOp
       approvals: {
         queue: createApprovalQueue({ baseDir: deps.approvalsBaseDir }),
         waiter: createApprovalWaiter(),
-        baseDir: deps.approvalsBaseDir,
       },
-      grants: createGrantRegistry(),
       journal: journal.deps,
       agent: { record: target.agent, store: deps.agents },
       ...(deps.clock !== undefined ? { clock: deps.clock } : {}),

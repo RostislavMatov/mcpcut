@@ -6,7 +6,6 @@ import { createJournalSink, type JournalSink } from '../../src/journal/sink.js'
 import type { JournalRecord } from '../../src/journal/record.js'
 import { createApprovalQueue, type ApprovalQueue, type PendingApproval } from '../../src/policy/approvals/queue.js'
 import { createApprovalWaiter } from '../../src/policy/approvals/waiter.js'
-import { createGrantRegistry } from '../../src/policy/approvals/grants.js'
 import { SURFACE_CHANGED_RULE } from '../../src/policy/decide.js'
 import type { SurfaceDelta } from '../../src/policy/schema-diff.js'
 import { parsePolicy, type Policy } from '../../src/policy/schema.js'
@@ -105,10 +104,8 @@ function createHarness(policy: Policy, inventory: GateInventory): Harness {
     inventory,
     approvalQueue: queue,
     approvalWaiter: createApprovalWaiter({ pollIntervalMs: 5 }),
-    grantRegistry: createGrantRegistry(),
     sink: capturingSink,
     clientWriter: writer,
-    approvalsBaseDir: approvalsDir,
     onError: (error: unknown) => errors.push(error),
   })
   return { gate, captured }

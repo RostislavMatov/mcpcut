@@ -2,7 +2,6 @@ import { join } from 'node:path'
 import { JOURNAL_DIR } from '../config.js'
 import { createRecordBuilder } from '../journal/record.js'
 import { createJournalSink, type JournalSinkOptions } from '../journal/sink.js'
-import { createGrantRegistry } from '../policy/approvals/grants.js'
 import { createApprovalQueue } from '../policy/approvals/queue.js'
 import { createApprovalWaiter } from '../policy/approvals/waiter.js'
 import { createInventory, INVENTORY_FILE_NAME } from '../policy/inventory.js'
@@ -15,10 +14,11 @@ import {
   type SessionHandle,
 } from '../session/core.js'
 import { DIAGNOSTIC_PREFIX } from './connect-constants.js'
+import { heldCallProgressText } from './next-step.js'
 
 /**
  * Assembles one `connect` session's non-transport half — journal, tool
- * inventory, approvals, grant registry — and hands it to `session/core.ts`
+ * inventory, approvals — and hands it to `session/core.ts`
  * together with the endpoints the caller built.
  *
  * `session/core.ts` owns the session itself (gate wiring, agent-revocation
@@ -173,9 +173,7 @@ export function startConnectSession(args: StartConnectSessionArgs): ConnectSessi
     approvals: {
       queue: approvalQueue,
       waiter: createApprovalWaiter(),
-      baseDir: approvalsBaseDir,
     },
-    grants: createGrantRegistry(),
     journal: { recordBuilder, sink },
     ...(args.knownSecrets !== undefined ? { knownSecrets: args.knownSecrets } : {}),
     agent: args.agent,
@@ -187,6 +185,8 @@ export function startConnectSession(args: StartConnectSessionArgs): ConnectSessi
     // ADR-0019: a stdio client is there to ask about the tools the policy
     // lists in `confirmInClient` for this agent.
     confirmInClient: { onNotice: args.onDiagnostic },
+    // M36: the same stdio client hears that a held call still waits, and for which approval.
+    heldCallProgress: heldCallProgressText,
   })
 
   failure.arm(session)

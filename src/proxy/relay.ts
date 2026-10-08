@@ -58,6 +58,8 @@ export interface RelayArgs {
   readonly agentScope?: GateAgentScope
   /** Hears of each call queued for a human; mode B only (mode A holds nothing). */
   readonly onApprovalPending?: (notice: PendingApprovalNotice) => void
+  /** The progress text of a held call (M36); mode B only. */
+  readonly heldCallProgress?: (approvalId: string) => string
   /** The client channel for `confirmInClient` (ADR-0019); mode B only. */
   readonly confirmInClient?: ConfirmInClientDeps
 }
@@ -90,6 +92,7 @@ function wirePipelines(args: RelayArgs, policy: Policy | PolicyProvider): RelayW
       : {}),
     ...(args.agentScope !== undefined ? { agentScope: args.agentScope } : {}),
     ...(args.onApprovalPending !== undefined ? { onApprovalPending: args.onApprovalPending } : {}),
+    ...(args.heldCallProgress !== undefined ? { heldCallProgress: args.heldCallProgress } : {}),
     ...(args.confirmInClient !== undefined ? { confirmInClient: args.confirmInClient } : {}),
   })
 }

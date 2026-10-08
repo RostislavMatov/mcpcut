@@ -239,6 +239,15 @@ async function resolveAction(
     actor: uiActor(session),
     ...(reason !== undefined ? { reason } : {}),
   })
+  if (!result.ok && result.reason === 'withdrawn') {
+    // M36: the agent left first. Said as the CLI says it, so both surfaces agree.
+    return jsonResult(HTTP_STATUS_CONFLICT, {
+      status: 'withdrawn',
+      message:
+        `The agent stopped waiting at ${result.withdrawnAt} (${result.withdrawnReason}): nothing was sent. ` +
+        'If it asks again, a new request appears here.',
+    })
+  }
   if (!result.ok) {
     return jsonResult(HTTP_STATUS_CONFLICT, {
       status: 'already-resolved',

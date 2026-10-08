@@ -5,9 +5,11 @@ import type { Policy, PolicyOutcome, ToolClass } from './schema.js'
 
 /**
  * Everything `decide()` needs to resolve one tool call to a policy outcome.
- * Deliberately flat data, no I/O: the caller (inventory + grant store) has
- * already resolved the tool's class, quarantine state, and grant status
- * before calling in, so this function stays pure and trivially testable.
+ * Deliberately flat data, no I/O: the caller (the inventory and the agent's
+ * scope) has already resolved the tool's class and quarantine state before
+ * calling in, so this function stays pure and trivially testable. An earlier
+ * approval is deliberately NOT an input (decision M36): an approval covers the
+ * one call it was given for, and every call that needs one asks again.
  */
 export interface DecideInput {
   readonly policy: Policy
@@ -15,7 +17,6 @@ export interface DecideInput {
   readonly toolName: string
   readonly toolClass: ToolClass
   readonly quarantineState: QuarantineState
-  readonly hasActiveGrant: boolean
   /**
    * True once the inventory has processed at least one `tools/list` for this
    * server. Gates the `shadow-tool` rule: a `'unknown'` tool seen AFTER the
@@ -35,7 +36,7 @@ export interface DecideInput {
    * already resolved the agent's grant matrix (`agentScope`) and it covers
    * this tool: the M2 chain runs unchanged. `'not-granted'` denies
    * immediately, before every other step -- what was never granted to an
-   * agent cannot be allowed by approvals, rules, or defaults.
+   * agent cannot be allowed by rules or defaults.
    */
   readonly agentGrant?: AgentGrantStatus
   /**
@@ -114,12 +115,13 @@ function failClosedQuarantineOutcome(policy: Policy): PolicyOutcome {
  *
  * Precedence (strict, first match wins):
  *  0. `agentGrant === 'not-granted'` -- the agent's grant matrix does not
- *     cover this tool; always deny, before approvals grants and every rule.
- *     A grant defines what an agent may touch at all -- policy only decides
- *     what happens to what was granted. Absent field (ad-hoc `wrap`) or
- *     `'granted'` fall through to the chain below unchanged.
- *  1. `hasActiveGrant` -- an operator already approved this exact call
- *     shape; always allow.
+ *     cover this tool; always deny, before every rule. A grant defines what
+ *     an agent may touch at all -- policy only decides what happens to what
+ *     was granted. Absent field (ad-hoc `wrap`) or `'granted'` fall through
+ *     to the chain below unchanged.
+ *  1. (Retired by decision M36: an operator's earlier approval of the same
+ *     call shape used to allow here. Every call that needs an approval now
+ *     asks again; the step numbers below are kept as they were.)
  *  2. An explicit tool rule under `servers.<serverName>.tools` (exact name,
  *     then longest trailing-glob prefix) -- an operator's deliberate,
  *     per-tool decision, so it outranks quarantine and every default. The
@@ -137,7 +139,6 @@ function failClosedQuarantineOutcome(policy: Policy): PolicyOutcome {
 export function decide(input: DecideInput): PolicyDecision {
   return (
     decideByAgentGrant(input) ??
-    decideByGrant(input) ??
     decideByToolRule(input) ??
     decideByCatalogUntrusted(input) ??
     decideByQuarantine(input) ??
@@ -166,8 +167,8 @@ function decideByCatalogUntrusted(input: DecideInput): PolicyDecision | null {
 
 /**
  * Step 0, the agent dimension: a tool the agent's grant matrix does not
- * cover is denied before anything else can run -- an approvals grant or an
- * allow rule must never resurrect what an operator never handed out.
+ * cover is denied before anything else can run -- an allow rule must never
+ * resurrect what an operator never handed out.
  * Missing `agentGrant` (ad-hoc `wrap`, no agent identity) and `'granted'`
  * both fall through, leaving the M2 chain byte-for-byte unchanged.
  */
@@ -177,15 +178,6 @@ function decideByAgentGrant(input: DecideInput): PolicyDecision | null {
     outcome: 'deny',
     rule: `agent: no grant for ${input.serverName}/${input.toolName}`,
     reason: `the agent has no grant covering tool '${input.toolName}' on server '${input.serverName}'; denied before policy evaluation`,
-  }
-}
-
-function decideByGrant(input: DecideInput): PolicyDecision | null {
-  if (!input.hasActiveGrant) return null
-  return {
-    outcome: 'allow',
-    rule: 'grant',
-    reason: 'an active grant already permits this call; skipping further policy evaluation',
   }
 }
 

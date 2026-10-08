@@ -96,11 +96,26 @@ export function resolveApprovalHint(approvalId: string): string {
  * agent with a shell would run it and approve itself (`synthesize.ts`).
  */
 export function heldCallNotice(notice: PendingApprovalNotice): string {
-  const waitSeconds = Math.round(notice.waitMs / MS_PER_SECOND)
+  // M36: no cap by default — the call is held for as long as its agent waits.
+  const wait =
+    notice.waitMs === undefined
+      ? 'the agent waits until you decide or it stops waiting'
+      : `the agent waits ${Math.round(notice.waitMs / MS_PER_SECOND)} s`
   return (
     `held for approval: ${formatReadableField(notice.toolName)} on ${formatReadableField(notice.serverName)} ` +
-    `(the agent waits ${waitSeconds} s). ${resolveApprovalHint(notice.approvalId)}`
+    `(${wait}). ${resolveApprovalHint(notice.approvalId)}`
   )
+}
+
+/**
+ * The `notifications/progress` text a call held for approval sends its client
+ * (decision M36): which approval it waits for and the command that releases
+ * it, so the person at the client can act without opening another view. The
+ * owner chose to show the command here; the -32002 error the AGENT reads at a
+ * timeout still carries none (see `heldCallNotice`).
+ */
+export function heldCallProgressText(approvalId: string): string {
+  return `waiting for approval ${approvalId} — ${cliCommand()} approvals approve ${shellArg(approvalId)}`
 }
 
 export function listApprovalsHint(): string {

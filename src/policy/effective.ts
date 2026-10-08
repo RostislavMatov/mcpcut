@@ -9,8 +9,8 @@ import type { Policy, PolicyOutcome, ToolClass } from './schema.js'
  * The "effective outcome" projection the `/servers` card renders for one
  * tool: what a plain call would resolve to right now, and which rule says
  * so. A thin wrapper over `decide()` -- it assembles the same `DecideInput`
- * the gate builds for a call that carries no grant, no agent identity and a
- * trusted, observed catalog, then names the source of the returned `rule`.
+ * the gate builds for a call that carries no agent identity and a trusted,
+ * observed catalog, then names the source of the returned `rule`.
  * It never reads the policy on its own: there is exactly one interpretation
  * of the policy in this codebase, and it lives in `decide()`.
  */
@@ -106,7 +106,6 @@ function plainViewDecideInput(input: EffectiveToolInput): DecideInput {
     toolName: tool.name,
     toolClass: classifyTool(descriptor, classOverrides),
     quarantineState: tool.quarantineState,
-    hasActiveGrant: false,
     catalogObserved: true,
     catalogTrusted: true,
     ...(tool.surfaceDelta !== undefined ? { surfaceDelta: tool.surfaceDelta } : {}),
@@ -128,7 +127,7 @@ const FIXED_RULE_SOURCES: Readonly<Record<string, EffectiveRuleSource>> = {
 /**
  * Maps `PolicyDecision.rule` to a source. Path-shaped rules are matched by
  * the exact prefix `decide()` builds from THIS input's server name, so a
- * server name containing dots cannot be mis-split. `grant`, `agent: ...` and
+ * server name containing dots cannot be mis-split. `agent: ...` and
  * `catalog-untrusted` are unreachable for the input built above and are
  * deliberately not mapped: reaching this function with one of them means the
  * input assembly changed, which must fail loudly.

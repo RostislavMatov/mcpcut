@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
-import { DEFAULT_APPROVAL_TIMEOUT_MS, POLICY_ENV_VAR } from '../../src/policy/constants.js'
+import { POLICY_ENV_VAR } from '../../src/policy/constants.js'
 import { formatPolicyErrors, loadPolicy } from '../../src/policy/load.js'
 import { policySchema } from '../../src/policy/schema.js'
 import { resolvePolicySource } from '../../src/policy/source.js'
@@ -212,7 +212,8 @@ describe('loadPolicy: defaults', () => {
 
     expect(result.status).toBe('loaded')
     if (result.status === 'loaded') {
-      expect(result.policy.approval.timeoutMs).toBe(DEFAULT_APPROVAL_TIMEOUT_MS)
+      expect(result.policy.approval.onTimeout).toBe('deny')
+      expect(result.policy.approval.timeoutMs).toBeUndefined() // M36: held while the agent waits
       expect(result.policy.defaultDecision).toBe('require-approval')
       expect(result.policy.quarantine.enabled).toBe(true)
     }

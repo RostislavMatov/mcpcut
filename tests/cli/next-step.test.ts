@@ -7,6 +7,7 @@ import {
   npxCommand,
   exportReportHint,
   heldCallNotice,
+  heldCallProgressText,
   keygenHint,
   listApprovalsHint,
   noJournalMessage,
@@ -189,6 +190,21 @@ describe('the Prove and Stop steps name what comes next (0.2.3)', () => {
     expect(notice).toContain(`${NPX} approvals approve 01HELD`)
     expect(notice).toContain(`${NPX} approvals deny 01HELD`)
     expect(notice.endsWith('\n')).toBe(true)
+  })
+
+  test('without a wait cap the held call waits for the operator, and the notice says so (M36)', () => {
+    asNpx()
+    const notice = heldCallNotice({ approvalId: '01HELD', toolName: 'write_file', serverName: 'fs' })
+    expect(notice).toContain('the agent waits until you decide or it stops waiting')
+    expect(notice).not.toMatch(/waits \d+ s/)
+    expect(notice).toContain(`${NPX} approvals approve 01HELD`)
+  })
+
+  test('the progress a held call sends its client names the approval and the command that releases it', () => {
+    asNpx()
+    expect(heldCallProgressText('01HELD')).toBe(`waiting for approval 01HELD — ${NPX} approvals approve 01HELD`)
+    asInstalled()
+    expect(heldCallProgressText('01HELD')).toBe('waiting for approval 01HELD — mcpcut approvals approve 01HELD')
   })
 
   test('a tool name the agent chose cannot drive the terminal', () => {

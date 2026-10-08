@@ -6,7 +6,6 @@ import type { JournalRecord } from '../../src/journal/record.js'
 import { createJournalSink, type JournalSink } from '../../src/journal/sink.js'
 import { createApprovalQueue, type ApprovalQueue, type PendingApproval } from '../../src/policy/approvals/queue.js'
 import { createApprovalWaiter } from '../../src/policy/approvals/waiter.js'
-import { createGrantRegistry } from '../../src/policy/approvals/grants.js'
 import { STATIC_POLICY_SOURCE, type PolicyProvider } from '../../src/policy/provider.js'
 import { parsePolicy, type Policy } from '../../src/policy/schema.js'
 import { CLIENT_CONFIRM_ID_PREFIX } from '../../src/proxy/client-confirm.js'
@@ -132,10 +131,8 @@ function createGate(policy: Policy | PolicyProvider, opts: GateOptions = {}): Po
     inventory: trustedInventory(),
     approvalQueue: queue,
     approvalWaiter: createApprovalWaiter({ pollIntervalMs: 5 }),
-    grantRegistry: createGrantRegistry(),
     sink,
     clientWriter: writer,
-    approvalsBaseDir: approvalsDir,
     clock: () => now,
     onError: (error: unknown) => errors.push(error),
     ...(opts.agent !== undefined ? { agentScope: agentScope(opts.agent) } : {}),

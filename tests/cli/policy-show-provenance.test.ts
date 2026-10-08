@@ -7,7 +7,6 @@ import { createJournalSink, type JournalSink } from '../../src/journal/sink.js'
 import type { Frame } from '../../src/protocol/split.js'
 import { createApprovalWaiter } from '../../src/policy/approvals/waiter.js'
 import { createApprovalQueue } from '../../src/policy/approvals/queue.js'
-import { createGrantRegistry } from '../../src/policy/approvals/grants.js'
 import { loadPolicy } from '../../src/policy/load.js'
 import { policyHashOf } from '../../src/policy/provenance.js'
 import type { Policy } from '../../src/policy/schema.js'
@@ -121,7 +120,7 @@ describe('policy show prints the policy fingerprint', () => {
     expect(parsed.trustClass).toBe('operator-launched')
     expect(parsed.sourcePath).toBe(path)
     expect(parsed.policy.defaultDecision).toBe('require-approval')
-    expect(typeof parsed.policy.approval.timeoutMs).toBe('number')
+    expect(parsed.policy.approval.onTimeout).toBe('deny')
   })
 
   test('--entry-point keeps its entryPoint label alongside the new hash', async () => {
@@ -212,10 +211,8 @@ async function stampedPolicyHash(policy: Policy): Promise<string | undefined> {
       inventory: trustedInventory(),
       approvalQueue: createApprovalQueue({ baseDir: join(journalDir, 'approvals') }),
       approvalWaiter: createApprovalWaiter({ pollIntervalMs: 5 }),
-      grantRegistry: createGrantRegistry(),
       sink,
       clientWriter: discardingWriter(),
-      approvalsBaseDir: join(journalDir, 'approvals'),
       onError: () => undefined,
     })
 

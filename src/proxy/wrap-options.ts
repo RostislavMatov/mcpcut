@@ -63,6 +63,13 @@ export interface RunWrapOptions {
    */
   readonly approvalNotice?: (notice: PendingApprovalNotice) => string
   /**
+   * The text of the `notifications/progress` a call held for approval sends
+   * the client while it waits (decision M36; see `MessagePolicyGateDeps`).
+   * Formatted by the CLI, like `approvalNotice`; absent means no progress is
+   * sent. Mode B only.
+   */
+  readonly heldCallProgress?: (approvalId: string) => string
+  /**
    * The one line written when the session ends (the wrapped server exited or
    * the client left), after the journal is flushed: it names the session and
    * how to read it. Formatted by the CLI; absent means silence, as before.

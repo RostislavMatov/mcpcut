@@ -207,7 +207,10 @@ describe('approve says what happens to the call (0.2.3, stranger run of 0.2.2)',
     expect(io.out()).not.toContain('retry')
   })
 
-  test("once the agent's wait has ended, only its retry passes, within the grant window", async () => {
+  test('no approval promises a retry any more: there is no grant window (M36)', async () => {
+    // A row whose recorded wait cap has passed is one the gate has already
+    // closed in a live system; even read straight from storage, an approval
+    // of it says nothing about a later retry, which would ask again.
     const { approvalId } = await createApprovalQueue({ baseDir }).enqueue(request({ waitTimeoutMs: 1 }))
     await new Promise((resolve) => setTimeout(resolve, 20))
     const io = fakeIo()
@@ -215,8 +218,8 @@ describe('approve says what happens to the call (0.2.3, stranger run of 0.2.2)',
     const exitCode = await runApprovals(['approve', approvalId], io, opts())
 
     expect(exitCode).toBe(0)
-    expect(io.out()).toContain('retry')
-    expect(io.out()).not.toContain('goes through now')
+    expect(io.out()).not.toContain('retry')
+    expect(io.out()).not.toContain('grant')
   })
 
   test('the no-admins note comes only with an action that happened, never before an unknown-id error', async () => {

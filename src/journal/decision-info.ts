@@ -17,6 +17,12 @@ export type PolicyOutcome =
   | 'denied-by-operator'
   | 'timeout'
   | 'quarantined'
+  /**
+   * Decision M36: the agent stopped waiting for a call held for approval — it
+   * cancelled the call, or its connection ended — so the request was
+   * withdrawn and nothing was sent. `reason` says which.
+   */
+  | 'agent-gone'
 
 /** Risk class a tool was resolved to at decision time. */
 export type ToolClass = 'read' | 'write' | 'destructive'
@@ -53,14 +59,16 @@ export interface DecisionInfo {
   /**
    * WHO determined this outcome, when a human did: the `actor` of the
    * approval resolution the outcome came from (`ui:<adminName>`, `cli`, …).
-   * Present on exactly the records a person decided — `approved`,
-   * `denied-by-operator`, and the `allow` of a retry admitted by a LATE
-   * approval — and ABSENT everywhere else, following the same "absent, not
-   * null" convention as `agentName`/`grantsHash`.
+   * Present on exactly the records a person decided — `approved` and
+   * `denied-by-operator` (and, in journals written before decision M36, the
+   * `allow` of a retry admitted by a LATE approval) — and ABSENT everywhere
+   * else, following the same "absent, not null" convention as
+   * `agentName`/`grantsHash`.
    *
    * Absence is therefore a FACT, not missing data: a `timeout` is the absence
-   * of a decision, an `expired` resolution is one session teardown or the
-   * sweep made rather than an operator, and a policy `allow`/`deny` had no
+   * of a decision, an `expired` resolution is one a capped wait or the sweep
+   * made rather than an operator, an `agent-gone` is the agent leaving, and a
+   * policy `allow`/`deny` had no
    * human in the loop at all. Stamping an actor on any of those would put a
    * false statement into the evidence waves 3-4 chain and sign, so the field
    * is populated only where an `ApprovalResolution` actually carried one
@@ -76,6 +84,13 @@ export interface DecisionInfo {
    * same "absent, not null" convention as `actor`.
    */
   readonly confirmedBy?: string
+  /**
+   * Why the agent left, on an `agent-gone` record (M36): the `params.reason`
+   * of its `notifications/cancelled` (`AbortError: user-cancel`,
+   * `SdkError: Request timed out`, …, cleaned and length-capped), or
+   * `disconnected` when the connection ended. Absent on every other record.
+   */
+  readonly reason?: string
   /**
    * Fingerprint of the *effective* policy this call was decided under
    * (`policy/provenance.ts`). Required: every decision record carries it, so

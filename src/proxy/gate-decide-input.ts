@@ -66,7 +66,7 @@ export function createDecideInputAssembler(deps: DecideInputAssemblerDeps) {
    * `agentScope`, `decide()` sees `'granted' | 'not-granted'` (step 0 of its
    * chain); without one, the key is absent and the M2 chain runs unchanged.
    */
-  function decideInputOf(facts: CallFacts, hasActiveGrant: boolean): DecideInput {
+  function decideInputOf(facts: CallFacts): DecideInput {
     // Read here rather than carried on `CallFacts`: the delta is an input to
     // the decision, not a fact recorded about the call, and `factsOf` feeds
     // the journal record. Only a `changed` tool can have one, and asking the
@@ -80,7 +80,6 @@ export function createDecideInputAssembler(deps: DecideInputAssemblerDeps) {
       toolName: facts.toolName,
       toolClass: facts.toolClass,
       quarantineState: facts.quarantineState,
-      hasActiveGrant,
       catalogObserved: inventory.hasObservedCatalog(),
       catalogTrusted: inventory.isCatalogTrusted(),
       ...(surfaceDelta !== undefined ? { surfaceDelta } : {}),

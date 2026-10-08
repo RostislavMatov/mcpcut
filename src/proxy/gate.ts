@@ -51,10 +51,7 @@ export interface PolicyGate {
   readonly gateClientMessage: GateFn
   /** Gates one server->client frame. */
   readonly gateServerMessage: GateFn
-  /**
-   * Session teardown: cancels every in-flight approval wait (each settles as
-   * a timeout, so the client still gets an answer) and awaits their verdicts.
-   */
+  /** Session teardown (see `MessagePolicyGate.cancelPending`): held calls are withdrawn, none answered. */
   cancelPending(): Promise<void>
 }
 

@@ -27,7 +27,6 @@ function input(overrides: Partial<DecideInput> & { policy: Policy }): DecideInpu
     toolName: 'search_index',
     toolClass: 'read',
     quarantineState: 'changed',
-    hasActiveGrant: false,
     catalogObserved: true,
     catalogTrusted: true,
     ...overrides,
@@ -180,13 +179,14 @@ describe('decide: what O4 deliberately does NOT touch', () => {
     expect(result.rule).toBe('servers.github.tools.search_index')
   })
 
-  test('an active approvals grant still allows: it was issued for THIS call shape', () => {
-    const result = decide(
-      input({ policy: policy(ALLOW_RULE_POLICY), hasActiveGrant: true, surfaceDelta: 'widened' }),
-    )
+  test('an earlier approval of the same call does not keep a withdrawn allow alive (M36)', () => {
+    const result = decide({
+      ...input({ policy: policy(ALLOW_RULE_POLICY), surfaceDelta: 'widened' }),
+      hasActiveGrant: true,
+    } as DecideInput)
 
-    expect(result.outcome).toBe('allow')
-    expect(result.rule).toBe('grant')
+    expect(result.rule).toBe(SURFACE_CHANGED_RULE)
+    expect(result.outcome).not.toBe('allow')
   })
 
   test('an ungranted agent is still denied first: O4 never resurrects a call step 0 killed', () => {

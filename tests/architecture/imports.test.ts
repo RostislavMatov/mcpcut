@@ -68,6 +68,11 @@ const SEMANTIC_ALLOWLIST: ReadonlySet<string> = new Set([
   // How one `tools/call` is decided, extracted from `gate-core.ts` for the
   // line budget when the confirmation step arrived (ADR-0019).
   'src/proxy/gate-call.ts',
+  // The client's `notifications/cancelled` and the hold beside a call waiting
+  // for approval (decision M36), extracted from `gate-router.ts` and
+  // `gate-approvals.ts`: both read the approvals policy, so both are semantic.
+  'src/proxy/gate-cancel.ts',
+  'src/proxy/approval-hold.ts',
   'src/proxy/journal-failure.ts',
   'src/protocol/classify.ts',
   'src/protocol/mcp.ts',

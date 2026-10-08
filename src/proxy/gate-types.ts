@@ -1,8 +1,8 @@
 import type { ApprovalWaiter } from '../policy/approvals/waiter.js'
-import type { GrantRegistry } from '../policy/approvals/grants.js'
 import type { PolicyProvider } from '../policy/reload.js'
 import type { Policy } from '../policy/schema.js'
 import type { MessageGate, MessageSink } from '../transport/message.js'
+import type { HoldScheduler } from './approval-hold.js'
 import type { GateApprovalQueue } from './gate-approvals.js'
 import type {
   DecisionProvenance,
@@ -26,8 +26,12 @@ export interface PendingApprovalNotice {
   /** Chosen by the agent's client: sanitize before it reaches a terminal. */
   readonly toolName: string
   readonly serverName: string
-  /** How long the agent's call waits before it is answered with a timeout. */
-  readonly waitMs: number
+  /**
+   * The policy's cap on the wait (`approval.timeoutMs`), after which the call
+   * is answered with a timeout. ABSENT by default (decision M36): the call is
+   * held for as long as its agent waits.
+   */
+  readonly waitMs?: number
 }
 
 export interface MessagePolicyGateDeps {
@@ -44,7 +48,6 @@ export interface MessagePolicyGateDeps {
   readonly inventory: GateInventory
   readonly approvalQueue: GateApprovalQueue
   readonly approvalWaiter: ApprovalWaiter
-  readonly grantRegistry: GrantRegistry
   readonly sink: GateSink
   /** Delivers synthetic answers to the client (content bytes, no framing). */
   readonly clientSink: GateAnswerSink
@@ -62,11 +65,6 @@ export interface MessagePolicyGateDeps {
    * `policy` and `agentScope`.
    */
   readonly provenance?: DecisionProvenance
-  /**
-   * Root of the approvals queue on disk, for the late-approval fallback.
-   * Defaults to `JOURNAL_DIR/approvals`; must match `approvalQueue`'s own.
-   */
-  readonly approvalsBaseDir?: string
   /** Injectable clock (ms since epoch) for deterministic tests. Defaults to `Date.now`. */
   readonly clock?: () => number
   /** Reports gate-internal failures. Defaults to one line on stderr. */
@@ -85,6 +83,18 @@ export interface MessagePolicyGateDeps {
    * paths — such a call is refused: nobody can be asked.
    */
   readonly confirmInClient?: ConfirmInClientDeps
+  /**
+   * Present on the stdio paths (`wrap`, `connect`), whose client channel can
+   * carry the gate's own notifications: the text of the
+   * `notifications/progress` a call held for approval sends its client at once
+   * and then once a minute, when the call carried a `progressToken`
+   * (decision M36). Absent — the HTTP paths — no progress is sent: a
+   * per-server POST is paired with the NEXT message the session emits, so a
+   * notification would be taken for the call's answer.
+   */
+  readonly heldCallProgress?: (approvalId: string) => string
+  /** Injectable intervals for the hold's heartbeat and progress (tests). Defaults to the real timers. */
+  readonly holdScheduler?: HoldScheduler
 }
 
 /** What the gate needs for the confirmation in the client (see `gate-confirm.ts`). */
@@ -99,8 +109,10 @@ export interface MessagePolicyGate {
   /** Gates one server->client message. */
   readonly gateServerMessage: MessageGate
   /**
-   * Session teardown: cancels every in-flight approval wait (each settles as
-   * a timeout, so the client still gets an answer) and awaits their verdicts.
+   * Session teardown: every call held for approval is withdrawn as
+   * `disconnected` (journaled `agent-gone`, never forwarded, never answered —
+   * the agent is gone; decision M36), every open confirmation is refused, and
+   * their verdicts are awaited.
    */
   cancelPending(): Promise<void>
 }

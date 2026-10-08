@@ -254,3 +254,20 @@ export function methodDeniedError(id: SynthesizableId, info: MethodDenialErrorIn
     },
   })
 }
+
+/**
+ * A `notifications/progress` the gate sends for a call it holds for approval
+ * (decision M36), on the `progressToken` the client put on that call. A
+ * notification, not a response: it carries no id and answers nothing, so the
+ * call stays open. `progress` must increase with every notification for the
+ * same token (MCP progress spec); `total` is omitted because nobody knows when
+ * a human will decide. Line-framed like every builder here.
+ */
+export function heldCallProgress(token: SynthesizableId, progress: number, message: string): Buffer {
+  const body = {
+    jsonrpc: '2.0',
+    method: 'notifications/progress',
+    params: { progressToken: token, progress, message },
+  }
+  return Buffer.from(`${JSON.stringify(body)}\n`, 'utf8')
+}

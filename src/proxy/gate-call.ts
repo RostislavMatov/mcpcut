@@ -1,5 +1,4 @@
 import { decide, type PolicyDecision } from '../policy/decide.js'
-import type { GrantKey, GrantRegistry } from '../policy/approvals/grants.js'
 import type { PolicyProvider } from '../policy/provider.js'
 import type { ParsedToolCall } from '../protocol/mcp.js'
 import type { ApprovalFlow } from './gate-approvals.js'
@@ -32,11 +31,9 @@ type DecideInputAssembler = ReturnType<typeof createDecideInputAssembler>
 
 export interface CallDeciderDeps {
   readonly policy: PolicyProvider
-  readonly serverName: string
   readonly factsOf: DecideInputAssembler['factsOf']
   readonly decideInputOf: DecideInputAssembler['decideInputOf']
   readonly enforceCatalogTrust: DecideInputAssembler['enforceCatalogTrust']
-  readonly grantRegistry: GrantRegistry
   readonly provenance: DecisionProvenance
   readonly applyAllow: (
     call: ParsedToolCall, facts: CallFacts, decision: PolicyDecision, extras?: DecisionExtras,
@@ -56,13 +53,12 @@ export interface CallDecider {
 /** One evaluation of a call under the rules in force at that instant. */
 interface Evaluation {
   readonly facts: CallFacts
-  readonly grantKey: GrantKey
   readonly decision: PolicyDecision
   readonly captured: ProvenanceSnapshot
 }
 
 export function createCallDecider(deps: CallDeciderDeps): CallDecider {
-  const { policy, serverName, confirmStep } = deps
+  const { policy, confirmStep } = deps
 
   function evaluate(call: ParsedToolCall): Evaluation {
     // Schedules a `stat` of the policy file (rate-limited); a pending edit
@@ -71,8 +67,7 @@ export function createCallDecider(deps: CallDeciderDeps): CallDecider {
     // same object because nothing in this synchronous stretch can swap it.
     policy.maybeRefresh()
     const facts = deps.factsOf(call)
-    const grantKey: GrantKey = { serverName, toolName: facts.toolName, argsHash: facts.argsHash }
-    const decision = deps.enforceCatalogTrust(decide(deps.decideInputOf(facts, deps.grantRegistry.isGranted(grantKey))))
+    const decision = deps.enforceCatalogTrust(decide(deps.decideInputOf(facts)))
     // Provenance is sampled HERE, in the same synchronous run as `decide()`,
     // because this is the instant the rules produced the verdict. Only the
     // deferred path needs it explicitly: `applyAllow`/`applyDeny` journal
@@ -80,18 +75,17 @@ export function createCallDecider(deps: CallDeciderDeps): CallDecider {
     // already this same instant, while `requestApproval` awaits a storage read
     // before it writes and would otherwise sample a matrix an `agent-watch`
     // poll had already replaced (M5 wave-2 review, finding 2).
-    return { facts, grantKey, decision, captured: deps.provenance.snapshot() }
+    return { facts, decision, captured: deps.provenance.snapshot() }
   }
 
   /** The admin's half: allow, deny, or the approval queue; `base` rides every record it writes. */
   function go(call: ParsedToolCall, evaluation: Evaluation, base: DecisionExtras): Verdict | Promise<Verdict> {
-    const { facts, grantKey, decision, captured } = evaluation
+    const { facts, decision, captured } = evaluation
     if (decision.outcome === 'allow') return deps.applyAllow(call, facts, decision, base)
     if (decision.outcome === 'deny') return deps.applyDeny(call, facts, decision)
     // An id-less call has no return address: an approval could never deliver
-    // it, yet its grant would still be minted and consumable by a later
-    // id-bearing call — pure operator-fatigue cost with zero upside, so it
-    // short-circuits to deny instead of enqueuing (re-review L4).
+    // it — pure operator-fatigue cost with zero upside, so it short-circuits
+    // to deny instead of enqueuing (re-review L4).
     if (call.id === null) {
       return deps.applyDeny(call, facts, {
         outcome: 'deny',
@@ -99,7 +93,7 @@ export function createCallDecider(deps: CallDeciderDeps): CallDecider {
         reason: 'id-less tools/call cannot receive an approval result; denying instead of enqueuing',
       })
     }
-    return deps.requestApproval(call, facts, grantKey, decision, captured, base)
+    return deps.requestApproval(call, facts, decision, captured, base)
   }
 
   /**

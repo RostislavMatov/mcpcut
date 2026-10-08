@@ -10,7 +10,6 @@ import {
   type PendingApproval,
 } from '../../src/policy/approvals/queue.js'
 import { createApprovalWaiter, type ApprovalWaiter } from '../../src/policy/approvals/waiter.js'
-import { createGrantRegistry } from '../../src/policy/approvals/grants.js'
 import { parsePolicy, type Policy } from '../../src/policy/schema.js'
 import { createPolicyGate, type PolicyGate } from '../../src/proxy/gate.js'
 import type { GateAgentScope, GateInventory, GateSink } from '../../src/proxy/gate-helpers.js'
@@ -148,10 +147,8 @@ function createHarness(opts: HarnessOptions = {}): GateHarness {
     ...(opts.agentScope !== undefined ? { agentScope: opts.agentScope } : {}),
     approvalQueue: queue,
     approvalWaiter: opts.approvalWaiter ?? createApprovalWaiter({ pollIntervalMs: 5 }),
-    grantRegistry: createGrantRegistry(),
     sink: capturingSink,
     clientWriter: writer,
-    approvalsBaseDir: approvalsDir,
     onError: (error: unknown) => errors.push(error),
   })
   return { gate, captured }
@@ -173,73 +170,73 @@ async function waitForPendingApproval(): Promise<PendingApproval> {
   throw new Error('no approval was enqueued')
 }
 
-describe('a retry admitted by a LATE approval names the approval and the operator', () => {
+describe('a LATE approval admits nothing: the retry is a question of its own (M36)', () => {
   /**
-   * THE defect of this wave. An operator approves a destructive call AFTER
-   * its wait already timed out; the agent retries, `checkRecentApproval`
-   * finds the resolution on disk and the gate lets the call through. The
-   * record it wrote said `allow` / `rule: grant` and nothing else: an
-   * auditor reading the retry saw a destructive call simply succeeding,
-   * with the human approval that authorized it recorded nowhere on it.
+   * Before M36 an operator could approve a call AFTER its wait timed out and
+   * the agent's identical retry passed on that approval (`rule: grant`); M5
+   * wave 2 made that retry's record name the approval and the operator. M36
+   * removed the window: the timed-out request is closed with its answer, a
+   * late approval of it is refused, and the retry raises its own prompt —
+   * whose terminal record names ITS operator, never the earlier one.
    */
-  test('the allow record carries both the approvalId and the resolving actor', async () => {
+  test('the late approval is refused, and the retry is approved under its own id and operator', async () => {
     const harness = createHarness({ policy: policyOf(LATE_APPROVAL_POLICY) })
 
     await harness.gate.gateClientMessage(toolCall(1, 'delete_repo'))
-    const pending = await waitForPendingApproval()
-    await queue.resolve(pending.approvalId, { outcome: 'approved', actor: OPERATOR })
+    const [closed] = await queue.listResolved({ limit: 1 })
+    expect((await queue.resolve(closed!.approvalId, { outcome: 'approved', actor: OPERATOR })).ok).toBe(false)
 
-    const retry = await harness.gate.gateClientMessage(toolCall(2, 'delete_repo'))
+    const retry = harness.gate.gateClientMessage(toolCall(2, 'delete_repo'))
+    const fresh = await waitForPendingApproval()
+    await queue.resolve(fresh.approvalId, { outcome: 'approved', actor: 'ui:bob' })
 
-    expect(retry).toEqual({ action: 'forward' })
-    expect(await queue.list()).toEqual([]) // no second prompt: this IS the late-grant path
-    const granted = decisionsOf(harness).at(-1)!
-    expect(granted['outcome']).toBe('allow')
-    expect(granted['rule']).toBe('grant')
-    expect(granted['approvalId']).toBe(pending.approvalId)
-    expect(granted['actor']).toBe(OPERATOR)
+    expect(await retry).toEqual({ action: 'forward' })
+    const approved = decisionsOf(harness).at(-1)!
+    expect(approved['outcome']).toBe('approved')
+    expect(approved['approvalId']).toBe(fresh.approvalId)
+    expect(approved['actor']).toBe('ui:bob')
+    expect(decisionsOf(harness).map((decision) => decision['rule'])).not.toContain('grant')
     expect(errors).toEqual([])
   })
 
-  test('a pre-M5 resolution with no actor still grants, and the record has no actor key', async () => {
-    // Records written before this wave (and every `resolve()` call that
-    // passes none) carry no actor. Attribution must not become a condition
-    // of the grant: the call is still authorized, the record simply says
-    // nothing it cannot support.
+  test('no record of the retry carries the earlier request\'s id', async () => {
     const harness = createHarness({ policy: policyOf(LATE_APPROVAL_POLICY) })
 
     await harness.gate.gateClientMessage(toolCall(1, 'delete_repo'))
-    const pending = await waitForPendingApproval()
-    await queue.resolve(pending.approvalId, { outcome: 'approved' })
+    const [closed] = await queue.listResolved({ limit: 1 })
+    const before = decisionsOf(harness).length
 
-    const retry = await harness.gate.gateClientMessage(toolCall(2, 'delete_repo'))
+    const retry = harness.gate.gateClientMessage(toolCall(2, 'delete_repo'))
+    const fresh = await waitForPendingApproval()
+    await queue.resolve(fresh.approvalId, { outcome: 'approved' })
+    await retry
 
-    expect(retry).toEqual({ action: 'forward' })
-    const granted = decisionsOf(harness).at(-1)!
-    expect(granted['approvalId']).toBe(pending.approvalId)
-    expect(Object.hasOwn(granted, 'actor')).toBe(false)
+    const retryRecords = decisionsOf(harness).slice(before)
+    expect(retryRecords.map((decision) => decision['approvalId'])).toEqual([fresh.approvalId, fresh.approvalId])
+    expect(retryRecords.map((decision) => decision['approvalId'])).not.toContain(closed!.approvalId)
+    expect(Object.hasOwn(retryRecords.at(-1)!, 'actor')).toBe(false)
   })
 
-  test('a late approval for agent alpha does not admit the identical retry from agent beta (audit 2026-09-02, F1)', async () => {
+  test('an approval for agent alpha never admits the identical call from agent beta (audit 2026-09-02, F1)', async () => {
     // Two authenticated agents, one approvals queue. The human answered
     // ALPHA's question; beta's byte-identical call is a question nobody was
-    // asked, so it must raise its own prompt rather than ride on alpha's.
-    const alpha = createHarness({ policy: policyOf(LATE_APPROVAL_POLICY), agentScope: scopeOf('alpha') })
+    // asked, so it raises its own prompt.
+    const alpha = createHarness({ policy: policyOf(APPROVAL_POLICY), agentScope: scopeOf('alpha') })
     const beta = createHarness({ policy: policyOf(LATE_APPROVAL_POLICY), agentScope: scopeOf('beta') })
 
-    await alpha.gate.gateClientMessage(toolCall(1, 'delete_repo'))
+    const alphaCall = alpha.gate.gateClientMessage(toolCall(1, 'delete_repo'))
     const pending = await waitForPendingApproval()
     expect(pending.agentName).toBe('alpha')
     await queue.resolve(pending.approvalId, { outcome: 'approved', actor: OPERATOR })
+    expect(await alphaCall).toEqual({ action: 'forward' })
 
     const retry = await beta.gate.gateClientMessage(toolCall(2, 'delete_repo'))
 
-    // Beta's own wait timed out: nobody approved BETA, and a fresh prompt was
-    // raised for it instead of being skipped.
+    // Beta's own wait timed out: nobody approved BETA.
     expect(retry).toEqual({ action: 'drop' })
-    const [betaPending] = await queue.list()
-    expect(betaPending?.agentName).toBe('beta')
-    expect(betaPending?.approvalId).not.toBe(pending.approvalId)
+    const [betaClosed] = await queue.listResolved({ limit: 1 })
+    expect(betaClosed?.agentName).toBe('beta')
+    expect(betaClosed?.approvalId).not.toBe(pending.approvalId)
     const betaDecisions = decisionsOf(beta)
     expect(betaDecisions.map((decision) => decision['rule'])).not.toContain('grant')
     expect(betaDecisions.at(-1)?.['outcome']).toBe('timeout')
@@ -315,7 +312,7 @@ describe('an outcome no human determined carries no actor', () => {
     expect(Object.hasOwn(terminal, 'actor')).toBe(false)
   })
 
-  test('an expired resolution (session teardown) attributes nobody', async () => {
+  test('an expired resolution (a capped wait, the expiry sweep) attributes nobody', async () => {
     // `markExpired()` records a resolution no operator made. The waiter
     // reports it as a denial (fail closed), so the record exists — but it
     // must not name anyone.

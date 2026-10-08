@@ -48,6 +48,8 @@ export interface ParsedToolCall {
   readonly toolName: string
   readonly args: unknown
   readonly id: JsonRpcId
+  /** `params._meta.progressToken` (a string or finite number): the gate reports on it while it holds the call (M36). */
+  readonly progressToken?: string | number
 }
 
 /** The result of successfully parsing a `tools/list` response. */
@@ -64,7 +66,7 @@ export interface ParsedToolsListResult {
  * `proxy/gate-helpers.ts`) go through it, so the two can never drift in what
  * they accept. Returns `null` on any malformed shape.
  */
-export function parseToolCallParams(raw: string): Pick<ParsedToolCall, 'toolName' | 'args'> | null {
+export function parseToolCallParams(raw: string): Omit<ParsedToolCall, 'id'> | null {
   const parsed = tryParseJsonObject(raw)
   if (!parsed) {
     return null
@@ -81,7 +83,17 @@ export function parseToolCallParams(raw: string): Pick<ParsedToolCall, 'toolName
   }
 
   const rawArgs = params['arguments']
-  return { toolName: name, args: rawArgs === undefined ? null : rawArgs }
+  const progressToken = progressTokenOf(params['_meta'])
+  const args = rawArgs === undefined ? null : rawArgs
+  return progressToken !== undefined ? { toolName: name, args, progressToken } : { toolName: name, args }
+}
+
+/** The `progressToken` of a request's `_meta`, if it is one a progress notification may name. */
+function progressTokenOf(meta: unknown): string | number | undefined {
+  if (!isPlainObject(meta)) return undefined
+  const token = meta['progressToken']
+  if (typeof token === 'string') return token
+  return typeof token === 'number' && Number.isFinite(token) ? token : undefined
 }
 
 /**

@@ -15,7 +15,13 @@ import {
 } from '../policy/source.js'
 import type { InstallConfigLoad } from '../setup/load.js'
 import { resolveShowSource } from './policy-show-source.js'
-import { BARE_SHOW_TRUST_CLASS, BARE_SHOW_VIEW_LINES, HOT_RELOAD_JSON, HOT_RELOAD_LINE } from './policy-show-constants.js'
+import {
+  BARE_SHOW_TRUST_CLASS,
+  BARE_SHOW_VIEW_LINES,
+  GRANT_TTL_NO_LONGER_USED_LINE,
+  HOT_RELOAD_JSON,
+  HOT_RELOAD_LINE,
+} from './policy-show-constants.js'
 
 /**
  * `policy validate|show` -- operator-facing inspection of the resolved
@@ -322,6 +328,7 @@ function formatReadableShow(
     `quarantine: ${JSON.stringify(policy.quarantine)}`,
     `toolsList: ${JSON.stringify(policy.toolsList)}`,
     `approval: ${JSON.stringify(policy.approval)}`,
+    ...(policy.approval.grantTtlMs !== undefined ? [`  ${GRANT_TTL_NO_LONGER_USED_LINE}`] : []),
     `journal: ${JSON.stringify(policy.journal)}`,
     HOT_RELOAD_LINE,
     '',

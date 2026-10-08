@@ -193,6 +193,8 @@ export interface DecisionExtras {
   readonly actor?: string
   /** The person at the client who confirmed the call (`confirmInClient`), as `client:<name>`. */
   readonly confirmedBy?: string
+  /** Why the agent left a held call (`agent-gone`, M36): its cancel's reason, or `disconnected`. */
+  readonly reason?: string
 }
 
 /**
@@ -317,6 +319,13 @@ export function recoverScalarId(raw: string): JsonRpcId {
  * so the client gate can order the cancellation strictly behind the request
  * it cancels (TS-M2). `null` when absent or non-scalar.
  */
+/** `params.reason` of a `notifications/cancelled`, raw and untrusted (clean it before use). */
+export function parseCancelledReason(raw: string): unknown {
+  const value = tryParse(raw)
+  const params = isPlainRecord(value) ? value['params'] : undefined
+  return isPlainRecord(params) ? params['reason'] : undefined
+}
+
 export function parseCancelledRequestId(raw: string): JsonRpcId {
   const value = tryParse(raw)
   if (!isPlainRecord(value)) return null

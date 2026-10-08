@@ -316,7 +316,7 @@ describe('applyToolRuleToDocument: the raw document stays the operator\'s', () =
     const reparsed = parsePolicy(result.document)
     expect(reparsed.ok).toBe(true)
     if (reparsed.ok) expect(policyHashOf(reparsed.policy)).toBe(policyHashOf(result.policy))
-    expect(result.policy.approval.timeoutMs).toBeGreaterThan(0)
+    expect(result.policy.approval.onTimeout).toBe('deny') // a schema default, applied
     expect(Object.hasOwn(result.document as object, 'approval')).toBe(false)
   })
 

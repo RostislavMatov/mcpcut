@@ -190,3 +190,72 @@ describe('createApprovalWaiter: wait', () => {
     }
   })
 })
+
+describe('createApprovalWaiter: hold while the agent holds (M36)', () => {
+  test('without a timeout the wait has no deadline: it settles only on a resolution', async () => {
+    let nowMs = 0
+    const waiter = createApprovalWaiter({ pollIntervalMs: POLL_INTERVAL_MS, clock: () => nowMs })
+    const queue = createFakeQueue()
+    let settled = false
+
+    const waitPromise = waiter.wait(queue, 'approval-1', undefined).then((result) => {
+      settled = true
+      return result
+    })
+    nowMs += 24 * 60 * 60_000 // a day passes on the injected clock
+    await sleep(POLL_INTERVAL_MS * 4)
+    expect(settled).toBe(false)
+
+    queue.setResolution({ outcome: 'approved', resolvedAt: new Date().toISOString() })
+    await expect(waitPromise).resolves.toEqual({ outcome: 'approved' })
+  })
+
+  test('a withdrawn resolution settles the wait as withdrawn, never as a denial', async () => {
+    const waiter = createApprovalWaiter({ pollIntervalMs: POLL_INTERVAL_MS })
+    const queue = createFakeQueue()
+
+    const waitPromise = waiter.wait(queue, 'approval-1', undefined)
+    queue.setResolution({ outcome: 'withdrawn', reason: 'disconnected', resolvedAt: new Date().toISOString() })
+
+    await expect(waitPromise).resolves.toEqual({ outcome: 'withdrawn' })
+  })
+
+  test('aborting the signal settles the wait as withdrawn at once and stops polling', async () => {
+    const waiter = createApprovalWaiter({ pollIntervalMs: POLL_INTERVAL_MS })
+    const queue = createFakeQueue()
+    const controller = new AbortController()
+
+    const waitPromise = waiter.wait(queue, 'approval-1', undefined, controller.signal)
+    await sleep(POLL_INTERVAL_MS * 2)
+    controller.abort()
+
+    await expect(waitPromise).resolves.toEqual({ outcome: 'withdrawn' })
+    const readsAtAbort = queue.readCount
+    await sleep(POLL_INTERVAL_MS * 4)
+    expect(queue.readCount).toBe(readsAtAbort)
+  })
+
+  test('an already-aborted signal settles without reading the queue', async () => {
+    const waiter = createApprovalWaiter({ pollIntervalMs: POLL_INTERVAL_MS })
+    const queue = createFakeQueue()
+    const controller = new AbortController()
+    controller.abort()
+
+    await expect(waiter.wait(queue, 'approval-1', undefined, controller.signal)).resolves.toEqual({
+      outcome: 'withdrawn',
+    })
+    expect(queue.readCount).toBe(0)
+  })
+
+  test('an abort after the wait settled changes nothing', async () => {
+    const waiter = createApprovalWaiter({ pollIntervalMs: POLL_INTERVAL_MS })
+    const queue = createFakeQueue()
+    const controller = new AbortController()
+    queue.setResolution({ outcome: 'denied', resolvedAt: new Date().toISOString() })
+
+    const result = await waiter.wait(queue, 'approval-1', undefined, controller.signal)
+    controller.abort()
+
+    expect(result).toEqual({ outcome: 'denied' })
+  })
+})

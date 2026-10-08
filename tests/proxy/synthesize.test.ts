@@ -205,6 +205,21 @@ describe('quarantinedError', () => {
  * this test automatically, without updating a hand-maintained list, as long
  * as it keeps taking `(id, info)` and returning a synthesized error buffer.
  */
+describe('heldCallProgress (M36)', () => {
+  test('is a single-line progress notification on the token, with no id', () => {
+    const bytes = synthesizeModule.heldCallProgress('tok-1', 3, 'waiting for approval 01A')
+    const text = bytes.toString('utf8')
+
+    expect(text.endsWith('\n')).toBe(true)
+    expect(text.slice(0, -1)).not.toContain('\n')
+    expect(JSON.parse(text)).toEqual({
+      jsonrpc: '2.0',
+      method: 'notifications/progress',
+      params: { progressToken: 'tok-1', progress: 3, message: 'waiting for approval 01A' },
+    })
+  })
+})
+
 describe('agent-facing safety invariant: no self-approval command', () => {
   const builderNames = Object.keys(synthesizeModule).filter(
     (name) => name.endsWith('Error') && name !== 'synthesizeError',
