@@ -1,9 +1,8 @@
-import { join } from 'node:path'
-import { JOURNAL_DIR } from '../config.js'
 import { FILES_SERVER_NAME } from '../files/constants.js'
 import { listedTools } from '../files/tools.js'
 import { formatReadableField } from '../journal/format.js'
-import { INVENTORY_FILE_NAME, approveCatalog } from '../policy/inventory.js'
+import { approveCatalog } from '../policy/inventory.js'
+import { inventoryStorePathOf } from '../policy/inventory-store.js'
 import { StoreCorruptError, StoreLockError } from '../policy/store.js'
 import type { ToolDescriptor } from '../protocol/mcp.js'
 import { DuplicateServerError } from '../registry/store.js'
@@ -45,7 +44,7 @@ export function notRegisteredMessage(env: NodeJS.ProcessEnv | undefined, folder:
 }
 
 /** Registers the built-in `files` server when absent; `added` says whether this call did it. */
-export async function registerFilesServer(registry: RegistryWriter): Promise<{ readonly added: boolean }> {
+async function registerFilesServer(registry: RegistryWriter): Promise<{ readonly added: boolean }> {
   if ((await filesServerState(registry)) === 'builtin') return { added: false }
   try {
     await registry.addServer({ name: FILES_SERVER_NAME, transport: 'builtin', kind: 'files' })
@@ -62,21 +61,29 @@ function builtinCatalog(): readonly ToolDescriptor[] {
   return JSON.parse(JSON.stringify(listedTools({ isSearchListed: true }))) as ToolDescriptor[]
 }
 
-export type ConfirmFilesToolsResult =
-  | { readonly ok: true; readonly tools: readonly string[] }
+export type PrepareFilesServerResult =
+  | { readonly ok: true; readonly registered: boolean; readonly confirmed: readonly string[] }
   | { readonly ok: false; readonly message: string }
 
 /**
- * Confirms the built-in server's tools in the quarantine inventory (owner's
- * decision, 2026-10-09): they are mcpcut's own code, so the agent's first
- * `list_roots` must not wait for a person. `tools` are the ones this call
- * confirmed — none when they already were, the changed ones after an
- * upgrade. Another server's quarantine is never touched. A corrupt or busy
- * store is one line naming `retry`, the command to run once it is fixed.
+ * Registers the built-in server when absent — the registry then forgets what
+ * another server left under the name — and confirms its tools in the
+ * quarantine inventory (owner's decision, 2026-10-09): they are mcpcut's own
+ * code, so the agent's first `list_roots` must not wait for a person.
+ * `confirmed` are the tools this call confirmed — none when they already
+ * were, the changed ones after an upgrade. Another server's quarantine is
+ * never touched. A corrupt or busy store is one line naming `retry`, the
+ * command to run once it is fixed.
  */
-export async function confirmFilesTools(journalDir: string | undefined, retry: string): Promise<ConfirmFilesToolsResult> {
+export async function prepareFilesServer(
+  registry: RegistryWriter,
+  journalDir: string | undefined,
+  retry: string,
+): Promise<PrepareFilesServerResult> {
   try {
-    return { ok: true, tools: await approveCatalog(FILES_SERVER_NAME, builtinCatalog(), join(journalDir ?? JOURNAL_DIR, INVENTORY_FILE_NAME)) }
+    const { added } = await registerFilesServer(registry)
+    const confirmed = await approveCatalog(FILES_SERVER_NAME, builtinCatalog(), inventoryStorePathOf(journalDir))
+    return { ok: true, registered: added, confirmed }
   } catch (error: unknown) {
     if (!(error instanceof StoreCorruptError || error instanceof StoreLockError)) throw error
     return { ok: false, message: `${error.message}. The folder was not added: once the store is repaired or free, run \`${retry}\` again` }

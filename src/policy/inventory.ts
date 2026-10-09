@@ -259,6 +259,18 @@ export async function approveCatalog(
   return approved
 }
 
+/**
+ * Forgets everything the inventory holds for `serverName`, approved and
+ * quarantined tools alike. The registry calls it when a registration ends or
+ * begins (`registry/store.ts`): an approval belongs to the server it was given
+ * to, not to whatever is registered under that name later.
+ */
+export async function forgetServer(serverName: string, storePath?: string): Promise<void> {
+  await openInventoryStore(storePath).update((current) =>
+    Object.hasOwn(current.servers, serverName) ? { ...current, servers: omitKey(current.servers, serverName) } : current,
+  )
+}
+
 /** Rejects (removes from quarantine) a tool on a given server. Thin wrapper for the CLI. */
 export async function rejectTool(serverName: string, toolName: string, storePath?: string): Promise<boolean> {
   return applyServerMutation(openInventoryStore(storePath), serverName, (entry) =>

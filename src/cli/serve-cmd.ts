@@ -207,7 +207,8 @@ function buildFront(
   // re-read: an agent granted through a group authenticates and opens a
   // session exactly like one granted personally (G2/G5).
   const agentReader = createEffectiveAgentReader({ agents, groups })
-  const registry = opts.stores?.registry ?? createRegistryStore(journalDir)
+  const registry = opts.stores?.registry ??
+    createRegistryStore(journalDir, opts.inventoryStorePath !== undefined ? { inventoryStorePath: opts.inventoryStorePath } : undefined)
   const vault = opts.stores?.vault ?? createVaultStore({ journalDir, warn })
   const hooks = createServeHooks()
 

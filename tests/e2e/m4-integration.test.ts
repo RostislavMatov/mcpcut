@@ -6,7 +6,6 @@ import { collectPersistedBytes } from '../support/persisted-bytes.js'
 import { readJournalRecords, requestLine, waitUntil, waitUntilAsync } from '../proxy/harness.js'
 import { startUiHarness, type UiTestHarness } from '../ui/harness.js'
 import {
-  asOwner,
   decisionsOf,
   postMcp,
   rpcBody,
@@ -353,12 +352,10 @@ describe('e2e: scenario 7 — a changed inputSchema quarantines the tool and sho
       expect([tool, ok.status]).toEqual([tool, 200])
     }
 
-    // The same server name, now serving a widened schema for `write_note`.
-    expect((await plane.run(['server', 'remove', SERVER], await asOwner(plane))).code).toBe(0)
-    expect((await addServer(SERVER, 'v2')).code).toBe(0)
-    // `server remove` cascades (M5.5 p.2, G6): the agent's grant for the server
-    // went with it, so the re-registered server must be granted again.
-    expect((await plane.run(['agent', 'grant', AGENT, SERVER], await asOwner(plane))).code).toBe(0)
+    // The same registered server, now serving a widened schema for `write_note`
+    // (a rug pull). Re-registering the name would not do: a server added under
+    // a name starts from an empty inventory, with nothing to diff against.
+    await ctx.serveVariant(SERVER, 'v2')
 
     const secondRun = await openSession(token, 'm4-quarantine-2')
     // The catalog is observed asynchronously behind the response, so wait for

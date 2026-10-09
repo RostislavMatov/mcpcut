@@ -23,12 +23,11 @@ import { recordAccessChange, requireAccessOwner, type AccessOp } from './access-
 import type { AgentCliIo } from './agent-cmd.js'
 import { formatRuleLines, grantNextStep, onTarget, FILES_USAGE } from './files-cmd-format.js'
 import {
-  confirmFilesTools,
   conflictMessage,
   filesServerState,
   notRegisteredMessage,
+  prepareFilesServer,
   recordConfirmedTools,
-  registerFilesServer,
 } from './files-cmd-registry.js'
 import type { FilesCliOptions } from './files-cmd.js'
 import { cliCommand, shellArg } from './next-step.js'
@@ -125,14 +124,13 @@ export async function runRootAdd(args: string[], io: AgentCliIo, opts: FilesCliO
     opts.journalDir ?? JOURNAL_DIR,
   )
   if (!prepared.ok) return fail(io, replaceControlChars(prepared.message))
-  const registered = await registerFilesServer(registryOf(opts))
-  if (registered.added) io.stdout.write(`registered the built-in file server as "files" (agents connect to it like any server)\n`)
-  const confirmed = await confirmFilesTools(opts.journalDir, `${cliCommand(opts.env)} files root add ${shellArg(prepared.path)}`)
-  if (!confirmed.ok) return fail(io, replaceControlChars(confirmed.message))
-  if (confirmed.tools.length > 0) {
-    io.stdout.write(`confirmed the built-in file server's ${confirmed.tools.length} tools: an agent's first call does not wait in quarantine\n`)
+  const server = await prepareFilesServer(registryOf(opts), opts.journalDir, `${cliCommand(opts.env)} files root add ${shellArg(prepared.path)}`)
+  if (!server.ok) return fail(io, replaceControlChars(server.message))
+  if (server.registered) io.stdout.write(`registered the built-in file server as "files" (agents connect to it like any server)\n`)
+  if (server.confirmed.length > 0) {
+    io.stdout.write(`confirmed the built-in file server's ${server.confirmed.length} tools: an agent's first call does not wait in quarantine\n`)
   }
-  await recordConfirmedTools(io, opts, actor, confirmed.tools)
+  await recordConfirmedTools(io, opts, actor, server.confirmed)
   const { added } = await roots.add(prepared.path)
   const folder = formatReadableField(prepared.path)
   const trash = `${folder}/.mcpcut-trash`

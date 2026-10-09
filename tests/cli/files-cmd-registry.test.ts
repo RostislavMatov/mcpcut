@@ -180,6 +180,17 @@ describe('files root add confirms the built-in tools (no quarantine stop on the 
     expect(await quarantineApprovals()).toHaveLength(before)
   })
 
+  test('after the built-in server is removed, root add registers it again and confirms its tools anew', async () => {
+    await files(['root', 'add', root])
+    await registry().removeServer('files')
+    expect((await observeBuiltin()).known).toEqual([])
+
+    const result = await files(['root', 'add', root])
+
+    expect(result.out).toContain(`confirmed the built-in file server's ${(await builtinCatalog()).length} tools`)
+    expect((await observeBuiltin()).new).toEqual([])
+  })
+
   test("leaves another server's quarantined tools in quarantine", async () => {
     const probe = createInventory('probe', { storePath: join(journalDir, INVENTORY_FILE_NAME) })
     await probe.load()

@@ -8,7 +8,7 @@ import { composeUi, type UiComposition } from '../../src/cli/ui-wiring.js'
 import { journalDbPathFor, openJournalDbShared } from '../../src/journal/db.js'
 import { POLICY_EDIT_SESSION_ID } from '../../src/journal/policy-edit-record.js'
 import { POLICY_FILE_NAME } from '../../src/policy/constants.js'
-import { INVENTORY_FILE_NAME } from '../../src/policy/inventory-store.js'
+import { INVENTORY_FILE_NAME, openInventoryStore } from '../../src/policy/inventory-store.js'
 import { loadPolicy } from '../../src/policy/load.js'
 import { policyHashOf } from '../../src/policy/provenance.js'
 import { createRegistryStore } from '../../src/registry/store.js'
@@ -209,15 +209,12 @@ describe('composeUi: the rule handler writes the resolved policy file with CAS',
     const projectPath = join(workDir, '.mcpcut-project', POLICY_FILE_NAME)
     await mkdir(join(workDir, '.mcpcut-project'), { recursive: true })
     await writeFile(projectPath, '{"version":1}\n', 'utf8')
-    await writeFile(
-      join(stateDir, INVENTORY_FILE_NAME),
-      JSON.stringify({
-        version: 1,
-        servers: { github: { approved: { create_issue: { schemaHash: 'h', approvedAt: '2026-08-01T00:00:00.000Z' } }, quarantined: {} } },
-      }),
-      'utf8',
-    )
     const other = await composeOver(stateDir, workDir)
+    // After `composeOver` registers github: a registration starts from an empty inventory.
+    await openInventoryStore(join(stateDir, INVENTORY_FILE_NAME)).update((current) => ({
+      ...current,
+      servers: { github: { approved: { create_issue: { schemaHash: 'h', approvedAt: '2026-08-01T00:00:00.000Z' } }, quarantined: {} } },
+    }))
 
     const page = await other.handlers.serversPage(getServers())
     const html = bodyOf(page)

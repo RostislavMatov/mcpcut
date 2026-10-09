@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url'
 import { ADMIN_TOKEN_ENV_VAR } from '../../src/admin/constants.js'
 import type { DispatchOptions } from '../../src/cli.js'
 import { createApprovalQueue } from '../../src/policy/approvals/queue.js'
+import { createRegistryStore } from '../../src/registry/store.js'
 import { requestLine, waitUntil, waitUntilAsync } from '../proxy/harness.js'
 import type { UiClient, UiTestHarness } from '../ui/harness.js'
 import {
@@ -85,6 +86,8 @@ export interface M4Context {
   onboard(variant?: SchemaVariant, extra?: Partial<OnboardingArgs>): Promise<string>
   /** Registers another stdio server backed by the same fixture. */
   addServer(name: string, variant: SchemaVariant): Promise<CliRun>
+  /** The registered server starts serving `variant`: the same registration, a new release (its approvals stay). */
+  serveVariant(name: string, variant: SchemaVariant): Promise<void>
   /** A live `connect` session that has already listed (and so classified) the catalog. */
   openSession(token: string, sessionId: string): Promise<ConnectDriver>
   /** One `resources/read` through a fresh session; returns the agent's answer. */
@@ -119,6 +122,14 @@ export function createM4Context(journalDir: string): M4Context {
       await asOwner(plane),
     )
 
+  async function serveVariant(name: string, variant: SchemaVariant): Promise<void> {
+    const registry = createRegistryStore(journalDir)
+    const record = await registry.getServer(name)
+    if (record === undefined) throw new Error(`no server ${name} to serve ${variant}`)
+    const result = await registry.updateServer({ ...record, args: [M4_FIXTURE, variant] })
+    if (result.status !== 'updated') throw new Error(`server ${name} vanished before it could serve ${variant}`)
+  }
+
   async function openSession(token: string, sessionId: string): Promise<ConnectDriver> {
     const live = startConnect({ plane, token, sessionId, argv: ['connect', SERVER, '--agent', AGENT] })
     // The catalog first: a tool must be known (and classified) before a class
@@ -152,7 +163,7 @@ export function createM4Context(journalDir: string): M4Context {
     return record as unknown as Record<string, unknown>
   }
 
-  return { plane, journalDir, onboard, addServer, openSession, runResourceRead, readResolved }
+  return { plane, journalDir, onboard, addServer, serveVariant, openSession, runResourceRead, readResolved }
 }
 
 /**

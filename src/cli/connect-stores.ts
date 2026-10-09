@@ -45,7 +45,9 @@ export function buildConnectStores(deps: ConnectDeps): ConnectStores {
   // through a group is indistinguishable from a personal one (G2/G5).
   return {
     agentReader: createEffectiveAgentReader({ agents, groups }),
-    registry: deps.registryStore ?? createRegistryStore(journalDir),
+    registry:
+      deps.registryStore ??
+      createRegistryStore(journalDir, deps.inventoryStorePath !== undefined ? { inventoryStorePath: deps.inventoryStorePath } : undefined),
   }
 }
 

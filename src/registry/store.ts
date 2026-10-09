@@ -1,3 +1,5 @@
+import { forgetServer } from '../policy/inventory.js'
+import { inventoryStorePathOf } from '../policy/inventory-store.js'
 import { createJsonStore, type JsonStore } from '../policy/store.js'
 import { BuiltinServerRefusedError, StdioServerRefusedError } from '../tenant/errors.js'
 import { TENANT_SETTINGS, type TenantSettings } from '../tenant/settings.js'
@@ -159,6 +161,8 @@ function assertBuiltinUnchanged(existing: ServerRecord, next: ServerRecord): voi
 export interface RegistryStoreOptions {
   /** Tenant settings this store enforces on write. Defaults to `TENANT_SETTINGS`. */
   readonly tenant?: TenantSettings
+  /** The tool inventory whose approvals a registration owns. Defaults to `<journalDir>/tool-inventory.json`, where the gate keeps it. */
+  readonly inventoryStorePath?: string
 }
 
 /**
@@ -175,6 +179,23 @@ export function createRegistryStore(journalDir?: string, opts?: RegistryStoreOpt
     validate: validateRegistry,
     defaultValue: EMPTY_REGISTRY,
   })
+  const inventoryStorePath = opts?.inventoryStorePath ?? inventoryStorePathOf(journalDir)
+
+  /**
+   * Tool approvals are keyed by server name (`policy/inventory.ts`), so a
+   * registration owns the ones under its name: they are forgotten when it is
+   * removed and when a new one is added — a server must never inherit what was
+   * approved for another, built-in `files` included. Done BEFORE the registry
+   * write, so a store that cannot be written fails the command with nothing
+   * changed, and a write that then fails — or an add that loses a race to a
+   * concurrent add of the same name — leaves tools quarantined, never
+   * approved. A name the registry already holds is left alone on add (the
+   * add is refused as a duplicate), and an unknown one on remove.
+   */
+  async function forgetApprovalsOf(name: string, change: 'adding' | 'removing'): Promise<void> {
+    const isRegistered = ownRecord((await store.read()).servers, name) !== undefined
+    if (isRegistered === (change === 'removing')) await forgetServer(name, inventoryStorePath)
+  }
 
   async function addServer(record: ServerRecord): Promise<ServerRecord> {
     const parsed = parseServerRecord(record)
@@ -183,6 +204,7 @@ export function createRegistryStore(journalDir?: string, opts?: RegistryStoreOpt
     }
     const validated = parsed.record
     assertTenantAllowsServer(validated, tenant)
+    await forgetApprovalsOf(validated.name, 'adding')
 
     await store.update((current) => {
       if (ownRecord(current.servers, validated.name) !== undefined) {
@@ -202,6 +224,7 @@ export function createRegistryStore(journalDir?: string, opts?: RegistryStoreOpt
     // attempt: a first attempt that saw the record, followed by a retry that
     // no longer does, would otherwise report a removal that never happened.
     let removed: ServerRecord | undefined
+    await forgetApprovalsOf(name, 'removing')
     await store.update((current) => {
       removed = undefined
       const existing = ownRecord(current.servers, name)

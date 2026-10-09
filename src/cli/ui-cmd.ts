@@ -278,7 +278,8 @@ function buildRuntime(flags: UiFlags, io: UiCliIo, opts: UiCommandOptions): UiRu
   }
   const adminStore = opts.stores?.adminStore ?? createAdminStore({ journalDir })
   const agents = opts.stores?.agents ?? createAgentsStore({ journalDir })
-  const registry = opts.stores?.registry ?? createRegistryStore(journalDir)
+  const registry = opts.stores?.registry ??
+    createRegistryStore(journalDir, opts.inventoryStorePath !== undefined ? { inventoryStorePath: opts.inventoryStorePath } : undefined)
   const vault = opts.stores?.vault ?? createVaultStore({ journalDir, warn })
 
   // Sessions are built here, ahead of the hub and the server, because BOTH need

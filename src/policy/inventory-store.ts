@@ -111,12 +111,13 @@ export function omitKey<T>(record: Readonly<Record<string, T>>, key: string): Re
   return next
 }
 
-function defaultInventoryStorePath(): string {
-  return join(JOURNAL_DIR, INVENTORY_FILE_NAME)
+/** Where the gate keeps the tool inventory for `journalDir` (`JOURNAL_DIR` by default). */
+export function inventoryStorePathOf(journalDir: string = JOURNAL_DIR): string {
+  return join(journalDir, INVENTORY_FILE_NAME)
 }
 
 export function openInventoryStore(storePath?: string): JsonStore<InventoryStoreData> {
-  return createJsonStore<InventoryStoreData>(storePath ?? defaultInventoryStorePath(), {
+  return createJsonStore<InventoryStoreData>(storePath ?? inventoryStorePathOf(), {
     validate: validateInventoryStore,
     defaultValue: DEFAULT_INVENTORY_STORE,
   })

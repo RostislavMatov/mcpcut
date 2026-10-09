@@ -363,6 +363,13 @@ journal as an `access-edit` record naming the admin, the server and the tool.
 attribution and parity with the UI's role table, not protection from a process
 running as the same user.
 
+Approvals belong to the server they were given to. `server remove` forgets the
+server's approved and quarantined tools, and a server added under a name starts
+with every tool in quarantine, whatever an earlier server of that name left
+behind. Editing a registered server keeps its approvals. The built-in file
+server is the one exception to the first stop: `mcpcut files root add`
+confirms its tools, since they ship with mcpcut.
+
 This is a defense against a server silently changing a tool's behavior after
 it was already trusted ("rug pull"): a description or schema change always
 re-quarantines the tool, even if its name is unchanged.

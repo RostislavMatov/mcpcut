@@ -52,6 +52,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- **Tool approvals belong to the server they were given to.** `server remove` (CLI, console and admin UI) forgets
+  the server's approved and quarantined tools, and a server added under a name starts with every tool in quarantine,
+  whatever an earlier server of that name left behind — before, a server registered under a removed server's name
+  inherited its approvals for tools with identical schemas. Editing a registered server keeps them.
 - **An approval covers one call, while its agent waits.** There is no grant window any more: every call that needs
   approval asks, even a byte-identical repeat. A held call waits for as long as the agent waits (no limit of
   mcpcut's own unless `approval.timeoutMs` sets one) and tells a client that gave it a progress token, at once and
