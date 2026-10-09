@@ -3,6 +3,8 @@ import type { ToolClass } from '../../policy/schema.js'
 import type { PendingApproval } from '../../policy/approvals/queue.js'
 import { renderToolName } from '../display-name.js'
 import { html, join, type Html } from '../html.js'
+import { UI_APPROVALS_REFRESH_MS } from '../constants.js'
+import { shortTime } from './dashboard-parts.js'
 import type { CurrentAdmin } from './layout.js'
 import { roleAllows } from './role-gate.js'
 
@@ -20,7 +22,9 @@ import { roleAllows } from './role-gate.js'
  * how long the agent has been waiting, whether the process holding the call
  * is still there (its heartbeat) — and when it is not, since when it has been
  * silent, because an approval then sends nothing — and, when the policy caps
- * the wait (`approval.timeoutMs`), how much of it is left.
+ * the wait (`approval.timeoutMs`), how much of it is left. A wait can last
+ * hours, so each duration is a clock (`data-clock`) the page script ticks on,
+ * and the region re-reads itself (`data-live-every`) for the heartbeat.
  */
 
 /** Batch ("approve all") is only ever offered for the read class (ADR-0004 §Границы). */
@@ -94,6 +98,19 @@ function formatDuration(totalSeconds: number): string {
   return minutes > 0 ? `${minutes}m${seconds}s` : `${seconds}s`
 }
 
+/**
+ * A duration the page script keeps current (`assets/app-js.ts`, Clocks): it
+ * counts `up` from `seconds`, or `down` to zero, in the same format.
+ */
+function renderClock(direction: 'up' | 'down', seconds: number): Html {
+  return html`<span class="num" data-clock="${direction}" data-clock-sec="${String(seconds)}">${formatDuration(seconds)}</span>`
+}
+
+/** An instant as the dashboard writes one (`07:20:45`), the full stamp on hover. */
+function renderInstant(isoTimestamp: string): Html {
+  return html`<span class="num" title="${isoTimestamp}">${shortTime(isoTimestamp)}</span>`
+}
+
 /** Pretty-prints redacted args as JSON; never throws on odd values. */
 function formatArgs(args: unknown): string {
   try {
@@ -104,17 +121,14 @@ function formatArgs(args: unknown): string {
 }
 
 function renderWaitLine(card: ApprovalCardView): Html {
-  const waiting = formatDuration(card.waitingSec)
   if (card.agentConnected === false) {
-    const since = card.holderSeenAt ?? 'unknown'
-    return html`<span class="wait-remaining wait-elapsed"><span class="dot dot-s dot-off"></span>Agent not connected — silent since <span class="num">${since}</span>; approving now sends nothing</span>`
+    const since = card.holderSeenAt === undefined ? html`unknown` : renderInstant(card.holderSeenAt)
+    return html`<span class="wait-remaining wait-elapsed"><span class="dot dot-s dot-off"></span>Agent not connected — silent since ${since}; approving now sends nothing</span>`
   }
   const cap =
-    card.waitRemainingSec === undefined
-      ? html``
-      : html` · closes in <span class="num">${formatDuration(card.waitRemainingSec)}</span>`
+    card.waitRemainingSec === undefined ? html`` : html` · closes in ${renderClock('down', card.waitRemainingSec)}`
   const connected = card.agentConnected === undefined ? html`` : html` · connected`
-  return html`<span class="wait-remaining"><span class="dot dot-s blink"></span>Agent waiting <span class="num">${waiting}</span>${connected}${cap}</span>`
+  return html`<span class="wait-remaining"><span class="dot dot-s blink"></span>Agent waiting ${renderClock('up', card.waitingSec)}${connected}${cap}</span>`
 }
 
 /**
@@ -176,7 +190,7 @@ function renderCard(card: ApprovalCardView, csrfToken: string, canResolve: boole
       ${renderWaitLine(card)}
     </div>
     ${card.resendOfWithdrawnAt !== undefined
-      ? html`<p class="small muted resend-note">Sent again: the first request for this same call closed at <span class="num">${card.resendOfWithdrawnAt}</span> when the agent's connection dropped.</p>`
+      ? html`<p class="small muted resend-note">Sent again: the first request for this same call closed at ${renderInstant(card.resendOfWithdrawnAt)} when the agent's connection dropped.</p>`
       : html``}
     ${tail}
   </article>`
@@ -276,6 +290,10 @@ function renderPendingTotalAttribute(input: ApprovalsPageInput): Html {
  * and the servers strip were never kept current by a resolution in the first
  * place. What does describe the queue — the panel-head "N held" and the Held
  * tile — is marked `data-live-text` and follows every swap.
+ *
+ * `data-live-every` re-reads the region on that period while a card is on it
+ * and the tab is visible (`UI_APPROVALS_REFRESH_MS`): a holder going silent
+ * is not a queue event.
  */
 export function renderQueueRegion(input: ApprovalsPageInput): Html {
   const canResolve = roleAllows(input.currentAdmin, APPROVAL_RESOLVE_MIN_ROLE)
@@ -287,6 +305,7 @@ export function renderQueueRegion(input: ApprovalsPageInput): Html {
     class="approvals"
     data-live-region="${APPROVALS_LIVE_TOPICS}"
     data-live-src="${APPROVALS_LIVE_SRC}"
+    data-live-every="${String(UI_APPROVALS_REFRESH_MS)}"
     data-live-settle
   >
     <p class="pending-count label" data-pending-count="${input.cards.length}"${renderPendingTotalAttribute(input)}>

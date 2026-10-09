@@ -61,7 +61,8 @@ All notable changes to this project are documented here. The format follows
   JSON response after 60 s keeps waiting.
 - `approvals list` and the web UI's approval card show how long the agent has been waiting and whether the process
   holding the call is still there (`agent_connected=no silent_since=…`: approving would send nothing) instead of the
-  two clocks of the grant window.
+  two clocks of the grant window. The card keeps counting while the page is open and re-reads the queue every
+  30 seconds, so a request whose process died closes on its own without a reload.
 - A pool address explains its refusal of a stateless request once per agent instead of on every Claude Code connect.
 - `mcpcut agent grant` on a server that already holds folder rules no longer
   drops them when it rewrites the tools.
