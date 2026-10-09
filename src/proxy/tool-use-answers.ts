@@ -24,7 +24,7 @@
  *    session that never ended) lapses after the longest a call can be held.
  */
 
-/** How long a server answer is kept for a resend (owner, 2026-10-09: "кэш на сутки"). */
+/** How long a server answer is kept for a resend: one day. */
 export const TOOL_USE_ANSWER_TTL_MS = 24 * 60 * 60 * 1000
 
 /** Largest answer kept, in bytes; a bigger one is journaled as not kept. */

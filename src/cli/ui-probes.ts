@@ -34,7 +34,7 @@ export interface ProbeComposition {
 }
 
 /**
- * Composes the probe chain for the UI (M5.5 п.1, ADR-0008): the shared
+ * Composes the probe chain for the UI (M5.5 item 1, ADR-0008): the shared
  * `composeProbeChain` (status store + passive activity + engine + inventory
  * observe + journal fact — one definition for UI and CLI alike, see
  * `probe-wiring.ts`) plus the UI's own SSE event. This is the ONLY place the

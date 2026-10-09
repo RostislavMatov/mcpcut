@@ -33,7 +33,7 @@ import { fieldsOf } from './request-helpers.js'
  * `mcpcut files trash restore`, then is attributed on the audit sink and
  * journaled as `files.trash.restore` with `via: 'ui'`.
  *
- * The module runs on the owner's own machine (ADR-0020 «Вне объёма»), so on a
+ * The module runs on the owner's own machine (out of scope for hosted, ADR-0020), so on a
  * hosted install both routes answer a notice and touch nothing.
  */
 
