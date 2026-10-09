@@ -30,4 +30,10 @@ describe('approvals list: whether anyone still waits for the call (M36)', () => 
   test('a connected holder is just yes', () => {
     expect(formatListReadable([pending({ agentConnected: true })], T0)).toContain('agent_connected=yes ')
   })
+
+  test('a resend of a call whose first request closed says when', () => {
+    const line = formatListReadable([pending({ agentConnected: true, resendOfWithdrawnAt: '2026-10-09T07:59:00.000Z' })], T0)
+
+    expect(line).toContain('agent_connected=yes resend_of_withdrawn=2026-10-09T07:59:00.000Z args=')
+  })
 })

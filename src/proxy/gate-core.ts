@@ -247,6 +247,11 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     ...(deps.confirmInClient?.onNotice !== undefined ? { onNotice: deps.confirmInClient.onNotice } : {}),
   })
 
+  // M36 phase C: the process's answers by tool use (shared by `serve`: a 404 resend comes on a
+  // new session), under name AND creation time — a recreated agent of the same name is someone else.
+  const answers = deps.toolUseAnswers ?? createToolUseAnswers({ clock })
+  const scope = agentScope === undefined ? '' : `${agentScope.agentName}\u0001${agentScope.agentCreatedAt ?? ''}`
+
   const approvalFlow = createApprovalFlow({
     // Wiring-time snapshot on purpose: the flow reads only `approval.timeoutMs`,
     // which does not hot-reload (see above).
@@ -269,20 +274,25 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     answerGuard,
     onError,
     ...(deps.onApprovalPending !== undefined ? { onApprovalPending: deps.onApprovalPending } : {}),
-    ...(deps.onRequestDropped !== undefined ? { onRequestDropped: deps.onRequestDropped } : {}),
+    onAgentGone: (call) => {
+      // M39: a resend of this tool use will be marked as one.
+      if (call.toolUseId !== undefined) answers.noteWithdrawn(scope, call.toolUseId, new Date(clock()).toISOString())
+      deps.onRequestDropped?.(call.id) // S-L1: no answer will ever come for this id
+    },
+    enqueueExtrasOf: (call) => {
+      const withdrawnAt = call.toolUseId === undefined ? undefined : answers.withdrawnAt(scope, call.toolUseId)
+      return withdrawnAt !== undefined ? { resendOfWithdrawnAt: withdrawnAt } : {}
+    },
   })
 
   const { guarded, track, awaitOutstanding } = createGateGuard({
     serverName, writeDecision, settleJournal, answerLocally, onError,
   })
 
-  // M36 phase C: resends of the same tool use, and what becomes of the
-  // answers to forwarded calls. The answers table is the process's when the
-  // caller shares one (`serve`: a 404 resend arrives on a new session).
+  // Resends of the same tool use, and what becomes of forwarded calls' answers.
   const delivery = createGateDelivery({
-    // Name AND creation time: a recreated agent of the same name is someone else.
-    scope: agentScope === undefined ? '' : `${agentScope.agentName}\u0001${agentScope.agentCreatedAt ?? ''}`,
-    answers: deps.toolUseAnswers ?? createToolUseAnswers({ clock }),
+    scope,
+    answers,
     clock,
     writeDecision,
     settleJournal,

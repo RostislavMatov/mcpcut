@@ -351,6 +351,7 @@ function pendingRecordOf(
     ...(req.decisionRule !== undefined ? { decisionRule: req.decisionRule } : {}),
     ...(req.policyHash !== undefined ? { policyHash: req.policyHash } : {}),
     ...(req.grantsHash !== undefined ? { grantsHash: req.grantsHash } : {}),
+    ...(req.resendOfWithdrawnAt !== undefined ? { resendOfWithdrawnAt: req.resendOfWithdrawnAt } : {}),
   }
 }
 

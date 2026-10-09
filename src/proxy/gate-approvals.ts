@@ -114,8 +114,10 @@ export interface ApprovalFlowDeps {
   readonly onError: (error: unknown) => void
   /** Hears of each call queued for a human, once, before its wait starts. */
   readonly onApprovalPending?: (notice: PendingApprovalNotice) => void
-  /** See `MessagePolicyGateDeps.onRequestDropped`. */
-  readonly onRequestDropped?: (id: JsonRpcId) => void
+  /** A held call's agent left: nothing sent, nothing to answer (S-L1: pool forgets the id; M39: resend mark). */
+  readonly onAgentGone?: (call: ParsedToolCall) => void
+  /** Fields a request carries beyond the call itself (M39: the resend mark). */
+  readonly enqueueExtrasOf?: (call: ParsedToolCall) => { readonly resendOfWithdrawnAt?: string }
 }
 
 export interface ApprovalFlow {
@@ -168,11 +170,7 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
 
   /** An announcement is a courtesy to a listener: its failure never decides the call. */
   function announce(listen: () => void): void {
-    try {
-      listen()
-    } catch (error: unknown) {
-      deps.onError(error)
-    }
+    try { listen() } catch (error: unknown) { deps.onError(error) }
   }
 
   /**
@@ -221,6 +219,7 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
       policyHash: captured.policyHash,
       ...(captured.grantsHash !== undefined ? { grantsHash: captured.grantsHash } : {}),
       ...(deps.agentName !== undefined ? { agentName: deps.agentName } : {}),
+      ...deps.enqueueExtrasOf?.(call),
     })
     const agent = deps.agentName !== undefined ? { agentName: deps.agentName } : {}
     writeDecision(
@@ -334,8 +333,7 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
     writeDecision(decisionInfoOf(ctx.facts, 'agent-gone', ctx.rule, extras), ctx.call.args, ctx.captured)
     await settleJournal()
     answerGuard.markAnswered(ctx.held.idKey)
-    // No answer will ever come for this id: a correlator may forget it (S-L1).
-    announce(() => deps.onRequestDropped?.(ctx.call.id))
+    announce(() => deps.onAgentGone?.(ctx.call))
     return DROP
   }
 

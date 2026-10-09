@@ -33,6 +33,12 @@ export interface EnqueueRequest {
   readonly policyHash?: string
   /** Fingerprint of the requesting agent's grant matrix at request time; absent without an agent (M5). */
   readonly grantsHash?: string
+  /**
+   * The same call (same client tool-use id) was asked about before, and that
+   * request closed at this instant because its agent's connection dropped:
+   * this one is it, sent again (decision M39). Shown to the operator.
+   */
+  readonly resendOfWithdrawnAt?: string
 }
 
 export interface EnqueueResult {

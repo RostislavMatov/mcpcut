@@ -585,3 +585,32 @@ describe('closing review leftovers (M39)', () => {
     expect(answers.claim('', 'toolu_X')).toBeNull()
   })
 })
+
+describe('a request for the same call again is marked as a resend (M39)', () => {
+  test('a held call withdrawn when its connection dropped: the resend\'s request says when the first one closed', async () => {
+    const { gate } = createHarness({ policy: policyOf('require-approval') })
+    const first = gate.gateClientMessage(toolCall(1, 'toolu_RS'))
+    const pendingA = await waitForPending()
+    gate.abandonRequest(1)
+    expect(await settled(first)).toEqual({ action: 'drop' })
+
+    void gate.gateClientMessage(toolCall(2, 'toolu_RS'))
+    let pendingB: PendingApproval | undefined
+    for (let attempt = 0; attempt < 400 && pendingB === undefined; attempt += 1) {
+      pendingB = (await queue.list()).find((entry) => entry.approvalId !== pendingA.approvalId)
+      if (pendingB === undefined) await sleep(POLL_INTERVAL_MS)
+    }
+
+    expect(pendingB?.resendOfWithdrawnAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    await gate.agentLeft()
+  })
+
+  test('a new call (another tool use) carries no such mark', async () => {
+    const { gate } = createHarness({ policy: policyOf('require-approval') })
+    void gate.gateClientMessage(toolCall(1, 'toolu_NEW'))
+    const pending = await waitForPending()
+
+    expect(pending.resendOfWithdrawnAt).toBeUndefined()
+    await gate.agentLeft()
+  })
+})

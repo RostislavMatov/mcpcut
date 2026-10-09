@@ -65,7 +65,8 @@ export interface PendingApprovalFile {
   readonly waitExpiresAt?: string
   readonly decisionRule?: string
   readonly policyHash?: string
-  readonly grantsHash?: string
+  readonly grantsHash?: string  /** See `EnqueueRequest.resendOfWithdrawnAt` (M39). */
+  readonly resendOfWithdrawnAt?: string
 }
 
 /**
@@ -226,7 +227,8 @@ export function isPendingApprovalFile(raw: unknown): raw is PendingApprovalFile 
     isOptionalTimestamp(value.waitExpiresAt) &&
     isOptionalString(value.decisionRule) &&
     isOptionalSha256Hex(value.policyHash) &&
-    isOptionalSha256Hex(value.grantsHash)
+    isOptionalSha256Hex(value.grantsHash) &&
+    isOptionalTimestamp(value.resendOfWithdrawnAt)
   )
 }
 

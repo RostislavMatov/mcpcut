@@ -43,6 +43,8 @@ export interface ApprovalCardView {
   readonly agentConnected?: boolean
   /** When that process last checked in, while it is not connected. */
   readonly holderSeenAt?: string
+  /** The same call sent again: its first request closed at this instant when the agent's connection dropped (M39). */
+  readonly resendOfWithdrawnAt?: string
 }
 
 /** True when a card may take part in a bulk "approve all" (read-class only). */
@@ -79,6 +81,7 @@ export function toApprovalCard(pending: PendingApproval, nowMs: number): Approva
       : {}),
     ...(pending.agentConnected !== undefined ? { agentConnected: pending.agentConnected } : {}),
     ...(pending.holderSeenAt !== undefined ? { holderSeenAt: pending.holderSeenAt } : {}),
+    ...(pending.resendOfWithdrawnAt !== undefined ? { resendOfWithdrawnAt: pending.resendOfWithdrawnAt } : {}),
   }
 }
 
@@ -172,6 +175,9 @@ function renderCard(card: ApprovalCardView, csrfToken: string, canResolve: boole
     <div class="clocks">
       ${renderWaitLine(card)}
     </div>
+    ${card.resendOfWithdrawnAt !== undefined
+      ? html`<p class="small muted resend-note">Sent again: the first request for this same call closed at <span class="num">${card.resendOfWithdrawnAt}</span> when the agent's connection dropped.</p>`
+      : html``}
     ${tail}
   </article>`
 }

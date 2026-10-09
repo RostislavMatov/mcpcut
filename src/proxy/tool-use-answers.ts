@@ -46,6 +46,9 @@ export const MAX_KEPT_ANSWERS_PER_AGENT_BYTES = MAX_KEPT_ANSWERS_BYTES / 4
  */
 export const TOOL_USE_CLAIM_MAX_AGE_MS = 25 * 60 * 60 * 1000
 
+/** Withdrawals remembered for the resend mark (M39); past it the oldest is forgotten. */
+const MAX_NOTED_WITHDRAWALS = 10_000
+
 /** Past this many claims, lapsed ones are swept before the next is taken (review L6). */
 const CLAIMS_SWEEP_AT = 10_000
 
@@ -86,6 +89,10 @@ export interface ToolUseAnswers {
    * the answer again (decision M39: a resend joins the call still running).
    */
   whenReleased(scope: string, toolUseId: string): Promise<void>
+  /** A call of this tool use, held for approval, was withdrawn at `atIso` because its agent left (M39). */
+  noteWithdrawn(scope: string, toolUseId: string, atIso: string): void
+  /** When a request for this tool use was last withdrawn that way, within 24 h. */
+  withdrawnAt(scope: string, toolUseId: string): string | undefined
 }
 
 export interface ToolUseAnswersOptions {
@@ -122,6 +129,8 @@ export function createToolUseAnswers(options: ToolUseAnswersOptions = {}): ToolU
   /** Insertion-ordered, oldest first: a re-kept answer is deleted and set again. */
   const answers = new Map<string, StoredAnswer>()
   const claims = new Map<string, ClaimEntry>()
+  /** When a held call of each key was withdrawn because its agent left; oldest first, bounded. */
+  const withdrawals = new Map<string, { readonly atIso: string; readonly notedAtMs: number }>()
   /** Who waits for each claimed key's release. */
   const releaseWaiters = new Map<string, Set<() => void>>()
 
@@ -221,6 +230,19 @@ export function createToolUseAnswers(options: ToolUseAnswersOptions = {}): ToolU
           wakeReleased(key)
         },
       }
+    },
+
+    noteWithdrawn(scope, toolUseId, atIso) {
+      const key = keyOf(scope, toolUseId)
+      withdrawals.delete(key)
+      if (withdrawals.size >= MAX_NOTED_WITHDRAWALS) withdrawals.delete(withdrawals.keys().next().value as string)
+      withdrawals.set(key, Object.freeze({ atIso, notedAtMs: clock() }))
+    },
+
+    withdrawnAt(scope, toolUseId) {
+      const noted = withdrawals.get(keyOf(scope, toolUseId))
+      if (noted === undefined || clock() - noted.notedAtMs >= TOOL_USE_ANSWER_TTL_MS) return undefined
+      return noted.atIso
     },
 
     whenReleased(scope, toolUseId) {

@@ -45,7 +45,7 @@ function formatListLine(entry: PendingApproval, nowMs: number): string {
   return (
     `${approvalId}${ROW_AFTER_ID}${serverName} tool=${toolName} class=${entry.toolClass} ` +
     `${formatAgent(entry)}waiting=${formatWaiting(entry, nowMs)} ` +
-    `agent_connected=${formatConnected(entry)} args=${argsPreview}\n`
+    `agent_connected=${formatConnected(entry)} ${formatResend(entry)}args=${argsPreview}\n`
   )
 }
 
@@ -85,6 +85,13 @@ function formatConnected(entry: PendingApproval): string {
   if (entry.agentConnected) return 'yes'
   // Since when its process has been silent: an approval now sends nothing (M36, S-L2).
   return entry.holderSeenAt !== undefined ? `no silent_since=${formatReadableField(entry.holderSeenAt)}` : 'no'
+}
+
+/** The same call sent again after its first request closed when the agent's connection dropped (M39). */
+function formatResend(entry: PendingApproval): string {
+  return entry.resendOfWithdrawnAt === undefined
+    ? ''
+    : `resend_of_withdrawn=${formatReadableField(entry.resendOfWithdrawnAt)} `
 }
 
 /** `Nm Ns` (or bare seconds under a minute). */

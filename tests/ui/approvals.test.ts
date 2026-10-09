@@ -115,6 +115,17 @@ describe('approvalsPage rendering', () => {
     expect(html).not.toContain('Grant window')
   })
 
+  test('the same call sent again says when its first request closed (M39)', () => {
+    const card = toApprovalCard(
+      { ...syntheticPending('01J0000000000000000000000E', T0), resendOfWithdrawnAt: '2026-10-09T07:59:00.000Z' },
+      T0,
+    )
+    const html = String(renderQueueRegion({ cards: [card], csrfToken: 'csrf', currentAdmin: { name: 'op', role: 'operator' } }))
+
+    expect(html).toContain('Sent again: the first request for this same call closed at')
+    expect(html).toContain('2026-10-09T07:59:00.000Z')
+  })
+
   test('an agent whose process stopped checking in: since when, and that approving sends nothing (M36 S-L2)', () => {
     const card = toApprovalCard(
       { ...syntheticPending('01J0000000000000000000000B', T0), agentConnected: false, holderSeenAt: '2026-10-09T08:00:00.000Z' },
