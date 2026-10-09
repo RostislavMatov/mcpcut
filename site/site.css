@@ -197,6 +197,13 @@ a.panel-note { color: var(--fg); }
   flex-direction: column;
   gap: 12px;
 }
+.demo {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
 
 /* Hero */
 .hero {
@@ -241,7 +248,7 @@ a.panel-note { color: var(--fg); }
 /* See · Stop · Prove */
 .tiles {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: var(--gap);
 }
 .tile {
