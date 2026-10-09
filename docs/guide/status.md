@@ -9,6 +9,8 @@ other text about the project may claim more than it does.
 | allow / deny / require-approval policy | shipped | policy test matrix |
 | quarantine of new & changed tools | shipped | schema-change tests |
 | approvals via CLI | shipped | approval-flow tests |
+| approval in the client (Claude Code **Accept** / **Decline**) | shipped | elicitation tests, a live run in Claude Code |
+| one approval per call, held while the agent waits; a retry with the same tool-use id answered once | shipped | approval and replay tests, a live run in Claude Code |
 | fail-closed journaling | shipped, **off by default** | fault-injection tests; opt in with `--fail-closed` |
 | server registry (`server add/list/...`) | shipped | registry tests |
 | credential vault (AES-256-GCM) | shipped | vault tests |
@@ -22,8 +24,11 @@ other text about the project may claim more than it does.
 | one address per agent (the pool, `/mcp`) | shipped, tools and prompts, sessionful agents | pool unit + e2e tests, a live run with real clients (official SDK v1/v2, Inspector CLI, Claude Code headless) against a VPS over TLS |
 | `connect --url` bridge for agents on another machine | shipped, **[preview](console.md#what-preview-means-here)** | bridge tests, a live run over TLS |
 | remote console (`--remote`, `--connect`) | shipped, **[preview](console.md#what-preview-means-here)** | remote-console tests, a live run over TLS |
+| built-in file server: folders, per-agent rights, carve-outs, trash, `files audit` | shipped | file-server unit + e2e tests, security reviews, a CI smoke on Linux, macOS and Windows, a live run in Claude Code |
+| Postgres index for the file audit | shipped, **opt-in** | Postgres tests in CI |
+| search by meaning (`search_files`) | shipped, **opt-in**, not on Intel Macs | index and search tests |
 | ready-made client config at `agent create` | shipped | config tests, a live run with real clients |
-| npm package (`npm i -g mcpcut`, `npx mcpcut@0.3.1`) | shipped, 0.1.0 | `tests/release/*`, a CI smoke of the published package on Linux, macOS and Windows |
+| npm package (`npm i -g mcpcut`, `npx mcpcut@0.4.0`) | shipped, 0.1.0 | `tests/release/*`, a CI smoke of the published package on Linux, macOS and Windows |
 | whole-product security audit | passed 2026-09-02, **internal** | 0 critical, 4 high findings, all fixed; no independent audit yet; reports via `SECURITY.md` |
 
 The journal is a persistent, append-oriented, secret-redacted SQLite database

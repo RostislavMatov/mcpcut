@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/RostislavMatov/mcpcut/actions/workflows/ci.yml/badge.svg)](https://github.com/RostislavMatov/mcpcut/actions/workflows/ci.yml) [![npm](https://img.shields.io/npm/v/mcpcut)](https://www.npmjs.com/package/mcpcut) [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-See every tool call your AI agent makes over MCP, hold the risky ones for your approval, and keep a secret-redacted journal that is tamper-evident with an external anchor.
+See every tool call your AI agent makes over MCP, hold the risky ones for your approval, give it only the folders it needs, and keep a secret-redacted journal that is tamper-evident with an external anchor.
 
 Self-hosted · Apache-2.0 · Node.js 24+ · two runtime dependencies. Start with one server on your laptop; grow into a [control plane for many agents](docs/guide/agents.md).
 
@@ -14,18 +14,18 @@ Requires **Node.js 24+** (`node -v`); on older Node, mcpcut prints one line and 
 
 **See.** Put the MCP servers you already have behind mcpcut. `adopt` finds them in Claude Code, Cursor and Claude Desktop and shows the change; `--apply` writes it, keeping a copy of each file (`adopt --undo` puts them back). Then restart the client:
 
-    npx -y mcpcut@0.3.1 adopt
-    npx -y mcpcut@0.3.1 adopt --apply
+    npx -y mcpcut@0.4.0 adopt
+    npx -y mcpcut@0.4.0 adopt --apply
 
-Or put mcpcut in front of one server by hand — here for Claude Code; in any other client, the server's command becomes `npx -y mcpcut@0.3.1 wrap -- <your server>`:
+Or put mcpcut in front of one server by hand — here for Claude Code; in any other client, the server's command becomes `npx -y mcpcut@0.4.0 wrap -- <your server>`:
 
-    claude mcp add fs -- npx -y mcpcut@0.3.1 wrap --server fs -- npx -y @modelcontextprotocol/server-filesystem ~/project
+    claude mcp add fs -- npx -y mcpcut@0.4.0 wrap --server fs -- npx -y @modelcontextprotocol/server-filesystem ~/project
 
 On Windows, npm commands start only through `cmd /c` (`adopt` adds it for you) — by hand, put it before both `npx`:
 
-    claude mcp add fs -- cmd /c npx -y mcpcut@0.3.1 wrap --server fs -- cmd /c npx -y @modelcontextprotocol/server-filesystem C:\path\to\project
+    claude mcp add fs -- cmd /c npx -y mcpcut@0.4.0 wrap --server fs -- cmd /c npx -y @modelcontextprotocol/server-filesystem C:\path\to\project
 
-The first start downloads mcpcut and the server; if your client gives up on it, start it once more. Let the agent work, then `npx -y mcpcut@0.3.1 sessions` and `npx -y mcpcut@0.3.1 show <id>`: every request and response, secrets redacted (with a policy, every decision too). `--server fs` names the server in the decisions a policy writes to the journal and in the approval queue.
+The first start downloads mcpcut and the server; if your client gives up on it, start it once more. Let the agent work, then `npx -y mcpcut@0.4.0 sessions` and `npx -y mcpcut@0.4.0 show <id>`: every request and response, secrets redacted (with a policy, every decision too). `--server fs` names the server in the decisions a policy writes to the journal and in the approval queue.
 
 **Stop.** Save this as `~/.mcpcut/data/policy.json` — every server behind mcpcut reads it when it starts — and restart the client. Reads pass, everything else waits for you (quarantine of new tools is off, so the first minute shows one gate: see [Quarantine](docs/guide/policies.md#quarantine)):
 
@@ -36,21 +36,21 @@ A server added by hand can take its own file instead: `--policy "$PWD/policy.jso
 
 A write now waits, for as long as the agent waits (Claude Code moves it to the background after two minutes and picks up the answer later). Approve it from another terminal — no token needed until you add your first admin. An approval sends exactly that call; if the agent stops waiting, the request closes and nothing is sent ([Approvals](docs/guide/policies.md#approval-scenario)):
 
-    npx -y mcpcut@0.3.1 approvals list
-    npx -y mcpcut@0.3.1 approvals approve <id>
+    npx -y mcpcut@0.4.0 approvals list
+    npx -y mcpcut@0.4.0 approvals approve <id>
 
 Or be asked right in the session: let everything pass and stop only the tools you name — Claude Code shows **Accept** / **Decline**, no second terminal. `fs` is the server's name in your client — `adopt` keeps those names ([Confirming in the client](docs/guide/policies.md#confirming-in-the-client)):
 
     { "version": 1, "defaultDecision": "allow", "quarantine": { "enabled": false },
       "servers": { "fs": { "confirmInClient": { "write_file": ["*"], "edit_file": ["*"] } } } }
 
-Rather click than write JSON? `npx -y mcpcut@0.3.1 ui` opens the admin UI. On **Servers**, **Create policy** writes a policy that lets every call pass — restart the client once — and then every tool of every server behind mcpcut has its buttons: **all** under **client** makes that tool ask you in the session, **approval** holds it for the queue, **deny** blocks it. Each click takes effect on the next call.
+Rather click than write JSON? `npx -y mcpcut@0.4.0 ui` opens the admin UI. On **Servers**, **Create policy** writes a policy that lets every call pass — restart the client once — and then every tool of every server behind mcpcut has its buttons: **all** under **client** makes that tool ask you in the session, **approval** holds it for the queue, **deny** blocks it. Each click takes effect on the next call.
 
 **Prove.** Sign the history, export it, and check it offline — with nothing but the directory:
 
-    npx -y mcpcut@0.3.1 keygen && npx -y mcpcut@0.3.1 export --report --out ./report
-    npx -y mcpcut@0.3.1 verify --report ./report
-    npx -y mcpcut@0.3.1 verify --sign
+    npx -y mcpcut@0.4.0 keygen && npx -y mcpcut@0.4.0 export --report --out ./report
+    npx -y mcpcut@0.4.0 verify --report ./report
+    npx -y mcpcut@0.4.0 verify --sign
 
 The last line signs the chain head: keep what it prints somewhere this host cannot rewrite — [the out-of-band anchor](docs/guide/audit-reports.md#the-out-of-band-anchor) is what makes the journal tamper-evident, not the hashes alone.
 
@@ -60,7 +60,7 @@ The last line signs the chain head: keep what it prints somewhere this host cann
 
 - **[Journal](docs/guide/wrap-and-journal.md)** — every request, response and decision, with secrets redacted before anything is written. Optionally fail-closed: no record, no call.
 - **[Policy per tool](docs/guide/policies.md)** — `allow`, `deny` or `require-approval` by server, tool name or tool class; read-only tools can pass on their own.
-- **[Approvals](docs/guide/policies.md#approval-scenario)** — a risky call waits until someone approves it from the CLI, the web UI or the terminal console.
+- **[Approvals](docs/guide/policies.md#approval-scenario)** — a risky call waits, for as long as the agent waits, until you approve that one call from the CLI, the web UI, the terminal console or [right in your Claude Code session](docs/guide/policies.md#confirming-in-the-client). If the agent stops waiting, nothing is sent; Claude Code's retry of an approved call gets its first answer instead of running twice.
 - **[Quarantine](docs/guide/policies.md#quarantine)** — a new tool, or one whose description or schema changed after you trusted it, is held until reviewed, with a diff of what changed.
 - **[Agents and grants](docs/guide/agents.md)** — a registry of servers, a key per agent, per-tool grants, groups, and an encrypted vault, so server credentials never sit in an agent's config.
 - **[Folders for agents](docs/guide/files.md)** — built-in file tools over the folders you declare. Rights per agent or group, inherited down the tree; the most specific rule wins, and an empty one carves a subfolder out. Deletes go to a trash you can restore from, and every call is in the audit (`files audit`, and the Files page of the admin UI). Optionally a local Postgres for a complete audit, and search by meaning that runs on your machine.
@@ -113,7 +113,7 @@ The full picture, with the trust boundaries: [docs/ARCHITECTURE.md](docs/ARCHITE
 
 ## Status
 
-mcpcut is 0.x. The core — proxy, policy, approvals, quarantine, journal, audit report, admin UI and console — is shipped and covered by tests; [Status](docs/guide/status.md) lists each capability with its evidence.
+mcpcut is 0.x. The core — proxy, policy, approvals, quarantine, journal, audit report, the built-in file server, admin UI and console — is shipped and covered by tests; [Status](docs/guide/status.md) lists each capability with its evidence.
 
 - **Preview:** the remote console (`mcpcut --remote`) and the `connect --url` bridge. They work and are tested against a VPS over TLS, but they put a token on the network, have had only an internal security review, and may change within 0.x.
 - **Tamper-evident means with an external anchor.** A process running as the same OS user can rewrite the journal and re-sign it; only a chain head recorded somewhere this host cannot write exposes that. mcpcut is not tamper-proof, and whether a report satisfies an audit is the auditor's call.

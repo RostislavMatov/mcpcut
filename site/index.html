@@ -43,7 +43,7 @@
   <section class="hero panel panel-strong" aria-labelledby="hero-title">
     <p class="eyebrow"><span class="dot blink" aria-hidden="true"></span> MCP · self-hosted · Apache-2.0</p>
     <h1 id="hero-title">A journal and an emergency brake for your AI agents</h1>
-    <p class="lede">See every tool call your agent makes over MCP, hold the risky ones until you say yes, and keep a secret-redacted journal that is tamper-evident with an external anchor.</p>
+    <p class="lede">See every tool call your agent makes over MCP, hold the risky ones until you say yes, give it only the folders it needs, and keep a secret-redacted journal that is tamper-evident with an external anchor.</p>
     <div class="actions">
       <a class="button button-primary" href="#quick-start">Quick start</a>
       <a class="button" href="https://github.com/RostislavMatov/mcpcut">Source on GitHub</a>
@@ -58,11 +58,15 @@
     </article>
     <article class="tile panel">
       <h2><span class="tile-index">02</span> Stop</h2>
-      <p>A policy per tool — <code>allow</code>, <code>deny</code> or <code>require-approval</code>. A risky call waits until you approve it from the CLI, the web UI, the terminal console or right in your Claude Code session. A new tool, or one whose schema changed after you trusted it, is quarantined with a diff.</p>
+      <p>A policy per tool — <code>allow</code>, <code>deny</code> or <code>require-approval</code>. A risky call waits for as long as your agent waits, until you approve that one call from the CLI, the web UI, the terminal console or right in your Claude Code session. If the agent gives up, nothing is sent. A new tool, or one whose schema changed after you trusted it, is quarantined with a diff.</p>
     </article>
     <article class="tile panel">
       <h2><span class="tile-index">03</span> Prove</h2>
       <p>A hash chain with a signed head. Export an audit report and verify it offline with a public key. Record the chain head somewhere this host cannot rewrite: the journal is tamper-evident with an external anchor, not by its hashes alone.</p>
+    </article>
+    <article class="tile panel">
+      <h2><span class="tile-index">04</span> Folders</h2>
+      <p>Give an agent folders, not your disk. Built-in file tools work only in the folders you declare, with rights per agent inherited down the tree and private subfolders carved out. Deletes go to a trash you can restore from, every file call is in the audit, and optional search by meaning runs on your machine.</p>
     </article>
   </section>
 
@@ -75,33 +79,33 @@
       <div class="step">
         <h3>See</h3>
         <p>Put the MCP servers you already have behind mcpcut. <code>adopt</code> finds them in Claude Code, Cursor and Claude Desktop and shows the change; <code>--apply</code> writes it, keeping a copy of each file. Then restart the client:</p>
-<pre data-from-readme>npx -y mcpcut@0.3.1 adopt
-npx -y mcpcut@0.3.1 adopt --apply</pre>
-        <p>Or put mcpcut in front of one server by hand — here for Claude Code. In any other client, the server's command becomes <code>npx -y mcpcut@0.3.1 wrap -- &lt;your server&gt;</code>.</p>
-<pre data-from-readme>claude mcp add fs -- npx -y mcpcut@0.3.1 wrap --server fs -- npx -y @modelcontextprotocol/server-filesystem ~/project</pre>
+<pre data-from-readme>npx -y mcpcut@0.4.0 adopt
+npx -y mcpcut@0.4.0 adopt --apply</pre>
+        <p>Or put mcpcut in front of one server by hand — here for Claude Code. In any other client, the server's command becomes <code>npx -y mcpcut@0.4.0 wrap -- &lt;your server&gt;</code>.</p>
+<pre data-from-readme>claude mcp add fs -- npx -y mcpcut@0.4.0 wrap --server fs -- npx -y @modelcontextprotocol/server-filesystem ~/project</pre>
         <p>Let the agent work, then read what happened — every request and response, secrets redacted (with a policy, every decision too):</p>
-<pre data-from-readme>npx -y mcpcut@0.3.1 sessions
-npx -y mcpcut@0.3.1 show &lt;id&gt;</pre>
+<pre data-from-readme>npx -y mcpcut@0.4.0 sessions
+npx -y mcpcut@0.4.0 show &lt;id&gt;</pre>
       </div>
       <div class="step">
         <h3>Stop</h3>
         <p>Save this as <code>~/.mcpcut/data/policy.json</code> — every server behind mcpcut reads it when it starts — and restart the client: reads pass, everything else waits for you.</p>
 <pre data-from-readme>{ "version": 1, "defaultDecision": "require-approval", "classDefaults": { "read": "allow" },
   "quarantine": { "enabled": false } }</pre>
-        <p>A write now waits. Approve it from another terminal within the agent's wait:</p>
-<pre data-from-readme>npx -y mcpcut@0.3.1 approvals list
-npx -y mcpcut@0.3.1 approvals approve &lt;id&gt;</pre>
+        <p>A write now waits, for as long as the agent waits. Approve it from another terminal: an approval sends exactly that call, and if the agent stops waiting, the request closes and nothing is sent.</p>
+<pre data-from-readme>npx -y mcpcut@0.4.0 approvals list
+npx -y mcpcut@0.4.0 approvals approve &lt;id&gt;</pre>
         <p>Or be asked right in the session: let everything pass and stop only the tools you name — Claude Code shows Accept / Decline, no second terminal. <code>fs</code> is the server's name in your client — <code>adopt</code> keeps those names:</p>
 <pre data-from-readme>{ "version": 1, "defaultDecision": "allow", "quarantine": { "enabled": false },
   "servers": { "fs": { "confirmInClient": { "write_file": ["*"], "edit_file": ["*"] } } } }</pre>
-        <p>Rather click than write JSON? <code>npx -y mcpcut@0.3.1 ui</code> opens the admin UI. On Servers, <b>Create policy</b> writes a policy that lets every call pass — restart the client once — and then every tool of every server behind mcpcut has its buttons: <i>all</i> under <i>client</i> makes that tool ask you in the session, <i>approval</i> holds it for the queue, <i>deny</i> blocks it.</p>
+        <p>Rather click than write JSON? <code>npx -y mcpcut@0.4.0 ui</code> opens the admin UI. On Servers, <b>Create policy</b> writes a policy that lets every call pass — restart the client once — and then every tool of every server behind mcpcut has its buttons: <i>all</i> under <i>client</i> makes that tool ask you in the session, <i>approval</i> holds it for the queue, <i>deny</i> blocks it.</p>
       </div>
       <div class="step">
         <h3>Prove</h3>
         <p>Sign the history, export it, and check it offline — with nothing but the directory:</p>
-<pre data-from-readme>npx -y mcpcut@0.3.1 keygen &amp;&amp; npx -y mcpcut@0.3.1 export --report --out ./report
-npx -y mcpcut@0.3.1 verify --report ./report
-npx -y mcpcut@0.3.1 verify --sign</pre>
+<pre data-from-readme>npx -y mcpcut@0.4.0 keygen &amp;&amp; npx -y mcpcut@0.4.0 export --report --out ./report
+npx -y mcpcut@0.4.0 verify --report ./report
+npx -y mcpcut@0.4.0 verify --sign</pre>
         <p>The last line signs the chain head: keep what it prints somewhere this host cannot rewrite — that copy is what makes the journal tamper-evident with an external anchor.</p>
       </div>
       <p class="more">The full walkthrough, with what each step prints: <a href="https://github.com/RostislavMatov/mcpcut#quick-start">README · Quick start</a>.</p>
@@ -118,6 +122,7 @@ npx -y mcpcut@0.3.1 verify --sign</pre>
       <p>Then run <code>mcpcut</code>: a setup wizard, and after it everything a team of agents needs.</p>
       <ul class="list">
         <li><a href="https://github.com/RostislavMatov/mcpcut/blob/main/docs/guide/agents.md">Agents and grants</a> — a registry of servers, a key per agent, per-tool grants, groups, and an encrypted vault, so server credentials never sit in an agent's config.</li>
+        <li><a href="https://github.com/RostislavMatov/mcpcut/blob/main/docs/guide/files.md">Folders for agents</a> — built-in file tools over the folders you declare: rights per agent or group, a trash you can restore from, every file call in the audit, and optional search by meaning that never leaves your machine.</li>
         <li><a href="https://github.com/RostislavMatov/mcpcut/blob/main/docs/guide/serve-and-pool.md">One address per agent</a> — every server an agent is granted behind one endpoint; grant or revoke without touching the client.</li>
         <li><a href="https://github.com/RostislavMatov/mcpcut/blob/main/docs/guide/admin-ui.md">Web UI</a> and <a href="https://github.com/RostislavMatov/mcpcut/blob/main/docs/guide/console.md">terminal console</a> — named admins with <code>owner</code>, <code>operator</code> and <code>viewer</code> roles; every change is attributed in the journal.</li>
         <li><a href="https://github.com/RostislavMatov/mcpcut/blob/main/docs/guide/operations.md">Services and Docker</a> — start, stop and back up the service on your machine or a server of your own.</li>
@@ -177,7 +182,7 @@ npx -y mcpcut@0.3.1 verify --sign</pre>
       <div class="panel-head"><h2>Status</h2><span class="panel-note">0.x</span></div>
       <div class="panel-body">
         <ul class="list">
-          <li>The core — proxy, policy, approvals, quarantine, journal, audit report, admin UI and console — is shipped and covered by tests. <a href="https://github.com/RostislavMatov/mcpcut/blob/main/docs/guide/status.md">Status</a> lists each capability with its evidence.</li>
+          <li>The core — proxy, policy, approvals, quarantine, journal, audit report, the built-in file server, admin UI and console — is shipped and covered by tests. <a href="https://github.com/RostislavMatov/mcpcut/blob/main/docs/guide/status.md">Status</a> lists each capability with its evidence.</li>
           <li>Preview: the remote console (<code>mcpcut --remote</code>). Preview: the <code>connect --url</code> bridge. Both put a token on the network and may change within 0.x.</li>
           <li>Security: an internal audit of the whole product in September 2026, no independent audit yet. Report vulnerabilities privately — see <a href="https://github.com/RostislavMatov/mcpcut/blob/main/SECURITY.md">SECURITY.md</a>.</li>
         </ul>
