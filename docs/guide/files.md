@@ -29,7 +29,10 @@ mcpcut serve
 ```
 
 `root add` declares the folder, creates its trash and registers the built-in
-server under the name `files` (once). `grant` gives the agent operations on
+server under the name `files` (once). It also confirms the server's tools in
+the quarantine: they ship with mcpcut, so the agent's first call does not wait
+for a person (after an upgrade that changed one, run `root add` again — the
+folder stays as it is). `grant` gives the agent operations on
 the folder and everything below it. `show` prints what the agent now holds:
 
 ```

@@ -190,6 +190,8 @@ export interface RecordAccessChangeInput {
   /** What the audit line says instead of `op` (e.g. `index on`); the journal record is unaffected. */
   readonly opLabel?: string
   readonly info: Omit<AccessEditInfo, 'actor'>
+  /** False when the caller already printed one audit line for a batch of these records; true by default. */
+  readonly isAuditLineShown?: boolean
 }
 
 /**
@@ -201,7 +203,9 @@ export interface RecordAccessChangeInput {
  */
 export async function recordAccessChange(input: RecordAccessChangeInput): Promise<number> {
   const { io, opts, actor, subject } = input
-  io.stderr.write(auditLineOf(subject, input.op, actor, input.target, input.opLabel))
+  if (input.isAuditLineShown !== false) {
+    io.stderr.write(auditLineOf(subject, input.op, actor, input.target, input.opLabel))
+  }
   const outcome = await journalAccessEdit({
     info: { ...input.info, actor: { adminName: actor.adminName, role: actor.role, via: 'cli' } },
     ...(opts.journalDir !== undefined ? { dir: opts.journalDir } : {}),

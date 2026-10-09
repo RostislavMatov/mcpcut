@@ -17,6 +17,9 @@ All notable changes to this project are documented here. The format follows
   wins, and `--ops none` cuts a subfolder out. Groups carry folder rules too
   (`files grant --group`); an agent's own rules replace its groups'. Folders on
   network or FUSE drives are refused: there one folder can look like two.
+  `files root add` also confirms the built-in tools in the quarantine (one
+  `quarantine.approve` record per tool), so the agent's first call answers at
+  once; other servers' tools still wait for a person.
 - **A trash instead of deletes.** `delete_file` moves to `.mcpcut-trash` inside
   the root; `mcpcut files trash list | restore | purge` manage it, and `serve`
   purges what is older than 30 days once a day.

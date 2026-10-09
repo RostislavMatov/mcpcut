@@ -22,7 +22,14 @@ import type { AdminRefusalWording, RequiredAdmin } from './admin-token.js'
 import { recordAccessChange, requireAccessOwner, type AccessOp } from './access-cmd-write.js'
 import type { AgentCliIo } from './agent-cmd.js'
 import { formatRuleLines, grantNextStep, onTarget, FILES_USAGE } from './files-cmd-format.js'
-import { conflictMessage, filesServerState, notRegisteredMessage, registerFilesServer } from './files-cmd-registry.js'
+import {
+  confirmFilesTools,
+  conflictMessage,
+  filesServerState,
+  notRegisteredMessage,
+  recordConfirmedTools,
+  registerFilesServer,
+} from './files-cmd-registry.js'
 import type { FilesCliOptions } from './files-cmd.js'
 import { cliCommand, shellArg } from './next-step.js'
 
@@ -119,9 +126,15 @@ export async function runRootAdd(args: string[], io: AgentCliIo, opts: FilesCliO
   )
   if (!prepared.ok) return fail(io, replaceControlChars(prepared.message))
   const registered = await registerFilesServer(registryOf(opts))
+  if (registered.added) io.stdout.write(`registered the built-in file server as "files" (agents connect to it like any server)\n`)
+  const confirmed = await confirmFilesTools(opts.journalDir, `${cliCommand(opts.env)} files root add ${shellArg(prepared.path)}`)
+  if (!confirmed.ok) return fail(io, replaceControlChars(confirmed.message))
+  if (confirmed.tools.length > 0) {
+    io.stdout.write(`confirmed the built-in file server's ${confirmed.tools.length} tools: an agent's first call does not wait in quarantine\n`)
+  }
+  await recordConfirmedTools(io, opts, actor, confirmed.tools)
   const { added } = await roots.add(prepared.path)
   const folder = formatReadableField(prepared.path)
-  if (registered.added) io.stdout.write(`registered the built-in file server as "files" (agents connect to it like any server)\n`)
   const trash = `${folder}/.mcpcut-trash`
   io.stdout.write(added ? `root added: ${folder}\n` : `${folder} is already a root\n`)
   io.stdout.write(`trash: ${trash} (${prepared.trashCreated ? 'created' : 'already present'})\n`)

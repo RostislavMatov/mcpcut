@@ -51,8 +51,10 @@ async function files(args: string[], env: NodeJS.ProcessEnv = { [ADMIN_TOKEN_ENV
   return { code, out: out.join(''), err: err.join('') }
 }
 
+/** The `files.*` records: `root add` also journals the built-in tools it confirms (`quarantine.approve`), counted elsewhere. */
 async function accessPayloads(): Promise<Array<Record<string, unknown>>> {
-  return (await readJournalRecords(journalDir, ACCESS_EDIT_SESSION_ID)).map((record) => record.payload as Record<string, unknown>)
+  const payloads = (await readJournalRecords(journalDir, ACCESS_EDIT_SESSION_ID)).map((record) => record.payload as Record<string, unknown>)
+  return payloads.filter((payload) => String(payload['action']).startsWith('files.'))
 }
 
 async function declareRoot(): Promise<void> {

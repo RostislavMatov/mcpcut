@@ -236,6 +236,29 @@ export async function approveTool(serverName: string, toolName: string, storePat
   )
 }
 
+/**
+ * Approves a whole catalog at its current hashes in one store write, and
+ * returns the names that were not already approved at those hashes (new or
+ * changed). For a catalog mcpcut ships itself -- the built-in file server,
+ * confirmed by `files root add` -- so the agent's first call does not wait
+ * for a person to release mcpcut's own code. Never for an upstream's list.
+ */
+export async function approveCatalog(
+  serverName: string,
+  tools: readonly ToolDescriptor[],
+  storePath?: string,
+  nowIso: string = new Date().toISOString(),
+): Promise<readonly string[]> {
+  let approved: readonly string[] = []
+  await openInventoryStore(storePath).update((current) => {
+    const outcome = withApprovedCatalog(current.servers[serverName] ?? EMPTY_SERVER_INVENTORY, tools, nowIso)
+    approved = outcome.approved
+    if (outcome.approved.length === 0) return current
+    return { ...current, servers: withKey(current.servers, serverName, outcome.serverEntry) }
+  })
+  return approved
+}
+
 /** Rejects (removes from quarantine) a tool on a given server. Thin wrapper for the CLI. */
 export async function rejectTool(serverName: string, toolName: string, storePath?: string): Promise<boolean> {
   return applyServerMutation(openInventoryStore(storePath), serverName, (entry) =>
@@ -281,6 +304,30 @@ function withApprovedTool(serverEntry: ServerInventory, toolName: string, approv
       quarantined: omitKey(serverEntry.quarantined, toolName),
     },
   }
+}
+
+/** No quarantine cap while a whole catalog is approved: nothing it adds stays in quarantine. */
+const UNCAPPED_QUARANTINE = Number.POSITIVE_INFINITY
+
+/**
+ * Pure: observes `tools` (which fingerprints each one into quarantine) and
+ * moves every new or changed one straight to approved. A tool already
+ * approved at its current hash but still held by an older quarantined
+ * schema (an upgrade, then a downgrade) is released too: the quarantine
+ * overlay would otherwise keep it `changed`.
+ */
+function withApprovedCatalog(
+  serverEntry: ServerInventory,
+  tools: readonly ToolDescriptor[],
+  approvedAt: string,
+): { readonly serverEntry: ServerInventory; readonly approved: readonly string[] } {
+  const { buckets, nextServerEntry } = observeAgainst(serverEntry, tools, approvedAt, UNCAPPED_QUARANTINE)
+  const pending = [...buckets.new, ...buckets.changed]
+  const stale = buckets.known.filter((name) => nextServerEntry.quarantined[name] !== undefined)
+  const approvedEntry = pending.reduce((entry, toolName) => withApprovedTool(entry, toolName, approvedAt).serverEntry, nextServerEntry)
+  const releasedEntry = stale.reduce((entry, toolName) => withRejectedTool(entry, toolName).serverEntry, approvedEntry)
+  const touched = new Set([...pending, ...stale])
+  return { serverEntry: releasedEntry, approved: tools.map((tool) => tool.name).filter((name) => touched.has(name)) }
 }
 
 /** Pure: removes `toolName` from quarantine. */
