@@ -34,7 +34,7 @@ The first start downloads mcpcut and the server; if your client gives up on it, 
 
 A server added by hand can take its own file instead: `--policy "$PWD/policy.json"` right after `wrap`.
 
-A write now waits. Approve it from another terminal within the agent's wait (60 s; after it, the agent's retry passes) — no token needed until you add your first admin ([Approvals](docs/guide/policies.md#approval-scenario)):
+A write now waits, for as long as the agent waits (Claude Code moves it to the background after two minutes and picks up the answer later). Approve it from another terminal — no token needed until you add your first admin. An approval sends exactly that call; if the agent stops waiting, the request closes and nothing is sent ([Approvals](docs/guide/policies.md#approval-scenario)):
 
     npx -y mcpcut@0.3.1 approvals list
     npx -y mcpcut@0.3.1 approvals approve <id>

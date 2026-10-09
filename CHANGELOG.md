@@ -6,6 +6,36 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **An approval covers one call, while its agent waits.** There is no grant window any more: every call that needs
+  approval asks, even a byte-identical repeat. A held call waits for as long as the agent waits (no limit of
+  mcpcut's own unless `approval.timeoutMs` sets one) and tells a client that gave it a progress token, at once and
+  then once a minute, that it waits for a person — Claude Code shows it and moves a long call to the background.
+  `approval.grantTtlMs` is accepted and ignored; `policy show` says so.
+- **The agent leaving closes its request.** Esc, the client's timeout, a dropped connection or the client closing
+  withdraws the held call: nothing is sent, the journal records `agent-gone` with the reason, and a late approve is
+  refused with one line saying when the agent stopped waiting.
+- Over HTTP (`serve`, `connect --url`), a held call is answered with an SSE stream at once, so a client that cuts a
+  JSON response after 60 s keeps waiting.
+- `approvals list` and the web UI's approval card show how long the agent has been waiting and whether the process
+  holding the call is still there (`agent_connected=no silent_since=…`: approving would send nothing) instead of the
+  two clocks of the grant window.
+- A pool address explains its refusal of a stateless request once per agent instead of on every Claude Code connect.
+
+### Added
+
+- **Retries are told from second calls by the client's tool-use id** (`_meta["claudecode/toolUseId"]`): the same id
+  again never runs twice — it gets the server's first answer, kept in memory for 24 hours (journal: `replayed`), or
+  waits for the first call if that one is still pending or running. A new id is a new call; a call without one is
+  never answered from memory.
+- `connect --url` sends a call with a tool-use id again when its connection to the service drops mid-call, so the
+  agent gets the one answer instead of a transport error.
+- An answer the agent no longer waited for is journaled `undelivered`; when the agent disconnects, mcpcut keeps
+  reading the server for up to 30 seconds so it can finish what it started. A call the server never answered by the
+  end of the session is journaled `unanswered`, and mcpcut prints one line naming the server and the command that
+  shows those records. The web journal marks both as alerts; `mcpcut show` prints their `reason=`.
+
 ## [0.3.1] — 2026-10-05
 
 ### Security
