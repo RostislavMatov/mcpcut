@@ -56,7 +56,6 @@ a.tile:hover { border-color: var(--line); }
 .clocks .wait-elapsed { color: var(--fg-dim); }
 .approval-card .actions button { flex: 1; min-width: 110px; }
 .approval-card .actions form { flex: 1; display: flex; }
-.approval-card .bulk-select { font-size: 11px; color: var(--fg-mute); }
 
 .dash-recent { display: flex; flex-direction: column; min-width: 0; }
 .dash-recent .panel-hd { flex-wrap: wrap; gap: 10px; }

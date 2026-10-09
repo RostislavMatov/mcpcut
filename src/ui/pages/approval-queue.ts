@@ -27,9 +27,6 @@ import { roleAllows } from './role-gate.js'
  * and the region re-reads itself (`data-live-every`) for the heartbeat.
  */
 
-/** Batch ("approve all") is only ever offered for the read class (ADR-0004 §Границы). */
-const BATCH_ELIGIBLE_CLASS: ToolClass = 'read'
-
 /** A single pending approval, projected for display. */
 export interface ApprovalCardView {
   readonly approvalId: string
@@ -49,11 +46,6 @@ export interface ApprovalCardView {
   readonly holderSeenAt?: string
   /** The same call sent again: its first request closed at this instant when the agent's connection dropped (M39). */
   readonly resendOfWithdrawnAt?: string
-}
-
-/** True when a card may take part in a bulk "approve all" (read-class only). */
-export function eligibleForBatch(card: ApprovalCardView): boolean {
-  return card.toolClass === BATCH_ELIGIBLE_CLASS
 }
 
 /** Whole seconds remaining until `isoTimestamp`, floored at 0; `undefined` if absent/unparseable. */
@@ -162,19 +154,16 @@ function renderReadOnlyNote(): Html {
   return html`<p class="actions muted small">Resolving an approval needs the operator role.</p>`
 }
 
-/** The approve/deny pair plus the bulk opt-in; only an `operator` sees them. */
+/**
+ * The approve/deny pair; only an `operator` sees it. Each card is answered on
+ * its own: the read-class "include in bulk approve" box shipped in M4 had no
+ * button or route behind it and is gone.
+ */
 function renderCardActions(card: ApprovalCardView, csrfToken: string): Html {
-  const batchControl = eligibleForBatch(card)
-    ? html`<label class="bulk-select check"
-        ><input type="checkbox" data-bulk-approve value="${card.approvalId}" /> include in bulk
-        approve</label
-      >`
-    : html``
   return html`<div class="actions">
       ${renderActionForm(card, 'approve', 'Approve', csrfToken, 'approve')}
       ${renderActionForm(card, 'deny', 'Deny', csrfToken, 'secondary deny')}
-    </div>
-    ${batchControl}`
+    </div>`
 }
 
 function renderCard(card: ApprovalCardView, csrfToken: string, canResolve: boolean): Html {

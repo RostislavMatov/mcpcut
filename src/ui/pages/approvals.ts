@@ -7,7 +7,6 @@
  * appearing only when the caller supplies a `summary`.
  */
 export {
-  eligibleForBatch,
   toApprovalCard,
   type ApprovalCardView,
   type ApprovalsPageInput,
