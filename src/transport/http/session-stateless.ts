@@ -1,11 +1,12 @@
 import type { IncomingHttpHeaders } from 'node:http'
-import { clientMessage } from '../message.js'
+import { clientMessage, type MessageSource } from '../message.js'
 import { HTTP_STATUS_ACCEPTED } from './constants.js'
 import { HTTP_STATUS_BAD_REQUEST, HTTP_STATUS_OK } from './server-constants.js'
 import {
   abandonedRequestPlan,
-  awaitFirstMessage,
   createDeferred,
+  RequestAbortedError,
+  UpstreamTimeoutError,
   jsonPlan,
   refusalPlan,
   SessionTornDownError,
@@ -122,4 +123,59 @@ export function createStatelessRunner(deps: StatelessDeps): StatelessRunner {
   }
 
   return Object.freeze({ handle, terminateAll })
+}
+
+/** A pending wait for the single message a one-shot session owes a request. */
+export interface FirstMessageWait {
+  readonly promise: Promise<Buffer>
+  /** Ends the wait with `error` unless it already settled. */
+  fail(error: unknown): void
+  /** Releases the timer and the abort listener. Idempotent. */
+  cancel(): void
+}
+
+export interface FirstMessageOptions {
+  readonly timeoutMs: number
+  readonly signal?: AbortSignal | undefined
+}
+
+/**
+ * Waits for the first message `source` produces, bounded on every side a
+ * one-shot exchange can fail on: an error, the source ending without an
+ * answer, the timeout, and the agent going away. The timer is unref'ed —
+ * a pending stateless request must not keep the process alive.
+ */
+export function awaitFirstMessage(
+  source: MessageSource,
+  opts: FirstMessageOptions,
+): FirstMessageWait {
+  const deferred = createDeferred<Buffer>()
+  // Marks the promise handled the moment it exists: it may reject before
+  // the caller awaits it (an already-dead upstream ends synchronously),
+  // and an unhandled rejection would take the process down.
+  void deferred.promise.catch(() => undefined)
+
+  source.onMessage((message) => deferred.resolve(message.bytes))
+  source.onError((error: unknown) => deferred.reject(error))
+  source.onEnd(() => deferred.reject(new SessionTornDownError()))
+
+  const timer = setTimeout(() => deferred.reject(new UpstreamTimeoutError()), opts.timeoutMs)
+  timer.unref()
+  const onAbort = (): void => deferred.reject(new RequestAbortedError())
+  opts.signal?.addEventListener('abort', onAbort, { once: true })
+  if (opts.signal?.aborted === true) {
+    onAbort()
+  }
+
+  let isCancelled = false
+  return Object.freeze({
+    promise: deferred.promise,
+    fail: (error: unknown) => deferred.reject(error),
+    cancel: (): void => {
+      if (isCancelled) return
+      isCancelled = true
+      clearTimeout(timer)
+      opts.signal?.removeEventListener('abort', onAbort)
+    },
+  })
 }

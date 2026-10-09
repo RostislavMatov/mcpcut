@@ -3,7 +3,6 @@ import type { Readable, Writable } from 'node:stream'
 import { JOURNAL_DIR } from '../config.js'
 import type { ClientServerDirection, JournalDirection } from '../journal/record.js'
 import type { JournalSink } from '../journal/sink.js'
-import { createGrantRegistry } from '../policy/approvals/grants.js'
 import { createApprovalQueue } from '../policy/approvals/queue.js'
 import { createApprovalWaiter } from '../policy/approvals/waiter.js'
 import { canonicalJson, sha256Hex } from '../policy/hash.js'
@@ -16,6 +15,7 @@ import { startPipeline, type GateFn } from './pipeline.js'
 import type { ServerHandle } from './spawn.js'
 import { splice, type SpliceErrorOrigin } from './splice.js'
 import { createOrderedWriter } from './writer.js'
+import { FORWARDED_ANSWER_GRACE_MS } from '../session/constants.js'
 
 /**
  * Mode B wiring: the relay used when a policy is active.
@@ -111,8 +111,14 @@ export interface PolicyRelayArgs {
   readonly agentScope?: GateAgentScope
   /** Hears of each call queued for a human (see `MessagePolicyGateDeps`). */
   readonly onApprovalPending?: (notice: PendingApprovalNotice) => void
+  /** The progress text of a held call (M36); stdio carries the gate's notifications. */
+  readonly heldCallProgress?: (approvalId: string) => string
   /** The client channel for `confirmInClient` (ADR-0019); stdio `wrap` always has one. */
   readonly confirmInClient?: ConfirmInClientDeps
+  /** The teardown grace for calls already sent (M36 phase C); `FORWARDED_ANSWER_GRACE_MS` when absent; mode B only. */
+  readonly forwardedAnswerGraceMs?: number
+  /** Hears how many calls the server left unanswered when the session ended (M36 phase C); mode B only. */
+  readonly onUnansweredCalls?: (count: number) => void
 }
 
 /** Where the policy layer's on-disk state lives for one run. */
@@ -174,12 +180,11 @@ export function wirePolicyRelay(args: PolicyRelayArgs): RelayWiring {
     inventory: createInventory(args.serverName, { storePath: inventoryStorePath, onError: onInternalError }),
     approvalQueue,
     approvalWaiter: createApprovalWaiter(),
-    grantRegistry: createGrantRegistry(),
     sink: args.sink,
     clientWriter,
-    approvalsBaseDir,
     ...(args.agentScope !== undefined ? { agentScope: args.agentScope } : {}),
     ...(args.onApprovalPending !== undefined ? { onApprovalPending: args.onApprovalPending } : {}),
+    ...(args.heldCallProgress !== undefined ? { heldCallProgress: args.heldCallProgress } : {}),
     ...(args.confirmInClient !== undefined ? { confirmInClient: args.confirmInClient } : {}),
     // A gate-internal failure is a proxy defect, not a broken stream: log it
     // (the gate has already failed the call closed) and keep the session up.
@@ -201,13 +206,36 @@ export function wirePolicyRelay(args: PolicyRelayArgs): RelayWiring {
     }
   }
 
+  /** Hears the count once, from whichever of the two endings below found calls unanswered. */
+  function reportUnanswered(count: number): void {
+    if (count > 0) args.onUnansweredCalls?.(count)
+  }
+
+  /**
+   * The client's stdin ended (M36 phase C). Its stdout may still be read — a
+   * one-shot `printf … | mcpcut wrap` reads its answers after its last line —
+   * so this is NOT the agent leaving: answers keep their usual path (review
+   * M3). What changes is the server's stdin: it ends once every call already
+   * sent is answered, or the grace runs out, instead of at once — most stdio
+   * servers exit on it and drop what they were doing.
+   */
+  async function endServerStdinAfterGrace(): Promise<void> {
+    try {
+      const graceMs = args.forwardedAnswerGraceMs ?? FORWARDED_ANSWER_GRACE_MS
+      reportUnanswered(await gate.settleForwarded(graceMs, 'client-ended'))
+    } catch (error: unknown) {
+      onInternalError(error)
+    }
+    endServerStdin()
+  }
+
   const toServer = startPipeline(
     args.clientStdin,
     serverWriter,
     tappedGate(gate.gateClientMessage, 'client→server', args.tapLine),
     {
       onError: (error) => args.reportError('client→server', error, 'source'),
-      onEnd: endServerStdin,
+      onEnd: () => void endServerStdinAfterGrace(),
     },
   )
 
@@ -245,6 +273,10 @@ export function wirePolicyRelay(args: PolicyRelayArgs): RelayWiring {
       Promise.all([toClient.done, stderrRelay.relayed]).then(() => undefined),
       disposed,
     ]),
-    cancelPending: () => gate.cancelPending(),
+    cancelPending: async () => {
+      // The server is gone: whatever it still owed will never come.
+      reportUnanswered(await gate.settleForwarded(0, 'server-ended'))
+      await gate.cancelPending()
+    },
   }
 }

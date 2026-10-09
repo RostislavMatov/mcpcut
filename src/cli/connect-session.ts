@@ -2,7 +2,6 @@ import { join } from 'node:path'
 import { JOURNAL_DIR } from '../config.js'
 import { createRecordBuilder } from '../journal/record.js'
 import { createJournalSink, type JournalSinkOptions } from '../journal/sink.js'
-import { createGrantRegistry } from '../policy/approvals/grants.js'
 import { createApprovalQueue } from '../policy/approvals/queue.js'
 import { createApprovalWaiter } from '../policy/approvals/waiter.js'
 import { createInventory, INVENTORY_FILE_NAME } from '../policy/inventory.js'
@@ -16,10 +15,11 @@ import {
 } from '../session/core.js'
 import type { ArgsCheck } from '../proxy/gate-args-check.js'
 import { DIAGNOSTIC_PREFIX } from './connect-constants.js'
+import { heldCallProgressText, unansweredCallsNotice } from './next-step.js'
 
 /**
  * Assembles one `connect` session's non-transport half — journal, tool
- * inventory, approvals, grant registry — and hands it to `session/core.ts`
+ * inventory, approvals — and hands it to `session/core.ts`
  * together with the endpoints the caller built.
  *
  * `session/core.ts` owns the session itself (gate wiring, agent-revocation
@@ -65,6 +65,8 @@ export interface StartConnectSessionArgs {
   readonly now?: () => number
   /** Revocation poll interval; defaults to the ≤5 s session constant. */
   readonly revocationPollIntervalMs?: number
+  /** The teardown grace for calls already sent (M36 phase C); the session's default when absent. */
+  readonly forwardedAnswerGraceMs?: number
   /** One complete, newline-terminated diagnostic line. Always stderr-bound. */
   readonly onDiagnostic: (line: string) => void
   /** Tighten-only look at call arguments (ADR-0020 §2); given only for the built-in file server. */
@@ -176,9 +178,7 @@ export function startConnectSession(args: StartConnectSessionArgs): ConnectSessi
     approvals: {
       queue: approvalQueue,
       waiter: createApprovalWaiter(),
-      baseDir: approvalsBaseDir,
     },
-    grants: createGrantRegistry(),
     journal: { recordBuilder, sink },
     ...(args.knownSecrets !== undefined ? { knownSecrets: args.knownSecrets } : {}),
     agent: args.agent,
@@ -191,6 +191,11 @@ export function startConnectSession(args: StartConnectSessionArgs): ConnectSessi
     // lists in `confirmInClient` for this agent.
     confirmInClient: { onNotice: args.onDiagnostic },
     ...(args.argsCheck !== undefined ? { argsCheck: args.argsCheck } : {}),
+    // M36: the same stdio client hears that a held call still waits, and for which approval.
+    heldCallProgress: heldCallProgressText,
+    ...(args.forwardedAnswerGraceMs !== undefined ? { forwardedAnswerGraceMs: args.forwardedAnswerGraceMs } : {}),
+    // M36 phase C: the operator hears of a server that left calls unanswered.
+    onUnansweredCalls: (count) => args.onDiagnostic(unansweredCallsNotice(args.serverName, count, args.sessionId)),
   })
 
   failure.arm(session)

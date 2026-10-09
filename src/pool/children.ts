@@ -1,4 +1,6 @@
+import type { JsonRpcId } from '../protocol/classify.js'
 import type { StatelessClientMeta } from '../protocol/mcp-stateless.js'
+import type { SynthesizableId } from '../proxy/synthesize.js'
 import type { McpMessage, MessageSink, MessageSource } from '../transport/message.js'
 import type { NegotiationOutcome, PoolMemberDiscipline, UpstreamRevisionHint } from './handshake.js'
 import { statelessMember } from './member.js'
@@ -33,6 +35,19 @@ export interface PoolChild {
   /** Journal session id of that child — the binding a `kind:'pool'` record carries. */
   readonly sessionId: string
   readonly sink: MessageSink
+  /**
+   * The agent stopped waiting for this request without a cancel (its HTTP
+   * request closed, M36 phase B): a call the child's gate holds for a human
+   * under its id is withdrawn. Absent on a child that holds nothing.
+   */
+  readonly abandon?: (requestBytes: Buffer) => void
+  /**
+   * Registers the listener for the agent's request ids this child settled
+   * without forwarding or answering them (its gate withdrew a held call whose
+   * agent left): no answer will come, so the pool's correlator forgets them
+   * (M36, S-L1). Absent on a child that holds nothing.
+   */
+  readonly onRequestDropped?: (listener: (id: JsonRpcId) => void) => void
   /**
    * Lets the child go. `dirty` = requests of this pool were still in flight
    * there: a child the caller would otherwise keep (a held session, ADR-0016)
@@ -144,6 +159,8 @@ export interface PoolChildrenDeps {
   readonly onEvent: (event: PoolChildEvent) => void
   /** Every frame a child emitted, tagged with the server it came from. */
   readonly onChildMessage: (server: string, message: McpMessage) => void
+  /** The current instance of `server` settled the agent's request `id` without an answer (S-L1). */
+  readonly onChildRequestDropped?: (server: string, id: SynthesizableId) => void
 }
 
 export interface PoolChildren {
@@ -243,6 +260,11 @@ export function createPoolChildren(deps: PoolChildrenDeps): PoolChildren {
       if (isCurrentInstance()) {
         deps.onChildMessage(server, message)
       }
+    })
+    // Same lock as the frames: only the instance that holds the route may
+    // free one of its ids; a null id was never tracked.
+    result.child.onRequestDropped?.((id) => {
+      if (id !== null && isCurrentInstance()) deps.onChildRequestDropped?.(server, id)
     })
     result.source.onEnd(() => {
       if (!isRouted) {

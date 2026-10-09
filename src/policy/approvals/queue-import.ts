@@ -320,8 +320,8 @@ const UNREADABLE_SETTLED_REASON = 'legacy settled record was unreadable at impor
 
 /**
  * Turns the readable pending twin of an unreadable settled record into a settled
- * and INERT row: `expired`, so nothing can approve it and `checkRecentApproval`
- * can never mint a grant from it, yet still a record `listResolved()` shows —
+ * and INERT row: `expired`, so nothing can approve it, yet still a record
+ * `listResolved()` shows —
  * chosen over refusing the id outright because a silently absent row tells
  * nobody a decision was lost, while this one names the request and its tool.
  *

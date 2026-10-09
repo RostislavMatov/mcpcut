@@ -1,6 +1,7 @@
 import type { PoolChild } from '../pool/children.js'
 import { POOL_DEPARTURE_UNGRANTED } from '../pool/constants.js'
 import type { PoolMemberDiscipline } from '../pool/handshake.js'
+import type { JsonRpcId } from '../protocol/classify.js'
 import type { SessionEndReason } from '../session/core.js'
 import type { McpMessage, MessageSource } from '../transport/message.js'
 import type { OpenedChildSession } from './serve-child.js'
@@ -73,6 +74,7 @@ export interface HeldSession {
 interface Attachment {
   onMessage: ((message: McpMessage) => void) | null
   onEnd: (() => void) | null
+  onRequestDropped: ((id: JsonRpcId) => void) | null
 }
 
 export function createHeldSession(
@@ -89,6 +91,11 @@ export function createHeldSession(
     // No attachment: dropped here, and already journaled by the session's gate.
     current?.onMessage?.(message)
   })
+  // Like the frames: a request id the session settled without an answer
+  // (S-L1) concerns only the pool attached when it happened.
+  opened.onRequestDropped((id) => {
+    current?.onRequestDropped?.(id)
+  })
   opened.source.onEnd(() => {
     if (hasEnded) return
     hasEnded = true
@@ -99,7 +106,7 @@ export function createHeldSession(
 
   function attach(): HeldAttachment | null {
     if (hasEnded || current !== null) return null
-    const mine: Attachment = { onMessage: null, onEnd: null }
+    const mine: Attachment = { onMessage: null, onEnd: null, onRequestDropped: null }
     current = mine
     /** THE lock: this attachment still speaks for the session. */
     const isCurrent = (): boolean => current === mine && !hasEnded
@@ -112,6 +119,13 @@ export function createHeldSession(
         write: (message) => (isCurrent() ? opened.sink.write(message) : Promise.resolve()),
         // The session's sink belongs to the session, not to one attachment.
         dispose: () => undefined,
+      },
+      // Only while this attachment speaks for the session, like the sink.
+      abandon: (requestBytes) => {
+        if (isCurrent()) opened.abandon?.(requestBytes)
+      },
+      onRequestDropped: (listener) => {
+        mine.onRequestDropped = listener
       },
       close: (options) => {
         released ??= (async () => {

@@ -56,6 +56,8 @@ export interface FakeSessionControl {
   readonly ctx: SessionContext
   /** Bodies the front wrote into the session, in order. */
   readonly written: Buffer[]
+  /** Request bodies the front reported abandoned (their POST closed; M36 phase B). */
+  readonly abandoned: Buffer[]
   /** Emits a server-initiated message into the source. */
   push(text: string): void
   /** Fires the source's `onError` (transport failure on the upstream side). */
@@ -64,6 +66,8 @@ export interface FakeSessionControl {
   end(): void
   isClosed(): boolean
   isDisposed(): boolean
+  /** Every write from now on rejects with `error`. */
+  failWrites(error: Error): void
 }
 
 export interface FakeFactoryOptions {
@@ -75,6 +79,12 @@ export interface FakeFactoryOptions {
   readonly throwError?: Error
   /** Opt into id correlation, the way a pool session does (plan P1). */
   readonly correlate?: ResponseCorrelation
+  /** Each write settles only after this long (a busy upstream pipe). */
+  readonly writeDelayMs?: number
+  /** Each write rejects with this error (after `writeDelayMs`). */
+  readonly writeError?: Error
+  /** `close()` settles only once this does (a session draining its upstream, M36 phase C). */
+  readonly closeGate?: Promise<void>
 }
 
 export interface FakeSessionFactory {
@@ -101,6 +111,8 @@ export function createFakeSessionFactory(options: FakeFactoryOptions = {}): Fake
     let isDisposed = false
     let isClosed = false
     const written: Buffer[] = []
+    const abandoned: Buffer[] = []
+    let writeError = options.writeError
 
     const emit = (text: string): void => {
       if (!isDisposed) {
@@ -115,7 +127,11 @@ export function createFakeSessionFactory(options: FakeFactoryOptions = {}): Fake
         if (reply !== null) {
           queueMicrotask(() => emit(reply))
         }
-        return Promise.resolve()
+        const { writeDelayMs } = options
+        if (writeDelayMs === undefined && writeError === undefined) return Promise.resolve()
+        return new Promise<void>((resolve, reject) =>
+          setTimeout(() => (writeError !== undefined ? reject(writeError) : resolve()), writeDelayMs ?? 0),
+        )
       },
       dispose: () => undefined,
     }
@@ -138,6 +154,7 @@ export function createFakeSessionFactory(options: FakeFactoryOptions = {}): Fake
     const control: FakeSessionControl = {
       ctx,
       written,
+      abandoned,
       push: emit,
       fail: (error: unknown) => {
         if (!isDisposed) onError?.(error)
@@ -145,6 +162,9 @@ export function createFakeSessionFactory(options: FakeFactoryOptions = {}): Fake
       end: () => onEnd?.(),
       isClosed: () => isClosed,
       isDisposed: () => isDisposed,
+      failWrites: (error) => {
+        writeError = error
+      },
     }
     handles.push(control)
 
@@ -152,9 +172,12 @@ export function createFakeSessionFactory(options: FakeFactoryOptions = {}): Fake
       sink,
       source,
       ...(options.correlate !== undefined ? { correlate: options.correlate } : {}),
+      abandon: (bytes) => {
+        abandoned.push(bytes)
+      },
       close: () => {
         isClosed = true
-        return Promise.resolve()
+        return options.closeGate ?? Promise.resolve()
       },
     }
     return Promise.resolve(opened)

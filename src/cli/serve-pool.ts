@@ -131,6 +131,9 @@ export interface PoolSessionDeps {
 }
 
 export function createPoolSessionFactory(deps: PoolSessionDeps): OpenSession {
+  /** Agents already told that a pool address takes no stateless request. */
+  const statelessExplained = new Set<string>()
+
   function report(ctx: SessionContext, message: string): void {
     deps.stderr.write(`[serve] ${ctx.agentName}/pool: ${message}\n`)
   }
@@ -149,7 +152,10 @@ export function createPoolSessionFactory(deps: PoolSessionDeps): OpenSession {
       return { error: REFUSAL_POOL_SESSIONFUL_ONLY }
     }
     if (model === 'stateless') {
-      report(ctx, POOL_STATELESS_MESSAGE)
+      if (!statelessExplained.has(ctx.agentName)) {
+        statelessExplained.add(ctx.agentName)
+        report(ctx, POOL_STATELESS_MESSAGE)
+      }
       return { error: REFUSAL_POOL_SESSIONFUL_ONLY }
     }
     // Re-read rather than trusting the front's authentication result, so a
@@ -297,6 +303,12 @@ export function createPoolSessionFactory(deps: PoolSessionDeps): OpenSession {
         }
       },
       onChildMessage: (server, message) => mux.handleChildFrame(server, message),
+      // A held call its agent left will never be answered: without this its
+      // entry stayed until the pool session ended, holding the id and marking
+      // the child dirty on release (S-L1).
+      onChildRequestDropped: (server, id) => {
+        correlator.forgetClient(server, id)
+      },
     })
     const catalog = createPoolCatalog({ fanout, children, maxPages: MAX_POOL_LIST_PAGES })
     const watch = createPoolWatch({
@@ -356,6 +368,7 @@ export function createPoolSessionFactory(deps: PoolSessionDeps): OpenSession {
       // Several of this agent's calls may be in flight at once — that is the
       // whole point of a pool (plan decision P1).
       correlate: deps.correlate,
+      abandon: (requestBytes) => mux.abandonAgentRequest(requestBytes),
       close,
     }
   }

@@ -198,6 +198,21 @@ describe('opening a pool session', () => {
     expect(await response.text()).toContain('pool-sessionful-only')
   })
 
+  test('the stateless refusal is explained on stderr once per agent, not on every connect', async () => {
+    // Claude Code opens every connection with a stateless `server/discover`
+    // and falls back to `initialize` by itself: a line per connect was noise.
+    const fixture = await startServe({ grant: '*' })
+    const stateless = (): Promise<Response> =>
+      fixture.post(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }), { 'mcp-method': 'tools/list' }, POOL)
+
+    expect((await stateless()).status).toBe(400)
+    expect((await stateless()).status).toBe(400)
+
+    const lines = fixture.io.errText().split('\n').filter((line) => line.includes('sessionful agents only'))
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toContain('falls back to initialize')
+  })
+
   test('a revoked agent never gets as far as the pool', async () => {
     // The front's own authentication rejects a revoked agent's token with the
     // uniform 401, before any route is answered. The pool's `no-grant` refusal

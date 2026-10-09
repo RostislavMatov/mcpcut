@@ -92,7 +92,7 @@ describe('readPolicyFileForEdit', () => {
     expect(result.document).toEqual(JSON.parse(raw))
     // The document is the file as written; the policy is its effective form.
     expect(Object.keys(result.document as object)).toEqual(['version', 'servers'])
-    expect(result.policy.approval.timeoutMs).toBeGreaterThan(0)
+    expect(result.policy.approval.onTimeout).toBe('deny') // a schema default, applied
     expect(result.hash).toBe(await loadedHash(policyPath))
     expect(result.policy.servers?.['github']?.tools).toEqual({ create_issue: 'deny' })
   })

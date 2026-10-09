@@ -1,4 +1,5 @@
 import type { ClassifiedMessage, JsonRpcId } from './classify.js'
+import { callMetaOf } from './call-meta.js'
 import { META_PROTOCOL_VERSION_KEY } from './mcp-stateless.js'
 
 /**
@@ -48,6 +49,14 @@ export interface ParsedToolCall {
   readonly toolName: string
   readonly args: unknown
   readonly id: JsonRpcId
+  /** `params._meta.progressToken` (a string or finite number): the gate reports on it while it holds the call (M36). */
+  readonly progressToken?: string | number
+  /**
+   * `params._meta["claudecode/toolUseId"]`: the model's tool use this call
+   * carries out (`call-meta.ts`). The same id again is a resend of the same
+   * tool use, answered with the first result (M36 phase C).
+   */
+  readonly toolUseId?: string
 }
 
 /** The result of successfully parsing a `tools/list` response. */
@@ -64,7 +73,7 @@ export interface ParsedToolsListResult {
  * `proxy/gate-helpers.ts`) go through it, so the two can never drift in what
  * they accept. Returns `null` on any malformed shape.
  */
-export function parseToolCallParams(raw: string): Pick<ParsedToolCall, 'toolName' | 'args'> | null {
+export function parseToolCallParams(raw: string): Omit<ParsedToolCall, 'id'> | null {
   const parsed = tryParseJsonObject(raw)
   if (!parsed) {
     return null
@@ -81,7 +90,8 @@ export function parseToolCallParams(raw: string): Pick<ParsedToolCall, 'toolName
   }
 
   const rawArgs = params['arguments']
-  return { toolName: name, args: rawArgs === undefined ? null : rawArgs }
+  const args = rawArgs === undefined ? null : rawArgs
+  return { toolName: name, args, ...callMetaOf(params['_meta']) }
 }
 
 /**

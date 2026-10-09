@@ -7,6 +7,7 @@ import { createAdminStore } from '../../src/admin/store.js'
 import { runApprovals, type ApprovalsCliOptions } from '../../src/cli/approvals-cmd.js'
 import { runQuarantine } from '../../src/cli/quarantine-cmd.js'
 import type { JournalRecord } from '../../src/journal/record.js'
+import { createApprovalQueue } from '../../src/policy/approvals/queue.js'
 import { INVENTORY_FILE_NAME } from '../../src/policy/inventory.js'
 import { parsePolicy, type Policy } from '../../src/policy/schema.js'
 import {
@@ -341,9 +342,9 @@ describe('runWrap: require-approval forwards the call once the real CLI approves
   })
 })
 
-// -- 4: timeout, then a late CLI approval turns into a grant for the retry -----------
+// -- 4: timeout, then a late CLI approval is refused and the retry asks again (M36) --------
 
-describe('runWrap: a late CLI approval after a timeout grants the identical retry', () => {
+describe('runWrap: a late CLI approval after a timeout is refused, and the identical retry asks again', () => {
   const journalDir = useJournalDir('mcpcut-policy-late-grant-')
   // Short enough that the wait reliably times out inside the test's own budget.
   const policy = policyOf({
@@ -351,9 +352,22 @@ describe('runWrap: a late CLI approval after a timeout grants the identical retr
     approval: { timeoutMs: 500 },
     servers: { [SERVER_NAME]: { tools: { echo: 'require-approval' } } },
   })
-  const approvalsBaseDir = () => join(journalDir(), 'approvals')
   let session: SessionResult
   let firstApprovalId: string
+  let lateApproveExit: number
+  let lateApproveErr: string
+
+  /** The id of the one request pending in this run's queue, once there is one. */
+  async function pendingApprovalId(): Promise<string> {
+    let found: string | undefined
+    await waitUntilAsync(async () => {
+      const probe = createCliCapture()
+      await runApprovals(['list', '--json'], probe, { baseDir: join(journalDir(), 'approvals'), env: {} })
+      found = (JSON.parse(probe.out()) as { approvals: { approvalId: string }[] }).approvals[0]?.approvalId
+      return found !== undefined
+    })
+    return found as string
+  }
 
   beforeAll(async () => {
     const started = startProxySession({
@@ -367,38 +381,45 @@ describe('runWrap: a late CLI approval after a timeout grants the identical retr
     started.harness.clientOutbox.write(requestLine(1, 'tools/call', { name: 'echo', arguments: {} }))
 
     await waitUntil(() => receivedMessagesOf(started.harness).some((m) => m.id === 1))
-    const timedOut = receivedMessagesOf(started.harness).find((m) => m.id === 1)
-    firstApprovalId = ((timedOut?.error as { data: { approvalId: string } }).data).approvalId
+    // The timeout names no approval id (R7): the operator's side has it.
+    const [closed] = await createApprovalQueue({ baseDir: join(journalDir(), 'approvals') }).listResolved({ limit: 1 })
+    firstApprovalId = closed!.approvalId
 
-    const approveIo = createCliCapture()
-    const approveExit = await runApprovals(
-      ['approve', firstApprovalId],
-      approveIo,
-      await approveAsAdminOpts(journalDir()),
-    )
-    expect(approveExit).toBe(0)
+    const adminOpts = await approveAsAdminOpts(journalDir())
+    const lateIo = createCliCapture()
+    lateApproveExit = await runApprovals(['approve', firstApprovalId], lateIo, adminOpts)
+    lateApproveErr = lateIo.err()
 
-    // Same tool, same (empty) arguments: the retry the on-disk grant must match.
+    // Same tool, same (empty) arguments: a question of its own, approved while it waits.
     started.harness.clientOutbox.write(requestLine(2, 'tools/call', { name: 'echo', arguments: {} }))
+    const retryApprovalId = await pendingApprovalId()
+    const approveIo = createCliCapture()
+    expect(await runApprovals(['approve', retryApprovalId], approveIo, adminOpts)).toBe(0)
     await waitUntil(() => receivedMessagesOf(started.harness).some((m) => m.id === 2))
 
     session = await finishProxySession(started, journalDir())
   })
 
-  test('the first call times out carrying the approval id in `data`, never in the message', () => {
+  test('the first call times out naming no approval id, in `data` or in the message', () => {
     const timedOut = session.messages.find((message) => message.id === 1)
 
     expect((timedOut?.error as { code: number }).code).toBe(ERROR_CODE_APPROVAL)
-    // Correlation belongs in the structured payload. The prose the agent reads
-    // must not hand it the id (nor the CLI command that takes one): the party
-    // being gated is the one party that must not be told how to lift the gate.
-    expect((timedOut?.error as { data: { approvalId: string } }).data.approvalId).toBe(firstApprovalId)
+    // The prose the agent reads must not hand it the id (nor the CLI command
+    // that takes one): the party being gated is the one party that must not be
+    // told how to lift the gate. And since M36 the request closed with this
+    // answer, so `data` carries no id either (R7).
+    expect((timedOut?.error as { data: Record<string, unknown> }).data).not.toHaveProperty('approvalId')
     const message = (timedOut?.error as { message: string }).message
     expect(message).not.toContain(firstApprovalId)
     expect(message).not.toContain('mcpcut')
   })
 
-  test('the retry is forwarded and answered, without a second pending approval', () => {
+  test('the late approval is refused: the timed-out request closed with its answer', () => {
+    expect(lateApproveExit).toBe(1)
+    expect(lateApproveErr).toMatch(/already resolved or unknown id/)
+  })
+
+  test('the retry raised its own request and was forwarded once approved', () => {
     const retried = session.messages.find((message) => message.id === 2)
 
     expect(retried?.error).toBeUndefined()
@@ -407,15 +428,15 @@ describe('runWrap: a late CLI approval after a timeout grants the identical retr
     const pendingRecords = decisionRecords(session.records).filter(
       (r) => r.decision?.outcome === 'require-approval-pending',
     )
-    expect(pendingRecords).toHaveLength(1) // only the first call ever enqueued
+    expect(pendingRecords).toHaveLength(2)
+    expect(pendingRecords[1]?.decision?.approvalId).not.toBe(firstApprovalId)
   })
 
-  test('the journal shows timeout for the first call, then an allow-by-grant for the retry', () => {
+  test('the journal shows timeout for the first call and an approval for the retry, never a grant', () => {
     expect(outcomesOf(session.records)).toEqual(
-      expect.arrayContaining(['require-approval-pending', 'timeout', 'allow']),
+      expect.arrayContaining(['require-approval-pending', 'timeout', 'approved']),
     )
-    const granted = decisionRecords(session.records).find((r) => r.decision?.rule === 'grant')
-    expect(granted?.decision?.outcome).toBe('allow')
+    expect(decisionRecords(session.records).some((r) => r.decision?.rule === 'grant')).toBe(false)
   })
 })
 

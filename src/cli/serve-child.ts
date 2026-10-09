@@ -1,4 +1,5 @@
 import type { AgentRecord } from '../agents/schema.js'
+import type { JsonRpcId } from '../protocol/classify.js'
 import { createRecordBuilder } from '../journal/record.js'
 import { createFilesArgsCheck } from '../files/args-check.js'
 import type { SearchBackend } from '../files/search/search-backend.js'
@@ -6,7 +7,6 @@ import { createAgentFilesBackend, type FilesBackend } from '../files/upstream.js
 import { createJournalSink, type JournalSink, type JournalSinkOptions } from '../journal/sink.js'
 import { createApprovalQueue } from '../policy/approvals/queue.js'
 import { createApprovalWaiter } from '../policy/approvals/waiter.js'
-import { createGrantRegistry } from '../policy/approvals/grants.js'
 import { createInventory } from '../policy/inventory.js'
 import type { PolicyProvider } from '../policy/reload.js'
 import type { Policy } from '../policy/schema.js'
@@ -19,12 +19,14 @@ import type {
   SessionContext,
 } from '../transport/http/session.js'
 import type { ServeWritable } from './serve-constants.js'
+import type { ToolUseAnswers } from '../proxy/tool-use-answers.js'
+import { heldCallProgressText, unansweredCallsNotice } from './next-step.js'
 import { createMemoryPipe } from './serve-pipe.js'
 import { openUpstream, type OpenUpstreamDeps } from './serve-upstream.js'
 
 /**
  * Building ONE fully wired single-server session: journal sink and record
- * builder, inventory, approvals, grants, the upstream, and the memory pipe
+ * builder, inventory, approvals, the upstream, and the memory pipe
  * that joins it to whoever is driving it.
  *
  * Extracted from `serve-runtime.ts` unchanged when the pool arrived (ADR-0015
@@ -65,6 +67,14 @@ export interface ChildSessionDeps {
   readonly failClosed: boolean
   /** One search backend for the whole process, shared by every file session; its owner closes it. */
   readonly filesSearch?: SearchBackend
+  /**
+   * The process's server answers by tool use (M36 phase C), one for every
+   * session `serve` opens: Claude Code resends a tool use on a NEW session
+   * after a 404, so a table per session would miss it.
+   */
+  readonly toolUseAnswers?: ToolUseAnswers
+  /** The teardown grace for calls already sent; the session's default when absent (tests shorten it). */
+  readonly forwardedAnswerGraceMs?: number
   /** @internal test-only seam mirroring `wrap`'s, for fail-closed tests. */
   readonly journalCommitBatchImpl?: JournalSinkOptions['commitBatchImpl']
 }
@@ -84,6 +94,12 @@ export interface OpenedChildSession extends OpenedSession {
    * listening on that end reads the reason in the same synchronous chain.
    */
   readonly endReason: () => SessionEndReason | null
+  /**
+   * Registers the ONE listener that hears each request id this session's gate
+   * settled without forwarding or answering (a held call whose agent left):
+   * the pool forgets it in its correlator (S-L1). A later call replaces it.
+   */
+  readonly onRequestDropped: (listener: (id: JsonRpcId) => void) => void
 }
 
 export type ChildSessionOpener = (
@@ -158,9 +174,7 @@ export function createChildSessionOpener(deps: ChildSessionDeps): ChildSessionOp
       approvals: {
         queue: createApprovalQueue({ baseDir: deps.approvalsBaseDir }),
         waiter: createApprovalWaiter(),
-        baseDir: deps.approvalsBaseDir,
       },
-      grants: createGrantRegistry(),
       journal: journal.deps,
       agent: { record: target.agent, store: deps.agents },
       ...(deps.clock !== undefined ? { clock: deps.clock } : {}),
@@ -168,6 +182,13 @@ export function createChildSessionOpener(deps: ChildSessionDeps): ChildSessionOp
         ? { revocationPollIntervalMs: deps.revocationPollIntervalMs }
         : {}),
       onError,
+      // M36 phase B: the front sends a held call's progress on its own POST,
+      // as an SSE stream, so the agent's client knows the call still waits.
+      heldCallProgress: heldCallProgressText,
+      ...(deps.toolUseAnswers !== undefined ? { toolUseAnswers: deps.toolUseAnswers } : {}),
+      ...(deps.forwardedAnswerGraceMs !== undefined ? { forwardedAnswerGraceMs: deps.forwardedAnswerGraceMs } : {}),
+      onUnansweredCalls: (count) =>
+        report(ctx, unansweredCallsNotice(target.record.name, count, journal.sessionId).trimEnd()),
     }
   }
 
@@ -215,6 +236,7 @@ export function createChildSessionOpener(deps: ChildSessionDeps): ChildSessionOp
     }
 
     const pipe = createMemoryPipe()
+    let droppedListener: ((id: JsonRpcId) => void) | null = null
     let closePromise: Promise<void> | null = null
     const closeAll = (): Promise<void> => {
       closePromise ??= (async () => {
@@ -231,6 +253,7 @@ export function createChildSessionOpener(deps: ChildSessionDeps): ChildSessionOp
         client: { source: pipe.session.source, sink: pipe.session.sink },
         server: { source: opened.upstream.source, sink: opened.upstream.sink },
         ...(files !== undefined ? { argsCheck: createFilesArgsCheck(files) } : {}),
+        onRequestDropped: (id) => droppedListener?.(id),
         onSessionEnd: (reason) => {
           // The session died on its own terms (revocation, upstream end):
           // tell whoever is driving it, whose teardown then calls `close()` —
@@ -254,6 +277,10 @@ export function createChildSessionOpener(deps: ChildSessionDeps): ChildSessionOp
       sessionId: journal.sessionId,
       sink: pipe.front.sink,
       source: pipe.front.source,
+      abandon: (requestBytes) => handle?.abandonRequest(requestBytes),
+      onRequestDropped: (listener) => {
+        droppedListener = listener
+      },
       close: closeAll,
       endReason: () => endedWith,
     }

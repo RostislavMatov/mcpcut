@@ -63,11 +63,26 @@ export interface RunWrapOptions {
    */
   readonly approvalNotice?: (notice: PendingApprovalNotice) => string
   /**
+   * The text of the `notifications/progress` a call held for approval sends
+   * the client while it waits (decision M36; see `MessagePolicyGateDeps`).
+   * Formatted by the CLI, like `approvalNotice`; absent means no progress is
+   * sent. Mode B only.
+   */
+  readonly heldCallProgress?: (approvalId: string) => string
+  /**
    * The one line written when the session ends (the wrapped server exited or
    * the client left), after the journal is flushed: it names the session and
    * how to read it. Formatted by the CLI; absent means silence, as before.
    */
   readonly sessionEndNotice?: (sessionId: string) => string
+  /**
+   * The line written when the server left calls unanswered at the end of the
+   * session (M36 phase C): which server, how many, how to read them.
+   * Formatted by the CLI; absent means silence.
+   */
+  readonly unansweredNotice?: (serverName: string, count: number, sessionId: string) => string
+  /** Test seam: the teardown grace for calls already sent (M36 phase C); 30 s when absent. */
+  readonly forwardedAnswerGraceMs?: number
   /**
    * Forces fail-closed journaling on regardless of `policy.journal.failClosed`
    * (the `--fail-closed` flag). Never forces it *off*: a policy that asks for

@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import type { AgentRecord } from '../../src/agents/schema.js'
 import { createRecordBuilder } from '../../src/journal/record.js'
 import type { JournalRecord } from '../../src/journal/record.js'
-import { createGrantRegistry } from '../../src/policy/approvals/grants.js'
 import { createApprovalQueue, type ApprovalQueue, type PendingApproval } from '../../src/policy/approvals/queue.js'
 import { createApprovalWaiter } from '../../src/policy/approvals/waiter.js'
 import { grantsHashOf, policyHashOf } from '../../src/policy/provenance.js'
@@ -150,9 +149,7 @@ function createSessionHarness(opts: HarnessOptions = {}): SessionHarness {
     approvals: {
       queue,
       waiter: createApprovalWaiter({ pollIntervalMs: 5 }),
-      baseDir: approvalsDir,
     },
-    grants: createGrantRegistry(),
     journal: {
       recordBuilder: createRecordBuilder(SESSION_ID),
       sink: {
@@ -164,6 +161,8 @@ function createSessionHarness(opts: HarnessOptions = {}): SessionHarness {
     },
     ...(opts.agent !== undefined ? { agent: opts.agent } : {}),
     revocationPollIntervalMs: POLL_INTERVAL_MS,
+    // The teardown grace has its own suite (`core-teardown-grace.test.ts`).
+    forwardedAnswerGraceMs: 0,
     onError: (error) => errors.push(error),
     onSessionEnd: (reason) => endReasons.push(reason),
   })
@@ -392,7 +391,7 @@ describe('createSession: agent scope', () => {
 })
 
 describe('createSession: revocation and live grant changes', () => {
-  test('revoking the agent mid-session answers in-flight approvals, journals, and ends within the poll interval', async () => {
+  test('revoking the agent mid-session withdraws in-flight approvals, journals, and ends within the poll interval', async () => {
     const record = agentRecordOf({ grants: { [SERVER_NAME]: { tools: '*' } } })
     const store = mutableAgentStore(record)
     const harness = createSessionHarness({
@@ -404,17 +403,20 @@ describe('createSession: revocation and live grant changes', () => {
     })
 
     harness.clientSource.emit(toolCallMessage(11, 'write_file'))
-    await waitForPendingApproval()
+    const pending = await waitForPendingApproval()
 
     store.set(agentRecordOf({ revokedAt: '2026-08-06T00:00:00.000Z' }))
 
     expect(await harness.session.ended).toBe('revoked')
     expect(harness.endReasons).toEqual(['revoked'])
-    // The in-flight call got the existing synthetic approval-timeout answer.
-    expect(harness.clientSink.written).toHaveLength(1)
-    const answer = parseMessage(harness.clientSink.written[0]!)
-    expect(answer['error'].code).toBe(ERROR_CODE_APPROVAL)
-    expect(answer['error'].data.reason).toBe('approval_timeout')
+    // M36: the session's end takes the held call with it — withdrawn, so a
+    // later approve is refused, and nothing is sent on a closing channel.
+    expect(harness.clientSink.written).toEqual([])
+    await expect(queue.readResolution(pending.approvalId)).resolves.toMatchObject({
+      outcome: 'withdrawn',
+      reason: 'disconnected',
+    })
+    expect(decisionsOf(harness.records).map((record) => record.decision?.outcome)).toContain('agent-gone')
     // The final journal record marks the revocation.
     const last = decisionsOf(harness.records).at(-1)
     expect(last?.decision).toMatchObject({

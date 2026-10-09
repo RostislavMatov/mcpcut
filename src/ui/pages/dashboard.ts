@@ -39,6 +39,8 @@ export interface RecentDecisionView {
   readonly agentName?: string
   readonly argsHash?: string
   readonly durationMs?: number
+  /** Why the agent left, or why the session ended (M36 phase C records). */
+  readonly reason?: string
 }
 
 /** Everything the dashboard shows besides the queue; built by the handler. */
@@ -92,6 +94,7 @@ export function toRecentDecisions(
       rule: d.rule,
       ...(d.agentName !== undefined ? { agentName: d.agentName } : {}),
       ...(d.argsHash !== undefined ? { argsHash: d.argsHash } : {}),
+      ...(d.reason !== undefined ? { reason: d.reason } : {}),
       ...(record.durationMs !== undefined ? { durationMs: record.durationMs } : {}),
     })
   }

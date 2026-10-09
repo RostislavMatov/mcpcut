@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { migrateApprovalsQueue } from '../../../src/policy/approvals/queue-import.js'
 import { openApprovalsDb, type ApprovalsDb } from '../../../src/policy/approvals/queue-db.js'
 import { createApprovalQueue } from '../../../src/policy/approvals/queue.js'
-import { checkRecentApproval } from '../../../src/policy/approvals/grants.js'
 
 /**
  * The legacy import's ONE-OUTCOME-PER-ID guarantee: an approval id that a
@@ -152,21 +151,14 @@ describe('importLegacyApprovals: a settled record that cannot be parsed', () => 
     await expect(queue.listResolved({ limit: 10 })).resolves.toHaveLength(1)
   })
 
-  test('the grant window is not reopened by an unreadable settled record', async () => {
+  test('an unreadable settled record never reads back as an approval', async () => {
     await writeLegacyFile('resolved', ID_B, TRUNCATED)
     await writeLegacyFile('pending', ID_B, legacyDoc(ID_B))
-    createApprovalQueue({ baseDir })
+    const queue = createApprovalQueue({ baseDir })
 
-    const granted = await checkRecentApproval(baseDir, {
-      serverName: 'github',
-      toolName: 'create_issue',
-      argsHash: 'hash-1',
-      sessionId: 'session-1', // the legacy document's own session (requester binding, audit 2026-09-02 F1)
-      ttlMs: 60_000,
-      clock: () => Date.now(),
-    })
+    const resolution = await queue.readResolution(ID_B)
 
-    expect(granted).toBeNull()
+    expect(resolution?.outcome).not.toBe('approved')
   })
 
   test('an unreadable settled record with NO twin is a lost record, not a resurrection', async () => {

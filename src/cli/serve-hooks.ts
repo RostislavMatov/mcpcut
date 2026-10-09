@@ -1,10 +1,12 @@
 import type { IncomingHttpHeaders } from 'node:http'
 import { classify } from '../protocol/classify.js'
-import { detectInitializeBytes, extractPerMessageHeaders } from '../protocol/mcp.js'
+import { detectInitializeBytes, extractPerMessageHeaders, PROGRESS_NOTIFICATION } from '../protocol/mcp.js'
+import { progressTokenOfNotification, progressTokenOfRequest } from '../pool/multiplexer-frames.js'
 import { idKeyOf } from '../proxy/gate-helpers.js'
 import type {
   DetectInitialize,
   ExpectsResponse,
+  ProgressCorrelation,
   ResponseCorrelation,
   StatelessValidation,
   ValidateStatelessHeaders,
@@ -133,6 +135,17 @@ export function expectsResponse(bytes: Buffer): boolean {
 }
 
 /**
+ * Whether a server payload is the server's own notification or request. Such
+ * a message never settles a per-server (positional) POST: arriving while a
+ * call is held, it goes to the GET stream instead of ending that POST as if
+ * it were the call's answer (security review of M36 phase B, L3).
+ */
+export function isServerInitiated(bytes: Buffer): boolean {
+  const kind = classify(bytes.toString('utf8')).kind
+  return kind === 'notification' || kind === 'request'
+}
+
+/**
  * How the front pairs a POOL session's replies with its requests (ADR-0015
  * phase 3, plan decision P1). Lives here for the same reason every other hook
  * does: the key is a JSON-RPC `id`, and the transport must not learn what that
@@ -146,6 +159,26 @@ export function expectsResponse(bytes: Buffer): boolean {
 export const poolResponseCorrelation: ResponseCorrelation = Object.freeze({
   keyOfRequest: (bytes: Buffer): string | null => correlationKeyOf(bytes, 'request'),
   keyOfResponse: (bytes: Buffer): string | null => correlationKeyOf(bytes, 'response'),
+})
+
+/**
+ * How the front routes a call's progress onto that call's own POST (decision
+ * M36, phase B): a request is keyed by the `progressToken` it carries, a
+ * `notifications/progress` by the token it reports on. Keyed with the gate's
+ * own `idKeyOf`, so `"1"` and `1` stay two tokens, as they are two ids.
+ */
+export const progressCorrelation: ProgressCorrelation = Object.freeze({
+  keyOfRequest: (bytes: Buffer): string | null => {
+    const message = classify(bytes.toString('utf8'))
+    const token = message.kind === 'request' ? progressTokenOfRequest(message.raw) : null
+    return token === null ? null : idKeyOf(token)
+  },
+  keyOfNotification: (bytes: Buffer): string | null => {
+    const message = classify(bytes.toString('utf8'))
+    const isProgress = message.kind === 'notification' && message.method === PROGRESS_NOTIFICATION
+    const token = isProgress ? progressTokenOfNotification(message.raw) : null
+    return token === null ? null : idKeyOf(token)
+  },
 })
 
 /** The id key of a classified message of `kind`, or `null` when it has none. */

@@ -96,11 +96,28 @@ export function resolveApprovalHint(approvalId: string): string {
  * agent with a shell would run it and approve itself (`synthesize.ts`).
  */
 export function heldCallNotice(notice: PendingApprovalNotice): string {
-  const waitSeconds = Math.round(notice.waitMs / MS_PER_SECOND)
+  // M36: no cap by default — the call is held for as long as its agent waits.
+  const wait =
+    notice.waitMs === undefined
+      ? 'the agent waits until you decide or it stops waiting'
+      : `the agent waits ${Math.round(notice.waitMs / MS_PER_SECOND)} s`
   return (
     `held for approval: ${formatReadableField(notice.toolName)} on ${formatReadableField(notice.serverName)} ` +
-    `(the agent waits ${waitSeconds} s). ${resolveApprovalHint(notice.approvalId)}`
+    `(${wait}). ${resolveApprovalHint(notice.approvalId)}`
   )
+}
+
+/**
+ * The `notifications/progress` text a call held for approval sends its client
+ * (decision M36). It travels on the AGENT's channel, and an agent with a shell
+ * on the same host could run whatever it is told — before the first admin
+ * exists `approvals approve` needs no token — so, like the -32002 error the
+ * agent reads at a timeout (`heldCallNotice`), it names neither the approval
+ * nor the command that releases it (security review of M36 phase A). The
+ * person who approves finds the request in `approvals list` or the console.
+ */
+export function heldCallProgressText(): string {
+  return 'waiting for a person to approve this call'
 }
 
 export function listApprovalsHint(): string {
@@ -160,6 +177,21 @@ export function noGroupsHint(): string {
 
 export function vaultNotInitializedMessage(): string {
   return `vault is not initialized. Run "${cliCommand()} vault init" first.\n`
+}
+
+/**
+ * The operator's one line when a server left calls unanswered at the end of a
+ * session (decision M36, phase C): which server, how many, and the command
+ * that shows the `unanswered` records. The server name comes from the
+ * registry or the command line, so it is made readable before it is printed.
+ */
+export function unansweredCallsNotice(serverName: string, count: number, sessionId: string): string {
+  const calls = count === 1 ? '1 call' : `${count} calls`
+  const pronoun = count === 1 ? 'it' : 'them'
+  return (
+    `server "${formatReadableField(serverName)}" did not answer ${calls} before its session closed ` +
+    `(journaled "unanswered"); see ${pronoun}: ${cliCommand()} show ${shellArg(sessionId)} --kind decision\n`
+  )
 }
 
 /** The line `wrap` writes when the session ends: the id and the command that reads it back. */

@@ -1,11 +1,11 @@
 import { decide, type PolicyDecision } from '../policy/decide.js'
-import type { GrantKey, GrantRegistry } from '../policy/approvals/grants.js'
 import type { PolicyProvider } from '../policy/provider.js'
 import type { ParsedToolCall } from '../protocol/mcp.js'
 import type { ApprovalFlow } from './gate-approvals.js'
 import type { ArgsCheck } from './gate-args-check.js'
 import type { ConfirmStep } from './gate-confirm.js'
 import type { createDecideInputAssembler } from './gate-decide-input.js'
+import type { GateDelivery } from './gate-delivery.js'
 import {
   ALREADY_ANSWERED_RULE,
   DROP,
@@ -33,11 +33,9 @@ type DecideInputAssembler = ReturnType<typeof createDecideInputAssembler>
 
 export interface CallDeciderDeps {
   readonly policy: PolicyProvider
-  readonly serverName: string
   readonly factsOf: DecideInputAssembler['factsOf']
   readonly decideInputOf: DecideInputAssembler['decideInputOf']
   readonly enforceCatalogTrust: DecideInputAssembler['enforceCatalogTrust']
-  readonly grantRegistry: GrantRegistry
   readonly provenance: DecisionProvenance
   readonly applyAllow: (
     call: ParsedToolCall, facts: CallFacts, decision: PolicyDecision, extras?: DecisionExtras,
@@ -50,6 +48,8 @@ export interface CallDeciderDeps {
   readonly settleJournal: () => Promise<void>
   /** Tighten-only look at the arguments after `decide()` (ADR-0020 §2); absent for every ordinary server. */
   readonly argsCheck?: ArgsCheck
+  /** A resend of the same tool use, and the tracking of what is forwarded (M36 phase C). */
+  readonly delivery: Pick<GateDelivery, 'admit' | 'track'>
 }
 
 export interface CallDecider {
@@ -59,7 +59,6 @@ export interface CallDecider {
 /** One evaluation of a call under the rules in force at that instant. */
 interface Evaluation {
   readonly facts: CallFacts
-  readonly grantKey: GrantKey
   readonly decision: PolicyDecision
   readonly captured: ProvenanceSnapshot
   /** Set only by an argument check's refusal: the words the client is answered with. */
@@ -67,7 +66,7 @@ interface Evaluation {
 }
 
 export function createCallDecider(deps: CallDeciderDeps): CallDecider {
-  const { policy, serverName, confirmStep } = deps
+  const { policy, confirmStep } = deps
 
   function evaluate(call: ParsedToolCall): Evaluation {
     // Schedules a `stat` of the policy file (rate-limited); a pending edit
@@ -76,8 +75,7 @@ export function createCallDecider(deps: CallDeciderDeps): CallDecider {
     // same object because nothing in this synchronous stretch can swap it.
     policy.maybeRefresh()
     const facts = deps.factsOf(call)
-    const grantKey: GrantKey = { serverName, toolName: facts.toolName, argsHash: facts.argsHash }
-    const decision = deps.enforceCatalogTrust(decide(deps.decideInputOf(facts, deps.grantRegistry.isGranted(grantKey))))
+    const decision = deps.enforceCatalogTrust(decide(deps.decideInputOf(facts)))
     // Provenance is sampled HERE, in the same synchronous run as `decide()`,
     // because this is the instant the rules produced the verdict. Only the
     // deferred path needs it explicitly: `applyAllow`/`applyDeny` journal
@@ -85,7 +83,7 @@ export function createCallDecider(deps: CallDeciderDeps): CallDecider {
     // already this same instant, while `requestApproval` awaits a storage read
     // before it writes and would otherwise sample a matrix an `agent-watch`
     // poll had already replaced (M5 wave-2 review, finding 2).
-    return { facts, grantKey, decision, captured: deps.provenance.snapshot() }
+    return { facts, decision, captured: deps.provenance.snapshot() }
   }
 
   /**
@@ -111,13 +109,12 @@ export function createCallDecider(deps: CallDeciderDeps): CallDecider {
 
   /** The admin's half: allow, deny, or the approval queue; `base` rides every record it writes. */
   function go(call: ParsedToolCall, evaluation: Evaluation, base: DecisionExtras): Verdict | Promise<Verdict> {
-    const { facts, grantKey, decision, captured } = evaluation
+    const { facts, decision, captured } = evaluation
     if (decision.outcome === 'allow') return deps.applyAllow(call, facts, decision, base)
     if (decision.outcome === 'deny') return deps.applyDeny(call, facts, decision, evaluation.clientMessage)
     // An id-less call has no return address: an approval could never deliver
-    // it, yet its grant would still be minted and consumable by a later
-    // id-bearing call — pure operator-fatigue cost with zero upside, so it
-    // short-circuits to deny instead of enqueuing (re-review L4).
+    // it — pure operator-fatigue cost with zero upside, so it short-circuits
+    // to deny instead of enqueuing (re-review L4).
     if (call.id === null) {
       return deps.applyDeny(call, facts, {
         outcome: 'deny',
@@ -125,7 +122,7 @@ export function createCallDecider(deps: CallDeciderDeps): CallDecider {
         reason: 'id-less tools/call cannot receive an approval result; denying instead of enqueuing',
       })
     }
-    return deps.requestApproval(call, facts, grantKey, decision, captured, base)
+    return deps.requestApproval(call, facts, decision, captured, base)
   }
 
   /**
@@ -155,22 +152,41 @@ export function createCallDecider(deps: CallDeciderDeps): CallDecider {
     }
   }
 
-  /** The verdict for an evaluated call: deny, the confirmation in the client, or the admin's half. */
+  /** The verdict for an evaluated call: deny, a resend (M36 phase C), the confirmation in the client, or the admin's half. */
   function decideEvaluated(call: ParsedToolCall): (evaluation: Evaluation) => Verdict | Promise<Verdict> {
     return (evaluation) => {
       const { facts, decision } = evaluation
       if (decision.outcome === 'deny') return deps.applyDeny(call, facts, decision, evaluation.clientMessage)
-      if (confirmStep.isRequired(facts.toolName)) return confirmThenGo(call, facts, decision.outcome === 'require-approval')
-      return go(call, evaluation, {})
+      // After the rules, before anyone is asked: a rule that now denies still
+      // wins over a kept answer, and a resend asks nobody twice (M36 phase C).
+      const admission = deps.delivery.admit(call, facts)
+      if (admission.kind === 'answered') return admission.verdict
+      // M39: joined the call holding its tool use; once it lets go, decide again —
+      // under the rules then in force — which finds and replays its answer.
+      if (admission.kind === 'joined') {
+        return admission.settled.then((outcome) => (outcome === 'released' ? decider.decideToolCall(call) : outcome))
+      }
+      let verdict: Verdict | Promise<Verdict>
+      try {
+        verdict = confirmStep.isRequired(facts.toolName)
+          ? confirmThenGo(call, facts, decision.outcome === 'require-approval')
+          : go(call, evaluation, {})
+      } catch (error: unknown) {
+        // The caller fails the call closed; the tool use must not stay claimed.
+        admission.claim?.release()
+        throw error
+      }
+      return deps.delivery.track(call, facts, admission.claim, verdict)
     }
   }
 
-  return {
+  const decider: CallDecider = {
     decideToolCall(call) {
       const evaluation = evaluateTightened(call)
       return isPromiseLike(evaluation) ? evaluation.then(decideEvaluated(call)) : decideEvaluated(call)(evaluation)
     },
   }
+  return decider
 }
 
 function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {

@@ -70,9 +70,10 @@ function rowHref(decision: RecentDecisionView, filter: string | undefined): stri
 
 /** The detail card's args-box line: the decision rule plus the args hash. */
 function detailMeta(decision: RecentDecisionView): string {
+  const reason = decision.reason !== undefined ? ` · reason ${decision.reason}` : ''
   return decision.argsHash !== undefined
-    ? `rule ${decision.rule} · args ${decision.argsHash}`
-    : `rule ${decision.rule}`
+    ? `rule ${decision.rule}${reason} · args ${decision.argsHash}`
+    : `rule ${decision.rule}${reason}`
 }
 
 /**

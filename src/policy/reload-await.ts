@@ -46,7 +46,7 @@ import type { Policy } from './schema.js'
  *    vanish (ADR-0005, ADR-0009). It never falls back to journaling-only.
  *
  * What adoption cannot change is what a session was WIRED with
- * (`approval.timeoutMs`, `approval.grantTtlMs`, `journal.failClosed`): a
+ * (`approval.timeoutMs`, `journal.failClosed`): a
  * session opened under the fallback keeps the fallback's wiring until it is
  * reopened, exactly as a reload never rewires one.
  */

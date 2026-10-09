@@ -6,7 +6,6 @@ import type { JournalRecord } from '../../src/journal/record.js'
 import { createJournalSink, type JournalSink } from '../../src/journal/sink.js'
 import { createApprovalQueue, type ApprovalQueue } from '../../src/policy/approvals/queue.js'
 import { createApprovalWaiter } from '../../src/policy/approvals/waiter.js'
-import { createGrantRegistry } from '../../src/policy/approvals/grants.js'
 import { parsePolicy, type Policy } from '../../src/policy/schema.js'
 import type { Frame } from '../../src/protocol/split.js'
 import { createPolicyGate, type PolicyGate } from '../../src/proxy/gate.js'
@@ -90,7 +89,6 @@ function createGate(policy: Policy, argsCheck?: ArgsCheck): PolicyGate {
     inventory: trustedInventory(),
     approvalQueue: queue,
     approvalWaiter: createApprovalWaiter({ pollIntervalMs: 5 }),
-    grantRegistry: createGrantRegistry(),
     sink,
     clientWriter: writer,
     approvalsBaseDir: join(tempDir, 'approvals'),

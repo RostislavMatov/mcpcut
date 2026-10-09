@@ -281,3 +281,25 @@ describe('buildDecisionRecord', () => {
     })
   })
 })
+
+describe('buildDecisionRecord: the client\'s tool-use id is traffic (M36 phase C)', () => {
+  test('a token-shaped toolUseId is redacted like every other client-sourced field', () => {
+    const secret = `ghp_${'A1b2C3d4E5'.repeat(4)}`
+    const record = buildDecisionRecord({
+      sessionId: 'session-1',
+      decision: decisionInfo({ outcome: 'undelivered', toolUseId: secret }),
+      clock: stubClock(1_700_000_000_000),
+    })
+
+    expect(record.decision?.toolUseId).not.toContain(secret)
+    expect(record.decision?.toolUseId).toContain(REDACTED_PLACEHOLDER)
+  })
+
+  test('an ordinary tool-use id passes unchanged, and an absent one stays absent', () => {
+    const withId = buildDecisionRecord({ sessionId: 's', decision: decisionInfo({ toolUseId: 'toolu_01QWvMGM8qKzbKiR7omHk34n' }) })
+    const without = buildDecisionRecord({ sessionId: 's', decision: decisionInfo() })
+
+    expect(withId.decision?.toolUseId).toBe('toolu_01QWvMGM8qKzbKiR7omHk34n')
+    expect(without.decision).not.toHaveProperty('toolUseId')
+  })
+})

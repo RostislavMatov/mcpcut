@@ -12,7 +12,7 @@ import {
   TOOLS_LIST_METHOD,
 } from '../protocol/mcp.js'
 import type { SynthesizableId } from '../proxy/synthesize.js'
-import { clientMessage, type McpMessage } from '../transport/message.js'
+import { clientMessage } from '../transport/message.js'
 import {
   cancelledRequestIdOf,
   emptyListFrame,
@@ -24,12 +24,9 @@ import {
   refusalFor,
 } from './multiplexer-frames.js'
 import type { PoolRecordInfo } from '../journal/pool-record.js'
-import type { PoolCatalog } from './catalog.js'
 import { createChildFrameHandler } from './child-frames.js'
 import { POOL_DEPARTURE_IN_FLIGHT_AT_CLOSE, POOL_DEPARTURE_UNGRANTED } from './constants.js'
-import type { PoolChildren } from './children.js'
-import type { PoolCorrelator } from './correlator.js'
-import type { PoolFanout } from './fanout.js'
+import type { PoolChild } from './children.js'
 import {
   poolCursorError,
   poolMemberGoneError,
@@ -39,7 +36,6 @@ import {
 import { readRequestedVersion, synthesizeInitializeResult } from './initialize.js'
 import type { PoolListKind } from './merge-lists.js'
 import { routePoolRequest, unknownTargetError } from './route-request.js'
-import type { PoolWatch } from './watch.js'
 
 /**
  * The multiplexer: one agent's frames in, N child sessions' frames out, and
@@ -61,39 +57,8 @@ import type { PoolWatch } from './watch.js'
  *    agent's servers with it.
  */
 
-export interface PoolMultiplexerDeps {
-  readonly agentName: string
-  /** The plane's own version, for `serverInfo`; there is no version literal under `src/`. */
-  readonly planeVersion: string
-  readonly children: PoolChildren
-  readonly catalog: PoolCatalog
-  readonly correlator: PoolCorrelator
-  /** Settles the replies to the plane's OWN upstream requests (`fanout.ts`). */
-  readonly fanout: PoolFanout
-  readonly watch: PoolWatch
-  /** One `kind:'pool'` record. Wrapped by the caller; guarded again here. */
-  readonly journal: (info: PoolRecordInfo) => void
-  /** Everything the pool sends the agent (already framed). */
-  readonly toAgent: (bytes: Buffer) => void
-  readonly onError: (error: unknown) => void
-}
-
-export interface PoolMultiplexer {
-  /** One frame from the agent. Never throws. */
-  handleAgentFrame(bytes: Buffer): void
-  /** One frame from a child session. Never throws. */
-  handleChildFrame(server: string, message: McpMessage): void
-  /**
-   * A child left the pool, for ANY reason — ungranted, its own session ended,
-   * or it stopped answering. Answers every call the agent had in flight there
-   * and forgets them. Idempotent, and must be called on every departure: see
-   * its implementation for what goes wrong when one path forgets.
-   */
-  releaseServer(server: string): void
-  /** Called by the watch when membership moved; closes what left, wakes the agent. */
-  onMembershipChanged(granted: readonly string[]): Promise<void>
-  close(): Promise<void>
-}
+export type { PoolMultiplexer, PoolMultiplexerDeps } from './multiplexer-types.js'
+import type { PoolMultiplexer, PoolMultiplexerDeps } from './multiplexer-types.js'
 
 /** The byte a line-framed message ends with; stripped before a payload is sent. */
 const NEWLINE_BYTE = 0x0a
@@ -292,18 +257,31 @@ export function createPoolMultiplexer(deps: PoolMultiplexerDeps): PoolMultiplexe
       return
     }
     if (method === CANCELLED_NOTIFICATION) {
-      const requestId = cancelledRequestIdOf(raw)
-      const server = requestId === null ? undefined : deps.correlator.serverOf(requestId)
-      const child = server === undefined ? undefined : deps.children.childOf(server)
       // Nobody holds that id: the request already settled, or never existed.
       // Swallow it — broadcasting a cancel to every upstream would cancel
       // work the agent never asked to stop.
-      void child?.sink
-        .write(clientMessage(Buffer.from(raw, 'utf8')))
+      void childHolding(cancelledRequestIdOf(raw))
+        ?.sink.write(clientMessage(Buffer.from(raw, 'utf8')))
         .catch((error: unknown) => deps.onError(error))
       return
     }
     record({ event: 'dropped', reason: 'unsupported-method', method })
+  }
+
+  /** The child holding the agent's in-flight request `id`, if any (the correlator knows). */
+  function childHolding(id: JsonRpcId): PoolChild | undefined {
+    const server = id === null ? undefined : deps.correlator.serverOf(id)
+    return server === undefined ? undefined : deps.children.childOf(server)
+  }
+
+  function abandonAgentRequest(bytes: Buffer): void {
+    if (isClosed) return
+    try {
+      const message = classify(bytes.toString('utf8'))
+      if (message.kind === 'request') childHolding(message.id)?.abandon?.(bytes)
+    } catch (error: unknown) {
+      deps.onError(error)
+    }
   }
 
   function handleAgentFrame(bytes: Buffer): void {
@@ -387,6 +365,7 @@ export function createPoolMultiplexer(deps: PoolMultiplexerDeps): PoolMultiplexe
   return Object.freeze({
     handleAgentFrame,
     handleChildFrame,
+    abandonAgentRequest,
     releaseServer,
     onMembershipChanged,
     close,

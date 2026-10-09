@@ -177,9 +177,11 @@ describe('parsePolicy', () => {
       expect(result.policy.quarantine.enabled).toBe(true)
       expect(result.policy.quarantine.onQuarantined).toBe('require-approval')
       expect(result.policy.toolsList.filter).toBe('hide-denied')
-      expect(result.policy.approval.timeoutMs).toBe(60_000)
+      // M36: no wait cap by default (a held call waits while its agent waits),
+      // and no grant window at all.
+      expect(result.policy.approval.timeoutMs).toBeUndefined()
       expect(result.policy.approval.onTimeout).toBe('deny')
-      expect(result.policy.approval.grantTtlMs).toBe(300_000)
+      expect(result.policy.approval.grantTtlMs).toBeUndefined()
       expect(result.policy.journal.failClosed).toBe(false)
     })
   })
@@ -201,6 +203,15 @@ describe('parsePolicy', () => {
       const result = parsePolicy({ version: 1, approval: { timeoutMs: 0 } })
 
       expect(result.ok).toBe(false)
+    })
+
+    test('a 0.3.x policy that sets approval.grantTtlMs still loads: the field is accepted and unused (M36)', () => {
+      const result = parsePolicy({ version: 1, approval: { timeoutMs: 30_000, grantTtlMs: 300_000 } })
+
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      expect(result.policy.approval.timeoutMs).toBe(30_000)
+      expect(result.policy.approval.grantTtlMs).toBe(300_000)
     })
 
     test('rejects a non-integer approval.grantTtlMs', () => {

@@ -7,7 +7,6 @@ import type { AgentGrant } from '../../src/agents/schema.js'
 import { journalDbPathFor } from '../../src/journal/db.js'
 import { createJournalSink, type JournalSink } from '../../src/journal/sink.js'
 import type { JournalRecord } from '../../src/journal/record.js'
-import { createGrantRegistry } from '../../src/policy/approvals/grants.js'
 import { createApprovalQueue, type ApprovalQueue } from '../../src/policy/approvals/queue.js'
 import { createApprovalWaiter } from '../../src/policy/approvals/waiter.js'
 import { parsePolicy, type Policy } from '../../src/policy/schema.js'
@@ -136,9 +135,7 @@ function commonDeps(opts: HarnessOptions, sessionId: string, sink: JournalSink) 
     inventory: trustedInventory(),
     approvalQueue: queue,
     approvalWaiter: createApprovalWaiter({ pollIntervalMs: 5 }),
-    grantRegistry: createGrantRegistry(),
     sink,
-    approvalsBaseDir: approvalsDir,
     ...(opts.agentScope !== undefined ? { agentScope: opts.agentScope } : {}),
     onError: (error: unknown) => errors.push(error),
   }
@@ -957,12 +954,10 @@ describe('message-level gate: method-grant paths fail closed on journal failure 
       inventory: trustedInventory(),
       approvalQueue: queue,
       approvalWaiter: createApprovalWaiter({ pollIntervalMs: 5 }),
-      grantRegistry: createGrantRegistry(),
       sink: {
         write: () => undefined,
         flush: () => (failFlush ? Promise.reject(new Error('disk full')) : Promise.resolve()),
       },
-      approvalsBaseDir: approvalsDir,
       agentScope: methodScopeOf({ resources: ['file:///project/*'] }),
       onError: (error: unknown) => errors.push(error),
       clientSink: {

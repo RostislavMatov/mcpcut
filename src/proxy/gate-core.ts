@@ -1,14 +1,18 @@
-import { join } from 'node:path'
-import { JOURNAL_DIR } from '../config.js'
 import type { JsonRpcId } from '../protocol/classify.js'
-import { decide, type PolicyDecision } from '../policy/decide.js'
+import type { PolicyDecision } from '../policy/decide.js'
+import { WITHDRAW_REASON_DISCONNECTED } from '../policy/approvals/withdraw.js'
+import { DEFAULT_CLIENT_CONFIRM_TIMEOUT_MS } from '../policy/constants.js'
 import { toPolicyProvider } from '../policy/reload.js'
 import type { ParsedToolCall } from '../protocol/mcp.js'
 import { serverMessage } from '../transport/message.js'
 import type { Verdict } from './pipeline.js'
 import type { SynthesizableId } from './synthesize.js'
+import { DEFAULT_HOLD_SCHEDULER } from './approval-hold.js'
 import { createApprovalFlow } from './gate-approvals.js'
 import { createClientConfirmer } from './client-confirm.js'
+import { createGateDelivery } from './gate-delivery.js'
+import { createGateGuard } from './gate-guard.js'
+import { createToolUseAnswers } from './tool-use-answers.js'
 import { createConfirmStep } from './gate-confirm.js'
 import { createCallDecider } from './gate-call.js'
 import { createDecideInputAssembler } from './gate-decide-input.js'
@@ -77,9 +81,6 @@ import {
  *    rejection as drop+report, but the gate does not rely on that).
  */
 
-/** Subdirectory `approvals/queue.ts` uses under the journal dir. */
-const APPROVALS_SUBDIR = 'approvals'
-
 /** Cap on locally-answered ids remembered per session (exactly-one-outcome LRU); oldest first. */
 const MAX_TRACKED_REQUEST_IDS = 10_000
 
@@ -96,17 +97,16 @@ function defaultOnError(error: unknown): void {
 }
 
 export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePolicyGate {
-  const { serverName, inventory, grantRegistry, approvalQueue, approvalWaiter } = deps
+  const { serverName, inventory, approvalQueue, approvalWaiter } = deps
   const agentScope = deps.agentScope
   const clock = deps.clock ?? Date.now
   const onError = deps.onError ?? defaultOnError
-  const approvalsBaseDir = deps.approvalsBaseDir ?? join(JOURNAL_DIR, APPROVALS_SUBDIR)
   // The rules are read through the provider on every decision (hot reload,
   // wave 2 of the policy-tool-rules-ui plan). Wiring-time configuration is
   // read ONCE from the policy in force at construction and does not reload:
-  // `journal.failClosed` here, `approval.timeoutMs`/`grantTtlMs` in the
-  // approval flow below, `quarantine.enabled` inside the inventory the caller
-  // built. Class overrides are rules, so they go through a getter.
+  // `journal.failClosed` here, `approval.timeoutMs` in the approval flow
+  // below, `quarantine.enabled` inside the inventory the caller built. Class
+  // overrides are rules, so they go through a getter.
   const policy = toPolicyProvider(deps.policy)
   const classOverridesOf = () => policy.current().servers?.[serverName]?.classOverrides
   const failClosed = policy.current().journal.failClosed
@@ -154,9 +154,6 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
 
   /** Exactly-one-outcome guard: LRU of answered ids plus a non-evicting in-flight burn set (M8). */
   const answerGuard = createAnswerGuard(MAX_TRACKED_REQUEST_IDS)
-  const outstanding = new Set<Promise<Verdict>>()
-  /** Approval ids enqueued to disk that no operator has resolved yet (H6 teardown). */
-  const enqueuedUnresolved = new Set<string>()
 
   /** Resolves once decision records are durable — but only when fail-closed. */
   function settleJournal(): Promise<void> {
@@ -203,7 +200,7 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
   })
 
   /** Stays synchronous unless fail-closed forces a flush: an allowed call must not be reordered. */
-  /** `extras` is supplied only by the late-approval path (see `ApprovalFlowDeps`). */
+  /** `extras` carries the confirmation in the client that came first (`confirmedBy`, ADR-0019). */
   function applyAllow(
     call: ParsedToolCall, facts: CallFacts, decision: PolicyDecision, extras: DecisionExtras = {},
   ): Verdict | Promise<Verdict> {
@@ -239,8 +236,9 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     serverName,
     ...(agentScope !== undefined ? { agentName: agentScope.agentName } : {}),
     ...(confirmer !== undefined ? { confirmer } : {}),
-    // Read once, like the approval flow's wait below.
-    timeoutMs: policy.current().approval.timeoutMs,
+    // Read once, like the approval flow's wait below. The admin's approval
+    // holds with no limit by default (M36); a dialog does not.
+    timeoutMs: policy.current().approval.timeoutMs ?? DEFAULT_CLIENT_CONFIRM_TIMEOUT_MS,
     writeDecision,
     settleJournal,
     answerLocally,
@@ -249,9 +247,14 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     ...(deps.confirmInClient?.onNotice !== undefined ? { onNotice: deps.confirmInClient.onNotice } : {}),
   })
 
+  // M36 phase C: the process's answers by tool use (shared by `serve`: a 404 resend comes on a
+  // new session), under name AND creation time — a recreated agent of the same name is someone else.
+  const answers = deps.toolUseAnswers ?? createToolUseAnswers({ clock })
+  const scope = agentScope === undefined ? '' : `${agentScope.agentName}\u0001${agentScope.agentCreatedAt ?? ''}`
+
   const approvalFlow = createApprovalFlow({
-    // Wiring-time snapshot on purpose: the flow reads only `approval.timeoutMs`
-    // and `approval.grantTtlMs`, which do not hot-reload (see above).
+    // Wiring-time snapshot on purpose: the flow reads only `approval.timeoutMs`,
+    // which does not hot-reload (see above).
     policy: policy.current(),
     serverName,
     sessionId: deps.sessionId,
@@ -260,42 +263,55 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     ...(agentScope !== undefined ? { agentName: agentScope.agentName } : {}),
     approvalQueue,
     approvalWaiter,
-    grantRegistry,
-    approvalsBaseDir,
     clock,
     writeDecision,
     settleJournal,
     answerLocally,
+    notifyClient: (bytes) => deps.clientSink.write(serverMessage(trimTrailingNewline(bytes))),
+    ...(deps.heldCallProgress !== undefined ? { heldCallProgress: deps.heldCallProgress } : {}),
+    holdScheduler: deps.holdScheduler ?? DEFAULT_HOLD_SCHEDULER,
+    cancelReasonOf: (idKey) => router.cancelReasonOf(idKey),
     answerGuard,
-    enqueuedUnresolved,
-    decideWithGrant: (facts, hasActiveGrant) => decide(decideInputOf(facts, hasActiveGrant)),
-    applyAllow,
     onError,
     ...(deps.onApprovalPending !== undefined ? { onApprovalPending: deps.onApprovalPending } : {}),
+    onAgentGone: (call) => {
+      // M39: a resend of this tool use will be marked as one.
+      if (call.toolUseId !== undefined) answers.noteWithdrawn(scope, call.toolUseId, new Date(clock()).toISOString())
+      deps.onRequestDropped?.(call.id) // S-L1: no answer will ever come for this id
+    },
+    enqueueExtrasOf: (call) => {
+      const withdrawnAt = call.toolUseId === undefined ? undefined : answers.withdrawnAt(scope, call.toolUseId)
+      return withdrawnAt !== undefined ? { resendOfWithdrawnAt: withdrawnAt } : {}
+    },
   })
 
-  /** Fail-closed handling of a gate-internal error on a `tools/call`. */
-  async function denyOnGateError(call: ParsedToolCall): Promise<Verdict> {
-    try {
-      // Worst-case class, no args fingerprint: nothing was resolved.
-      const toolName = call.toolName
-      const facts: CallFacts = { serverName, toolName, toolClass: 'destructive', quarantineState: 'unknown', argsHash: '' }
-      writeDecision(decisionInfoOf(facts, 'deny', GATE_ERROR_RULE))
-      await settleJournal()
-      await answerLocally(call.id, (id) => denialBytesFor(id, { toolName, serverName, rule: GATE_ERROR_RULE }))
-    } catch (error: unknown) {
-      onError(error)
-    }
-    return DROP
-  }
+  const { guarded, track, awaitOutstanding } = createGateGuard({
+    serverName, writeDecision, settleJournal, answerLocally, onError,
+  })
+
+  const delivery = createGateDelivery({ // resends of a tool use; what becomes of forwarded calls' answers
+    scope,
+    answers,
+    clock,
+    writeDecision,
+    settleJournal,
+    answerLocally,
+    departureOf: (idKey) => router.departureOf(idKey),
+    answerGuard,
+    // Only where the client channel carries the gate's own notifications.
+    ...(deps.heldCallProgress !== undefined
+      ? { sendProgress: (bytes: Buffer) => deps.clientSink.write(serverMessage(trimTrailingNewline(bytes))) }
+      : {}),
+    holdScheduler: deps.holdScheduler ?? DEFAULT_HOLD_SCHEDULER,
+    ...(deps.onRequestDropped !== undefined ? { onRequestDropped: deps.onRequestDropped } : {}),
+    onError,
+  })
 
   const { decideToolCall } = createCallDecider({
     policy,
-    serverName,
     factsOf,
     decideInputOf,
     enforceCatalogTrust,
-    grantRegistry,
     provenance,
     applyAllow,
     applyDeny,
@@ -305,6 +321,7 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     writeDecision,
     settleJournal,
     ...(deps.argsCheck !== undefined ? { argsCheck: deps.argsCheck } : {}),
+    delivery,
   })
 
   /**
@@ -321,38 +338,14 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     return decideToolCall(call)
   }
 
-  /**
-   * Runs one tool call's decision path so that neither a synchronous throw
-   * nor a rejected promise can escape: both fail closed (deny + drop). The
-   * synchronous shape is preserved when `produce` answers synchronously, so
-   * an allowed call is not reordered merely for having been guarded.
-   */
-  function guarded(call: ParsedToolCall, produce: () => Verdict | Promise<Verdict>): Verdict | Promise<Verdict> {
-    const failClose = (error: unknown): Promise<Verdict> => {
-      onError(error)
-      return denyOnGateError(call)
-    }
-
-    let outcome: Verdict | Promise<Verdict>
-    try {
-      outcome = produce()
-    } catch (error: unknown) {
-      return failClose(error)
-    }
-    return isPromiseVerdict(outcome) ? outcome.catch(failClose) : outcome
-  }
-
-  /** Remembers an in-flight verdict so `cancelPending()` can wait it out. */
-  function track(work: Verdict | Promise<Verdict>): Verdict | Promise<Verdict> {
-    if (!isPromiseVerdict(work)) return work
-    outstanding.add(work)
-    void work.finally(() => outstanding.delete(work))
-    return work
-  }
-
   const router = createGateRouter({
     ...(confirmer !== undefined ? { clientConfirmer: confirmer } : {}),
-    onClientCancelled: (idKey) => confirmStep.cancelByClient(idKey),
+    onClientCancelled: (idKey, reason, kind) => {
+      confirmStep.cancelByClient(idKey)
+      delivery.departed(idKey, { reason, kind })
+      return approvalFlow.withdrawByClient(idKey, reason)
+    },
+    onResponse: (idKey, raw) => delivery.observeAnswer(idKey, raw),
     serverName,
     writeDecision,
     settleJournal,
@@ -375,21 +368,33 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     ...(agentScope?.methodGrants !== undefined ? { methodGrants: agentScope.methodGrants } : {}),
   })
 
-  async function cancelPending(): Promise<void> {
+  /** The agent is gone: nothing held may go out any more, and what was sent is owed to nobody. */
+  async function agentLeft(): Promise<void> {
+    delivery.agentLeft()
     confirmStep.withdrawAll()
+    await approvalFlow.withdrawAll()
+  }
+
+  async function cancelPending(): Promise<void> {
+    delivery.agentLeft()
+    confirmStep.withdrawAll()
+    // M36 (replacing H6's mark-expired): the agent is gone, so every held
+    // call is withdrawn as `disconnected` — a resolution landing after
+    // teardown is refused with that reason, and nothing is answered. Any wait
+    // the withdrawal could not reach settles as a timeout below.
+    await approvalFlow.withdrawAll()
     approvalWaiter.cancelAll()
-    await Promise.allSettled(Array.from(outstanding))
-    // H6: every approval we enqueued but no operator resolved is marked
-    // expired on disk, so a resolution landing after teardown is refused and
-    // cannot leave a reusable grant for a session that no longer exists.
-    const unresolved = Array.from(enqueuedUnresolved)
-    enqueuedUnresolved.clear()
-    await Promise.allSettled(unresolved.map((id) => approvalQueue.markExpired(id)))
+    await awaitOutstanding()
   }
 
   return {
     gateClientMessage: router.gateClientMessage,
     gateServerMessage: router.gateServerMessage,
     cancelPending,
+    agentLeft,
+    settleForwarded: (graceMs, reason, stop) => delivery.settle(graceMs, reason, stop),
+    abandonRequest: (id) => {
+      if (id !== null) router.abandonRequest(idKeyOf(id), WITHDRAW_REASON_DISCONNECTED)
+    },
   }
 }

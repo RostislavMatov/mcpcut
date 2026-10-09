@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { createJournalSink, type JournalSink } from '../../src/journal/sink.js'
 import { createApprovalQueue, type ApprovalQueue, type PendingApproval } from '../../src/policy/approvals/queue.js'
 import { createApprovalWaiter } from '../../src/policy/approvals/waiter.js'
-import { createGrantRegistry } from '../../src/policy/approvals/grants.js'
 import { parsePolicy, type Policy } from '../../src/policy/schema.js'
 import { createPolicyGate, type PolicyGate } from '../../src/proxy/gate.js'
 import type { GateInventory } from '../../src/proxy/gate-helpers.js'
@@ -79,10 +78,8 @@ function createGate(policy: Policy, onApprovalPending: (notice: PendingApprovalN
     inventory: trustedInventory(),
     approvalQueue: queue,
     approvalWaiter: createApprovalWaiter({ pollIntervalMs: 5 }),
-    grantRegistry: createGrantRegistry(),
     sink,
     clientWriter: writer,
-    approvalsBaseDir: approvalsDir,
     onError: (error: unknown) => errors.push(error),
     onApprovalPending,
   })

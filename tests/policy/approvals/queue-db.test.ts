@@ -3,7 +3,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { APPROVALS_IMPORT_BATCH_ROWS } from '../../../src/config.js'
-import { checkRecentApproval } from '../../../src/policy/approvals/grants.js'
 import {
   APPROVALS_QUEUE_MARKER,
   importLegacyApprovals,
@@ -304,7 +303,7 @@ describe('importLegacyApprovals: the file queue an M4 build left behind', () => 
     expect(rows(db)).toEqual([])
   })
 
-  test('imported records are usable: a legacy pending resolves, a legacy approval grants', async () => {
+  test('imported records are usable: a legacy pending resolves, a legacy approval reads back', async () => {
     const nowMs = Date.now()
     await seedLegacyQueue(new Date(nowMs - 1000).toISOString())
     const queue = createApprovalQueue({ baseDir })
@@ -313,17 +312,10 @@ describe('importLegacyApprovals: the file queue an M4 build left behind', () => 
       outcome: 'approved',
       actor: 'alice',
     })
-    const granted = await checkRecentApproval(baseDir, {
-      serverName: 'github',
-      toolName: 'create_issue',
-      argsHash: 'hash-1',
-      sessionId: 'session-1', // the legacy document's own session (requester binding, audit 2026-09-02 F1)
-      ttlMs: 60_000,
-      clock: () => nowMs,
-    })
+    const legacyResolution = await queue.readResolution(LEGACY_IDS.resolved[0] as string)
 
     expect(resolved.ok).toBe(true)
-    expect(granted).not.toBeNull()
+    expect(legacyResolution?.outcome).toBe('approved')
     await expect(queue.list()).resolves.toHaveLength(1) // the other legacy pending
   })
 

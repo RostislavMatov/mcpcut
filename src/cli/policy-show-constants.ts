@@ -48,10 +48,19 @@ export const HOT_RELOADED_FIELDS: readonly string[] = [
 
 export const RESTART_REQUIRED_FIELDS: readonly string[] = [
   'approval.timeoutMs',
-  'approval.grantTtlMs',
   'journal.failClosed',
   'quarantine.enabled',
 ]
+
+/**
+ * Fields the schema still accepts so older policies keep loading, and that no
+ * longer do anything (decision M36 retired the grant window).
+ */
+export const NO_LONGER_USED_FIELDS: readonly string[] = ['approval.grantTtlMs']
+
+/** What `policy show` prints when the policy sets `approval.grantTtlMs`. */
+export const GRANT_TTL_NO_LONGER_USED_LINE =
+  'approval.grantTtlMs is no longer used: every call that needs approval asks again'
 
 export const HOT_RELOAD_LINE =
   `hot reload: rules yes (${HOT_RELOADED_FIELDS.join(', ')}) · ` +
@@ -61,4 +70,5 @@ export const HOT_RELOAD_LINE =
 export const HOT_RELOAD_JSON = {
   reloads: HOT_RELOADED_FIELDS,
   restartRequired: RESTART_REQUIRED_FIELDS,
+  noLongerUsed: NO_LONGER_USED_FIELDS,
 } as const

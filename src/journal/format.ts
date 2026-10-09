@@ -53,6 +53,11 @@ export function replaceControlChars(value: string): string {
   return value.replace(CONTROL_CHAR_PATTERN, CONTROL_CHAR_REPLACEMENT)
 }
 
+/** Removes every character `replaceControlChars` would mark, for a value stored rather than printed (a client's cancel reason). */
+export function stripControlChars(value: string): string {
+  return value.replace(CONTROL_CHAR_PATTERN, '')
+}
+
 function truncate(text: string, maxLength: number): string {
   return text.length > maxLength ? `${text.slice(0, maxLength)}${TRUNCATION_MARKER}` : text
 }
@@ -66,6 +71,8 @@ export interface DecisionSummaryFields {
   readonly outcome: string
   readonly toolName: string
   readonly rule: string
+  /** Why the agent left, or why its session ended (M36); printed only when present. */
+  readonly reason?: string
 }
 
 /**
@@ -78,5 +85,6 @@ export function formatDecisionSummary(decision: DecisionSummaryFields): string {
   const outcome = formatReadableField(decision.outcome)
   const tool = formatReadableField(decision.toolName)
   const rule = formatReadableField(decision.rule)
-  return `outcome=${outcome} tool=${tool} rule=${rule}`
+  const reason = decision.reason !== undefined ? ` reason=${formatReadableField(decision.reason)}` : ''
+  return `outcome=${outcome} tool=${tool} rule=${rule}${reason}`
 }

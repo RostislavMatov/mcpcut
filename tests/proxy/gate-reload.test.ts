@@ -6,7 +6,6 @@ import type { JournalRecord } from '../../src/journal/record.js'
 import { createJournalSink, type JournalSink } from '../../src/journal/sink.js'
 import { createApprovalQueue } from '../../src/policy/approvals/queue.js'
 import { createApprovalWaiter } from '../../src/policy/approvals/waiter.js'
-import { createGrantRegistry } from '../../src/policy/approvals/grants.js'
 import { policyHashOf } from '../../src/policy/provenance.js'
 import { POLICY_RECHECK_MIN_MS } from '../../src/policy/constants.js'
 import { createPolicyProvider, type PolicyProvider } from '../../src/policy/reload.js'
@@ -163,10 +162,8 @@ function createHarness(policy: Policy | PolicyProvider): GateHarness {
     inventory: trustedInventory(),
     approvalQueue: createApprovalQueue({ baseDir: join(tempDir, 'approvals') }),
     approvalWaiter: createApprovalWaiter({ pollIntervalMs: 5 }),
-    grantRegistry: createGrantRegistry(),
     sink: capturingSink,
     clientWriter: writer,
-    approvalsBaseDir: join(tempDir, 'approvals'),
     onError: (error: unknown) => errors.push(error),
   })
   return { gate, written, captured }

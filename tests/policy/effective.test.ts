@@ -294,7 +294,6 @@ describe('effectiveToolRule: parity with decide()', () => {
           toolName: tool.name,
           toolClass: effective.toolClass,
           quarantineState: tool.quarantineState,
-          hasActiveGrant: false,
           catalogObserved: true,
           catalogTrusted: true,
           ...(tool.surfaceDelta !== undefined ? { surfaceDelta: tool.surfaceDelta } : {}),
@@ -324,10 +323,9 @@ describe('effectiveToolRule: exhaustive over the rule strings decide() can produ
     "isShadow ? 'shadow-tool' : 'quarantine'",
     'path',
   ]
-  /** Never fire for a plain view: the input is built with no grant, no agent, a trusted catalog. */
+  /** Never fire for a plain view: the input is built with no agent and a trusted catalog. */
   const UNREACHABLE_FOR_PLAIN_VIEW = [
     "'catalog-untrusted'",
-    "'grant'",
     '`agent: no grant for ${input.serverName}/${input.toolName}`',
   ]
 

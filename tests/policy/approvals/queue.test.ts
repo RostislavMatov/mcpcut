@@ -240,21 +240,21 @@ describe('createApprovalQueue: M4 UI metadata (agentName, waitExpiresAt, decisio
     await expect(queue.list()).resolves.toEqual([])
   })
 
-  test('an approval landing after waitExpiresAt but before expiresAt is still recorded approved', async () => {
+  test('an approval landing after waitExpiresAt but before expiresAt is downgraded to expired', async () => {
     let nowMs = Date.UTC(2026, 0, 1)
     const queue = createApprovalQueue({ baseDir, clock: () => nowMs })
     const { approvalId } = await queue.enqueue(
       baseRequest({ timeoutMs: 300_000, waitTimeoutMs: 1_000 }),
     )
 
-    nowMs += 60_000 // the agent's wait is long over; the grant window is not
+    nowMs += 60_000 // the agent's wait is long over
     const result = await queue.resolve(approvalId, { outcome: 'approved', actor: 'operator' })
 
     expect(result.ok).toBe(true)
     if (!result.ok) throw new Error('expected ok result')
-    // waitExpiresAt must NOT participate in the expiry downgrade: an approval
-    // inside the grant window still mints a grant for the agent's retry.
-    expect(result.record.resolution.outcome).toBe('approved')
+    // M36 (review R5): there is no grant window, so an approval after the
+    // agent's capped wait reaches nobody — it must not be recorded approved.
+    expect(result.record.resolution).toEqual({ outcome: 'expired', actor: 'operator' })
   })
 })
 

@@ -123,6 +123,7 @@ export function startAgentWatch(deps: AgentWatchDeps): AgentWatch {
 
   const scope: GateAgentScope = Object.freeze({
     agentName: record.name,
+    agentCreatedAt: record.createdAt,
     isGranted: (tool: string) => state.scope.isGranted(tool),
     filterVisible: (tools: readonly string[]) => state.scope.filterVisible(tools),
     // The method-grant dimension (M4 Task 6) delegates the same way, so a

@@ -81,6 +81,55 @@ describe('wrap announces a held call to the operator', () => {
     expect(toAgent).not.toContain(pending!.approvalId)
   })
 
+  test('a held call that carries a progressToken hears at once which approval it waits for (M36)', async () => {
+    // Arrange
+    const policyPath = join(journalDir, 'policy.json')
+    await writeFile(policyPath, JSON.stringify(HELD_POLICY), 'utf8')
+    const approvalsBaseDir = join(journalDir, 'approvals')
+    const queue = createApprovalQueue({ baseDir: approvalsBaseDir })
+    const harness = createClientHarness()
+    const cmdIo = { stderr: { write: () => true } }
+
+    // Act
+    const run = runWrapCommand(['--server', 'fs', '--policy', policyPath, '--', 'node', FAKE_SERVER_PATH], cmdIo, {
+      runWrap: {
+        dir: journalDir,
+        approvalsBaseDir,
+        stdin: harness.clientOutbox,
+        stdout: harness.clientStdout,
+        stderr: harness.clientStderr,
+        killEscalationMs: 500,
+        relayDrainTimeoutMs: 1000,
+      },
+    })
+    harness.clientOutbox.write(
+      requestLine(8, 'tools/call', { name: 'echo', arguments: { t: 8 }, _meta: { progressToken: 'p-8' } }),
+    )
+    await waitUntilAsync(async () => (await queue.list()).length === 1)
+    const [pending] = await queue.list()
+    await waitUntil(() => harness.receivedLineCount() >= 1)
+    const whileHeld = receivedMessagesOf(harness)
+    await queue.resolve(pending!.approvalId, { outcome: 'approved', actor: 'cli:test' })
+    await waitUntil(() => receivedMessagesOf(harness).some((message) => message.id === 8))
+    harness.clientOutbox.end()
+    await run
+
+    // Assert
+    expect(whileHeld).toEqual([
+      {
+        jsonrpc: '2.0',
+        method: 'notifications/progress',
+        params: {
+          progressToken: 'p-8',
+          progress: 1,
+          message: 'waiting for a person to approve this call',
+        },
+      },
+    ])
+    const answer = receivedMessagesOf(harness).find((message) => message.id === 8)
+    expect(answer?.result).toBeDefined()
+  })
+
   test('when the wait times out, the agent gets -32002 with no approval command in it', async () => {
     // Arrange
     const policyPath = join(journalDir, 'policy.json')

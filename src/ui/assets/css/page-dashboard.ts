@@ -95,7 +95,7 @@ a.jf.is-on, a.jf.is-on:hover { border-color: var(--fg); background: var(--fg); c
 .dash-row.is-sel { background: rgba(255, 255, 255, 0.08); }
 .dash-row .lat { text-align: right; color: var(--fg-dim); }
 .dash-row .outcome { text-align: right; font-size: 10px; letter-spacing: 0.12em; color: var(--fg-dim); }
-.dash-row .outcome-deny, .dash-row .outcome-denied, .dash-row .outcome-quarantine, .dash-row .outcome-quarantined { color: var(--fg); }
+.dash-row .outcome-deny, .dash-row .outcome-denied, .dash-row .outcome-quarantine, .dash-row .outcome-quarantined, .dash-row .outcome-undelivered, .dash-row .outcome-unanswered { color: var(--fg); }
 .dash-recent .empty { border: none; border-radius: 0; }
 .dash-recent .panel-ft { margin-top: auto; }
 

@@ -94,7 +94,6 @@ export function createToolCatalog(deps: ToolCatalogDeps): ToolCatalog {
       toolName: tool.name,
       toolClass: classifyTool(tool, deps.classOverridesOf()),
       quarantineState: deps.inventory.stateOf(tool.name),
-      hasActiveGrant: false,
       catalogObserved: deps.inventory.hasObservedCatalog(),
       catalogTrusted: deps.inventory.isCatalogTrusted(),
     }

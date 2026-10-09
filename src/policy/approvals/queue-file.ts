@@ -24,21 +24,24 @@ export const RESOLVE_OUTCOME_VALUES = ['approved', 'denied'] as const
 export type ResolveOutcome = (typeof RESOLVE_OUTCOME_VALUES)[number]
 
 /**
- * Every outcome that can end up in a resolved record. Adds `expired` to
- * `ResolveOutcome`: `markExpired()` (session teardown) records a resolution
- * an operator never made, so it gets its own outcome rather than being
- * force-fit into `denied`.
+ * Every outcome that can end up in a resolved record. Adds two outcomes no
+ * operator makes to `ResolveOutcome`, each with its own name rather than being
+ * force-fit into `denied`: `expired` (the request outlived its own expiry, or a
+ * capped wait ran out) and `withdrawn` (decision M36: the agent stopped
+ * waiting — it cancelled, disconnected, or the process holding the request was
+ * lost — so nothing was sent; `resolution.reason` says which, see
+ * `withdraw.ts`).
  */
-export const RESOLUTION_OUTCOME_VALUES = [...RESOLVE_OUTCOME_VALUES, 'expired'] as const
+export const RESOLUTION_OUTCOME_VALUES = [...RESOLVE_OUTCOME_VALUES, 'expired', 'withdrawn'] as const
 export type ResolutionOutcome = (typeof RESOLUTION_OUTCOME_VALUES)[number]
 
 /**
- * Shape of a request awaiting a decision. `expiresAt` is the end of
- * the GRANT window (`grantTtlMs`); the three optional M4 fields are additions
- * for the admin UI — records written before them still parse (`list()` reads
- * both generations), and `waitExpiresAt` (end of the agent's own wait,
- * `timeoutMs`) tells an operator whether an approval delivers the call now
- * or only grants a retry.
+ * Shape of a request awaiting a decision. `expiresAt` is the hard cap on how
+ * long the request stays approvable (decision M36: 24 h, or the policy's
+ * `approval.timeoutMs` when that is shorter; before M36 it was the end of a
+ * grant window). The three optional M4 fields are additions for the admin UI —
+ * records written before them still parse (`list()` reads both generations);
+ * `waitExpiresAt` is present only when the policy capped the agent's wait.
  *
  * `policyHash`/`grantsHash` are the M5 pair: the fingerprint of the rules in
  * force WHEN THE REQUEST WAS MADE (`policy/provenance.ts`), so a resolution
@@ -62,12 +65,25 @@ export interface PendingApprovalFile {
   readonly waitExpiresAt?: string
   readonly decisionRule?: string
   readonly policyHash?: string
-  readonly grantsHash?: string
+  readonly grantsHash?: string  /** See `EnqueueRequest.resendOfWithdrawnAt` (M39). */
+  readonly resendOfWithdrawnAt?: string
 }
 
-/** `list()` entry: a pending record plus a derived, not-persisted `expired` flag. */
+/**
+ * `list()` entry: a pending record plus derived, not-persisted flags.
+ * `agentConnected` is true while the process holding the call refreshes its
+ * heartbeat (M36); it is ABSENT for a request that has no heartbeat at all — one
+ * an older build enqueued — because "unknown" and "gone" are different facts.
+ */
 export interface PendingApproval extends PendingApprovalFile {
   readonly expired: boolean
+  readonly agentConnected?: boolean
+  /**
+   * When the process holding the call last checked in (its heartbeat), present
+   * only while `agentConnected` is false: the operator is told since when the
+   * agent has been silent, and that an approval now would send nothing.
+   */
+  readonly holderSeenAt?: string
 }
 
 /**
@@ -75,11 +91,12 @@ export interface PendingApproval extends PendingApprovalFile {
  *
  * `actor` names WHO recorded the resolution (`cli`, `ui:<adminName>`) and is
  * ABSENT — not null, not empty — whenever no human made it. The `expired`
- * paths (`queue.ts`'s `markExpired()` at session teardown and the lazy
- * sweep's `markExpiredBatch()`) deliberately carry none: those resolutions
- * are recorded by the process itself because a request outlived its window,
- * and inventing an actor for them would put a person's name on a decision
- * they never made. So "no actor" reads as a FACT ABOUT THE OUTCOME, not as
+ * paths (`queue.ts`'s `markExpired()` for a capped wait that ran out, and the
+ * lazy sweep's `markExpiredBatch()`) and every `withdrawn` one (the agent
+ * left, M36) deliberately carry none: those resolutions are recorded by the
+ * process itself, and inventing an actor for them would put a person's name
+ * on a decision they never made. A `withdrawn` resolution's `reason` says why
+ * the agent left (`withdraw.ts`). So "no actor" reads as a FACT ABOUT THE OUTCOME, not as
  * missing data — which is what lets the journal (M5 wave 2) treat an
  * attributed record and an unattributed one as two different claims rather
  * than as one claim with a gap.
@@ -166,9 +183,8 @@ export class ApprovalActorTooLongError extends Error {
  *
  * Validating on read alone let an over-cap actor be accepted and persisted,
  * after which every reader rejected the whole record: the waiting agent never
- * saw the decision and timed out, and `checkRecentApproval` skipped the
- * record, so an APPROVED request behaved as unresolved with no diagnostic
- * anywhere. Failing loudly at the boundary turns that silent evidence loss
+ * saw the decision and timed out, so an APPROVED request behaved as
+ * unresolved with no diagnostic anywhere. Failing loudly at the boundary turns that silent evidence loss
  * into a stack trace at the call site that caused it. Deliberately not a
  * truncation: a repaired attribution is a fabricated one, and this field is
  * about to be signed.
@@ -211,7 +227,8 @@ export function isPendingApprovalFile(raw: unknown): raw is PendingApprovalFile 
     isOptionalTimestamp(value.waitExpiresAt) &&
     isOptionalString(value.decisionRule) &&
     isOptionalSha256Hex(value.policyHash) &&
-    isOptionalSha256Hex(value.grantsHash)
+    isOptionalSha256Hex(value.grantsHash) &&
+    isOptionalTimestamp(value.resendOfWithdrawnAt)
   )
 }
 
@@ -227,6 +244,16 @@ export function isPendingApprovalFile(raw: unknown): raw is PendingApprovalFile 
 export function isExpiredAt(expiresAt: string, nowMs: number): boolean {
   const expiresAtMs = Date.parse(expiresAt)
   return Number.isNaN(expiresAtMs) || nowMs >= expiresAtMs
+}
+
+/**
+ * When nothing could deliver an approval of this request any more: the agent's
+ * capped wait (`waitExpiresAt`) or the request's own cap, whichever is first.
+ * Fixed-width UTC ISO timestamps, so string order is time order.
+ */
+export function deliveryEndsAt(record: PendingApprovalFile): string {
+  const { waitExpiresAt, expiresAt } = record
+  return waitExpiresAt !== undefined && waitExpiresAt < expiresAt ? waitExpiresAt : expiresAt
 }
 
 /** Parses one stored record, returning `null` for anything the validators reject. */

@@ -54,6 +54,13 @@ export const DROP: Verdict = Object.freeze({ action: 'drop' as const })
 export interface GateAgentScope {
   /** Journal-facing identity of the authenticated agent. */
   readonly agentName: string
+  /**
+   * When the agent's record was created: with the name, the identity the
+   * gate keys kept answers by (M36 phase C), so an agent deleted and created
+   * again under the same name never reads the old one's answers. Absent on
+   * scopes that predate it — then the name alone.
+   */
+  readonly agentCreatedAt?: string
   /** True iff the agent's grant matrix covers `tool` on this server. */
   isGranted(tool: string): boolean
   /** The subset of `tools` the agent may see, input order preserved. */
@@ -129,6 +136,8 @@ export const QUARANTINE_RULE = 'quarantine'
 export const GATE_ERROR_RULE = 'gate-error'
 /** `rule` recorded when an approval landed on an id the gate already answered. */
 export const ALREADY_ANSWERED_RULE = 'already-answered-locally'
+/** Rule recorded for a call refused because its session already holds the most calls it may (M36, R2). */
+export const HELD_CALLS_LIMIT_RULE = 'held-calls-limit'
 /** `rule` recorded when the server answered an id the gate had answered locally. */
 export const DUPLICATE_RESPONSE_RULE = 'duplicate-response-warning'
 /** `rule` recorded when a client frame could not be positively identified as safe and was dropped (C2). */
@@ -193,6 +202,10 @@ export interface DecisionExtras {
   readonly actor?: string
   /** The person at the client who confirmed the call (`confirmInClient`), as `client:<name>`. */
   readonly confirmedBy?: string
+  /** Why the agent left a held call (`agent-gone`, M36): its cancel's reason, or `disconnected`. */
+  readonly reason?: string
+  /** The client's tool-use id, on the records of M36 phase C (`gate-delivery.ts`). */
+  readonly toolUseId?: string
 }
 
 /**
@@ -317,6 +330,13 @@ export function recoverScalarId(raw: string): JsonRpcId {
  * so the client gate can order the cancellation strictly behind the request
  * it cancels (TS-M2). `null` when absent or non-scalar.
  */
+/** `params.reason` of a `notifications/cancelled`, raw and untrusted (clean it before use). */
+export function parseCancelledReason(raw: string): unknown {
+  const value = tryParse(raw)
+  const params = isPlainRecord(value) ? value['params'] : undefined
+  return isPlainRecord(params) ? params['reason'] : undefined
+}
+
 export function parseCancelledRequestId(raw: string): JsonRpcId {
   const value = tryParse(raw)
   if (!isPlainRecord(value)) return null

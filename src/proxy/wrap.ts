@@ -104,6 +104,7 @@ export async function runWrap(
     await sink.close()
     throw error
   }
+  const serverName = opts.serverName ?? autoServerName(command, args)
   const signalHandle = installSignalForwarding(handle, DEFAULT_FORWARDED_SIGNALS, { killEscalationMs })
   const shutdown = createShutdownController(handle, { diagnostics, killEscalationMs })
   const wiring = wireRelay({
@@ -117,7 +118,11 @@ export async function runWrap(
     reportError: (channel, error, origin) => shutdown.report(channel, error, origin),
     sessionId,
     policy: effectivePolicyOf(opts, isFailClosed),
-    serverName: opts.serverName ?? autoServerName(command, args),
+    serverName,
+    ...(opts.forwardedAnswerGraceMs !== undefined ? { forwardedAnswerGraceMs: opts.forwardedAnswerGraceMs } : {}),
+    ...(opts.unansweredNotice !== undefined
+      ? { onUnansweredCalls: (count: number) => diagnostics.write(opts.unansweredNotice!(serverName, count, sessionId)) }
+      : {}),
     ...(opts.agentScope !== undefined ? { agentScope: opts.agentScope } : {}),
     ...approvalNoticeOf(opts, diagnostics),
     // ADR-0019: a stdio client is always there to ask; why a confirmation was
@@ -190,10 +195,15 @@ function failureExitCode(childExitCode: number): number {
 }
 
 /** The operator's line for a held call, on the stderr the client logs; nothing when unasked for. */
-function approvalNoticeOf(opts: RunWrapOptions, diagnostics: Writable): Pick<RelayArgs, 'onApprovalPending'> {
+function approvalNoticeOf(
+  opts: RunWrapOptions,
+  diagnostics: Writable,
+): Pick<RelayArgs, 'onApprovalPending' | 'heldCallProgress'> {
   const format = opts.approvalNotice
-  if (format === undefined) return {}
+  const progress = opts.heldCallProgress !== undefined ? { heldCallProgress: opts.heldCallProgress } : {}
+  if (format === undefined) return progress
   return {
+    ...progress,
     onApprovalPending: (notice) => {
       diagnostics.write(format(notice))
     },

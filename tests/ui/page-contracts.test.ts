@@ -65,9 +65,9 @@ const APPROVAL_CARD: ApprovalCardView = {
   toolName: 'create_issue',
   toolClass: 'write',
   argsRedacted: { title: 'hello' },
+  waitingSec: 18,
   waitRemainingSec: 42,
-  grantRemainingSec: 300,
-  expired: false,
+  agentConnected: true,
 }
 
 const QUARANTINE_CARD: QuarantineCardView = {

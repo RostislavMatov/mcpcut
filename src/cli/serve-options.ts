@@ -111,6 +111,8 @@ export interface ServeCommandOptions {
    */
   readonly bindDefaults?: ServeServiceDefaults
   readonly killEscalationMs?: number
+  /** Test seam: the teardown grace for calls already sent (M36 phase C); 30 s when absent. */
+  readonly forwardedAnswerGraceMs?: number
   /**
    * Tenant mode as this run sees it; defaults to `TENANT_SETTINGS`. Today it
    * decides only the agent front's request budget (`serve-budget.ts`, plan

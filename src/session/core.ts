@@ -1,33 +1,23 @@
-import type { RecordBuilder, ClientServerDirection } from '../journal/record.js'
-import type { JournalSink } from '../journal/sink.js'
-import type { GrantRegistry } from '../policy/approvals/grants.js'
-import type { ApprovalWaiter } from '../policy/approvals/waiter.js'
-import type { PolicyProvider } from '../policy/reload.js'
-import type { Policy } from '../policy/schema.js'
+import type { ClientServerDirection } from '../journal/record.js'
 import { classify } from '../protocol/classify.js'
 import {
   clientMessage,
   serverMessage,
   type McpMessage,
   type MessageSink,
-  type MessageSource,
   type MessageVerdict,
 } from '../transport/message.js'
-import type { AgentRecord } from '../agents/schema.js'
-import type { GateApprovalQueue } from '../proxy/gate-approvals.js'
 import { createMessagePolicyGate, type MessagePolicyGate } from '../proxy/gate-core.js'
-import type { ArgsCheck } from '../proxy/gate-args-check.js'
-import type { MessagePolicyGateDeps } from '../proxy/gate-types.js'
 import {
   createDecisionProvenance,
   createDecisionWriter,
   isPromiseVerdict,
-  type GateInventory,
 } from '../proxy/gate-helpers.js'
-import { isRevokedFor, startAgentWatch, type AgentRecordReader, type AgentWatch } from './agent-watch.js'
+import { isRevokedFor, startAgentWatch, type AgentWatch } from './agent-watch.js'
 import {
   AGENT_REVOCATION_POLL_INTERVAL_MS,
   AGENT_REVOKED_RULE,
+  FORWARDED_ANSWER_GRACE_MS,
   SESSION_TOOL_NAME,
 } from './constants.js'
 
@@ -63,96 +53,29 @@ import {
  * `onSessionEnd('revoked')` fires. Grant edits WITHOUT revocation are
  * picked up by the same poll and apply from the next call.
  *
+ * Teardown grace (M36 phase C): when the agent leaves (`client-ended`, or the
+ * plane's own `closed`) while calls it sent are still running, the session
+ * stops reading the client at once but keeps reading the server for up to
+ * `FORWARDED_ANSWER_GRACE_MS` — each answer is journaled, and the gate marks
+ * it `undelivered`; nothing reaches the client. What is still unanswered then
+ * is journaled `unanswered` and counted to `onUnansweredCalls`. A server that
+ * ended, or an agent revoked, gets no grace.
+ *
  * This module owns lifecycle, not transports: sources/sinks arrive
  * constructed and are disposed here on end, but process/socket lifetimes
  * belong to the callers (`connect`/`serve`, Wave 4).
  */
 
-/** One side's transport endpoints, already constructed by the caller. */
-export interface SessionEndpoints {
-  readonly source: MessageSource
-  readonly sink: MessageSink
-}
-
-/** The approvals machinery for one session, shared shape with the gate. */
-export interface SessionApprovals {
-  readonly queue: GateApprovalQueue
-  readonly waiter: ApprovalWaiter
-  /** Approvals root on disk; must match `queue`'s own (see gate-core). */
-  readonly baseDir?: string
-}
-
-/** Journal wiring: the record builder and sink are bound to this session id. */
-export interface SessionJournal {
-  readonly recordBuilder: RecordBuilder
-  readonly sink: Pick<JournalSink, 'write' | 'flush'>
-}
-
-/** The authenticated agent of this session, plus where to re-read it from. */
-export interface SessionAgent {
-  /** The record as authenticated at session start. */
-  readonly record: AgentRecord
-  /** Re-reads grants/revocation; satisfied by `agents/store.ts`. */
-  readonly store: AgentRecordReader
-}
-
-export interface CreateSessionDeps {
-  readonly sessionId: string
-  /** Registry name of the proxied server (`auto:<hash>` only for ad-hoc wrap). */
-  readonly serverName: string
-  readonly client: SessionEndpoints
-  readonly server: SessionEndpoints
-  /**
-   * Pre-loaded, already-validated policy (loading is the caller's job). A
-   * `PolicyProvider` hot-reloads the rules under the session; a plain
-   * `Policy` behaves exactly as before.
-   */
-  readonly policy: Policy | PolicyProvider
-  readonly inventory: GateInventory
-  readonly approvals: SessionApprovals
-  readonly grants: GrantRegistry
-  readonly journal: SessionJournal
-  /**
-   * Exact values this session's upstream was handed (vault-resolved env and
-   * header material, plus the registry literals beside them). Registered on
-   * the record builder before any traffic is tapped, so the journal redacts
-   * the secrets the plane itself injected even when a server echoes one back
-   * under an innocent key. See `redact/known-secrets.ts`.
-   */
-  readonly knownSecrets?: readonly string[]
-  readonly agent?: SessionAgent
-  /** Injectable clock (ms since epoch) for deterministic tests. */
-  readonly clock?: () => number
-  /** Poll interval for revocation/grant re-reads. Defaults to the ≤5 s constant. */
-  readonly revocationPollIntervalMs?: number
-  /** Reports session-internal failures. Defaults to one line on stderr. */
-  readonly onError?: (error: unknown) => void
-  /**
-   * The client channel for `confirmInClient` (ADR-0019). Given only by the
-   * stdio `connect`, whose client is one process with one person; the HTTP
-   * front never passes it (a held POST has no channel for the question), so
-   * there a call that needs the confirmation is refused.
-   */
-  readonly confirmInClient?: MessagePolicyGateDeps['confirmInClient']
-  /** Tighten-only look at call arguments (ADR-0020 §2); given only for the built-in file server. */
-  readonly argsCheck?: ArgsCheck
-  /** Fired exactly once, after the session has fully ended. */
-  readonly onSessionEnd?: (reason: SessionEndReason) => void
-}
-
-/** Why a session ended. `closed` is the caller's own `close()`. */
-export type SessionEndReason = 'client-ended' | 'server-ended' | 'revoked' | 'closed'
-
-export interface SessionHandle {
-  /**
-   * Ends the session: stops the watch, disposes sources, settles in-flight
-   * approval waits (clients still get an answer), drains pending writes,
-   * then disposes sinks. Idempotent — the first reason wins.
-   */
-  close(reason?: SessionEndReason): Promise<void>
-  /** Resolves once the session has fully ended, with the winning reason. */
-  readonly ended: Promise<SessionEndReason>
-}
+export type {
+  CreateSessionDeps,
+  SessionAgent,
+  SessionApprovals,
+  SessionEndpoints,
+  SessionEndReason,
+  SessionHandle,
+  SessionJournal,
+} from './core-types.js'
+import type { CreateSessionDeps, SessionEndReason, SessionHandle } from './core-types.js'
 
 function defaultOnError(error: unknown): void {
   process.stderr.write(`[session] ${error instanceof Error ? error.message : String(error)}\n`)
@@ -183,6 +106,10 @@ export function createSession(deps: CreateSessionDeps): SessionHandle {
   })
   /** In-flight verdicts and sink writes, awaited before the sinks go away. */
   const pending = new Set<Promise<void>>()
+  /** The teardown grace: the server is still read (journaled, gated), the client is gone. */
+  let isDraining = false
+  /** Aborted when the server goes during the grace: nothing more can come (review M1). */
+  const serverGone = new AbortController()
 
   const watch: AgentWatch | null =
     deps.agent !== undefined
@@ -220,14 +147,15 @@ export function createSession(deps: CreateSessionDeps): SessionHandle {
     inventory: deps.inventory,
     approvalQueue: deps.approvals.queue,
     approvalWaiter: deps.approvals.waiter,
-    grantRegistry: deps.grants,
     sink: journal.sink,
     clientSink: client.sink,
     provenance,
     ...(watch !== null ? { agentScope: watch.scope } : {}),
-    ...(deps.approvals.baseDir !== undefined ? { approvalsBaseDir: deps.approvals.baseDir } : {}),
     ...(deps.confirmInClient !== undefined ? { confirmInClient: deps.confirmInClient } : {}),
     ...(deps.argsCheck !== undefined ? { argsCheck: deps.argsCheck } : {}),
+    ...(deps.heldCallProgress !== undefined ? { heldCallProgress: deps.heldCallProgress } : {}),
+    ...(deps.toolUseAnswers !== undefined ? { toolUseAnswers: deps.toolUseAnswers } : {}),
+    ...(deps.onRequestDropped !== undefined ? { onRequestDropped: deps.onRequestDropped } : {}),
     clock,
     onError,
   })
@@ -279,9 +207,10 @@ export function createSession(deps: CreateSessionDeps): SessionHandle {
     direction: ClientServerDirection,
     sink: MessageSink,
   ): void {
-    if (endedReason !== null) return
+    if (endedReason !== null && !(isDraining && direction === 'server→client')) return
     if (isBlankMessage(message)) {
-      trackPending(sink.write(message))
+      // Nothing reaches the client once the session ended, a blank line neither (review L1).
+      if (endedReason === null) trackPending(sink.write(message))
       return
     }
     tap(message, direction)
@@ -337,10 +266,33 @@ export function createSession(deps: CreateSessionDeps): SessionHandle {
     }
   }
 
+  /**
+   * The teardown grace for calls already sent (see the module doc): the agent
+   * leaving gets it, a server that ended or an agent revoked does not.
+   * Resolves to how many calls the server left unanswered.
+   */
+  async function settleForwarded(reason: SessionEndReason): Promise<number> {
+    const isAgentGone = reason === 'client-ended' || reason === 'closed'
+    try {
+      if (!isAgentGone) return await gate.settleForwarded(0, reason)
+      isDraining = true
+      await gate.agentLeft()
+      const graceMs = deps.forwardedAnswerGraceMs ?? FORWARDED_ANSWER_GRACE_MS
+      return await gate.settleForwarded(graceMs, reason, serverGone.signal)
+    } catch (error: unknown) {
+      onError(error)
+      return 0
+    } finally {
+      isDraining = false
+    }
+  }
+
   async function runEnd(reason: SessionEndReason): Promise<void> {
     watch?.stop()
-    // Stop intake first: no new message may enter the gate after the end.
+    // Stop intake first: no new request may enter the gate after the end.
+    // The server is still read through the grace, for answers already owed.
     client.source.dispose()
+    const unanswered = await settleForwarded(reason)
     server.source.dispose()
     // In-flight approval waits settle as timeouts and answer their clients
     // through client.sink — which must still be alive here.
@@ -362,8 +314,17 @@ export function createSession(deps: CreateSessionDeps): SessionHandle {
     }
     client.sink.dispose()
     server.sink.dispose()
+    if (unanswered > 0) reportUnanswered(unanswered)
     deps.onSessionEnd?.(reason)
     settleEnded(reason)
+  }
+
+  function reportUnanswered(count: number): void {
+    try {
+      deps.onUnansweredCalls?.(count)
+    } catch (error: unknown) {
+      onError(error)
+    }
   }
 
   function endSession(reason: SessionEndReason): Promise<void> {
@@ -390,9 +351,11 @@ export function createSession(deps: CreateSessionDeps): SessionHandle {
   })
   server.source.onError((error) => {
     onError(error)
+    serverGone.abort()
     void endSession('server-ended')
   })
   server.source.onEnd(() => {
+    serverGone.abort()
     void endSession('server-ended')
   })
 
@@ -406,8 +369,18 @@ export function createSession(deps: CreateSessionDeps): SessionHandle {
     watch?.start()
   }
 
+  function abandonRequest(requestBytes: Buffer): void {
+    try {
+      const message = classify(requestBytes.toString('utf8'))
+      if (message.kind === 'request') gate.abandonRequest(message.id)
+    } catch (error: unknown) {
+      onError(error)
+    }
+  }
+
   return Object.freeze({
     close: (reason: SessionEndReason = 'closed') => endSession(reason),
     ended,
+    abandonRequest,
   })
 }

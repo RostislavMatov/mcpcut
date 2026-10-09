@@ -124,30 +124,30 @@ describe('denialError', () => {
 
 describe('approvalTimeoutError', () => {
   test('uses the approval error code', () => {
-    const bytes = approvalTimeoutError('req-2', { toolName: 'send_email', approvalId: 'appr-42' })
+    const bytes = approvalTimeoutError('req-2', { toolName: 'send_email' })
 
     expect(errorOf(bytes)['code']).toBe(ERROR_CODE_APPROVAL)
   })
 
-  test('message tells the agent it needs human approval and to retry, without a self-approval command', () => {
-    const bytes = approvalTimeoutError('req-2', { toolName: 'send_email', approvalId: 'appr-42' })
+  test('message says nothing was sent and a new call asks again, without a self-approval command', () => {
+    const bytes = approvalTimeoutError('req-2', { toolName: 'send_email' })
     const message = errorOf(bytes)['message'] as string
 
     expect(message).toContain('send_email')
     expect(message.toLowerCase()).toContain('human')
-    expect(message.toLowerCase()).toContain('retry')
+    expect(message).toContain('Nothing was sent')
+    expect(message).toContain('asks for a new approval')
+    // The request it waited for is closed: "retry once they do" would send the
+    // agent to wait on an approval that can no longer reach it (M36, R7).
+    expect(message).not.toContain('once they do')
     expect(message).not.toContain('mcpcut')
-    expect(message).not.toContain('appr-42')
   })
 
-  test('data carries the machine-readable reason, tool name, and approval id', () => {
-    const bytes = approvalTimeoutError('req-2', { toolName: 'send_email', approvalId: 'appr-42' })
+  test('data carries the machine-readable reason and tool name, and no approval id', () => {
+    const bytes = approvalTimeoutError('req-2', { toolName: 'send_email' })
+    const data = errorOf(bytes)['data'] as Record<string, unknown>
 
-    expect(errorOf(bytes)['data']).toMatchObject({
-      reason: 'approval_timeout',
-      toolName: 'send_email',
-      approvalId: 'appr-42',
-    })
+    expect(data).toEqual({ reason: 'approval_timeout', toolName: 'send_email' })
   })
 })
 
@@ -215,6 +215,21 @@ describe('quarantinedError', () => {
  * this test automatically, without updating a hand-maintained list, as long
  * as it keeps taking `(id, info)` and returning a synthesized error buffer.
  */
+describe('heldCallProgress (M36)', () => {
+  test('is a single-line progress notification on the token, with no id', () => {
+    const bytes = synthesizeModule.heldCallProgress('tok-1', 3, 'waiting for approval 01A')
+    const text = bytes.toString('utf8')
+
+    expect(text.endsWith('\n')).toBe(true)
+    expect(text.slice(0, -1)).not.toContain('\n')
+    expect(JSON.parse(text)).toEqual({
+      jsonrpc: '2.0',
+      method: 'notifications/progress',
+      params: { progressToken: 'tok-1', progress: 3, message: 'waiting for approval 01A' },
+    })
+  })
+})
+
 describe('agent-facing safety invariant: no self-approval command', () => {
   const builderNames = Object.keys(synthesizeModule).filter(
     (name) => name.endsWith('Error') && name !== 'synthesizeError',

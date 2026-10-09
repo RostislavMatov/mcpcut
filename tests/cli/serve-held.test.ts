@@ -39,6 +39,7 @@ function createHarness(): Harness {
       return Promise.resolve()
     },
     endReason: () => endReason,
+    onRequestDropped: () => undefined,
   }
   const released: boolean[] = []
   const ended: Harness['ended'] = []

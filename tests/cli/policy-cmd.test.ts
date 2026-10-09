@@ -150,7 +150,26 @@ describe('runPolicyValidate', () => {
 })
 
 describe('runPolicyShow', () => {
-  test('--json prints parseable JSON with defaults applied (approval.timeoutMs present)', async () => {
+  test('a policy that still sets approval.grantTtlMs is told the field is no longer used (M36)', async () => {
+    const path = await writePolicyFile(cwd, { ...VALID_POLICY, approval: { grantTtlMs: 300_000 } })
+    const io = fakeIo()
+
+    const exitCode = await runPolicyShow(['--policy', path], io)
+
+    expect(exitCode).toBe(0)
+    expect(io.out()).toContain('approval.grantTtlMs is no longer used: every call that needs approval asks again')
+  })
+
+  test('a policy without approval.grantTtlMs gets no such note', async () => {
+    const path = await writePolicyFile(cwd, VALID_POLICY)
+    const io = fakeIo()
+
+    await runPolicyShow(['--policy', path], io)
+
+    expect(io.out()).not.toContain('no longer used')
+  })
+
+  test('--json prints parseable JSON with defaults applied (approval.onTimeout present)', async () => {
     const path = await writePolicyFile(cwd, VALID_POLICY)
     const io = fakeIo()
 
@@ -159,7 +178,7 @@ describe('runPolicyShow', () => {
     expect(exitCode).toBe(0)
     const parsed = JSON.parse(io.out())
     expect(parsed.sourcePath).toBe(path)
-    expect(typeof parsed.policy.approval.timeoutMs).toBe('number')
+    expect(parsed.policy.approval.onTimeout).toBe('deny')
     expect(parsed.policy.quarantine.enabled).toBe(true)
   })
 
@@ -720,7 +739,7 @@ describe('runPolicyShow -- hot reload line', () => {
     for (const field of ['servers.*', 'classDefaults', 'defaultDecision', 'toolsList.filter', 'quarantine.onQuarantined']) {
       expect(line).toContain(field)
     }
-    for (const field of ['approval.timeoutMs', 'approval.grantTtlMs', 'journal.failClosed', 'quarantine.enabled']) {
+    for (const field of ['approval.timeoutMs', 'journal.failClosed', 'quarantine.enabled']) {
       expect(line).toContain(field)
     }
     expect(line).toContain('restart')
@@ -736,7 +755,8 @@ describe('runPolicyShow -- hot reload line', () => {
     const parsed = JSON.parse(io.out()) as { hotReload: { reloads: string[]; restartRequired: string[] } }
     expect(parsed.hotReload).toEqual({
       reloads: ['servers.*', 'classDefaults', 'defaultDecision', 'toolsList.filter', 'quarantine.onQuarantined'],
-      restartRequired: ['approval.timeoutMs', 'approval.grantTtlMs', 'journal.failClosed', 'quarantine.enabled'],
+      restartRequired: ['approval.timeoutMs', 'journal.failClosed', 'quarantine.enabled'],
+      noLongerUsed: ['approval.grantTtlMs'],
     })
   })
 })

@@ -10,12 +10,15 @@ import {
 // helpers, this module needs its first-touch import. Both sides only ever call
 // the other's (hoisted) functions, never read a binding while loading.
 import { importLegacyApprovals } from './queue-import.js'
+import type { HoldRecord } from './holder.js'
+import { holdOf, prepareHoldsSchema } from './queue-holds-db.js'
 
 /**
  * The storage substrate of the approvals queue: schema, statements and write
- * pacing. Every piece of SQL the queue runs lives here, so `queue.ts` and
- * `grants.ts` stay pure record logic and `node:sqlite` keeps exactly one entry
- * point in the process (`src/store/sqlite.ts`, ADR-0006).
+ * pacing. Every piece of SQL the queue runs lives here (and, for the hold side
+ * table and the change feed, in `queue-holds-db.ts` and `queue-changes.ts`), so `queue.ts` stays pure record
+ * logic and `node:sqlite` keeps exactly one entry point in the process
+ * (`src/store/sqlite.ts`, ADR-0006).
  *
  * The tables live in the SAME `state.db` as the document stores — the seam
  * wave 2 left open (`store-backend.ts`: "wave 3 adds its own tables to the
@@ -51,9 +54,12 @@ const CREATE_STATUS_SEQ_INDEX =
   'CREATE INDEX IF NOT EXISTS idx_approvals_status_seq ON approvals(status, change_seq)'
 const CREATE_SEQ_INDEX =
   'CREATE INDEX IF NOT EXISTS idx_approvals_change_seq ON approvals(change_seq)'
-/** The grant lookup on the gate's hot path (`checkRecentApproval`). */
-const CREATE_GRANT_INDEX =
-  'CREATE INDEX IF NOT EXISTS idx_approvals_grant ON approvals(server_name, tool_name, args_hash)'
+/**
+ * The grant lookup's index, left by builds before decision M36 (every approval
+ * now asks a human, so nothing reads it): dropped on open, because an unused
+ * index still costs every write.
+ */
+const DROP_GRANT_INDEX = 'DROP INDEX IF EXISTS idx_approvals_grant'
 /**
  * The lazy expiry sweep (`SELECT_EXPIRED_PENDING`), which both filters and
  * SORTS on `expires_at`. Column order matters: `status` first makes the
@@ -83,8 +89,12 @@ const INSERT_PENDING =
   'INSERT INTO approvals (approval_id, status, doc, server_name, tool_name, args_hash, ' +
   "requested_at, expires_at, change_seq) VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?)"
 
+/** The pending page, each row with its hold when it has one (M36, `queue-holds-db.ts`). */
 const SELECT_PENDING_DOCS =
-  "SELECT doc FROM approvals WHERE status = 'pending' ORDER BY requested_at, approval_id LIMIT ?"
+  'SELECT a.doc AS doc, h.heartbeat_at AS heartbeat_at, h.holder_pid AS holder_pid, ' +
+  'h.holder_host AS holder_host, h.holder_nonce AS holder_nonce FROM approvals a ' +
+  'LEFT JOIN approval_holds h ON h.approval_id = a.approval_id ' +
+  "WHERE a.status = 'pending' ORDER BY a.requested_at, a.approval_id LIMIT ?"
 const SELECT_PENDING_DOC =
   "SELECT doc FROM approvals WHERE approval_id = ? AND status = 'pending'"
 const SELECT_RESOLVED_DOC =
@@ -92,11 +102,6 @@ const SELECT_RESOLVED_DOC =
 /** ULID primary keys: lexicographic DESC is chronological newest-first. */
 const SELECT_NEWEST_RESOLVED_DOCS =
   "SELECT doc FROM approvals WHERE status = 'resolved' ORDER BY approval_id DESC LIMIT ?"
-
-/** The gate's grant lookup: served by `idx_approvals_grant`, newest ULID first. */
-const SELECT_RESOLVED_FOR_GRANT =
-  "SELECT doc FROM approvals WHERE status = 'resolved' AND server_name = ? AND tool_name = ? " +
-  'AND args_hash = ? ORDER BY approval_id DESC LIMIT ?'
 
 /**
  * Candidates for the lazy expiry sweep, oldest expiry first. The `expires_at`
@@ -116,22 +121,7 @@ export const SELECT_EXPIRED_PENDING =
   "SELECT approval_id, doc FROM approvals WHERE status = 'pending' AND expires_at <= ? " +
   'ORDER BY expires_at LIMIT ?'
 
-/**
- * Retention: a bounded delete of the oldest settled requests. `resolved_at`
- * holds a fixed-width UTC ISO timestamp, so string comparison IS chronological
- * comparison and the cutoff needs no parsing. The inner SELECT keeps one call's
- * cost bounded, exactly as the file sweep it replaces was.
- */
-const DELETE_OLD_RESOLVED =
-  'DELETE FROM approvals WHERE approval_id IN (SELECT approval_id FROM approvals ' +
-  "WHERE status = 'resolved' AND resolved_at < ? ORDER BY resolved_at LIMIT ?)"
-
-const SELECT_LATEST_SEQ = 'SELECT change_seq FROM approvals_meta WHERE id = 1'
 const COUNT_PENDING = "SELECT COUNT(*) AS n FROM approvals WHERE status = 'pending'"
-/** Every row touched after `?`, oldest change first, so a reader can replay in order. */
-const SELECT_CHANGES_SINCE =
-  'SELECT approval_id, status, doc, change_seq FROM approvals WHERE change_seq > ? ' +
-  'ORDER BY change_seq LIMIT ?'
 
 const RESOLVE_PENDING =
   "UPDATE approvals SET status = 'resolved', doc = ?, outcome = ?, resolved_at = ?, " +
@@ -166,8 +156,8 @@ const preparedHandles = new WeakMap<SqliteHandle, Promise<void>>()
 
 /**
  * Opens (creating if needed) the queue's database and guarantees its schema.
- * Both `queue.ts` and `checkRecentApproval` come through here, so whatever
- * first-touch work is due happens on every entry path.
+ * Every entry path of the queue comes through here, so whatever first-touch
+ * work is due happens on all of them.
  */
 export async function openApprovalsDb(baseDir: string): Promise<ApprovalsDb> {
   const dbPath = approvalsDbPath(baseDir)
@@ -202,13 +192,14 @@ async function prepare(db: ApprovalsDb): Promise<void> {
   database.exec(CREATE_APPROVALS_TABLE)
   database.exec(CREATE_STATUS_SEQ_INDEX)
   database.exec(CREATE_SEQ_INDEX)
-  database.exec(CREATE_GRANT_INDEX)
+  database.exec(DROP_GRANT_INDEX)
   // `IF NOT EXISTS` is what makes this a migration and not just a creation:
   // an installation whose `approvals` table predates an index gets it on the
   // next open, without a version table and without touching a single row.
   database.exec(CREATE_STATUS_EXPIRES_INDEX)
   database.exec(CREATE_APPROVALS_META_TABLE)
   database.exec(SEED_APPROVALS_META)
+  prepareHoldsSchema(database)
   // First touch of the process also picks up whatever an M4 build left in
   // `pending/`/`resolved/` — see `queue-import.ts` for the marker rules.
   await importLegacyApprovals(db)
@@ -304,16 +295,31 @@ export function resolvePendingRow(database: StateDatabase, row: ResolveRowInput)
   return Number(changes) === 1
 }
 
+/** One pending record's JSON text, with its hold when it has one. */
+export interface PendingDocRow {
+  readonly doc: string
+  readonly hold?: HoldRecord
+}
+
 /**
- * At most `limit` pending records' JSON text, oldest request first.
+ * At most `limit` pending records, oldest request first, each with its
+ * hold (absent for a row an older build enqueued).
  *
  * The bound is not an optimisation: without it every UI poll read the entire
  * pending set, so a queue nobody drains turned each poll into a full scan.
- * Truncation keeps the OLDEST end — those are the requests closest to timing
- * out, and hiding them is the one loss an operator cannot recover from.
+ * Truncation keeps the OLDEST end — those are the requests that have waited
+ * longest, and hiding them is the one loss an operator cannot recover from.
  */
-export function selectPendingDocs(database: StateDatabase, limit: number): string[] {
-  return docTexts(database.prepare(SELECT_PENDING_DOCS).all(limit))
+export function selectPendingDocs(database: StateDatabase, limit: number): PendingDocRow[] {
+  return database
+    .prepare(SELECT_PENDING_DOCS)
+    .all(limit)
+    .flatMap((row): PendingDocRow[] => {
+      const doc = docText(row)
+      if (doc === null) return []
+      const hold = holdOf(row)
+      return [hold !== undefined ? { doc, hold } : { doc }]
+    })
 }
 
 /** How many requests are pending right now — the total a bounded list cannot show. */
@@ -369,108 +375,6 @@ export function selectResolvedDoc(database: StateDatabase, approvalId: string): 
 /** The `limit` newest resolved records, newest first; the read never exceeds `limit` rows. */
 export function selectNewestResolvedDocs(database: StateDatabase, limit: number): string[] {
   return docTexts(database.prepare(SELECT_NEWEST_RESOLVED_DOCS).all(limit))
-}
-
-/** The indexed key of a grant lookup; the same triple the gate hashes a call into. */
-export interface GrantLookupKey {
-  readonly serverName: string
-  readonly toolName: string
-  readonly argsHash: string
-}
-
-/**
- * The `limit` newest resolved records for one call triple, newest first. The
- * columns only NARROW the candidates — every criterion that decides a grant is
- * checked against `doc`, which stays the source of truth.
- */
-export function selectResolvedDocsForGrant(
-  database: StateDatabase,
-  key: GrantLookupKey,
-  limit: number,
-): string[] {
-  return docTexts(
-    database
-      .prepare(SELECT_RESOLVED_FOR_GRANT)
-      .all(key.serverName, key.toolName, key.argsHash, limit),
-  )
-}
-
-/**
- * Deletes up to `limit` resolved rows settled before `cutoffIso` (an ISO-8601
- * UTC instant). Returns how many rows went, so a caller can tell "nothing was
- * old enough" from "the batch was full".
- */
-export function deleteResolvedOlderThan(
-  database: StateDatabase,
-  cutoffIso: string,
-  limit: number,
-): number {
-  return Number(database.prepare(DELETE_OLD_RESOLVED).run(cutoffIso, limit).changes)
-}
-
-/**
- * The counter as it stands, which is the watermark a change reader carries
- * between polls. It is read from the meta row rather than from `MAX(change_seq)`
- * so retention deleting the newest resolved row can never rewind the watermark
- * and replay the whole table.
- */
-export function selectLatestChangeSeq(database: StateDatabase): number {
-  const row = database.prepare(SELECT_LATEST_SEQ).get() as { change_seq?: unknown } | undefined
-  const latest = row?.change_seq
-  return typeof latest === 'number' && Number.isInteger(latest) ? latest : 0
-}
-
-/** One changed row as a change reader sees it; `doc` still carries the whole record. */
-export interface ApprovalChangeRow {
-  readonly approvalId: string
-  readonly status: string
-  readonly doc: string
-  /** This row's change sequence — the watermark a truncated page stops at. */
-  readonly changeSeq: number
-}
-
-/**
- * Every row whose change sequence is past `sinceSeq`. Callers MUST read the
- * watermark (`selectLatestChangeSeq`) BEFORE this query: a write committing
- * between the two then shows up in this result while staying above the reported
- * watermark, so it is delivered again on the next poll — at-least-once, which a
- * caller can deduplicate. The other order would drop it silently.
- */
-export function selectChangesSince(
-  database: StateDatabase,
-  sinceSeq: number,
-  limit: number,
-): ChangePage {
-  const rows = database.prepare(SELECT_CHANGES_SINCE).all(sinceSeq, limit)
-  return {
-    // `fetched` counts what SQL returned, BEFORE malformed rows are dropped.
-    // The caller decides truncation by comparing it to the limit, and a dropped
-    // row must not make a full page look like a partial one.
-    fetched: rows.length,
-    rows: rows.map(changeRow).filter((row): row is ApprovalChangeRow => row !== null),
-  }
-}
-
-/** One page of the change feed: the usable rows plus how many SQL actually returned. */
-export interface ChangePage {
-  readonly rows: readonly ApprovalChangeRow[]
-  readonly fetched: number
-}
-
-function changeRow(row: unknown): ApprovalChangeRow | null {
-  if (typeof row !== 'object' || row === null) return null
-  const { approval_id: approvalId, status, doc, change_seq: changeSeq } = row as Record<string, unknown>
-  if (typeof approvalId !== 'string' || typeof status !== 'string') return null
-  if (typeof changeSeq !== 'number' && typeof changeSeq !== 'bigint') return null
-  // A malformed `doc` is kept as an empty string rather than dropping the row:
-  // the id and status are still the truth about WHAT changed, and the record
-  // parser above this layer skips the unusable content (MALFORMED_SKIP).
-  return {
-    approvalId,
-    status,
-    doc: typeof doc === 'string' ? doc : '',
-    changeSeq: Number(changeSeq),
-  }
 }
 
 /**

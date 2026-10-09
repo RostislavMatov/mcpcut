@@ -36,34 +36,16 @@ export function approvalIdOfListLine(line: string): string | undefined {
   return LIST_ROW_PATTERN.exec(line)?.[1]
 }
 
-/**
- * What the wait column says when the queue entry carries no `waitExpiresAt`
- * at all (a request enqueued before M4, or by a caller that declared no wait).
- * Named rather than blank: "we do not know" and "the agent left" are different
- * facts, and only one of them means an approval still delivers the call.
- */
-const AGENT_WAIT_UNKNOWN = 'agent_wait=unknown'
-
-/**
- * What the wait column says once the agent's own window has closed. The words
- * are the point: the entry is still listed and still approvable, but the call
- * it belonged to is gone, so approving now only mints a grant the agent has to
- * come back and use (the M2 dogfood tail, and the reason the web card carries
- * the same sentence).
- */
-const AGENT_WAIT_OVER = 'agent_wait=over(retry_passes_after_approve)'
-
 /** Every field printed here comes from a queue file on disk -- untrusted, like a journal record. */
 function formatListLine(entry: PendingApproval, nowMs: number): string {
   const approvalId = formatReadableField(entry.approvalId)
   const serverName = formatReadableField(entry.serverName)
   const toolName = formatReadableField(entry.toolName)
   const argsPreview = formatArgsPreview(entry.argsRedacted)
-  const remaining = formatTimeRemaining(entry, nowMs)
-  const waiting = formatAgentWait(entry, nowMs)
   return (
     `${approvalId}${ROW_AFTER_ID}${serverName} tool=${toolName} class=${entry.toolClass} ` +
-    `${formatAgent(entry)}${waiting} expires_in=${remaining} args=${argsPreview}\n`
+    `${formatAgent(entry)}waiting=${formatWaiting(entry, nowMs)} ` +
+    `agent_connected=${formatConnected(entry)} ${formatResend(entry)}args=${argsPreview}\n`
   )
 }
 
@@ -83,30 +65,36 @@ function formatAgent(entry: PendingApproval): string {
 }
 
 /**
- * The AGENT's remaining wait, which is not the grant window: the queue entry
- * expires in minutes, while the call blocking on it gives up in seconds
- * (`approval.waitTimeoutMs`). Printing only the grant window told an operator
- * they had four minutes to decide when they had forty seconds (user-journey
- * smoke UX-8). `waitExpiresAt` has been on the record since M4 and in
- * `--json`; this is the same fact in the view a human reads.
+ * How long the request has been waiting (decision M36). The call is held for
+ * as long as its agent waits, so the operator's question is no longer "how
+ * long do I have" (the two clocks this row printed before) but "how long has
+ * it been asking"; the request closes by itself when the agent leaves.
  */
-function formatAgentWait(entry: PendingApproval, nowMs: number): string {
-  const waitExpiresAt = entry.waitExpiresAt
-  if (waitExpiresAt === undefined) return AGENT_WAIT_UNKNOWN
-  const deadlineMs = Date.parse(waitExpiresAt)
-  if (Number.isNaN(deadlineMs)) return AGENT_WAIT_UNKNOWN
-  const remainingMs = deadlineMs - nowMs
-  return remainingMs > 0 ? `agent_wait_left=${formatDuration(remainingMs)}` : AGENT_WAIT_OVER
+function formatWaiting(entry: PendingApproval, nowMs: number): string {
+  const requestedMs = Date.parse(entry.requestedAt)
+  return formatDuration(Number.isNaN(requestedMs) ? 0 : Math.max(0, nowMs - requestedMs))
 }
 
-/** `entry.expired` is derived by `queue.list()` from the same clock, so the two never disagree. */
-function formatTimeRemaining(entry: PendingApproval, nowMs: number): string {
-  if (entry.expired) return 'expired'
-
-  return formatDuration(Math.max(0, Date.parse(entry.expiresAt) - nowMs))
+/**
+ * Whether the process holding the call is still there (its heartbeat, M36).
+ * `unknown` for a request an older build enqueued, which has no heartbeat:
+ * "we cannot tell" and "gone" are different facts.
+ */
+function formatConnected(entry: PendingApproval): string {
+  if (entry.agentConnected === undefined) return 'unknown'
+  if (entry.agentConnected) return 'yes'
+  // Since when its process has been silent: an approval now sends nothing (M36, S-L2).
+  return entry.holderSeenAt !== undefined ? `no silent_since=${formatReadableField(entry.holderSeenAt)}` : 'no'
 }
 
-/** `Nm Ns` (or bare seconds under a minute) — the shape both clocks are printed in. */
+/** The same call sent again after its first request closed when the agent's connection dropped (M39). */
+function formatResend(entry: PendingApproval): string {
+  return entry.resendOfWithdrawnAt === undefined
+    ? ''
+    : `resend_of_withdrawn=${formatReadableField(entry.resendOfWithdrawnAt)} `
+}
+
+/** `Nm Ns` (or bare seconds under a minute). */
 function formatDuration(remainingMs: number): string {
   const totalSeconds = Math.floor(remainingMs / MS_PER_SECOND)
   const minutes = Math.floor(totalSeconds / SECONDS_PER_MINUTE)

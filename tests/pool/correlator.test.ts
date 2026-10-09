@@ -283,3 +283,34 @@ describe('createPoolCorrelator: progress tokens (N2)', () => {
     expect(correlator.progressServerOf(fanoutId ?? '')).toBeUndefined()
   })
 })
+
+describe('createPoolCorrelator: a request no answer will ever come for (M36 phase C, S-L1)', () => {
+  test('forgetClient drops the agent\'s request at its own server: the id is free, the server clean', () => {
+    const correlator = createPoolCorrelator(8)
+    correlator.trackClient(5, 'alpha', 'tok')
+
+    expect(correlator.forgetClient('alpha', 5)).toBe(true)
+
+    expect(correlator.hasPending('alpha')).toBe(false)
+    expect(correlator.serverOf(5)).toBeUndefined()
+    expect(correlator.progressServerOf('tok')).toBeUndefined()
+    expect(correlator.trackClient(5, 'alpha')).toEqual({ ok: true })
+  })
+
+  test('another server cannot make the pool forget a request it does not hold', () => {
+    const correlator = createPoolCorrelator(8)
+    correlator.trackClient(5, 'alpha')
+
+    expect(correlator.forgetClient('beta', 5)).toBe(false)
+    expect(correlator.serverOf(5)).toBe('alpha')
+  })
+
+  test('the plane\'s own requests are never forgotten this way', () => {
+    const correlator = createPoolCorrelator(8)
+    const fanoutId = correlator.trackFanout('alpha', 'tools/list')
+
+    expect(fanoutId).not.toBeNull()
+    expect(correlator.forgetClient('alpha', fanoutId!)).toBe(false)
+    expect(correlator.hasPending('alpha')).toBe(true)
+  })
+})

@@ -62,6 +62,8 @@ export interface ConnectBridgeDeps {
   readonly createClient?: typeof createHttpUpstreamClient
   /** @internal test seam: delays and reconnect budgets, so a test need not wait them out. */
   readonly clientOptions?: HttpUpstreamClientOptions
+  /** @internal test seam: the pauses before re-sending a dropped call (`bridge/retry.ts`). */
+  readonly retryDelaysMs?: readonly number[]
 }
 
 const DEFAULT_IO: ConnectCliIo = { stderr: process.stderr }
@@ -286,7 +288,12 @@ export async function runConnectBridge(
     onDiagnostic,
   })
 
-  const end = await runBridge({ client, service, onDiagnostic })
+  const end = await runBridge({
+    client,
+    service,
+    onDiagnostic,
+    ...(deps.retryDelaysMs !== undefined ? { retryDelaysMs: deps.retryDelaysMs } : {}),
+  })
   await teardown(client, service, stdin)
 
   return reportEnd(end, resolved.url, io)

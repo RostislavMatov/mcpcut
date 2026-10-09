@@ -141,8 +141,11 @@ mcpcut policy show [--server <name>] [--json]
 A `require-approval` tool call does not reach the server immediately:
 
 1. The agent calls a gated tool. `mcpcut` enqueues an approval request
-   and the call blocks (client-side) until it is resolved or times out
-   (60s default).
+   and holds the call for as long as the agent waits for it — there is no
+   wait limit of mcpcut's own unless `approval.timeoutMs` sets one. A client
+   that gave the call a progress token hears at once, and then once a minute,
+   that the call waits for a person; Claude Code shows it and moves a long call
+   to the background, picking up the answer when it lands.
 2. An operator reviews and resolves it in another terminal:
    ```
    mcpcut approvals list
@@ -163,22 +166,19 @@ A `require-approval` tool call does not reach the server immediately:
    the requirement on. The same holds for `policy set`, journaled with
    `adminName: null`.
 
-   Each pending line carries **two clocks**, and they mean different things:
+   Each pending line says how long the agent has been waiting and whether the
+   process holding the call is still there:
 
    ```
-   01K5…  server=github tool=create_issue class=write agent=claude-code agent_wait_left=42s expires_in=4m55s args={…}
+   01K5…  github tool=create_issue class=write agent=claude-code waiting=1m10s agent_connected=yes args={…}
    ```
 
-   `agent_wait_left` is how much of the agent's wait remains, so how long the
-   blocked call is still there to be unblocked; `expires_in` is how long a fresh
-   approval stays usable. Once the first runs out the line says
-   `agent_wait=over(retry_passes_after_approve)`: approving then still
-   mints the grant, but the agent has already given up and has to call again
-   for it to be used. `agent_wait=unknown` means the request recorded no wait
-   window. `agent=` names the agent that asked and is absent on the `wrap`
+   `agent_connected=yes` means approving now sends the call and the answer
+   reaches the agent. `agent_connected=no silent_since=<time>` means the process
+   holding it stopped checking in: approving would send nothing, and the
+   request closes by itself. `unknown` marks a request a build before 0.4.0
+   queued. `agent=` names the agent that asked and is absent on the `wrap`
    path, which has none; `args=` is cut to 120 characters (`--json` has it whole).
-   With `--json`, both deadlines are in `expiresAt` /
-   `waitExpiresAt`.
 
    **What this does and does not buy.** It buys **attribution**, not an access
    barrier. A process running as the same user can read your environment
@@ -186,12 +186,60 @@ A `require-approval` tool call does not reach the server immediately:
    stop anyone who already has shell access on the host. What it does is make
    an approval name a human, so a later audit export has no anonymous entries
    in it.
-3. If approved before the timeout, the original call is forwarded to the
-   server and its response reaches the agent normally. If it times out (or is
-   denied), the agent gets a synthetic JSON-RPC error instead — but the
-   approval, once it lands, creates a short-lived **grant** for that exact
-   `(server, tool, args)` triple, so an agent's retry a few minutes later
-   passes without a second manual approval.
+3. Once approved, the call is sent to the server and its answer reaches the
+   agent. Denied, the agent gets a JSON-RPC error saying a person refused it.
+
+### What an approval covers
+
+Exactly one call: the one that is waiting. There is no window after it — the
+next call that needs approval asks again, even a byte-identical one. And it
+covers that call only while its agent waits for it:
+
+- **The agent leaves before anyone decides** — Esc in Claude Code, the
+  client's own timeout, a dropped connection, the client closing: the request
+  closes, nothing is sent to the server, and the journal records `agent-gone`
+  with the reason (`AbortError: user-cancel`, `disconnected`, …). Approving it
+  afterwards is refused with one line that says so.
+- **The agent leaves after the call was sent** — the server finishes what it
+  started (when the client disconnected, mcpcut keeps reading the server for up
+  to 30 seconds before it lets it go) and the journal records the answer as
+  `undelivered`.
+- **The server never answers** by the end of the session: the journal records
+  `unanswered`, and mcpcut prints one line naming the server and the command
+  that shows those records.
+
+`approval.timeoutMs` still caps how long a call is held, if you set one;
+`approval.grantTtlMs` is accepted in older policy files and ignored.
+
+### Retries and duplicates
+
+mcpcut tells a **retry of the same call** from a **deliberate second call** by
+the id the client gives each tool use of the model — Claude Code sends it as
+`_meta["claudecode/toolUseId"]`:
+
+- The same id again is the same call sent again (a reconnect, a lost answer).
+  It never runs twice: the server's answer to the first one is kept in memory
+  for 24 hours and given to it (journal: `replayed`); if the first one is still
+  waiting for approval or still running, the resend waits for it and then gets
+  that answer.
+- A new id is a new call: it is decided on its own and asks again if it needs
+  approval — even with the same arguments.
+- A call without such an id is never answered from memory: without it, a retry
+  and a second call look the same.
+- If the first call was sent but never answered — it was cancelled while it
+  ran, or its session ended first — it may still have run: the same id again
+  gets an error that says so, never a second run. If the server's answer comes
+  after all, a later resend gets that answer.
+
+`mcpcut connect --url` uses this: when its connection to the service drops in
+the middle of a call, it sends the call again (only one with that id, at most
+three more times), and the agent gets the one answer.
+
+What mcpcut remembers here lives in the memory of the process that serves the
+agent (`serve`, `connect`, `wrap`). After a restart it is gone: a resend of a
+call sent before the restart is decided as a new call and, if allowed, runs
+again. Keep that in mind for tools that must never run twice and are reached
+over HTTP, where a call can outlive the plane's restart.
 
 ### Confirming in the client
 

@@ -91,8 +91,27 @@ export const STATELESS_RESPONSE_TIMEOUT_MS = SESSION_IDLE_TTL_MS
 /** How often the idle sweeper runs (unref'ed timer). */
 export const SESSION_SWEEP_INTERVAL_MS = 10_000
 
-/** Interval between `: ping` heartbeat comments on an open GET-SSE stream. */
+/** Interval between `: ping` heartbeat comments on an open SSE stream (GET, or a POST answered as one). */
 export const SSE_HEARTBEAT_INTERVAL_MS = 15_000
+
+/**
+ * How long a POST waits for its answer as plain JSON before the response
+ * becomes an SSE stream (decision M36, phase B). Claude Code cuts a JSON
+ * response at 60 s, but counts the SSE headers as the first byte and the
+ * `: ping` heartbeat keeps the connection warm, so a call held for a human —
+ * or any slow tool — lives as long as its agent waits (smoke 2026-10-08, #6
+ * and #7). Well under 60 s; a progress notification for the request opens the
+ * stream at once, without waiting for this.
+ */
+export const POST_STREAM_AFTER_MS = 10_000
+
+/**
+ * How long a POST waiting on its answer keeps its session off the idle
+ * sweeper (decision M36, phase B). A call held for a human waits at most a day
+ * (the approval's own cap), so a request quiet for longer than this is stuck,
+ * not held, and the session is swept as an idle one would be.
+ */
+export const MAX_REQUEST_WAIT_MS = 25 * 60 * 60_000
 
 /**
  * Max server-initiated messages buffered per session while no GET stream is

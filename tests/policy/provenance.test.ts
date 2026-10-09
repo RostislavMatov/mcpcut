@@ -190,14 +190,21 @@ describe('golden vectors: the fingerprints of a fixed input never drift silently
    * hand: if `canonicalJson` produced it, this test could not catch a change
    * in `canonicalJson`.
    */
+  /**
+   * Moved once, on purpose, by decision M36 (2026-10-08): `approval.timeoutMs`
+   * and `approval.grantTtlMs` lost their defaults, so the effective minimal
+   * policy no longer spells them out. The break is documented with the
+   * journal's evidence decision (amendment of 2026-10-08); the previous hash
+   * was 27cae103…4da3. A policy that sets both fields keeps its old hash.
+   */
   const MINIMAL_POLICY_CANONICAL_JSON =
-    '{"approval":{"grantTtlMs":300000,"onTimeout":"deny","timeoutMs":60000},' +
+    '{"approval":{"onTimeout":"deny"},' +
     '"defaultDecision":"require-approval","journal":{"failClosed":false},' +
     '"quarantine":{"enabled":true,"onQuarantined":"require-approval"},' +
     '"toolsList":{"filter":"hide-denied"},"version":1}'
 
   /** SHA-256 of the string above. Changing either means changing history. */
-  const MINIMAL_POLICY_HASH = '27cae103c5ec874ec0d6aa33bc6d16440ca415d9a24849630a0ed1a747cd4da3'
+  const MINIMAL_POLICY_HASH = 'daed2c77d8507d017bb186accbbdfea2cf0f51817d06ecb56a8fd5e20f648fab'
 
   /** A fixed matrix with every grant field populated and every list out of order. */
   const FIXED_GRANT_MATRIX = {

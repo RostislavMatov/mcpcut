@@ -2,8 +2,6 @@ import { z } from 'zod'
 import {
   CONFIRM_AGENT_NAME_PATTERN,
   CONFIRM_ANY_AGENT,
-  DEFAULT_APPROVAL_TIMEOUT_MS,
-  DEFAULT_GRANT_TTL_MS,
   MAX_CONFIRM_AGENTS,
   MAX_SERVERS_IN_POLICY,
   MAX_TOOL_RULES_PER_SERVER,
@@ -125,9 +123,20 @@ const toolsListSchema = z
 
 const approvalSchema = z
   .strictObject({
-    timeoutMs: z.number().int().positive().default(DEFAULT_APPROVAL_TIMEOUT_MS),
+    /**
+     * Optional cap on how long a call held for approval waits (decision M36).
+     * Unset — the default — holds the call while its agent holds the
+     * connection; set, a wait that reaches it resolves to `onTimeout`.
+     */
+    timeoutMs: z.number().int().positive().optional(),
     onTimeout: z.literal('deny').default('deny'),
-    grantTtlMs: z.number().int().positive().default(DEFAULT_GRANT_TTL_MS),
+    /**
+     * No longer used (decision M36: every call that needs an approval asks
+     * again, so there is no grant window). Still accepted — the schema is
+     * strict, and refusing it would break every 0.3.x policy that set it —
+     * and `policy show` says it does nothing.
+     */
+    grantTtlMs: z.number().int().positive().optional(),
   })
   .prefault({})
 

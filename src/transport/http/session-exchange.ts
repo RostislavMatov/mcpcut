@@ -9,16 +9,21 @@ import {
   HTTP_STATUS_TOO_MANY_REQUESTS,
 } from './server-constants.js'
 import {
+  abandonedRequestPlan,
   createDeferred,
   jsonPlan,
+  RequestAbortedError,
   SessionTornDownError,
   type BufferedMessages,
   type Deferred,
   type ExpectsResponse,
   type OpenedSession,
+  type PostOptions,
+  type ProgressCorrelation,
   type ResponseCorrelation,
   type ResponsePlan,
 } from './session-support.js'
+import { startPostStream, STREAMED, type PostStream, type Streamed } from './session-post-stream.js'
 
 /**
  * How a POST is paired with its answer, and where an inbound payload goes.
@@ -42,113 +47,8 @@ import {
  * hooks' business, and this module only ever compares them.
  */
 
-/** What registering one request in the waiting room produced. */
-export type RegisterOutcome =
-  /** Nothing to wait for: the body is owed no answer (a notification, or a key the hook refused). */
-  | { readonly kind: 'unkeyed' }
-  /** A key already in flight; the CLIENT reused an id. */
-  | { readonly kind: 'duplicate' }
-  /** The room is full. */
-  | { readonly kind: 'at-capacity' }
-  /** Registered; await `pending`, and call `unregister` if the wait fails. */
-  | {
-      readonly kind: 'waiting'
-      readonly pending: Deferred<Buffer>
-      unregister(): void
-    }
-
-/**
- * The key a hook would file `bytes` under, or `null` when it correlates
- * nothing. A hook handed garbage may throw — that is read as "owed no answer",
- * the same fail-closed reading `expectsResponse` gets, because a malformed body
- * must not take the request handler down with it.
- */
-export function correlationKeyOf(
-  correlate: ResponseCorrelation,
-  which: 'keyOfRequest' | 'keyOfResponse',
-  bytes: Buffer,
-  onError: (error: unknown) => void,
-): string | null {
-  try {
-    return correlate[which](bytes)
-  } catch (error: unknown) {
-    onError(error)
-    return null
-  }
-}
-
-/**
- * Files one outgoing request. A duplicate key is the CLIENT's error rather
- * than the session being busy: two live requests under one id is "one outcome
- * per id" broken, and the manager will not quietly pick between them. A full
- * room fails closed rather than evicting, for the same reason the pool's
- * correlator does — a forgotten key is a reply with nowhere to go.
- */
-export function registerWaiter(
-  waiting: Map<string, Deferred<Buffer>>,
-  correlate: ResponseCorrelation,
-  body: Buffer,
-  maxInFlight: number,
-  onError: (error: unknown) => void,
-): RegisterOutcome {
-  const key = correlationKeyOf(correlate, 'keyOfRequest', body, onError)
-  if (key === null) {
-    return { kind: 'unkeyed' }
-  }
-  if (waiting.has(key)) {
-    return { kind: 'duplicate' }
-  }
-  if (waiting.size >= maxInFlight) {
-    return { kind: 'at-capacity' }
-  }
-
-  const pending = createDeferred<Buffer>()
-  waiting.set(key, pending)
-  return {
-    kind: 'waiting',
-    pending,
-    unregister: (): void => {
-      // Guarded on identity: a later request under the same key must not be
-      // unregistered by an earlier one's failure.
-      if (waiting.get(key) === pending) {
-        waiting.delete(key)
-      }
-    },
-  }
-}
-
-/** The waiter `payload` answers, removed from the room; `null` when it answers none. */
-export function takeWaiter(
-  waiting: Map<string, Deferred<Buffer>>,
-  correlate: ResponseCorrelation,
-  payload: Buffer,
-  onError: (error: unknown) => void,
-): Deferred<Buffer> | null {
-  if (waiting.size === 0) {
-    return null
-  }
-  const key = correlationKeyOf(correlate, 'keyOfResponse', payload, onError)
-  if (key === null) {
-    return null
-  }
-  const waiter = waiting.get(key)
-  if (waiter === undefined) {
-    return null
-  }
-  waiting.delete(key)
-  return waiter
-}
-
-/** Ends every wait with `error` and empties the room. */
-export function rejectAllWaiting(
-  waiting: Map<string, Deferred<Buffer>>,
-  error: () => Error,
-): void {
-  for (const waiter of [...waiting.values()]) {
-    waiter.reject(error())
-  }
-  waiting.clear()
-}
+export { correlationKeyOf, registerWaiter, rejectAllWaiting, takeWaiter, type RegisterOutcome } from './session-waiting.js'
+import { correlationKeyOf, registerWaiter, takeWaiter } from './session-waiting.js'
 
 // ---------------------------------------------------------------------------
 // The two pairing rules
@@ -157,8 +57,7 @@ export function rejectAllWaiting(
 /**
  * The part of a live session these rules touch. Declared structurally rather
  * than importing `ActiveSession`: this module has no business with a session's
- * id, its (agent, server) pair or its SSE stream, and saying so in the type
- * keeps it that way.
+ * id or its (agent, server) pair, and saying so in the type keeps it that way.
  */
 export interface PairedSession {
   readonly handle: OpenedSession
@@ -168,50 +67,143 @@ export interface PairedSession {
   buffered: BufferedMessages
   /** Present and open when the agent holds a GET stream. */
   readonly stream: { isOpen(): boolean; send(payload: Buffer): void } | null
+  /** The POST streams of this session's waiting requests, by progress key (M36 phase B). */
+  readonly related: Map<string, PostStream>
+  /** Response keys of correlated requests the agent abandoned: their late answer is dropped, not re-routed. */
+  readonly abandoned: Set<string>
+  /** Ends the session; a positional one cannot survive an abandoned request. */
+  readonly end: () => void
+  /**
+   * Waits backed by a live POST (one with an abort signal) — what keeps the
+   * session off the idle sweeper. A handshake has no signal and is not
+   * counted, so a server hung in `initialize` is swept as before.
+   */
+  liveWaits: number
 }
 
 export interface ExchangeRulesDeps {
   readonly expectsResponse: ExpectsResponse
-  /** Requests ONE correlating session may hold at once. */
+  /** Requests ONE correlating session may hold at once; also bounds `abandoned`. */
   readonly maxCorrelatedInFlight: number
   readonly now: () => number
   /** Appends to the bounded server-message buffer (count and byte capped). */
   readonly buffer: (current: BufferedMessages, payload: Buffer) => BufferedMessages
   /** Reports a correlation-hook failure; it belongs to no one session. */
   readonly onHookError: (error: unknown) => void
+  /** Routes a request's progress onto its own POST; absent — nothing is related to a POST. */
+  readonly progress: ProgressCorrelation | undefined
+  /** How long a POST answers with JSON before it becomes an SSE stream. */
+  readonly postStreamAfterMs: number
+  /**
+   * Whether a payload is the server's own notification or request. When
+   * given, such a message never settles a positional POST: a log or a
+   * `list_changed` sent while a call is held goes to the GET stream instead
+   * of ending that POST as if it were the call's answer.
+   */
+  readonly isServerInitiated: ((bytes: Buffer) => boolean) | undefined
 }
+
+/** What answering one POST came to: a plan for the front to write, or an answer already streamed. */
+export type PostOutcome = ResponsePlan | Streamed
 
 export interface ExchangeRules {
   /** Answers one POST on an existing session, by whichever rule it declared. */
-  post(session: PairedSession, body: Buffer): Promise<ResponsePlan>
+  post(session: PairedSession, body: Buffer, options?: PostOptions): Promise<PostOutcome>
   /** Writes `body` and answers with the session's next message (the handshake path). */
   exchange(session: PairedSession, body: Buffer): Promise<ResponsePlan>
-  /** Delivers one server-origin payload: waiter > in-flight > stream > buffer. */
+  /** Delivers one server-origin payload: waiter > abandoned > related POST > in-flight (not server-initiated) > stream > buffer. */
   deliver(session: PairedSession, payload: Buffer): void
 }
 
+/** One wait for an answer, with what to do if the agent walks away from it. */
+interface AnswerWait {
+  readonly session: PairedSession
+  readonly body: Buffer
+  readonly pending: Deferred<Buffer>
+  unregister(): void
+  /** The agent's request closed before the answer (phase B). */
+  abandon(): void
+  readonly options: PostOptions | undefined
+}
+
+const NOOP = (): void => undefined
+
+/** Runs `onAbort` when `signal` aborts (now, or later); returns the listener's release. */
+function onAbort(signal: AbortSignal | undefined, abort: () => void): () => void {
+  if (signal === undefined) return NOOP
+  if (signal.aborted) {
+    abort()
+    return NOOP
+  }
+  signal.addEventListener('abort', abort, { once: true })
+  return () => signal.removeEventListener('abort', abort)
+}
+
 export function createExchangeRules(deps: ExchangeRulesDeps): ExchangeRules {
+  /** The progress key `bytes` carries on `side`, or `null`; a throwing hook relates nothing. */
+  function progressKeyOf(side: keyof ProgressCorrelation, bytes: Buffer): string | null {
+    if (deps.progress === undefined) return null
+    try {
+      return deps.progress[side](bytes)
+    } catch (error: unknown) {
+      deps.onHookError(error)
+      return null
+    }
+  }
+
+  /** Files this POST's stream under the progress its request asks for; first holder of a key wins. */
+  function relate(session: PairedSession, body: Buffer, stream: PostStream): () => void {
+    const key = progressKeyOf('keyOfRequest', body)
+    if (key === null || session.related.has(key)) return NOOP
+    session.related.set(key, stream)
+    return () => {
+      if (session.related.get(key) === stream) session.related.delete(key)
+    }
+  }
+
   /**
    * Writes `body` into the session and awaits the answer it was registered
    * for, undoing the registration on any failure. Shared by both rules so the
-   * teardown → 404 mapping cannot drift between them.
+   * teardown → 404 mapping cannot drift between them. The answer is the plain
+   * JSON it always was, unless the POST became a stream on the way
+   * (`session-post-stream.ts`).
    */
-  async function awaitAnswer(
-    session: PairedSession,
-    body: Buffer,
-    pending: Deferred<Buffer>,
-    unregister: () => void,
-  ): Promise<ResponsePlan> {
+  async function awaitAnswer(wait: AnswerWait): Promise<PostOutcome> {
+    const { session, body, pending, options } = wait
+    const signal = options?.signal
+    if (signal?.aborted === true) {
+      // The agent is gone before anything was sent: send nothing at all.
+      wait.unregister()
+      return abandonedRequestPlan(new RequestAbortedError())
+    }
+    // The abort may reject `pending` while the write is still in flight —
+    // before anybody awaits it (review H1): handled from the start.
+    void pending.promise.catch(() => undefined)
+    const stream = startPostStream({ open: options?.openStream, upgradeAfterMs: deps.postStreamAfterMs })
+    const releaseRelated = relate(session, body, stream)
+    const releaseAbort = onAbort(signal, () => pending.reject(new RequestAbortedError()))
+    const isLive = signal !== undefined
+    if (isLive) session.liveWaits += 1
     try {
       await session.handle.sink.write(clientMessage(body))
       const payload = await pending.promise
-      return jsonPlan(HTTP_STATUS_OK, payload)
+      return stream.finish(payload) ?? jsonPlan(HTTP_STATUS_OK, payload)
     } catch (error: unknown) {
-      unregister()
+      wait.unregister()
+      if (error instanceof RequestAbortedError) wait.abandon()
+      const streamed = stream.abort()
       if (error instanceof SessionTornDownError) {
-        return jsonPlan(HTTP_STATUS_NOT_FOUND, BODY_SESSION_NOT_FOUND)
+        return streamed ?? jsonPlan(HTTP_STATUS_NOT_FOUND, BODY_SESSION_NOT_FOUND)
       }
+      // Nobody reads it; the plan only completes the handler's contract.
+      if (error instanceof RequestAbortedError) return streamed ?? abandonedRequestPlan(error)
+      // Anything else is a bug and goes to the front's 500 path, which reports
+      // it — an open stream is cut there, never ended as if all went well (M1).
       throw error
+    } finally {
+      if (isLive) session.liveWaits -= 1
+      releaseRelated()
+      releaseAbort()
     }
   }
 
@@ -221,24 +213,44 @@ export function createExchangeRules(deps: ExchangeRulesDeps): ExchangeRules {
     return Object.freeze({ status: HTTP_STATUS_ACCEPTED })
   }
 
-  async function positional(session: PairedSession, body: Buffer): Promise<ResponsePlan> {
+  async function positional(session: PairedSession, body: Buffer, options?: PostOptions): Promise<PostOutcome> {
     if (!deps.expectsResponse(body)) {
       return acknowledge(session, body)
     }
     const pending = createDeferred<Buffer>()
     session.inFlight = pending
-    return awaitAnswer(session, body, pending, () => {
-      if (session.inFlight === pending) {
-        session.inFlight = null
-      }
+    return awaitAnswer({
+      session,
+      body,
+      pending,
+      options,
+      unregister: () => {
+        if (session.inFlight === pending) {
+          session.inFlight = null
+        }
+      },
+      // "The answer is the next message" cannot survive a request whose answer
+      // may never come (a held call withdrawn) or come late to the wrong POST:
+      // the session ends, which withdraws whatever it held.
+      abandon: () => session.end(),
     })
+  }
+
+  /** Remembers an abandoned request's key so its late answer is dropped; bounded, oldest out. */
+  function rememberAbandoned(session: PairedSession, key: string): void {
+    if (session.abandoned.size >= deps.maxCorrelatedInFlight) {
+      const oldest = session.abandoned.values().next()
+      if (oldest.done !== true) session.abandoned.delete(oldest.value)
+    }
+    session.abandoned.add(key)
   }
 
   async function correlated(
     session: PairedSession,
     correlate: ResponseCorrelation,
     body: Buffer,
-  ): Promise<ResponsePlan> {
+    options?: PostOptions,
+  ): Promise<PostOutcome> {
     const registered = registerWaiter(
       session.waiting,
       correlate,
@@ -255,26 +267,69 @@ export function createExchangeRules(deps: ExchangeRulesDeps): ExchangeRules {
     if (registered.kind === 'at-capacity') {
       return jsonPlan(HTTP_STATUS_TOO_MANY_REQUESTS, BODY_TOO_MANY_REQUESTS_IN_FLIGHT)
     }
-    return awaitAnswer(session, body, registered.pending, registered.unregister)
+    // The key belongs to this request now: a late answer to an abandoned one
+    // under the same id can no longer be told apart, and must not make this
+    // request's own answer vanish (review M4).
+    session.abandoned.delete(registered.key)
+    return awaitAnswer({
+      session,
+      body,
+      pending: registered.pending,
+      options,
+      unregister: registered.unregister,
+      abandon: () => {
+        rememberAbandoned(session, registered.key)
+        session.handle.abandon?.(body)
+      },
+    })
+  }
+
+  /** A late answer to a request its agent abandoned: dropped, never handed to another reader. */
+  function dropAbandoned(session: PairedSession, correlate: ResponseCorrelation, payload: Buffer): boolean {
+    if (session.abandoned.size === 0) return false
+    const key = correlationKeyOf(correlate, 'keyOfResponse', payload, deps.onHookError)
+    return key !== null && session.abandoned.delete(key)
+  }
+
+  /**
+   * Progress on a waiting request goes out on that request's own POST. A POST
+   * that cannot stream (the client did not accept SSE) hands it to the GET
+   * stream if one is open and otherwise drops it — never to the in-flight
+   * POST, which would read it as its answer.
+   */
+  function deliverRelated(session: PairedSession, payload: Buffer): boolean {
+    if (session.related.size === 0) return false
+    const key = progressKeyOf('keyOfNotification', payload)
+    const target = key === null ? undefined : session.related.get(key)
+    if (target === undefined) return false
+    if (!target.send(payload) && session.stream !== null && session.stream.isOpen()) {
+      session.stream.send(payload)
+    }
+    return true
   }
 
   return Object.freeze({
-    exchange: positional,
+    async exchange(session: PairedSession, body: Buffer): Promise<ResponsePlan> {
+      const outcome = await positional(session, body)
+      // Without `openStream` no answer can stream; the handshake never offers one.
+      if (outcome === STREAMED) throw new Error('a handshake answer cannot stream')
+      return outcome
+    },
 
-    post(session: PairedSession, body: Buffer): Promise<ResponsePlan> {
+    post(session: PairedSession, body: Buffer, options?: PostOptions): Promise<PostOutcome> {
       const correlate = session.handle.correlate
       if (correlate !== undefined) {
         // Stamped on REGISTRATION, not only on the answer: a pool call held by
         // a human approval, on a session with no GET stream, would otherwise
         // be swept by the idle sweeper mid-wait.
         session.lastActivityMs = deps.now()
-        return correlated(session, correlate, body)
+        return correlated(session, correlate, body, options)
       }
       if (session.inFlight !== null) {
         return Promise.resolve(jsonPlan(HTTP_STATUS_CONFLICT, BODY_REQUEST_IN_FLIGHT))
       }
       session.lastActivityMs = deps.now()
-      return positional(session, body)
+      return positional(session, body, options)
     },
 
     deliver(session: PairedSession, payload: Buffer): void {
@@ -288,7 +343,9 @@ export function createExchangeRules(deps: ExchangeRulesDeps): ExchangeRules {
         waiter.resolve(payload)
         return
       }
-      if (session.inFlight !== null) {
+      if (correlate !== undefined && dropAbandoned(session, correlate, payload)) return
+      if (deliverRelated(session, payload)) return
+      if (session.inFlight !== null && deps.isServerInitiated?.(payload) !== true) {
         const pending = session.inFlight
         session.inFlight = null
         session.lastActivityMs = deps.now()

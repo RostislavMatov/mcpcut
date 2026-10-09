@@ -40,8 +40,8 @@ export type { PolicyFileVersion, PolicyReadFileSync, PolicyStat, PolicyStatSync 
  * What reloads is what those consumers read: the RULES (`servers.*`,
  * `classDefaults`, `defaultDecision`, `toolsList.filter`,
  * `quarantine.onQuarantined`). What does NOT reload is the configuration the
- * session was wired with — `approval.timeoutMs`, `approval.grantTtlMs`,
- * `journal.failClosed`, `quarantine.enabled` — read once at construction.
+ * session was wired with — `approval.timeoutMs`, `journal.failClosed`,
+ * `quarantine.enabled` — read once at construction.
  *
  * Three properties are load-bearing for the gate:
  *
