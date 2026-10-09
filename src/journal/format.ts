@@ -71,6 +71,8 @@ export interface DecisionSummaryFields {
   readonly outcome: string
   readonly toolName: string
   readonly rule: string
+  /** Why the agent left, or why its session ended (M36); printed only when present. */
+  readonly reason?: string
 }
 
 /**
@@ -83,5 +85,6 @@ export function formatDecisionSummary(decision: DecisionSummaryFields): string {
   const outcome = formatReadableField(decision.outcome)
   const tool = formatReadableField(decision.toolName)
   const rule = formatReadableField(decision.rule)
-  return `outcome=${outcome} tool=${tool} rule=${rule}`
+  const reason = decision.reason !== undefined ? ` reason=${formatReadableField(decision.reason)}` : ''
+  return `outcome=${outcome} tool=${tool} rule=${rule}${reason}`
 }

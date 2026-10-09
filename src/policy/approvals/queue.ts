@@ -181,7 +181,8 @@ export function createApprovalQueue(opts: ApprovalQueueOptions = {}): ApprovalQu
       if (record === null) return []
       const expired = isExpiredAt(record.expiresAt, nowMs)
       if (row.hold === undefined) return [{ ...record, expired }]
-      return [{ ...record, expired, agentConnected: isHoldLive(record.approvalId, row.hold, nowMs) }]
+      const agentConnected = isHoldLive(record.approvalId, row.hold, nowMs)
+      return [{ ...record, expired, agentConnected, ...(agentConnected ? {} : { holderSeenAt: row.hold.heartbeatAt }) }]
     })
   }
 

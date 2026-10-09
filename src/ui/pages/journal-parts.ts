@@ -56,6 +56,10 @@ const ALERT_OUTCOMES: ReadonlySet<string> = new Set([
   'denied-by-operator',
   'quarantined',
   'timeout',
+  // M36 phase C: a call that ran but whose answer never reached its agent, and
+  // one its server never answered — both need a person to look.
+  'undelivered',
+  'unanswered',
 ])
 
 export function sessionHref(sessionId: string): string {
@@ -210,7 +214,9 @@ function decisionDetail(record: JournalRecord): Html {
     d.approvalId !== undefined
       ? html` · <a href="/#approval-${encodeURIComponent(d.approvalId)}">approval ${d.approvalId}</a>`
       : html``
-  return html`<p class="rule small">rule: ${d.rule}${approval}</p>`
+  // Why the agent left, or why the session ended (M36): traffic text, escaped by `html`.
+  const reason = d.reason !== undefined ? html` · reason: ${d.reason}` : html``
+  return html`<p class="rule small">rule: ${d.rule}${reason}${approval}</p>`
 }
 
 /** A list of records as rows, with its header; `sessionId` supplies the prefix link per record. */

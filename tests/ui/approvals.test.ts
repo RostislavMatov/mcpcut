@@ -11,7 +11,8 @@ import {
 import type { UiRequestContext, UiResult } from '../../src/ui/routes.js'
 import type { UiSession } from '../../src/ui/auth.js'
 import { createApprovalsHandlers, type ApprovalsQueue } from '../../src/ui/handlers/approvals.js'
-import { eligibleForBatch, type ApprovalCardView } from '../../src/ui/pages/approvals.js'
+import { eligibleForBatch, toApprovalCard, type ApprovalCardView } from '../../src/ui/pages/approvals.js'
+import { renderQueueRegion } from '../../src/ui/pages/approval-queue.js'
 
 /**
  * Task 12 — approvals queue page + approve/deny actions. Uses a REAL
@@ -95,7 +96,7 @@ function bodyText(result: UiResult): string {
 }
 
 describe('approvalsPage rendering', () => {
-  test('shows agent, server, tool, class, redacted args and wait remaining separate from grant window', async () => {
+  test('shows agent, server, tool, class, redacted args, how long the agent waits and what is left of a capped wait', async () => {
     await enqueueSample()
     const handlers = createApprovalsHandlers({ queue, clock: () => T0 + 18_000 })
     const result = await handlers.approvalsPage(makeCtx())
@@ -107,10 +108,23 @@ describe('approvalsPage rendering', () => {
     expect(html).toContain('write')
     // Secret argument value must have been redacted before it reached the page.
     expect(html).not.toContain('secret-value')
-    // Agent wait remaining (60s window, 18s elapsed → 42s) shown distinctly.
-    expect(html).toContain('42')
-    // Grant window remaining (300s window, 18s elapsed → 282s) shown too.
-    expect(html).toContain('282')
+    // Waiting for 18s; the policy caps the wait at 60s, so 42s are left (M36).
+    expect(html).toContain('Agent waiting <span class="num">18s</span>')
+    expect(html).toContain('closes in <span class="num">42s</span>')
+    // No grant window any more.
+    expect(html).not.toContain('Grant window')
+  })
+
+  test('an agent whose process stopped checking in: since when, and that approving sends nothing (M36 S-L2)', () => {
+    const card = toApprovalCard(
+      { ...syntheticPending('01J0000000000000000000000B', T0), agentConnected: false, holderSeenAt: '2026-10-09T08:00:00.000Z' },
+      T0 + 5_000,
+    )
+    const html = String(renderQueueRegion({ cards: [card], csrfToken: 'csrf', currentAdmin: { name: 'op', role: 'operator' } }))
+
+    expect(html).toContain('Agent not connected')
+    expect(html).toContain('2026-10-09T08:00:00.000Z')
+    expect(html).toContain('approving now sends nothing')
   })
 
   test('escapes hostile tool name and arguments from a malicious server', async () => {

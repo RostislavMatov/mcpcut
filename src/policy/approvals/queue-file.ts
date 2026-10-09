@@ -77,6 +77,12 @@ export interface PendingApprovalFile {
 export interface PendingApproval extends PendingApprovalFile {
   readonly expired: boolean
   readonly agentConnected?: boolean
+  /**
+   * When the process holding the call last checked in (its heartbeat), present
+   * only while `agentConnected` is false: the operator is told since when the
+   * agent has been silent, and that an approval now would send nothing.
+   */
+  readonly holderSeenAt?: string
 }
 
 /**

@@ -15,11 +15,12 @@ import { roleAllows } from './role-gate.js'
  * args) is untrusted server/disk content and reaches markup only through the
  * escaping `html` template.
  *
- * The card separates two clocks the operator MUST not confuse:
- *  - the agent's remaining WAIT (`waitExpiresAt`): while > 0 an approval
- *    delivers the call NOW; at 0 the agent has given up and an approval only
- *    mints a grant for a retry;
- *  - the GRANT window (`expiresAt`): how long a fresh approval stays usable.
+ * Since decision M36 there is no grant window: an approval sends exactly the
+ * call that is waiting, and only while its agent still waits. So the card says
+ * how long the agent has been waiting, whether the process holding the call
+ * is still there (its heartbeat) — and when it is not, since when it has been
+ * silent, because an approval then sends nothing — and, when the policy caps
+ * the wait (`approval.timeoutMs`), how much of it is left.
  */
 
 /** Batch ("approve all") is only ever offered for the read class (ADR-0004 §Границы). */
@@ -34,12 +35,14 @@ export interface ApprovalCardView {
   readonly toolClass: ToolClass
   /** Already-redacted call arguments (redaction happened at enqueue time). */
   readonly argsRedacted: unknown
-  /** Seconds the agent will still wait, or `undefined` when no wait was recorded. */
+  /** How long the agent has been waiting (since the request), in seconds. */
+  readonly waitingSec: number
+  /** Seconds left of a policy-capped wait; absent when the wait is not capped (the default). */
   readonly waitRemainingSec?: number
-  /** Seconds left in the grant window. */
-  readonly grantRemainingSec: number
-  /** `true` once the grant window itself has elapsed. */
-  readonly expired: boolean
+  /** Whether the process holding the call still checks in; absent for a request an older build enqueued. */
+  readonly agentConnected?: boolean
+  /** When that process last checked in, while it is not connected. */
+  readonly holderSeenAt?: string
 }
 
 /** True when a card may take part in a bulk "approve all" (read-class only). */
@@ -55,9 +58,14 @@ function remainingSeconds(isoTimestamp: string | undefined, nowMs: number): numb
   return Math.max(0, Math.ceil((targetMs - nowMs) / 1000))
 }
 
+/** Whole seconds since `isoTimestamp`, floored at 0 (0 when unparseable). */
+function elapsedSeconds(isoTimestamp: string, nowMs: number): number {
+  const fromMs = Date.parse(isoTimestamp)
+  return Number.isNaN(fromMs) ? 0 : Math.max(0, Math.floor((nowMs - fromMs) / 1000))
+}
+
 /** Pure projection of a queue entry into the display shape at instant `nowMs`. */
 export function toApprovalCard(pending: PendingApproval, nowMs: number): ApprovalCardView {
-  const grant = remainingSeconds(pending.expiresAt, nowMs)
   return {
     approvalId: pending.approvalId,
     ...(pending.agentName !== undefined ? { agentName: pending.agentName } : {}),
@@ -65,12 +73,22 @@ export function toApprovalCard(pending: PendingApproval, nowMs: number): Approva
     toolName: pending.toolName,
     toolClass: pending.toolClass,
     argsRedacted: pending.argsRedacted,
+    waitingSec: elapsedSeconds(pending.requestedAt, nowMs),
     ...(pending.waitExpiresAt !== undefined
       ? { waitRemainingSec: remainingSeconds(pending.waitExpiresAt, nowMs) ?? 0 }
       : {}),
-    grantRemainingSec: grant ?? 0,
-    expired: pending.expired,
+    ...(pending.agentConnected !== undefined ? { agentConnected: pending.agentConnected } : {}),
+    ...(pending.holderSeenAt !== undefined ? { holderSeenAt: pending.holderSeenAt } : {}),
   }
+}
+
+/** `1h2m`, `2m5s` or `7s`. */
+function formatDuration(totalSeconds: number): string {
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  if (hours > 0) return `${hours}h${minutes}m`
+  return minutes > 0 ? `${minutes}m${seconds}s` : `${seconds}s`
 }
 
 /** Pretty-prints redacted args as JSON; never throws on odd values. */
@@ -83,13 +101,17 @@ function formatArgs(args: unknown): string {
 }
 
 function renderWaitLine(card: ApprovalCardView): Html {
-  if (card.waitRemainingSec === undefined) {
-    return html`<span class="wait-remaining wait-unknown"><span class="dot dot-s dot-off"></span>Agent wait: unknown</span>`
+  const waiting = formatDuration(card.waitingSec)
+  if (card.agentConnected === false) {
+    const since = card.holderSeenAt ?? 'unknown'
+    return html`<span class="wait-remaining wait-elapsed"><span class="dot dot-s dot-off"></span>Agent not connected — silent since <span class="num">${since}</span>; approving now sends nothing</span>`
   }
-  if (card.waitRemainingSec <= 0) {
-    return html`<span class="wait-remaining wait-elapsed"><span class="dot dot-s dot-off dot-blink"></span>Agent wait elapsed — approval only grants a retry</span>`
-  }
-  return html`<span class="wait-remaining"><span class="dot dot-s blink"></span>Agent still waiting: <span class="num">${card.waitRemainingSec}s</span></span>`
+  const cap =
+    card.waitRemainingSec === undefined
+      ? html``
+      : html` · closes in <span class="num">${formatDuration(card.waitRemainingSec)}</span>`
+  const connected = card.agentConnected === undefined ? html`` : html` · connected`
+  return html`<span class="wait-remaining"><span class="dot dot-s blink"></span>Agent waiting <span class="num">${waiting}</span>${connected}${cap}</span>`
 }
 
 /**
@@ -149,7 +171,6 @@ function renderCard(card: ApprovalCardView, csrfToken: string, canResolve: boole
     <pre class="args">${formatArgs(card.argsRedacted)}</pre>
     <div class="clocks">
       ${renderWaitLine(card)}
-      <span class="grant-remaining">Grant window: <span class="num">${card.grantRemainingSec}s</span> left</span>
     </div>
     ${tail}
   </article>`

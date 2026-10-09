@@ -82,7 +82,9 @@ function formatWaiting(entry: PendingApproval, nowMs: number): string {
  */
 function formatConnected(entry: PendingApproval): string {
   if (entry.agentConnected === undefined) return 'unknown'
-  return entry.agentConnected ? 'yes' : 'no'
+  if (entry.agentConnected) return 'yes'
+  // Since when its process has been silent: an approval now sends nothing (M36, S-L2).
+  return entry.holderSeenAt !== undefined ? `no silent_since=${formatReadableField(entry.holderSeenAt)}` : 'no'
 }
 
 /** `Nm Ns` (or bare seconds under a minute). */

@@ -64,7 +64,8 @@ function formatRecordLine(record: JournalRecord): string {
 function decisionText(record: JournalRecord): string {
   const summary = formatDecisionSummary(record.decision as NonNullable<JournalRecord['decision']>)
   const detail = record.decision?.toolName === TOOLS_LIST_TOOL ? toolCountText(record.payload) : undefined
-  const tail = detail ?? payloadText(record.payload)
+  // A record with no arguments of its own (M36 phase C, a revocation) shows none, not `null`.
+  const tail = detail ?? (record.payload === null ? '' : payloadText(record.payload))
   return tail === '' ? summary : `${summary}  ${tail}`
 }
 
