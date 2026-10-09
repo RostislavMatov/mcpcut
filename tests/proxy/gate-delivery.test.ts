@@ -96,6 +96,7 @@ interface HarnessOptions {
   readonly answers?: ToolUseAnswers
   readonly sessionSink?: JournalSink
   readonly onRequestDropped?: (id: unknown) => void
+  readonly progressText?: boolean
 }
 
 function createHarness(opts: HarnessOptions = {}): Harness {
@@ -117,6 +118,7 @@ function createHarness(opts: HarnessOptions = {}): Harness {
     },
     ...(opts.answers !== undefined ? { toolUseAnswers: opts.answers } : {}),
     ...(opts.onRequestDropped !== undefined ? { onRequestDropped: opts.onRequestDropped } : {}),
+    ...(opts.progressText === true ? { heldCallProgress: () => 'waiting for a person to approve this call' } : {}),
     onError: (error) => errors.push(error),
   })
   return { gate, written }
@@ -221,47 +223,47 @@ describe('a resend of the same tool use gets the first answer', () => {
   })
 })
 
-describe('one call per tool use at a time', () => {
-  test('a resend while the first call is still running is refused, and nothing is sent again', async () => {
+describe('one call per tool use at a time: a resend joins the call still running (M39)', () => {
+  test('a resend while the first call is still running waits for it and gets its answer; nothing is sent twice', async () => {
     const { gate, written } = createHarness()
     expect(await settled(gate.gateClientMessage(toolCall(1, 'toolu_A')))).toEqual({ action: 'forward' })
 
-    expect(await settled(gate.gateClientMessage(toolCall(2, 'toolu_A')))).toEqual({ action: 'drop' })
-
-    const refusal = parsed(written.at(-1)!)
-    expect(refusal.id).toBe(2)
-    expect(refusal.error.code).toBe(ERROR_CODE_RESEND)
-    expect(refusal.error.data.reason).toBe('tool_use_in_flight')
-    const denied = (await decisions()).find((record) => record.decision?.rule === 'tool-use-in-flight')
-    expect(denied?.decision).toMatchObject({ outcome: 'deny', toolUseId: 'toolu_A' })
-
-    // Once the first is answered, a further resend gets that answer.
+    const resend = gate.gateClientMessage(toolCall(2, 'toolu_A'))
+    expect(resend).toBeInstanceOf(Promise)
     gate.gateServerMessage(resultOf(1, 'done'))
-    expect(await settled(gate.gateClientMessage(toolCall(3, 'toolu_A')))).toEqual({ action: 'drop' })
-    expect(parsed(written.at(-1)!).result.content[0].text).toBe('done')
+
+    expect(await settled(resend)).toEqual({ action: 'drop' })
+    const answer = parsed(written.at(-1)!)
+    expect(answer).toMatchObject({ id: 2, result: { content: [{ text: 'done' }] } })
+    const outcomes = (await decisions()).map((record) => record.decision?.outcome)
+    expect(outcomes).toEqual(['allow', 'replayed'])
   })
 
-  test('a resend while the first call waits for a human is refused: nobody is asked twice', async () => {
+  test('a resend while the first call waits for a human joins it: nobody is asked twice', async () => {
     const { gate, written } = createHarness({ policy: policyOf('require-approval') })
     const first = gate.gateClientMessage(toolCall(1, 'toolu_H'))
     const pending = await waitForPending()
 
-    expect(await settled(gate.gateClientMessage(toolCall(2, 'toolu_H')))).toEqual({ action: 'drop' })
-    expect(parsed(written.at(-1)!).error.data.reason).toBe('tool_use_in_flight')
+    const resend = gate.gateClientMessage(toolCall(2, 'toolu_H'))
+    await sleep(20)
     expect((await queue.list()).map((entry) => entry.approvalId)).toEqual([pending.approvalId])
 
     await queue.resolve(pending.approvalId, { outcome: 'approved', actor: 'operator' })
     expect(await settled(first)).toEqual({ action: 'forward' })
+    gate.gateServerMessage(resultOf(1, 'approved and done'))
+    expect(await settled(resend)).toEqual({ action: 'drop' })
+    expect(parsed(written.at(-1)!)).toMatchObject({ id: 2, result: { content: [{ text: 'approved and done' }] } })
   })
 
-  test('a held call the agent cancelled frees its tool use: a resend asks again', async () => {
+  test('the first call let go without an answer: the resend is decided on its own and asks for itself', async () => {
     const { gate } = createHarness({ policy: policyOf('require-approval') })
     const first = gate.gateClientMessage(toolCall(1, 'toolu_C'))
     const pendingA = await waitForPending()
+    const resend = gate.gateClientMessage(toolCall(2, 'toolu_C'))
+
     gate.gateClientMessage(cancelOf(1))
     expect(await settled(first)).toEqual({ action: 'drop' })
 
-    const resend = gate.gateClientMessage(toolCall(2, 'toolu_C'))
     let pendingB: PendingApproval | undefined
     for (let attempt = 0; attempt < 400 && pendingB === undefined; attempt += 1) {
       pendingB = (await queue.list()).find((entry) => entry.approvalId !== pendingA.approvalId)
@@ -270,6 +272,47 @@ describe('one call per tool use at a time', () => {
     expect(pendingB).toBeDefined()
     await queue.resolve(pendingB!.approvalId, { outcome: 'approved', actor: 'operator' })
     expect(await settled(resend)).toEqual({ action: 'forward' })
+  })
+
+  test('the agent leaves a joined resend: agent-gone, nothing answered, its id announced (S-L1)', async () => {
+    const dropped: unknown[] = []
+    const { gate, written } = createHarness({ onRequestDropped: (id) => dropped.push(id) })
+    await settled(gate.gateClientMessage(toolCall(1, 'toolu_J')))
+    const resend = gate.gateClientMessage(toolCall(2, 'toolu_J'))
+    const writtenBefore = written.length
+
+    gate.abandonRequest(2)
+
+    expect(await settled(resend)).toEqual({ action: 'drop' })
+    expect(written.length).toBe(writtenBefore)
+    expect(dropped).toEqual([2])
+    const gone = (await decisions()).find((record) => record.decision?.outcome === 'agent-gone')
+    expect(gone?.decision).toMatchObject({ rule: 'tool-use-joined', reason: 'disconnected', toolUseId: 'toolu_J' })
+  })
+
+  test('a joined resend hears that it waits, on its progress token', async () => {
+    const { gate, written } = createHarness({ progressText: true })
+    await settled(gate.gateClientMessage(toolCall(1, 'toolu_P')))
+
+    const resend = gate.gateClientMessage(toolCall(2, 'toolu_P'))
+    await sleep(5)
+
+    expect(parsed(written.at(-1)!)).toMatchObject({
+      method: 'notifications/progress',
+      params: { progressToken: 1, message: 'this call is already running; waiting for its answer' },
+    })
+    gate.gateServerMessage(resultOf(1))
+    await settled(resend)
+  })
+
+  test('the session ending ends a joined wait too', async () => {
+    const { gate } = createHarness()
+    await settled(gate.gateClientMessage(toolCall(1, 'toolu_S')))
+    const resend = gate.gateClientMessage(toolCall(2, 'toolu_S'))
+
+    await gate.agentLeft()
+
+    expect(await settled(resend)).toEqual({ action: 'drop' })
   })
 
   test('a denied call frees its tool use at once', async () => {
@@ -281,7 +324,7 @@ describe('one call per tool use at a time', () => {
     const resend = await settled(gate.gateClientMessage(toolCall(2, 'toolu_D')))
 
     expect(resend).toEqual({ action: 'drop' })
-    expect((await decisions()).filter((record) => record.decision?.rule === 'tool-use-in-flight')).toEqual([])
+    expect((await decisions()).some((record) => record.decision?.rule === 'tool-use-joined')).toBe(false)
   })
 })
 

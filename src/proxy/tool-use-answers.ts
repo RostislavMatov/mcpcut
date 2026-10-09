@@ -80,6 +80,12 @@ export interface ToolUseAnswers {
   find(scope: string, toolUseId: string, call: CallIdentity): KeptAnswer | null
   /** `null` while another call of the same tool use holds it. */
   claim(scope: string, toolUseId: string): ToolUseClaim | null
+  /**
+   * Settles once the claim on this tool use is released — at once when none is
+   * held. A resend that found its tool use claimed waits on it, then looks for
+   * the answer again (decision M39: a resend joins the call still running).
+   */
+  whenReleased(scope: string, toolUseId: string): Promise<void>
 }
 
 export interface ToolUseAnswersOptions {
@@ -116,6 +122,15 @@ export function createToolUseAnswers(options: ToolUseAnswersOptions = {}): ToolU
   /** Insertion-ordered, oldest first: a re-kept answer is deleted and set again. */
   const answers = new Map<string, StoredAnswer>()
   const claims = new Map<string, ClaimEntry>()
+  /** Who waits for each claimed key's release. */
+  const releaseWaiters = new Map<string, Set<() => void>>()
+
+  function wakeReleased(key: string): void {
+    const waiters = releaseWaiters.get(key)
+    if (waiters === undefined) return
+    releaseWaiters.delete(key)
+    for (const wake of waiters) wake()
+  }
   let totalBytes = 0
   const scopeBytes = new Map<string, number>()
 
@@ -190,7 +205,9 @@ export function createToolUseAnswers(options: ToolUseAnswersOptions = {}): ToolU
       const now = clock()
       if (claims.size >= CLAIMS_SWEEP_AT) {
         for (const [held, entry] of [...claims]) {
-          if (now - entry.claimedAtMs >= TOOL_USE_CLAIM_MAX_AGE_MS) claims.delete(held)
+          if (now - entry.claimedAtMs < TOOL_USE_CLAIM_MAX_AGE_MS) continue
+          claims.delete(held)
+          wakeReleased(held)
         }
       }
       const held = claims.get(key)
@@ -199,9 +216,22 @@ export function createToolUseAnswers(options: ToolUseAnswersOptions = {}): ToolU
       claims.set(key, entry)
       return {
         release() {
-          if (claims.get(key) === entry) claims.delete(key)
+          if (claims.get(key) !== entry) return
+          claims.delete(key)
+          wakeReleased(key)
         },
       }
+    },
+
+    whenReleased(scope, toolUseId) {
+      const key = keyOf(scope, toolUseId)
+      const held = claims.get(key)
+      if (held === undefined || clock() - held.claimedAtMs >= TOOL_USE_CLAIM_MAX_AGE_MS) return Promise.resolve()
+      return new Promise<void>((resolve) => {
+        const waiters = releaseWaiters.get(key) ?? new Set<() => void>()
+        waiters.add(resolve)
+        releaseWaiters.set(key, waiters)
+      })
     },
   }
 }

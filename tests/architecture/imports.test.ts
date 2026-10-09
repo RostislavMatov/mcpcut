@@ -78,6 +78,8 @@ const SEMANTIC_ALLOWLIST: ReadonlySet<string> = new Set([
   // the router and the fail-closed guard, both extracted from the gate for the
   // line budget: all three are the gate's semantics.
   'src/proxy/gate-delivery.ts',
+  // M39: a resend joining the call still running (split from gate-delivery.ts).
+  'src/proxy/gate-delivery-join.ts',
   'src/proxy/gate-server-router.ts',
   'src/proxy/gate-guard.ts',
   'src/proxy/journal-failure.ts',

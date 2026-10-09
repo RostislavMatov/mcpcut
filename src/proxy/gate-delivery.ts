@@ -3,13 +3,16 @@ import type { JsonRpcId } from '../protocol/classify.js'
 import type { ParsedToolCall } from '../protocol/mcp.js'
 import type { Verdict } from './pipeline.js'
 import type { SynthesizableId } from './synthesize.js'
-import { answerNotKeptError, toolUseInFlightError } from './synthesize-resend.js'
+import type { HoldScheduler } from './approval-hold.js'
+import { createJoinedCalls, type JoinOutcome } from './gate-delivery-join.js'
+import { answerNotKeptError } from './synthesize-resend.js'
 import type { CallIdentity, ToolUseAnswers, ToolUseClaim } from './tool-use-answers.js'
 import {
   DROP,
   decisionInfoOf,
   idKeyOf,
   isPromiseVerdict,
+  type AnswerGuard,
   type CallFacts,
   type DecisionExtras,
   type DecisionWriter,
@@ -23,9 +26,10 @@ import {
  *  - **A resend of the same tool use** (same agent, `toolUseId`, server, tool
  *    and arguments) is answered with the server's first answer under the new
  *    id, journaled `replayed`; while the first call is still held or running
- *    it is refused (`tool-use-in-flight`). Decided after `decide()`, so a
- *    rule that now denies still wins; a call without a `toolUseId` is never a
- *    resend (owner, 2026-10-09).
+ *    it joins it (`gate-delivery-join.ts`, decision M39) and is decided again
+ *    once that call lets go. Decided after `decide()`, so a rule that now
+ *    denies still wins; a call without a `toolUseId` is never a resend
+ *    (owner, 2026-10-09).
  *  - **Forwarded calls are tracked** until the server answers. The agent may
  *    leave meanwhile — a cancel, an abandoned HTTP request, the session ending
  *    — and its answer is then journaled `undelivered`, with why the agent left
@@ -43,8 +47,6 @@ import {
 
 /** A resend answered with the first result. */
 export const TOOL_USE_RESEND_RULE = 'tool-use-resend'
-/** A resend refused while the first call of its tool use is still held or running. */
-export const TOOL_USE_IN_FLIGHT_RULE = 'tool-use-in-flight'
 /** An undelivered answer, kept for a resend of its tool use. */
 export const ANSWER_KEPT_RULE = 'answer-kept'
 /** An undelivered answer over the size limit: a resend is told so instead. */
@@ -75,10 +77,18 @@ export interface GateDeliveryDeps {
   readonly answerLocally: (id: JsonRpcId, build: (id: SynthesizableId) => Buffer) => Promise<void>
   /** How the agent left `idKey` while its verdict was still in flight, if it did. */
   readonly departureOf: (idKey: string) => Departure | undefined
+  readonly answerGuard: Pick<AnswerGuard, 'markAnswered'>
+  /** Present on a path that carries the gate's own notifications: a joined resend hears progress. */
+  readonly sendProgress?: (bytes: Buffer) => Promise<void>
+  readonly holdScheduler: HoldScheduler
+  readonly onRequestDropped?: (id: JsonRpcId) => void
+  readonly onError: (error: unknown) => void
 }
 
 export type Admission =
   | { readonly kind: 'answered'; readonly verdict: Promise<Verdict> }
+  /** Joined the call holding its tool use: `'released'` means decide it again (M39). */
+  | { readonly kind: 'joined'; readonly settled: Promise<JoinOutcome> }
   | { readonly kind: 'go'; readonly claim: ToolUseClaim | null }
 
 export interface GateDelivery {
@@ -135,6 +145,16 @@ function toolUseExtra(subject: { readonly toolUseId?: string }): Pick<DecisionEx
 export function createGateDelivery(deps: GateDeliveryDeps): GateDelivery {
   const { scope, answers, clock, writeDecision, settleJournal, answerLocally } = deps
   const forwarded = new Map<string, ForwardedCall>()
+  const joins = createJoinedCalls({
+    scope,
+    answers,
+    writeDecision,
+    answerGuard: deps.answerGuard,
+    ...(deps.sendProgress !== undefined ? { sendProgress: deps.sendProgress } : {}),
+    scheduler: deps.holdScheduler,
+    ...(deps.onRequestDropped !== undefined ? { onRequestDropped: deps.onRequestDropped } : {}),
+    onError: deps.onError,
+  })
   let isLeaving = false
   /** Settles waiting for the answers still owed; more than one `settle` may wait. */
   const owedWaiters = new Set<() => void>()
@@ -159,21 +179,16 @@ export function createGateDelivery(deps: GateDeliveryDeps): GateDelivery {
     return DROP
   }
 
-  async function refuseInFlight(call: ParsedToolCall, facts: CallFacts): Promise<Verdict> {
-    writeDecision(decisionInfoOf(facts, 'deny', TOOL_USE_IN_FLIGHT_RULE, toolUseExtra(call)), call.args)
-    await settleJournal()
-    await answerLocally(call.id, (id) => toolUseInFlightError(id, { toolName: facts.toolName }))
-    return DROP
-  }
-
   function admit(call: ParsedToolCall, facts: CallFacts): Admission {
-    if (call.id === null || call.toolUseId === undefined) return GO_UNCLAIMED
-    const kept = answers.find(scope, call.toolUseId, identityOf(facts))
+    const { toolUseId } = call
+    if (call.id === null || toolUseId === undefined) return GO_UNCLAIMED
+    const kept = answers.find(scope, toolUseId, identityOf(facts))
     const response = kept === null ? null : parseKeptResponse(kept.response)
     if (response !== null) return { kind: 'answered', verdict: replay(call, facts, response) }
-    const claim = answers.claim(scope, call.toolUseId)
-    if (claim === null) return { kind: 'answered', verdict: refuseInFlight(call, facts) }
-    return { kind: 'go', claim }
+    const claim = answers.claim(scope, toolUseId)
+    // Once the session settles, a resend has nothing left to wait with.
+    if (claim === null && !isLeaving) return { kind: 'joined', settled: joins.join({ ...call, toolUseId }, facts) }
+    return claim === null ? GO_UNCLAIMED : { kind: 'go', claim }
   }
 
   function register(call: ParsedToolCall, facts: CallFacts, claim: ToolUseClaim | null, verdict: Verdict): void {
@@ -260,6 +275,7 @@ export function createGateDelivery(deps: GateDeliveryDeps): GateDelivery {
   }
 
   function departed(idKey: string, departure: Departure): void {
+    joins.leave(idKey, departure.reason)
     const entry = forwarded.get(idKey)
     if (entry === undefined || entry.departure !== undefined) return
     if (departure.kind === 'cancel') entry.claim?.release()
@@ -268,6 +284,7 @@ export function createGateDelivery(deps: GateDeliveryDeps): GateDelivery {
 
   function agentLeft(): void {
     isLeaving = true
+    joins.leaveAll(WITHDRAW_REASON_DISCONNECTED)
     for (const idKey of [...forwarded.keys()]) {
       departed(idKey, { reason: WITHDRAW_REASON_DISCONNECTED, kind: 'abandon' })
     }
@@ -293,6 +310,7 @@ export function createGateDelivery(deps: GateDeliveryDeps): GateDelivery {
     // Whatever ending this is, nothing forwarded from now on is tracked: it
     // could only ever be settled by a second `settle` (review M2).
     isLeaving = true
+    joins.leaveAll(reason)
     await waitOwed(graceMs, stop)
     let unanswered = 0
     for (const [idKey, entry] of [...forwarded]) {

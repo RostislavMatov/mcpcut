@@ -167,3 +167,40 @@ describe('tool-use answers: one call per tool use at a time', () => {
     expect(answers.claim('bot', 'toolu_1')).toBeNull()
   })
 })
+
+describe('tool-use answers: a resend waits for the call that holds its tool use (M39)', () => {
+  test('whenReleased settles once the claim is released, not before', async () => {
+    const answers = createToolUseAnswers({ clock: clockAt().now })
+    const claim = answers.claim('bot', 'toolu_1')
+    let released = false
+    const waiting = answers.whenReleased('bot', 'toolu_1').then(() => {
+      released = true
+    })
+
+    await Promise.resolve()
+    expect(released).toBe(false)
+    claim?.release()
+    await waiting
+    expect(released).toBe(true)
+  })
+
+  test('with no claim held it settles at once', async () => {
+    const answers = createToolUseAnswers({ clock: clockAt().now })
+    await expect(answers.whenReleased('bot', 'toolu_free')).resolves.toBeUndefined()
+  })
+
+  test('another agent\'s release of the same id wakes nobody here', async () => {
+    const answers = createToolUseAnswers({ clock: clockAt().now })
+    const mine = answers.claim('bot', 'toolu_1')
+    const theirs = answers.claim('other', 'toolu_1')
+    let released = false
+    void answers.whenReleased('bot', 'toolu_1').then(() => {
+      released = true
+    })
+
+    theirs?.release()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    expect(released).toBe(false)
+    mine?.release()
+  })
+})

@@ -126,7 +126,7 @@ export function createCallDecider(deps: CallDeciderDeps): CallDecider {
     }
   }
 
-  return {
+  const decider: CallDecider = {
     decideToolCall(call) {
       const evaluation = evaluate(call)
       const { facts, decision } = evaluation
@@ -135,6 +135,11 @@ export function createCallDecider(deps: CallDeciderDeps): CallDecider {
       // wins over a kept answer, and a resend asks nobody twice (M36 phase C).
       const admission = deps.delivery.admit(call, facts)
       if (admission.kind === 'answered') return admission.verdict
+      // M39: joined the call holding its tool use; once it lets go, decide again —
+      // under the rules then in force — which finds and replays its answer.
+      if (admission.kind === 'joined') {
+        return admission.settled.then((outcome) => (outcome === 'released' ? decider.decideToolCall(call) : outcome))
+      }
       let verdict: Verdict | Promise<Verdict>
       try {
         verdict = confirmStep.isRequired(facts.toolName)
@@ -148,4 +153,5 @@ export function createCallDecider(deps: CallDeciderDeps): CallDecider {
       return deps.delivery.track(call, facts, admission.claim, verdict)
     },
   }
+  return decider
 }

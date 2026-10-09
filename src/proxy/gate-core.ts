@@ -287,6 +287,14 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
     settleJournal,
     answerLocally,
     departureOf: (idKey) => router.departureOf(idKey),
+    answerGuard,
+    // Only where the client channel carries the gate's own notifications.
+    ...(deps.heldCallProgress !== undefined
+      ? { sendProgress: (bytes: Buffer) => deps.clientSink.write(serverMessage(trimTrailingNewline(bytes))) }
+      : {}),
+    holdScheduler: deps.holdScheduler ?? DEFAULT_HOLD_SCHEDULER,
+    ...(deps.onRequestDropped !== undefined ? { onRequestDropped: deps.onRequestDropped } : {}),
+    onError,
   })
 
   const { decideToolCall } = createCallDecider({

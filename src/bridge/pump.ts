@@ -1,13 +1,24 @@
 import { classify, type JsonRpcId } from '../protocol/classify.js'
 import { synthesizeError, type SynthesizableId } from '../proxy/synthesize.js'
 import {
+  clientMessage,
   serverMessage,
   type McpMessage,
   type MessageSink,
   type MessageSource,
 } from '../transport/message.js'
 import { DIAGNOSTIC_PREFIX } from '../upstream/constants.js'
+import { parseCancelledRequestId } from '../proxy/gate-helpers.js'
 import { ERROR_CODE_BRIDGE_TRANSPORT } from './constants.js'
+import {
+  BRIDGE_RETRY_DELAYS_MS,
+  attemptBytes,
+  cancelFor,
+  createRetryBook,
+  retryableCallOf,
+  withId,
+  type RetryableCall,
+} from './retry.js'
 import {
   classifyBridgeFailure,
   isFatal,
@@ -22,7 +33,9 @@ import {
  * module never touches a stream, a socket or a URL — and what crosses it
  * crosses byte for byte: the bridge relays, the SERVICE gates. The only
  * bytes it ever originates are the transport error it owes a request it
- * could not deliver.
+ * could not deliver, and — decision M39, `retry.ts` — a dropped `tools/call`
+ * with a tool-use id sent again under an id of its own, its answer and its
+ * client's cancel moved between the two ids.
  *
  * Two disciplines are load-bearing:
  *
@@ -54,6 +67,8 @@ export interface RunBridgeArgs {
   readonly service: BridgeServiceEndpoints
   /** Operator-facing lines (stderr). Never the protocol channel. */
   readonly onDiagnostic: (line: string) => void
+  /** Pauses before each further attempt of a dropped call (`retry.ts`); tests shorten them. */
+  readonly retryDelaysMs?: readonly number[]
 }
 
 export type BridgeEnd =
@@ -92,6 +107,10 @@ function answerableIdOf(bytes: Buffer): SynthesizableId | undefined {
   return id === null ? undefined : id
 }
 
+/** Cheap pre-checks before a message is parsed at all (`includes` on the raw bytes). */
+const TOOLS_CALL_METHOD_BYTES = Buffer.from('"tools/call"')
+const CANCELLED_METHOD_BYTES = Buffer.from('"notifications/cancelled"')
+
 /** How a message that failed to reach the service describes itself in a diagnostic. */
 function labelOf(bytes: Buffer): string {
   const message = classify(bytes.toString('utf8'))
@@ -110,6 +129,8 @@ function labelOf(bytes: Buffer): string {
  */
 interface Pump {
   forward(message: McpMessage): Promise<void>
+  /** A service message as the client must see it: an attempt's answer under the original id (M39). */
+  toClient(message: McpMessage): McpMessage
   writeToClient(message: McpMessage): Promise<void>
   onServiceError(error: unknown): void
   endClientSide(): Promise<void>
@@ -129,6 +150,10 @@ function createPump(args: RunBridgeArgs, resolve: (end: BridgeEnd) => void): Pum
    * `forward` is about to print with the method and the id attached.
    */
   let forwardsInFlight = 0
+  /** Calls waiting out a pause before their next attempt. */
+  let retriesPending = 0
+  const book = createRetryBook()
+  const delays = args.retryDelaysMs ?? BRIDGE_RETRY_DELAYS_MS
 
   function diagnose(text: string): void {
     onDiagnostic(`${DIAGNOSTIC_PREFIX} ${text}\n`)
@@ -165,9 +190,11 @@ function createPump(args: RunBridgeArgs, resolve: (end: BridgeEnd) => void): Pum
 
   /**
    * Answers a request the bridge could not deliver, so the agent's client
-   * sees a failed call rather than a call that never returns. There is no
-   * retry: a `tools/call` is not idempotent, and re-sending one the service
-   * may well have received is worse than reporting the failure.
+   * sees a failed call rather than a call that never returns. Only a
+   * `tools/call` with a tool-use id is ever sent again (`sendWithRetries`,
+   * decision M39) — the service matches it to the first call; anything else
+   * is not idempotent, and re-sending one the service may well have received
+   * is worse than reporting the failure.
    */
   function answerUndeliverable(bytes: Buffer, failure: BridgeFailure): void {
     const id = answerableIdOf(bytes)
@@ -202,14 +229,85 @@ function createPump(args: RunBridgeArgs, resolve: (end: BridgeEnd) => void): Pum
   async function forward(message: McpMessage): Promise<void> {
     forwardsInFlight += 1
     try {
-      await service.sink.write(message)
-    } catch (error: unknown) {
-      const failure = classifyBridgeFailure(error)
-      if (isFatal(failure)) settleFatal(failure)
-      else reportUndelivered(message, failure)
+      await sendWithRetries(cancelOfAttempt(message))
     } finally {
       forwardsInFlight -= 1
     }
+  }
+
+  /**
+   * A client's cancel of a call the bridge may send again: no further attempt,
+   * and if one is out, it is the one cancelled. Only a message that can be a
+   * cancel is parsed.
+   */
+  function cancelOfAttempt(message: McpMessage): McpMessage {
+    if (!message.bytes.includes(CANCELLED_METHOD_BYTES)) return message
+    const parsed = classify(message.bytes.toString('utf8'))
+    if (parsed.kind !== 'notification' || parsed.method !== 'notifications/cancelled') return message
+    const attemptId = book.cancel(parseCancelledRequestId(parsed.raw))
+    return attemptId === undefined ? message : clientMessage(cancelFor(message.bytes, attemptId), message.meta.terminator)
+  }
+
+  /**
+   * Sends `message`; a `tools/call` with a tool-use id whose connection
+   * dropped is sent again under an attempt id after each pause in `delays`
+   * (decision M39, `retry.ts`). Anything else that fails costs that request.
+   */
+  async function sendWithRetries(message: McpMessage): Promise<void> {
+    // Known from the start, so a cancel sent while the first attempt is still
+    // out stops any later one.
+    const call = message.bytes.includes(TOOLS_CALL_METHOD_BYTES) ? retryableCallOf(message.bytes) : null
+    if (call !== null) book.begin(call.originalId)
+    let current = message
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await service.sink.write(current)
+        // An attempt's mapping goes when its answer arrives (`toClient`).
+        if (call !== null && current === message) book.forget(call.originalId)
+        return
+      } catch (error: unknown) {
+        const failure = classifyBridgeFailure(error)
+        if (isFatal(failure)) return settleFatal(failure)
+        const delay = delays[attempt]
+        if (call === null || delay === undefined || failure.kind !== 'network' || book.isCancelled(call.originalId)) {
+          return giveUp(message, call, failure)
+        }
+        diagnose(`${labelOf(message.bytes)}: the connection dropped; sending it again in ${delay} ms (${attempt + 1} of ${delays.length})`)
+        if (!(await pauseFor(delay, call))) return
+        current = clientMessage(attemptBytes(call, book.nextAttemptId(call.originalId)), message.meta.terminator)
+      }
+    }
+  }
+
+  /** Waits `ms`; false when the call should not go again after all (cancelled, or the bridge ended). */
+  async function pauseFor(ms: number, call: RetryableCall): Promise<boolean> {
+    retriesPending += 1
+    try {
+      await new Promise<void>((resolve) => setTimeout(resolve, ms).unref())
+    } finally {
+      retriesPending -= 1
+    }
+    if (!isSettled && !book.isCancelled(call.originalId)) return true
+    book.forget(call.originalId)
+    return false
+  }
+
+  /** The request is lost: say so, and answer it under its original id — unless its client cancelled it. */
+  function giveUp(message: McpMessage, call: RetryableCall | null, failure: BridgeFailure): void {
+    if (call !== null) {
+      const isCancelled = book.isCancelled(call.originalId)
+      book.forget(call.originalId)
+      if (isCancelled) return
+    }
+    reportUndelivered(message, failure)
+  }
+
+  function toClient(message: McpMessage): McpMessage {
+    if (book.hasNoAttempts()) return message
+    const parsed = classify(message.bytes.toString('utf8'))
+    if (parsed.kind !== 'response') return message
+    const original = book.takeOriginal(parsed.id)
+    return original === undefined ? message : serverMessage(withId(message.bytes, original), message.meta.terminator)
   }
 
   function onServiceError(error: unknown): void {
@@ -239,7 +337,7 @@ function createPump(args: RunBridgeArgs, resolve: (end: BridgeEnd) => void): Pum
     resolve({ reason: 'client-ended' })
   }
 
-  return { forward, writeToClient, onServiceError, endClientSide, hasEnded: () => isSettled }
+  return { forward, toClient, writeToClient, onServiceError, endClientSide, hasEnded: () => isSettled }
 }
 
 /** Wires both sides to one pump. Every handler is registered before the first `await`. */
@@ -265,7 +363,7 @@ export function runBridge(args: RunBridgeArgs): Promise<BridgeEnd> {
 
     args.service.source.onMessage((message) => {
       if (pump.hasEnded()) return
-      void pump.writeToClient(message)
+      void pump.writeToClient(pump.toClient(message))
     })
     args.service.source.onError((error: unknown) => {
       pump.onServiceError(error)
