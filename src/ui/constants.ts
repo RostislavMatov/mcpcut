@@ -191,6 +191,16 @@ export const UI_SESSION_SWEEP_INTERVAL_MS = 2000
 export const UI_QUEUE_POLL_INTERVAL_MS = 1000
 
 /**
+ * How often an open dashboard re-reads its approval queue while a card is on
+ * it (`data-live-every`). Whether the agent's process still checks in changes
+ * with no queue event — its heartbeat just stops — so without a re-read a card
+ * says "connected" until the page reloads. One heartbeat interval: a stale
+ * holder shows within this much of going stale, and the read also runs the
+ * queue's lazy sweep, which closes a request whose process is gone.
+ */
+export const UI_APPROVALS_REFRESH_MS = 30_000
+
+/**
  * How many bounded change pages one poll tick will drain before yielding.
  *
  * The drain loop terminates on its own (each page strictly advances the

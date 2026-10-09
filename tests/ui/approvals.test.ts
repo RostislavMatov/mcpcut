@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { APPROVALS_LIST_MAX_ROWS } from '../../src/config.js'
+import { APPROVAL_HEARTBEAT_INTERVAL_MS } from '../../src/policy/constants.js'
+import { UI_APPROVALS_REFRESH_MS } from '../../src/ui/constants.js'
 import {
   createApprovalQueue,
   type ApprovalQueue,
@@ -109,21 +111,23 @@ describe('approvalsPage rendering', () => {
     // Secret argument value must have been redacted before it reached the page.
     expect(html).not.toContain('secret-value')
     // Waiting for 18s; the policy caps the wait at 60s, so 42s are left (M36).
-    expect(html).toContain('Agent waiting <span class="num">18s</span>')
-    expect(html).toContain('closes in <span class="num">42s</span>')
+    // Both are clocks the page script ticks on (`data-clock`, APP_JS).
+    expect(html).toContain('Agent waiting <span class="num" data-clock="up" data-clock-sec="18">18s</span>')
+    expect(html).toContain('closes in <span class="num" data-clock="down" data-clock-sec="42">42s</span>')
     // No grant window any more.
     expect(html).not.toContain('Grant window')
   })
 
-  test('the same call sent again says when its first request closed (M39)', () => {
+  test('the same call sent again says when its first request closed, as the journal writes a time (M39)', () => {
     const card = toApprovalCard(
       { ...syntheticPending('01J0000000000000000000000E', T0), resendOfWithdrawnAt: '2026-10-09T07:59:00.000Z' },
       T0,
     )
     const html = String(renderQueueRegion({ cards: [card], csrfToken: 'csrf', currentAdmin: { name: 'op', role: 'operator' } }))
 
-    expect(html).toContain('Sent again: the first request for this same call closed at')
-    expect(html).toContain('2026-10-09T07:59:00.000Z')
+    expect(html).toContain(
+      'Sent again: the first request for this same call closed at <span class="num" title="2026-10-09T07:59:00.000Z">07:59:00</span>',
+    )
   })
 
   test('an agent whose process stopped checking in: since when, and that approving sends nothing (M36 S-L2)', () => {
@@ -134,8 +138,16 @@ describe('approvalsPage rendering', () => {
     const html = String(renderQueueRegion({ cards: [card], csrfToken: 'csrf', currentAdmin: { name: 'op', role: 'operator' } }))
 
     expect(html).toContain('Agent not connected')
-    expect(html).toContain('2026-10-09T08:00:00.000Z')
+    expect(html).toContain('silent since <span class="num" title="2026-10-09T08:00:00.000Z">08:00:00</span>')
     expect(html).toContain('approving now sends nothing')
+  })
+
+  test('the queue re-reads itself while the tab is open, so a card follows its agent with no event (M36)', () => {
+    const html = String(renderQueueRegion({ cards: [], csrfToken: 'csrf', currentAdmin: { name: 'op', role: 'operator' } }))
+
+    expect(html).toContain(`data-live-every="${UI_APPROVALS_REFRESH_MS}"`)
+    // Fast enough to show a process that stopped checking in soon after its heartbeat goes stale.
+    expect(UI_APPROVALS_REFRESH_MS).toBeLessThanOrEqual(APPROVAL_HEARTBEAT_INTERVAL_MS)
   })
 
   test('escapes hostile tool name and arguments from a malicious server', async () => {

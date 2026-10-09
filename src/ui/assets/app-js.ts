@@ -50,6 +50,18 @@ import { buildAsset, type Asset } from './asset.js'
  *     `data-pending-total` on the SAME element overrides it when it is larger:
  *     queue reads are bounded, and a badge built from the truncated count
  *     would under-report the backlog the page body admits to.
+ *   - `data-live-every="<ms>"` on a region re-fetches it on that period while
+ *     the tab is visible and the region shows a clock (below): what stands
+ *     beside a clock can change with no event (an approval card's agent going
+ *     silent is a heartbeat that stopped, not a queue change).
+ *
+ *  Clocks
+ *   - `data-clock="up|down"` with `data-clock-sec="<n>"` is a duration the
+ *     server measured at render time (an agent's wait, what is left of a capped
+ *     one). Once a second the script writes it on — counting up from `n`, or
+ *     down to zero — in the server's format (`7s`, `2m5s`, `1h2m`), timed from
+ *     when the script first saw the node, so a swapped-in region starts from
+ *     its own fresh value.
  *
  *  Server status dots (M5.5 p.1, O7)
  *   - the Servers page renders each card's dot with `data-server="<name>"`
@@ -286,6 +298,47 @@ const APP_JS_SOURCE = `"use strict";
     for (var i = 0; i < regions.length; i++) refreshRegion(regions[i]);
   }
 
+  // --- Clocks and regions that age ------------------------------------------
+  var CLOCK_TICK_MS = 1000;
+
+  // The same format as formatDuration in pages/approval-queue.ts.
+  function formatClock(totalSeconds) {
+    var s = Math.max(0, Math.floor(totalSeconds));
+    var hours = Math.floor(s / 3600);
+    var minutes = Math.floor((s % 3600) / 60);
+    if (hours > 0) return hours + "h" + minutes + "m";
+    return minutes > 0 ? minutes + "m" + (s % 60) + "s" : s + "s";
+  }
+
+  function tickClocks(nowMs) {
+    var nodes = document.querySelectorAll("[data-clock-sec]");
+    for (var i = 0; i < nodes.length; i++) {
+      var seen = parseInt(nodes[i].getAttribute("data-clock-seen") || "", 10);
+      if (isNaN(seen)) { seen = nowMs; nodes[i].setAttribute("data-clock-seen", String(nowMs)); }
+      var base = parseInt(nodes[i].getAttribute("data-clock-sec") || "0", 10) || 0;
+      var passed = Math.floor((nowMs - seen) / 1000);
+      var down = nodes[i].getAttribute("data-clock") === "down";
+      nodes[i].textContent = formatClock(down ? base - passed : base + passed);
+    }
+  }
+
+  function startClocks() {
+    setInterval(function () { tickClocks(Date.now()); }, CLOCK_TICK_MS);
+  }
+
+  function wireAgingRegion(region) {
+    var everyMs = parseInt(region.getAttribute("data-live-every") || "", 10);
+    if (!(everyMs > 0)) return;
+    setInterval(function () {
+      if (!document.hidden && region.querySelector("[data-clock-sec]")) refreshRegion(region);
+    }, everyMs);
+  }
+
+  function wireAgingRegions() {
+    var regions = document.querySelectorAll("[data-live-region][data-live-every]");
+    for (var i = 0; i < regions.length; i++) wireAgingRegion(regions[i]);
+  }
+
   // --- Pending badge in the tab title --------------------------------------
   function syncPendingBadge(scope) {
     var node = (scope || document).querySelector("[data-pending-count]");
@@ -453,6 +506,8 @@ const APP_JS_SOURCE = `"use strict";
     wireClientFilter();
     syncPendingBadge(document);
     connect();
+    startClocks();
+    wireAgingRegions();
   }
 
   if (document.readyState === "loading") {
