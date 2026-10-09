@@ -79,6 +79,8 @@ All notable changes to this project are documented here. The format follows
   drops them when it rewrites the tools.
 - `mcpcut server show` describes a built-in server and names the command that
   gives an agent folders.
+- `mcpcut show` names who confirmed a call in the client (`confirmed_by=client:claude-code`); the record always
+  carried it, the readable view did not print it.
 
 ## [0.3.1] — 2026-10-05
 

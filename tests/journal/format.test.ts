@@ -115,6 +115,29 @@ describe('formatDecisionSummary', () => {
     expect(result).not.toMatch(/[\x00-\x1f\x7f]/)
     expect(result).toBe('outcome=allow?[31m tool=tool?name rule=rule?name')
   })
+
+  test('names who confirmed the call in the client, when someone did', () => {
+    const result = formatDecisionSummary({
+      outcome: 'allow',
+      toolName: 'write_file',
+      rule: 'defaultDecision',
+      confirmedBy: 'client:claude-code',
+    })
+
+    expect(result).toBe('outcome=allow tool=write_file rule=defaultDecision confirmed_by=client:claude-code')
+  })
+
+  test('neutralizes control characters in who confirmed, a client-declared name', () => {
+    const result = formatDecisionSummary({
+      outcome: 'allow',
+      toolName: 'write_file',
+      rule: 'defaultDecision',
+      confirmedBy: 'client:evil\x1b[2J',
+    })
+
+    expect(result).not.toMatch(/[\x00-\x1f\x7f]/)
+    expect(result).toContain(' confirmed_by=client:evil?[2J')
+  })
 })
 
 /**

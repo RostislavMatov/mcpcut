@@ -71,6 +71,8 @@ export interface DecisionSummaryFields {
   readonly outcome: string
   readonly toolName: string
   readonly rule: string
+  /** Who confirmed the call in the client (`client:<name>`); printed only when someone did. */
+  readonly confirmedBy?: string
   /** Why the agent left, or why its session ended (M36); printed only when present. */
   readonly reason?: string
 }
@@ -85,6 +87,7 @@ export function formatDecisionSummary(decision: DecisionSummaryFields): string {
   const outcome = formatReadableField(decision.outcome)
   const tool = formatReadableField(decision.toolName)
   const rule = formatReadableField(decision.rule)
+  const confirmedBy = decision.confirmedBy !== undefined ? ` confirmed_by=${formatReadableField(decision.confirmedBy)}` : ''
   const reason = decision.reason !== undefined ? ` reason=${formatReadableField(decision.reason)}` : ''
-  return `outcome=${outcome} tool=${tool} rule=${rule}${reason}`
+  return `outcome=${outcome} tool=${tool} rule=${rule}${confirmedBy}${reason}`
 }
