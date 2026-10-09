@@ -5,7 +5,8 @@ import type { Verdict } from './pipeline.js'
 import type { SynthesizableId } from './synthesize.js'
 import type { HoldScheduler } from './approval-hold.js'
 import { createJoinedCalls, type JoinOutcome } from './gate-delivery-join.js'
-import { answerNotKeptError } from './synthesize-resend.js'
+import { MAX_HELD_CALLS_PER_SESSION } from '../policy/constants.js'
+import { answerNotKeptError, joinLimitError, mayHaveRunError } from './synthesize-resend.js'
 import type { CallIdentity, ToolUseAnswers, ToolUseClaim } from './tool-use-answers.js'
 import {
   DROP,
@@ -51,6 +52,8 @@ export const TOOL_USE_RESEND_RULE = 'tool-use-resend'
 export const ANSWER_KEPT_RULE = 'answer-kept'
 /** An undelivered answer over the size limit: a resend is told so instead. */
 export const ANSWER_TOO_LARGE_RULE = 'answer-too-large-to-keep'
+/** A resend refused because the session already has as many resends waiting as it may hold calls. */
+export const RESEND_WAIT_LIMIT_RULE = 'resend-wait-limit'
 /** An undelivered answer to a call without a `toolUseId`: nothing to key it by. */
 export const ANSWER_NOT_KEPT_RULE = 'answer-not-kept-no-tool-use-id'
 /** A forwarded call the server had not answered when its session ended. */
@@ -189,9 +192,31 @@ export function createGateDelivery(deps: GateDeliveryDeps): GateDelivery {
     const response = kept === null ? null : parseKeptResponse(kept.response)
     if (response !== null) return { kind: 'answered', verdict: replay(call, facts, response) }
     const claim = answers.claim(scope, toolUseId)
+    if (claim !== null) return { kind: 'go', claim }
     // Once the session settles, a resend has nothing left to wait with.
-    if (claim === null && !isLeaving) return { kind: 'joined', settled: joins.join({ ...call, toolUseId }, facts) }
-    return claim === null ? GO_UNCLAIMED : { kind: 'go', claim }
+    if (isLeaving) return GO_UNCLAIMED
+    if (joins.count() >= MAX_HELD_CALLS_PER_SESSION) return { kind: 'answered', verdict: refuseJoin(call, facts) }
+    return { kind: 'joined', settled: joins.join({ ...call, toolUseId }, facts) }
+  }
+
+  /** The session already has as many resends waiting as it may hold calls (security review L1). */
+  async function refuseJoin(call: ParsedToolCall, facts: CallFacts): Promise<Verdict> {
+    writeDecision(decisionInfoOf(facts, 'deny', RESEND_WAIT_LIMIT_RULE, toolUseExtra(call)), call.args)
+    await settleJournal()
+    await answerLocally(call.id, (id) => joinLimitError(id, { toolName: facts.toolName, limit: MAX_HELD_CALLS_PER_SESSION }))
+    return DROP
+  }
+
+  /**
+   * A forwarded call that will have no answer — cancelled while it ran, its
+   * session ending, pushed out — may still have run: a resend of its tool use
+   * is told so rather than sent again or left waiting (review M1 of M39). A
+   * real answer arriving later replaces it.
+   */
+  function keepMayHaveRun(entry: ForwardedCall, why: 'cancelled' | 'unanswered'): void {
+    if (entry.toolUseId === undefined) return
+    const response = mayHaveRunError(0, { toolName: entry.facts.toolName, why }).toString('utf8').trimEnd()
+    answers.keep(scope, entry.toolUseId, { ...identityOf(entry.facts), response, delivered: false })
   }
 
   function register(call: ParsedToolCall, facts: CallFacts, claim: ToolUseClaim | null, verdict: Verdict): void {
@@ -200,18 +225,15 @@ export function createGateDelivery(deps: GateDeliveryDeps): GateDelivery {
       return
     }
     const idKey = idKeyOf(call.id)
-    // A reused id: the earlier call's answer can no longer be told apart. Its
-    // tool use stays claimed — released, a resend of it could run it twice;
-    // the claim lapses on its own (S-L4).
-    forwarded.delete(idKey)
+    // A reused id: the earlier call's answer can no longer be told apart (S-L4);
+    // and past the cap the oldest is let go — either may still have run.
+    const previous = forwarded.get(idKey)
+    if (previous !== undefined) letGo(idKey, previous, 'unanswered')
     if (forwarded.size >= MAX_TRACKED_FORWARDED_CALLS) {
       const [oldestKey, oldest] = forwarded.entries().next().value as [string, ForwardedCall]
-      forget(oldestKey, oldest)
+      letGo(oldestKey, oldest, 'unanswered')
     }
     const departure = deps.departureOf(idKey)
-    // A call its agent cancelled is owed nothing: its tool use is free again
-    // at once, so a server that honours the cancel cannot pin it (review M4).
-    if (departure?.kind === 'cancel') claim?.release()
     const entry: ForwardedCall = {
       ...toolUseExtra(call),
       facts,
@@ -220,6 +242,23 @@ export function createGateDelivery(deps: GateDeliveryDeps): GateDelivery {
       ...(departure !== undefined ? { departure } : {}),
     }
     forwarded.set(idKey, Object.freeze(entry))
+    if (departure?.kind === 'cancel') freeCancelled(Object.freeze(entry))
+  }
+
+  /** Forgets a call that will have no answer, leaving a resend of it the "may have run" answer. */
+  function letGo(idKey: string, entry: ForwardedCall, why: 'cancelled' | 'unanswered'): void {
+    keepMayHaveRun(entry, why)
+    forget(idKey, entry)
+  }
+
+  /**
+   * A call its agent cancelled is owed nothing: its tool use is free at once,
+   * so a server that honours the cancel cannot pin it (review M4) — but a
+   * resend gets "it may have run", never a second run (M39 review M1).
+   */
+  function freeCancelled(entry: ForwardedCall): void {
+    keepMayHaveRun(entry, 'cancelled')
+    entry.claim?.release()
   }
 
   /** Registers or releases; a fault here must not leave the tool use claimed (review L3). */
@@ -282,7 +321,7 @@ export function createGateDelivery(deps: GateDeliveryDeps): GateDelivery {
     joins.leave(idKey, departure.reason)
     const entry = forwarded.get(idKey)
     if (entry === undefined || entry.departure !== undefined) return
-    if (departure.kind === 'cancel') entry.claim?.release()
+    if (departure.kind === 'cancel') freeCancelled(entry)
     forwarded.set(idKey, Object.freeze({ ...entry, departure }))
   }
 
@@ -318,8 +357,9 @@ export function createGateDelivery(deps: GateDeliveryDeps): GateDelivery {
     await waitOwed(graceMs, stop)
     let unanswered = 0
     for (const [idKey, entry] of [...forwarded]) {
-      forget(idKey, entry)
-      if (entry.departure?.kind === 'cancel') continue
+      const wasCancelled = entry.departure?.kind === 'cancel'
+      letGo(idKey, entry, wasCancelled ? 'cancelled' : 'unanswered')
+      if (wasCancelled) continue
       unanswered += 1
       const extras: DecisionExtras = {
         reason: entry.departure?.reason ?? reason,

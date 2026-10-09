@@ -27,8 +27,9 @@ All notable changes to this project are documented here. The format follows
 
 - **Retries are told from second calls by the client's tool-use id** (`_meta["claudecode/toolUseId"]`): the same id
   again never runs twice — it gets the server's first answer, kept in memory for 24 hours (journal: `replayed`), or
-  waits for the first call if that one is still pending or running. A new id is a new call; a call without one is
-  never answered from memory.
+  waits for the first call if that one is still pending or running; a first call that was sent but never answered
+  leaves the resend an error saying it may have run. A new id is a new call; a call without one is never answered
+  from memory. All of it lives in process memory: after a restart a resend is a new call.
 - `connect --url` sends a call with a tool-use id again when its connection to the service drops mid-call, so the
   agent gets the one answer instead of a transport error.
 - An answer the agent no longer waited for is journaled `undelivered`; when the agent disconnects, mcpcut keeps

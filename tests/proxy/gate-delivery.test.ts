@@ -503,12 +503,19 @@ describe('a held call its agent left is announced as never to be answered (S-L1)
 })
 
 describe('review fixes of phase C', () => {
-  test('a cancel frees the tool use at once: a server that honours it cannot pin it (M4)', async () => {
-    const { gate } = createHarness()
+  test('a cancel frees the tool use at once; a resend is told the call may have run, not run again (M4; M39 M1)', async () => {
+    const { gate, written } = createHarness()
     await settled(gate.gateClientMessage(toolCall(1, 'toolu_K')))
     await settled(gate.gateClientMessage(cancelOf(1)))
 
-    expect(await settled(gate.gateClientMessage(toolCall(2, 'toolu_K')))).toEqual({ action: 'forward' })
+    // Nothing pins it: the resend is answered at once, without a second run.
+    expect(await settled(gate.gateClientMessage(toolCall(2, 'toolu_K')))).toEqual({ action: 'drop' })
+    expect(parsed(written.at(-1)!).error.data.reason).toBe('cancelled_may_have_run')
+
+    // The server finished after all: its real answer replaces the notice.
+    gate.gateServerMessage(resultOf(1, 'ran anyway'))
+    await settled(gate.gateClientMessage(toolCall(3, 'toolu_K')))
+    expect(parsed(written.at(-1)!).result.content[0].text).toBe('ran anyway')
   })
 
   test('once a session settles, a late forward is neither tracked nor left claimed (M2)', async () => {
@@ -571,9 +578,8 @@ describe('closing review leftovers (M39)', () => {
     expect(await settled(second.gate.gateClientMessage(toolCall(1, 'toolu_S')))).toEqual({ action: 'drop' })
   })
 
-  test('a client reusing an id still in flight gets no stored answer under it, and the first call keeps its tool use', async () => {
-    const answers = createToolUseAnswers()
-    const { gate } = createHarness({ answers })
+  test('a client reusing an id still in flight gets no stored answer under it; the first call is never run twice', async () => {
+    const { gate, written } = createHarness()
     await settled(gate.gateClientMessage(toolCall(1, 'toolu_X')))
     await settled(gate.gateClientMessage(toolCall(2, 'toolu_Y')))
     gate.gateServerMessage(resultOf(2, 'Y done'))
@@ -581,8 +587,9 @@ describe('closing review leftovers (M39)', () => {
     // Id 1 is reused for a resend of toolu_Y while call 1 (toolu_X) still runs.
     expect(await settled(gate.gateClientMessage(toolCall(1, 'toolu_Y')))).toEqual({ action: 'forward' })
 
-    // toolu_X is still held by the first call: a resend of it does not run it again.
-    expect(answers.claim('', 'toolu_X')).toBeNull()
+    // toolu_X can no longer be told apart: a resend of it is told it may have run.
+    expect(await settled(gate.gateClientMessage(toolCall(3, 'toolu_X')))).toEqual({ action: 'drop' })
+    expect(parsed(written.at(-1)!).error.data.reason).toBe('unanswered_may_have_run')
   })
 })
 
@@ -611,6 +618,43 @@ describe('a request for the same call again is marked as a resend (M39)', () => 
     const pending = await waitForPending()
 
     expect(pending.resendOfWithdrawnAt).toBeUndefined()
+    await gate.agentLeft()
+  })
+})
+
+describe('M39 review fixes on the service', () => {
+  test('a session that ended without the answer leaves a resend "may have run", never a second run (M1)', async () => {
+    const answers = createToolUseAnswers()
+    const first = createHarness({ answers })
+    await settled(first.gate.gateClientMessage(toolCall(1, 'toolu_U')))
+    await first.gate.agentLeft()
+    await first.gate.settleForwarded(0, 'closed')
+
+    const second = createHarness({ answers })
+    expect(await settled(second.gate.gateClientMessage(toolCall(1, 'toolu_U')))).toEqual({ action: 'drop' })
+    expect(parsed(second.written.at(-1)!).error.data.reason).toBe('unanswered_may_have_run')
+  })
+
+  test('more resends waiting than a session may hold calls: the next is refused, nothing sent', async () => {
+    const { gate, written } = createHarness()
+    await settled(gate.gateClientMessage(toolCall(1, 'toolu_W')))
+    for (let n = 0; n < 16; n += 1) void gate.gateClientMessage(toolCall(100 + n, 'toolu_W'))
+    await sleep(10)
+
+    expect(await settled(gate.gateClientMessage(toolCall(200, 'toolu_W')))).toEqual({ action: 'drop' })
+    expect(parsed(written.at(-1)!).error.data.reason).toBe('resend_wait_limit')
+    await gate.agentLeft()
+  })
+
+  test('a second resend under the id of one still waiting ends the earlier wait', async () => {
+    const { gate } = createHarness()
+    await settled(gate.gateClientMessage(toolCall(1, 'toolu_V')))
+    const earlier = gate.gateClientMessage(toolCall(2, 'toolu_V'))
+    void gate.gateClientMessage(toolCall(2, 'toolu_V'))
+
+    expect(await settled(earlier)).toEqual({ action: 'drop' })
+    const gone = (await decisions()).find((record) => record.decision?.rule === 'tool-use-joined')
+    expect(gone?.decision?.reason).toBe('replaced by a request reusing its id')
     await gate.agentLeft()
   })
 })

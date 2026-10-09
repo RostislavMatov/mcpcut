@@ -183,3 +183,58 @@ describe('what is never sent again', () => {
     expect(await rig.ended).toEqual({ reason: 'fatal', failure: { kind: 'session-expired' } })
   })
 })
+
+describe('review fixes (M39): one answer per id, cancels reach a live request', () => {
+  test('the answer arrived before the stream failed: nothing is sent again, the client has its one answer', async () => {
+    const rig = startRig({ retryDelaysMs: DELAYS })
+    const release = rig.serviceOut.holdNext()
+    rig.serviceOut.failNext(dropped())
+    rig.clientIn.emit(toolCall(7, 'toolu_A'))
+    await settle()
+
+    rig.serviceIn.emit(serverMessage(Buffer.from('{"jsonrpc":"2.0","id":7,"result":{"content":[]}}')))
+    await settle()
+    release()
+    await wait(40)
+
+    expect(rig.serviceOut.written).toEqual([])
+    expect(rig.clientOut.written.map(jsonOf)).toEqual([{ jsonrpc: '2.0', id: 7, result: { content: [] } }])
+    rig.clientIn.end()
+    await rig.ended
+  })
+
+  test('a second answer for a call already answered is dropped, and said so', async () => {
+    const rig = startRig({ retryDelaysMs: DELAYS })
+    rig.serviceOut.failNext(dropped())
+    rig.clientIn.emit(toolCall(7, 'toolu_A'))
+    await wait(30)
+    const attemptId = jsonOf(rig.serviceOut.written[0]!)['id']
+
+    rig.serviceIn.emit(serverMessage(Buffer.from('{"jsonrpc":"2.0","id":7,"result":{"first":true}}')))
+    rig.serviceIn.emit(serverMessage(Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: attemptId, result: { first: false } }))))
+    await settle()
+
+    expect(rig.clientOut.written.map(jsonOf)).toEqual([{ jsonrpc: '2.0', id: 7, result: { first: true } }])
+    expect(rig.diagnostics.join('')).toContain('dropped a second answer')
+    rig.clientIn.end()
+    await rig.ended
+  })
+
+  test('a cancel during a pause goes under the original id, not a failed attempt\'s', async () => {
+    const rig = startRig({ retryDelaysMs: [5, 60] })
+    rig.serviceOut.failNext(dropped())
+    rig.serviceOut.failNext(dropped())
+    rig.clientIn.emit(toolCall(7, 'toolu_A'))
+    await wait(30)
+
+    rig.clientIn.emit(clientMessage(Buffer.from('{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}'), '\n'))
+    await wait(100)
+
+    const sent = rig.serviceOut.written.map(jsonOf)
+    expect(sent).toHaveLength(1)
+    expect((sent[0]?.['params'] as Record<string, unknown>)['requestId']).toBe(7)
+    expect(rig.clientOut.written).toEqual([])
+    rig.clientIn.end()
+    await rig.ended
+  })
+})

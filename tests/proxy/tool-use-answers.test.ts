@@ -204,3 +204,17 @@ describe('tool-use answers: a resend waits for the call that holds its tool use 
     mine?.release()
   })
 })
+
+describe('tool-use answers: a waiter is not stranded by a claim nobody releases (M39 review L3)', () => {
+  test('whenReleased settles when the claim lapses', async () => {
+    const clock = clockAt()
+    const answers = createToolUseAnswers({ clock: clock.now })
+    answers.claim('bot', 'toolu_1')
+    clock.advance(TOOL_USE_CLAIM_MAX_AGE_MS - 20)
+
+    const startedAt = Date.now()
+    await answers.whenReleased('bot', 'toolu_1')
+
+    expect(Date.now() - startedAt).toBeLessThan(1_000)
+  })
+})

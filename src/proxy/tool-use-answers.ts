@@ -248,10 +248,19 @@ export function createToolUseAnswers(options: ToolUseAnswersOptions = {}): ToolU
     whenReleased(scope, toolUseId) {
       const key = keyOf(scope, toolUseId)
       const held = claims.get(key)
-      if (held === undefined || clock() - held.claimedAtMs >= TOOL_USE_CLAIM_MAX_AGE_MS) return Promise.resolve()
+      const ageMs = held === undefined ? TOOL_USE_CLAIM_MAX_AGE_MS : clock() - held.claimedAtMs
+      if (ageMs >= TOOL_USE_CLAIM_MAX_AGE_MS) return Promise.resolve()
       return new Promise<void>((resolve) => {
+        // The claim lapsing wakes the waiter too, released or not (review L3).
+        const lapse = setTimeout(wake, TOOL_USE_CLAIM_MAX_AGE_MS - ageMs)
+        lapse.unref()
+        function wake(): void {
+          clearTimeout(lapse)
+          releaseWaiters.get(key)?.delete(wake)
+          resolve()
+        }
         const waiters = releaseWaiters.get(key) ?? new Set<() => void>()
-        waiters.add(resolve)
+        waiters.add(wake)
         releaseWaiters.set(key, waiters)
       })
     },

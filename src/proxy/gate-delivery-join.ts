@@ -29,6 +29,9 @@ import {
 /** `rule` of the `agent-gone` record of a resend whose agent left while it waited. */
 export const TOOL_USE_JOINED_RULE = 'tool-use-joined'
 
+/** Why a joined resend ended when its client sent another request under the same id. */
+const REPLACED_REASON = 'replaced by a request reusing its id'
+
 /** What a joined resend's client hears while it waits (not an approval: the first call is already on its way). */
 export const JOINED_CALL_PROGRESS_TEXT = 'this call is already running; waiting for its answer'
 
@@ -52,6 +55,8 @@ export interface JoinedCalls {
   /** The agent stopped waiting for `idKey`: a resend joined under it ends. */
   leave(idKey: string, reason: string): void
   leaveAll(reason: string): void
+  /** Resends waiting now. */
+  count(): number
 }
 
 export function createJoinedCalls(deps: JoinedCallsDeps): JoinedCalls {
@@ -86,11 +91,26 @@ export function createJoinedCalls(deps: JoinedCallsDeps): JoinedCalls {
         isDone = true
         hold.stop()
         if (waiting.get(idKey) === leaveThis) waiting.delete(idKey)
-        resolve(outcome())
+        // A fault while journaling the departure must not leave the call unsettled (review M2): fail closed.
+        let settled: JoinOutcome = DROP
+        try {
+          settled = outcome()
+        } catch (error: unknown) {
+          deps.onError(error)
+        }
+        resolve(settled)
       }
       const leaveThis = (reason: string): void => finish(() => agentGone(call, facts, reason))
+      // A client reusing the id of a resend still waiting: the earlier one ends (review M5).
+      waiting.get(idKey)?.(REPLACED_REASON)
       waiting.set(idKey, leaveThis)
-      void deps.answers.whenReleased(deps.scope, call.toolUseId).then(() => finish(() => 'released'))
+      deps.answers.whenReleased(deps.scope, call.toolUseId).then(
+        () => finish(() => 'released'),
+        (error: unknown) => {
+          deps.onError(error)
+          finish(() => 'released')
+        },
+      )
     })
   }
 
@@ -102,5 +122,6 @@ export function createJoinedCalls(deps: JoinedCallsDeps): JoinedCalls {
     leaveAll(reason) {
       for (const leave of [...waiting.values()]) leave(reason)
     },
+    count: () => waiting.size,
   }
 }

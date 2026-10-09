@@ -48,7 +48,11 @@ export function attemptBytes(call: RetryableCall, id: string): Buffer {
   return Buffer.from(JSON.stringify({ ...call.body, id }), 'utf8')
 }
 
-/** `bytes` (a JSON-RPC object) under `id` instead of its own. */
+/**
+ * `bytes` (a JSON-RPC object) under `id` instead of its own. Re-serialised: an
+ * integer past 2^53 in the answer would lose precision — the same limit the
+ * service's own replay of a kept answer has; MCP results are text content.
+ */
 export function withId(bytes: Buffer, id: JsonRpcId): Buffer {
   const parsed = JSON.parse(bytes.toString('utf8')) as Record<string, unknown>
   return Buffer.from(JSON.stringify({ ...parsed, id }), 'utf8')
@@ -61,71 +65,116 @@ export function cancelFor(bytes: Buffer, attemptId: string): Buffer {
   return Buffer.from(JSON.stringify({ ...parsed, params: { ...params, requestId: attemptId } }), 'utf8')
 }
 
-/** The bridge's ledger of calls it is re-sending. */
+/** Calls being re-sent at once, at most; past it the oldest is forgotten (and simply not retried again). */
+const MAX_BOOK_CALLS = 1_024
+
+/** Calls whose answer reached the client, remembered so a second answer for one id is dropped. */
+const MAX_ANSWERED_REMEMBERED = 256
+
+/** The bridge's ledger of calls it may send again (decision M39). */
 export interface RetryBook {
-  /** The call first sent as `originalId` failed and will be sent again: from now on a cancel of it counts. */
+  /** The call first sent as `originalId` may be sent again: from now on its cancel and its answer count. */
   begin(originalId: SynthesizableId): void
   /** A fresh id for the next attempt of the call first sent as `originalId`. */
   nextAttemptId(originalId: SynthesizableId): string
-  /** If `id` is an attempt's, the original id its answer belongs to — and the attempt is forgotten. */
-  takeOriginal(id: JsonRpcId): SynthesizableId | undefined
-  /** The client cancelled `originalId`: no further attempt. Returns the attempt in flight to cancel instead, if any. */
+  /** The attempt now out failed: a cancel from here on goes under the original id. */
+  attemptFailed(originalId: SynthesizableId): void
+  /**
+   * An answer under `id` is on its way to the client: the original id it belongs to (an attempt's answer is
+   * moved back to it), `null` when it must be dropped — that call was already answered once — and `undefined`
+   * when `id` is nobody the bridge re-sends.
+   */
+  answerFor(id: JsonRpcId): SynthesizableId | null | undefined
+  /** The call already got its answer: no further attempt. */
+  isAnswered(originalId: SynthesizableId): boolean
+  /** The client cancelled `originalId`: no further attempt. Returns the attempt out now to cancel instead, if any. */
   cancel(originalId: JsonRpcId): string | undefined
   isCancelled(originalId: SynthesizableId): boolean
-  /** The call is over (answered, given up): forget it. */
+  /** Still being re-sent (not answered, cancelled, forgotten or pushed out by the bound). */
+  isTracked(originalId: SynthesizableId): boolean
+  /** The call is over: forget it (an attempt still out keeps its way back until its answer). */
   forget(originalId: SynthesizableId): void
-  /** True while no attempt is out: answers then need no id lookup at all. */
-  hasNoAttempts(): boolean
+  /** True while no call is being re-sent: answers then need no lookup at all. */
+  isEmpty(): boolean
+}
+
+interface BookEntry {
+  readonly originalId: SynthesizableId
+  /** The attempt out now, if one is. */
+  live: string | undefined
+}
+
+/** Adds `key` to a bounded, insertion-ordered set (oldest leaves first). */
+function remember(set: Set<string>, key: string, max: number): void {
+  set.delete(key)
+  if (set.size >= max) set.delete(set.values().next().value as string)
+  set.add(key)
 }
 
 export function createRetryBook(): RetryBook {
   let counter = 0
-  /** Attempt id -> original id. */
-  const originals = new Map<string, SynthesizableId>()
-  /** Original id key -> the attempt id in flight. */
-  const live = new Map<string, string>()
-  /** Calls being re-sent: only their cancels are kept, so the set stays as small as they are. */
-  const begun = new Set<string>()
+  /** Original id key -> the call (insertion order: oldest first). */
+  const calls = new Map<string, BookEntry>()
+  /** Attempt id -> original id: the way back for an attempt's answer. */
+  const attempts = new Map<string, SynthesizableId>()
+  /** Original id keys already answered once, and cancelled by the client (both bounded, oldest first). */
+  const answered = new Set<string>()
   const cancelled = new Set<string>()
 
-  function drop(key: string): void {
-    const attempt = live.get(key)
-    if (attempt !== undefined) originals.delete(attempt)
-    live.delete(key)
-    begun.delete(key)
-    cancelled.delete(key)
+  function markAnswered(key: string): void {
+    remember(answered, key, MAX_ANSWERED_REMEMBERED)
+    calls.delete(key)
   }
 
   return {
     begin(originalId) {
-      begun.add(idKeyOf(originalId))
+      const key = idKeyOf(originalId)
+      answered.delete(key)
+      cancelled.delete(key)
+      if (calls.size >= MAX_BOOK_CALLS) calls.delete(calls.keys().next().value as string)
+      calls.set(key, { originalId, live: undefined })
     },
     nextAttemptId(originalId) {
       counter += 1
       const attemptId = `${BRIDGE_RETRY_ID_PREFIX}${counter}`
-      const key = idKeyOf(originalId)
-      const previous = live.get(key)
-      if (previous !== undefined) originals.delete(previous)
-      originals.set(attemptId, originalId)
-      live.set(key, attemptId)
+      const entry = calls.get(idKeyOf(originalId))
+      if (entry !== undefined) entry.live = attemptId
+      attempts.set(attemptId, originalId)
       return attemptId
     },
-    takeOriginal(id) {
-      if (typeof id !== 'string' || !id.startsWith(BRIDGE_RETRY_ID_PREFIX)) return undefined
-      const original = originals.get(id)
-      if (original === undefined) return undefined
-      drop(idKeyOf(original))
+    attemptFailed(originalId) {
+      const entry = calls.get(idKeyOf(originalId))
+      if (entry?.live === undefined) return
+      attempts.delete(entry.live)
+      entry.live = undefined
+    },
+    answerFor(id) {
+      if (id === null) return undefined
+      const viaAttempt = typeof id === 'string' ? attempts.get(id) : undefined
+      if (viaAttempt !== undefined) attempts.delete(id as string)
+      const original = viaAttempt ?? id
+      const key = idKeyOf(original)
+      if (answered.has(key)) return null
+      if (viaAttempt === undefined && !calls.has(key)) return undefined
+      markAnswered(key)
       return original
     },
+    isAnswered: (originalId) => answered.has(idKeyOf(originalId)),
     cancel(originalId) {
       if (originalId === null) return undefined
       const key = idKeyOf(originalId)
-      if (!begun.has(key)) return undefined
-      cancelled.add(key)
-      return live.get(key)
+      const entry = calls.get(key)
+      if (entry === undefined) return undefined
+      // Done with it: a cancelled call gets no further attempt, and (usually) no answer.
+      remember(cancelled, key, MAX_ANSWERED_REMEMBERED)
+      calls.delete(key)
+      return entry.live
     },
     isCancelled: (originalId) => cancelled.has(idKeyOf(originalId)),
-    forget: (originalId) => drop(idKeyOf(originalId)),
-    hasNoAttempts: () => originals.size === 0,
+    isTracked: (originalId) => calls.has(idKeyOf(originalId)),
+    forget(originalId) {
+      calls.delete(idKeyOf(originalId))
+    },
+    isEmpty: () => calls.size === 0 && attempts.size === 0,
   }
 }

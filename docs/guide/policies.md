@@ -226,10 +226,20 @@ the id the client gives each tool use of the model — Claude Code sends it as
   approval — even with the same arguments.
 - A call without such an id is never answered from memory: without it, a retry
   and a second call look the same.
+- If the first call was sent but never answered — it was cancelled while it
+  ran, or its session ended first — it may still have run: the same id again
+  gets an error that says so, never a second run. If the server's answer comes
+  after all, a later resend gets that answer.
 
 `mcpcut connect --url` uses this: when its connection to the service drops in
-the middle of a call, it sends the call again (only one with that id), and the
-agent gets the one answer.
+the middle of a call, it sends the call again (only one with that id, at most
+three more times), and the agent gets the one answer.
+
+What mcpcut remembers here lives in the memory of the process that serves the
+agent (`serve`, `connect`, `wrap`). After a restart it is gone: a resend of a
+call sent before the restart is decided as a new call and, if allowed, runs
+again. Keep that in mind for tools that must never run twice and are reached
+over HTTP, where a call can outlive the plane's restart.
 
 ### Confirming in the client
 

@@ -110,6 +110,8 @@ function answerableIdOf(bytes: Buffer): SynthesizableId | undefined {
 /** Cheap pre-checks before a message is parsed at all (`includes` on the raw bytes). */
 const TOOLS_CALL_METHOD_BYTES = Buffer.from('"tools/call"')
 const CANCELLED_METHOD_BYTES = Buffer.from('"notifications/cancelled"')
+const RESULT_KEY_BYTES = Buffer.from('"result"')
+const ERROR_KEY_BYTES = Buffer.from('"error"')
 
 /** How a message that failed to reach the service describes itself in a diagnostic. */
 function labelOf(bytes: Buffer): string {
@@ -129,8 +131,8 @@ function labelOf(bytes: Buffer): string {
  */
 interface Pump {
   forward(message: McpMessage): Promise<void>
-  /** A service message as the client must see it: an attempt's answer under the original id (M39). */
-  toClient(message: McpMessage): McpMessage
+  /** A service message as the client must see it: an attempt's answer under the original id; `null`: drop it (M39). */
+  toClient(message: McpMessage): McpMessage | null
   writeToClient(message: McpMessage): Promise<void>
   onServiceError(error: unknown): void
   endClientSide(): Promise<void>
@@ -150,8 +152,6 @@ function createPump(args: RunBridgeArgs, resolve: (end: BridgeEnd) => void): Pum
    * `forward` is about to print with the method and the id attached.
    */
   let forwardsInFlight = 0
-  /** Calls waiting out a pause before their next attempt. */
-  let retriesPending = 0
   const book = createRetryBook()
   const delays = args.retryDelaysMs ?? BRIDGE_RETRY_DELAYS_MS
 
@@ -267,13 +267,16 @@ function createPump(args: RunBridgeArgs, resolve: (end: BridgeEnd) => void): Pum
         return
       } catch (error: unknown) {
         const failure = classifyBridgeFailure(error)
+        if (call !== null) book.attemptFailed(call.originalId)
         if (isFatal(failure)) return settleFatal(failure)
+        // The answer already reached the client (the stream failed after it): nothing to send again.
+        if (call !== null && book.isAnswered(call.originalId)) return
         const delay = delays[attempt]
-        if (call === null || delay === undefined || failure.kind !== 'network' || book.isCancelled(call.originalId)) {
+        if (call === null || delay === undefined || failure.kind !== 'network' || !book.isTracked(call.originalId)) {
           return giveUp(message, call, failure)
         }
         diagnose(`${labelOf(message.bytes)}: the connection dropped; sending it again in ${delay} ms (${attempt + 1} of ${delays.length})`)
-        if (!(await pauseFor(delay, call))) return
+        if (!(await pauseFor(delay, call))) return giveUp(message, call, failure)
         current = clientMessage(attemptBytes(call, book.nextAttemptId(call.originalId)), message.meta.terminator)
       }
     }
@@ -281,13 +284,8 @@ function createPump(args: RunBridgeArgs, resolve: (end: BridgeEnd) => void): Pum
 
   /** Waits `ms`; false when the call should not go again after all (cancelled, or the bridge ended). */
   async function pauseFor(ms: number, call: RetryableCall): Promise<boolean> {
-    retriesPending += 1
-    try {
-      await new Promise<void>((resolve) => setTimeout(resolve, ms).unref())
-    } finally {
-      retriesPending -= 1
-    }
-    if (!isSettled && !book.isCancelled(call.originalId)) return true
+    await new Promise<void>((resolve) => setTimeout(resolve, ms).unref())
+    if (!isSettled && book.isTracked(call.originalId)) return true
     book.forget(call.originalId)
     return false
   }
@@ -295,19 +293,33 @@ function createPump(args: RunBridgeArgs, resolve: (end: BridgeEnd) => void): Pum
   /** The request is lost: say so, and answer it under its original id — unless its client cancelled it. */
   function giveUp(message: McpMessage, call: RetryableCall | null, failure: BridgeFailure): void {
     if (call !== null) {
-      const isCancelled = book.isCancelled(call.originalId)
+      // The client cancelled it, or already has its answer: nobody to tell.
+      const isSilent = book.isCancelled(call.originalId) || book.isAnswered(call.originalId)
       book.forget(call.originalId)
-      if (isCancelled) return
+      if (isSilent) return
     }
     reportUndelivered(message, failure)
   }
 
-  function toClient(message: McpMessage): McpMessage {
-    if (book.hasNoAttempts()) return message
+  /**
+   * Only while a call may be re-sent, and only what can be a response, is
+   * parsed: an attempt's answer goes back under the original id, and a second
+   * answer for a call already answered once is dropped (the first attempt's
+   * answer can arrive just before its stream fails).
+   */
+  function toClient(message: McpMessage): McpMessage | null {
+    if (book.isEmpty() || !(message.bytes.includes(RESULT_KEY_BYTES) || message.bytes.includes(ERROR_KEY_BYTES))) {
+      return message
+    }
     const parsed = classify(message.bytes.toString('utf8'))
     if (parsed.kind !== 'response') return message
-    const original = book.takeOriginal(parsed.id)
-    return original === undefined ? message : serverMessage(withId(message.bytes, original), message.meta.terminator)
+    const original = book.answerFor(parsed.id)
+    if (original === undefined) return message
+    if (original === null) {
+      diagnose(`dropped a second answer for ${labelOf(message.bytes)}: the client already has one`)
+      return null
+    }
+    return original === parsed.id ? message : serverMessage(withId(message.bytes, original), message.meta.terminator)
   }
 
   function onServiceError(error: unknown): void {
@@ -363,7 +375,8 @@ export function runBridge(args: RunBridgeArgs): Promise<BridgeEnd> {
 
     args.service.source.onMessage((message) => {
       if (pump.hasEnded()) return
-      void pump.writeToClient(pump.toClient(message))
+      const outgoing = pump.toClient(message)
+      if (outgoing !== null) void pump.writeToClient(outgoing)
     })
     args.service.source.onError((error: unknown) => {
       pump.onServiceError(error)
