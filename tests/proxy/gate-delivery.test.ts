@@ -97,6 +97,8 @@ interface HarnessOptions {
   readonly sessionSink?: JournalSink
   readonly onRequestDropped?: (id: unknown) => void
   readonly progressText?: boolean
+  /** An agent session: its name and the moment its record was created. */
+  readonly agent?: { readonly name: string; readonly createdAt: string }
 }
 
 function createHarness(opts: HarnessOptions = {}): Harness {
@@ -119,6 +121,17 @@ function createHarness(opts: HarnessOptions = {}): Harness {
     ...(opts.answers !== undefined ? { toolUseAnswers: opts.answers } : {}),
     ...(opts.onRequestDropped !== undefined ? { onRequestDropped: opts.onRequestDropped } : {}),
     ...(opts.progressText === true ? { heldCallProgress: () => 'waiting for a person to approve this call' } : {}),
+    ...(opts.agent !== undefined
+      ? {
+          agentScope: {
+            agentName: opts.agent.name,
+            agentCreatedAt: opts.agent.createdAt,
+            isGranted: () => true,
+            filterVisible: (tools: readonly string[]) => [...tools],
+            grantsHash: () => 'grants-hash',
+          },
+        }
+      : {}),
     onError: (error) => errors.push(error),
   })
   return { gate, written }
@@ -531,5 +544,44 @@ describe('review fixes of phase C', () => {
 
     const undelivered = (await decisions()).find((record) => record.decision?.outcome === 'undelivered')
     expect(JSON.stringify(undelivered?.payload ?? null)).not.toContain('payload')
+  })
+})
+
+describe('closing review leftovers (M39)', () => {
+  test('an agent deleted and recreated under the same name does not get the old one\'s answers', async () => {
+    const answers = createToolUseAnswers()
+    const before = createHarness({ answers, agent: { name: 'bot', createdAt: '2026-10-01T00:00:00.000Z' } })
+    await settled(before.gate.gateClientMessage(toolCall(1, 'toolu_R')))
+    before.gate.gateServerMessage(resultOf(1, 'the old agent\'s answer'))
+
+    const after = createHarness({ answers, agent: { name: 'bot', createdAt: '2026-10-09T00:00:00.000Z' } })
+
+    expect(await settled(after.gate.gateClientMessage(toolCall(1, 'toolu_R')))).toEqual({ action: 'forward' })
+  })
+
+  test('the same agent on another session still gets its answer', async () => {
+    const answers = createToolUseAnswers()
+    const agent = { name: 'bot', createdAt: '2026-10-01T00:00:00.000Z' }
+    const first = createHarness({ answers, agent })
+    await settled(first.gate.gateClientMessage(toolCall(1, 'toolu_S')))
+    first.gate.gateServerMessage(resultOf(1, 'kept'))
+
+    const second = createHarness({ answers, agent })
+
+    expect(await settled(second.gate.gateClientMessage(toolCall(1, 'toolu_S')))).toEqual({ action: 'drop' })
+  })
+
+  test('a client reusing an id still in flight gets no stored answer under it, and the first call keeps its tool use', async () => {
+    const answers = createToolUseAnswers()
+    const { gate } = createHarness({ answers })
+    await settled(gate.gateClientMessage(toolCall(1, 'toolu_X')))
+    await settled(gate.gateClientMessage(toolCall(2, 'toolu_Y')))
+    gate.gateServerMessage(resultOf(2, 'Y done'))
+
+    // Id 1 is reused for a resend of toolu_Y while call 1 (toolu_X) still runs.
+    expect(await settled(gate.gateClientMessage(toolCall(1, 'toolu_Y')))).toEqual({ action: 'forward' })
+
+    // toolu_X is still held by the first call: a resend of it does not run it again.
+    expect(answers.claim('', 'toolu_X')).toBeNull()
   })
 })

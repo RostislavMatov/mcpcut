@@ -280,7 +280,8 @@ export function createMessagePolicyGate(deps: MessagePolicyGateDeps): MessagePol
   // answers to forwarded calls. The answers table is the process's when the
   // caller shares one (`serve`: a 404 resend arrives on a new session).
   const delivery = createGateDelivery({
-    scope: agentScope?.agentName ?? '',
+    // Name AND creation time: a recreated agent of the same name is someone else.
+    scope: agentScope === undefined ? '' : `${agentScope.agentName}\u0001${agentScope.agentCreatedAt ?? ''}`,
     answers: deps.toolUseAnswers ?? createToolUseAnswers({ clock }),
     clock,
     writeDecision,

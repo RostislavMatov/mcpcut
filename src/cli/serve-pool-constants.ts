@@ -24,9 +24,15 @@ export const REFUSAL_POOL_NO_AGENT = 'no-grant'
 export const POOL_MODEL_UNDETECTED_MESSAGE =
   'the downstream session model could not be determined; refusing'
 
-/** Stderr line when an agent addressed the pool without a handshake. */
+/**
+ * Stderr line when an agent addressed the pool without a handshake — once per
+ * agent per process: Claude Code opens EVERY connection with a stateless
+ * `server/discover` and falls back to `initialize` by itself (smoke
+ * 2026-10-09), so a line per connect told the operator nothing.
+ */
 export const POOL_STATELESS_MESSAGE =
-  'a pool address serves sessionful agents only; send initialize first'
+  'a pool address serves sessionful agents only; a client that falls back to initialize ' +
+  '(Claude Code does) needs nothing; one that does not cannot use this address'
 
 /**
  * The stderr line for a start that did not produce a member (BU3), or `null`

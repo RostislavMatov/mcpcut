@@ -54,6 +54,13 @@ export const DROP: Verdict = Object.freeze({ action: 'drop' as const })
 export interface GateAgentScope {
   /** Journal-facing identity of the authenticated agent. */
   readonly agentName: string
+  /**
+   * When the agent's record was created: with the name, the identity the
+   * gate keys kept answers by (M36 phase C), so an agent deleted and created
+   * again under the same name never reads the old one's answers. Absent on
+   * scopes that predate it — then the name alone.
+   */
+  readonly agentCreatedAt?: string
   /** True iff the agent's grant matrix covers `tool` on this server. */
   isGranted(tool: string): boolean
   /** The subset of `tools` the agent may see, input order preserved. */

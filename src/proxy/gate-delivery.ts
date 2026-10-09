@@ -182,6 +182,9 @@ export function createGateDelivery(deps: GateDeliveryDeps): GateDelivery {
   function admit(call: ParsedToolCall, facts: CallFacts): Admission {
     const { toolUseId } = call
     if (call.id === null || toolUseId === undefined) return GO_UNCLAIMED
+    // A client reusing an id still in flight: no stored answer goes out under
+    // it, or the id would be answered twice (security review S-L4).
+    if (forwarded.has(idKeyOf(call.id))) return GO_UNCLAIMED
     const kept = answers.find(scope, toolUseId, identityOf(facts))
     const response = kept === null ? null : parseKeptResponse(kept.response)
     if (response !== null) return { kind: 'answered', verdict: replay(call, facts, response) }
@@ -197,9 +200,10 @@ export function createGateDelivery(deps: GateDeliveryDeps): GateDelivery {
       return
     }
     const idKey = idKeyOf(call.id)
-    // A reused id: the earlier call's answer can no longer be told apart.
-    const previous = forwarded.get(idKey)
-    if (previous !== undefined) forget(idKey, previous)
+    // A reused id: the earlier call's answer can no longer be told apart. Its
+    // tool use stays claimed — released, a resend of it could run it twice;
+    // the claim lapses on its own (S-L4).
+    forwarded.delete(idKey)
     if (forwarded.size >= MAX_TRACKED_FORWARDED_CALLS) {
       const [oldestKey, oldest] = forwarded.entries().next().value as [string, ForwardedCall]
       forget(oldestKey, oldest)

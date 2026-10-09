@@ -131,6 +131,9 @@ export interface PoolSessionDeps {
 }
 
 export function createPoolSessionFactory(deps: PoolSessionDeps): OpenSession {
+  /** Agents already told that a pool address takes no stateless request. */
+  const statelessExplained = new Set<string>()
+
   function report(ctx: SessionContext, message: string): void {
     deps.stderr.write(`[serve] ${ctx.agentName}/pool: ${message}\n`)
   }
@@ -149,7 +152,10 @@ export function createPoolSessionFactory(deps: PoolSessionDeps): OpenSession {
       return { error: REFUSAL_POOL_SESSIONFUL_ONLY }
     }
     if (model === 'stateless') {
-      report(ctx, POOL_STATELESS_MESSAGE)
+      if (!statelessExplained.has(ctx.agentName)) {
+        statelessExplained.add(ctx.agentName)
+        report(ctx, POOL_STATELESS_MESSAGE)
+      }
       return { error: REFUSAL_POOL_SESSIONFUL_ONLY }
     }
     // Re-read rather than trusting the front's authentication result, so a
