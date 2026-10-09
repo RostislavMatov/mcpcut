@@ -7,7 +7,7 @@
 # Usage, from the repository root:
 #   sh docs/demo/render.sh            # quickstart.tape -> quickstart.gif
 #   sh docs/demo/render.sh console    # console.tape    -> console.gif
-#   sh docs/demo/render.sh claude-code  # claude-code.tape -> claude-code.gif (needs Claude Code signed in)
+#   claude-code.gif has its own script, with a browser half: docs/demo/claude-code-render.sh
 set -eu
 NAME=${1:-quickstart}
 FRAMES=/tmp/mcpcut-demo-frames

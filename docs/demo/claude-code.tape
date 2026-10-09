@@ -1,8 +1,10 @@
-# mcpcut with Claude Code: install from npm, put the project's MCP server behind
-# mcpcut, and let the agent work — a read passes, a write asks you right in the
-# session, the journal keeps both with the database password redacted.
-# Regenerate from the repository root:  sh docs/demo/render.sh claude-code
-# (this tape writes frames; render.sh joins them into docs/demo/claude-code.gif)
+# mcpcut with Claude Code and the admin UI: install from npm, put the project's MCP
+# server behind mcpcut, start the admin UI, and let the agent work — a read passes,
+# a write waits until it is approved in the browser, the journal keeps both with the
+# database password redacted.
+# Regenerate from the repository root:  sh docs/demo/claude-code-render.sh
+# (this tape writes the terminal frames; claude-code-browser.mjs records the browser
+# at the same time, and the render script joins both into docs/demo/claude-code.gif)
 #
 # Needs Claude Code signed in on the recording machine; the model's words differ
 # from run to run. The hidden part runs docs/demo/claude-code-setup.sh: a project
@@ -34,8 +36,6 @@ Type "sh docs/demo/claude-code-setup.sh && cd $DEMO/home/project" Enter
 Wait
 Type `claude() { HOME=$REAL_HOME command claude --setting-sources project --strict-mcp-config --mcp-config .mcp.json --disallowedTools "Bash Read Write Edit Glob Grep" --model sonnet "$@"; }` Enter
 Wait
-Type `latest() { mcpcut sessions 2>/dev/null | awk 'NR>1' | sort -k2 | tail -1 | cut -d' ' -f1; }` Enter
-Wait
 # Claude Code asks once whether to trust a new folder: answered here, off camera.
 # Down and Enter also do nothing harmful at an empty prompt, when it was trusted before.
 Type "claude" Enter
@@ -48,7 +48,7 @@ Sleep 2s
 Wait+Screen@90s /shortcuts|Try "/
 Type "/exit" Enter
 Wait
-Type "clear" Enter
+Type "set +m; clear; touch $DEMO/t0" Enter
 Wait
 Show
 
@@ -57,18 +57,25 @@ Sleep 500ms
 Type "npm install -g mcpcut" Enter
 Wait
 Sleep 1s
+# The browser half signs in as an owner: made here, off camera, its token only in a file.
+Hide
+Type "mcpcut admin add me --role owner 2>/dev/null | sed -n 's/^token: //p' > $DEMO/token" Enter
+Wait
+Show
 Type "mcpcut adopt --apply" Enter
 Wait
 Sleep 3s
 
-Type "# Let calls pass, but ask me in the session before a write" Enter
+Type "# Reads pass, a write waits for you" Enter
 Sleep 500ms
 Type "cat > ~/.mcpcut/data/policy.json <<'EOF'" Enter
-Type `{ "version": 1, "defaultDecision": "allow", "quarantine": { "enabled": false },` Enter
-Type `  "servers": { "fs": { "confirmInClient": { "write_file": ["*"], "edit_file": ["*"] } } } }` Enter
+Type `{ "version": 1, "defaultDecision": "require-approval", "classDefaults": { "read": "allow" },` Enter
+Type `  "quarantine": { "enabled": false } }` Enter
 Type "EOF" Enter
 Wait
-Sleep 2s
+Sleep 1s
+Type "mcpcut ui &" Enter
+Sleep 3s
 
 # VHS matches Wait+Screen against the first screenful of the buffer, so Claude Code starts on a cleared one.
 Hide
@@ -79,25 +86,10 @@ Type "claude" Enter
 Wait+Screen@90s /shortcuts|Try "/
 Sleep 1s
 Type "Use the fs tools: read notes.md, then write its next steps to todo.md as a checklist" Enter
-Wait+Screen@3m /Accept/
-Sleep 3s
-Enter
-Sleep 10s
+# The write is held; claude-code-browser.mjs approves it in the admin UI and then records the journal.
+Sleep 75s
 Type "/exit" Enter
-Wait
+Sleep 2s
 Hide
-Type "clear" Enter
+Type "kill %1 2>/dev/null; wait" Enter
 Wait
-Show
-
-Type "# Every call is in the journal, the password redacted" Enter
-Sleep 500ms
-Type "mcpcut sessions" Enter
-Wait
-Sleep 2s
-Type "mcpcut show $(latest) | grep -m1 -o 'postgres://[^@]*@[a-z.]*'" Enter
-Wait
-Sleep 2s
-Type "mcpcut show $(latest) --kind decision | grep -v tools/list | grep -o 'outcome=[^{]*'" Enter
-Wait
-Sleep 6s

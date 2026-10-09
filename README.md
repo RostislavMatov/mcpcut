@@ -6,7 +6,7 @@ See every tool call your AI agent makes over MCP, hold the risky ones for your a
 
 Self-hosted · Apache-2.0 · Node.js 24+ · two runtime dependencies. Start with one server on your laptop; grow into a [control plane for many agents](docs/guide/agents.md).
 
-![A terminal: npm install -g mcpcut, mcpcut adopt --apply, and a policy that asks before a write. In Claude Code the agent reads notes.md through the fs server, then Claude Code shows mcpcut: allow write_file on fs? with Accept and Decline. After Accept, mcpcut sessions and mcpcut show list both calls, the database password redacted and the write confirmed by Claude Code.](docs/demo/claude-code.gif)
+![A terminal: npm install -g mcpcut, mcpcut adopt --apply, a policy where a write waits for approval, and mcpcut ui. In Claude Code the agent reads notes.md through the fs server, and its write waits for a person. In the browser the admin UI shows the held write_file with its arguments and Approve is pressed; Claude Code finishes, and the journal in the browser lists the session.](docs/demo/claude-code.gif)
 
 ## Quick start
 

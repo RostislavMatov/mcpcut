@@ -25,4 +25,6 @@ Next steps:
 - tag and publish
 EOF
 printf '{"mcpServers":{"fs":{"command":"npx","args":["-y","%s","%s"]}}}\n' "$FS_SERVER" "$PWD" > .mcp.json
-npm cache add "$FS_SERVER" >/dev/null 2>&1
+# Install the server into npx's cache in full now: a first start cut short (Claude Code
+# exiting while npx still unpacks it) leaves a broken cache entry that every later start trips on.
+npx -y "$FS_SERVER" "$PWD" </dev/null >/dev/null 2>&1 || true
