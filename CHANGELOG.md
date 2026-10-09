@@ -22,6 +22,8 @@ All notable changes to this project are documented here. The format follows
   holding the call is still there (`agent_connected=no silent_since=…`: approving would send nothing) instead of the
   two clocks of the grant window. The card keeps counting while the page is open and re-reads the queue every
   30 seconds, so a request whose process died closes on its own without a reload.
+- The approval card no longer shows the "include in bulk approve" box on read-class calls: nothing could submit it.
+  Each request is approved or denied on its own.
 - A pool address explains its refusal of a stateless request once per agent instead of on every Claude Code connect.
 
 ### Added

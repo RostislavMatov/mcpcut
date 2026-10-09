@@ -939,7 +939,7 @@ describe('a page offers no control the role cannot use', () => {
   const VIEWER = { name: 'val', role: 'viewer' }
   const OPERATOR = { name: 'op', role: 'operator' }
 
-  test('the dashboard queue hides Approve/Deny and the bulk control below operator', () => {
+  test('the dashboard queue hides Approve/Deny below operator', () => {
     const document = renderApprovalsPage({
       cards: [APPROVAL_CARD],
       csrfToken: SESSION.csrfToken,
@@ -948,7 +948,6 @@ describe('a page offers no control the role cannot use', () => {
 
     expect(document).not.toContain('/approve"')
     expect(document).not.toContain('/deny"')
-    expect(document).not.toContain('data-bulk-approve')
     // The queue is still readable: the point of a viewer's dashboard.
     expect(document).toContain(APPROVAL_CARD.toolName)
     expect(document).toContain('1 held')

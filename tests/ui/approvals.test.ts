@@ -13,7 +13,7 @@ import {
 import type { UiRequestContext, UiResult } from '../../src/ui/routes.js'
 import type { UiSession } from '../../src/ui/auth.js'
 import { createApprovalsHandlers, type ApprovalsQueue } from '../../src/ui/handlers/approvals.js'
-import { eligibleForBatch, toApprovalCard, type ApprovalCardView } from '../../src/ui/pages/approvals.js'
+import { toApprovalCard, type ApprovalCardView } from '../../src/ui/pages/approvals.js'
 import { renderQueueRegion } from '../../src/ui/pages/approval-queue.js'
 
 /**
@@ -202,21 +202,16 @@ describe('approvalsPage rendering', () => {
   })
 })
 
-describe('eligibleForBatch', () => {
-  test('read-class approvals are batch-eligible, write and destructive are not', () => {
-    const read: ApprovalCardView = { toolClass: 'read' } as ApprovalCardView
-    const write: ApprovalCardView = { toolClass: 'write' } as ApprovalCardView
-    const destructive: ApprovalCardView = { toolClass: 'destructive' } as ApprovalCardView
-    expect(eligibleForBatch(read)).toBe(true)
-    expect(eligibleForBatch(write)).toBe(false)
-    expect(eligibleForBatch(destructive)).toBe(false)
-  })
-
-  test('a write-only queue renders no bulk-approve control', async () => {
-    await enqueueSample({ toolClass: 'write' })
+describe('no bulk approval on a card', () => {
+  test('no card offers a bulk-approve box: there is no button or route to submit it', async () => {
+    await enqueueSample({ toolClass: 'read' })
+    await enqueueSample({ toolClass: 'write', toolName: 'merge_pr' })
     const handlers = createApprovalsHandlers({ queue, clock: () => T0 })
     const html = bodyText(await handlers.approvalsPage(makeCtx()))
+
+    expect(html).toContain('data-tool-class="read"')
     expect(html).not.toContain('data-bulk-approve')
+    expect(html).not.toContain('include in bulk approve')
   })
 })
 
