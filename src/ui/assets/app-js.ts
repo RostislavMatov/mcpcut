@@ -51,9 +51,12 @@ import { buildAsset, type Asset } from './asset.js'
  *     queue reads are bounded, and a badge built from the truncated count
  *     would under-report the backlog the page body admits to.
  *   - `data-live-every="<ms>"` on a region re-fetches it on that period while
- *     the tab is visible and the region shows a clock (below): what stands
- *     beside a clock can change with no event (an approval card's agent going
- *     silent is a heartbeat that stopped, not a queue change).
+ *     the tab is visible and the region shows a clock (below), and once more
+ *     when the tab comes back: what stands beside a clock can change with no
+ *     event (an approval card's agent going silent is a heartbeat that
+ *     stopped, not a queue change). A timed re-fetch waits while the operator
+ *     is busy in the region — focus on a control there, or text selected in
+ *     it — because the swap would drop both.
  *
  *  Clocks
  *   - `data-clock="up|down"` with `data-clock-sec="<n>"` is a duration the
@@ -316,7 +319,8 @@ const APP_JS_SOURCE = `"use strict";
       var seen = parseInt(nodes[i].getAttribute("data-clock-seen") || "", 10);
       if (isNaN(seen)) { seen = nowMs; nodes[i].setAttribute("data-clock-seen", String(nowMs)); }
       var base = parseInt(nodes[i].getAttribute("data-clock-sec") || "0", 10) || 0;
-      var passed = Math.floor((nowMs - seen) / 1000);
+      // A wall clock set back never runs a clock backwards past its server value.
+      var passed = Math.max(0, Math.floor((nowMs - seen) / 1000));
       var down = nodes[i].getAttribute("data-clock") === "down";
       nodes[i].textContent = formatClock(down ? base - passed : base + passed);
     }
@@ -326,12 +330,23 @@ const APP_JS_SOURCE = `"use strict";
     setInterval(function () { tickClocks(Date.now()); }, CLOCK_TICK_MS);
   }
 
+  function isOperatorBusyIn(region) {
+    var active = document.activeElement;
+    if (active && active !== document.body && region.contains(active)) return true;
+    var selection = window.getSelection ? window.getSelection() : null;
+    return !!(selection && !selection.isCollapsed && selection.anchorNode && region.contains(selection.anchorNode));
+  }
+
+  function refreshIfAging(region) {
+    if (document.hidden || !region.querySelector("[data-clock-sec]") || isOperatorBusyIn(region)) return;
+    refreshRegion(region);
+  }
+
   function wireAgingRegion(region) {
     var everyMs = parseInt(region.getAttribute("data-live-every") || "", 10);
     if (!(everyMs > 0)) return;
-    setInterval(function () {
-      if (!document.hidden && region.querySelector("[data-clock-sec]")) refreshRegion(region);
-    }, everyMs);
+    setInterval(function () { refreshIfAging(region); }, everyMs);
+    document.addEventListener("visibilitychange", function () { refreshIfAging(region); });
   }
 
   function wireAgingRegions() {

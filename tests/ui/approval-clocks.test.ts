@@ -102,6 +102,15 @@ describe('tickClocks in APP_JS', () => {
     expect(closes.textContent).toBe('0s')
   })
 
+  test('a wall clock set back never runs a clock below what the server measured', () => {
+    const waiting = clockNode('up', 47)
+    const tick = loadTickClocks([waiting])
+
+    tick(4_000_000)
+    tick(3_990_000)
+    expect(waiting.textContent).toBe('47s')
+  })
+
   test('a clock swapped in by a region refresh starts from its own fresh value', () => {
     const before = clockNode('up', 10)
     const tick = loadTickClocks([before])
@@ -115,28 +124,59 @@ describe('tickClocks in APP_JS', () => {
 })
 
 describe('regions that re-read themselves (data-live-every) in APP_JS', () => {
-  interface RegionStub {
-    readonly every: string | null
-    readonly hasClock: boolean
+  interface Scene {
+    readonly every?: string
+    readonly hasClock?: boolean
+    readonly hidden?: boolean
+    /** Focus sits on a control inside the region (a ticked box, a tabbed-to button). */
+    readonly focusInside?: boolean
+    /** Text inside the region is selected (args being copied). */
+    readonly selectionInside?: boolean
   }
 
-  function wire(region: RegionStub, hidden: boolean): { readonly periodMs: number | undefined; readonly fire: () => number } {
-    let callback: (() => void) | undefined
+  interface Wired {
+    readonly periodMs: number | undefined
+    /** Runs the timer once; returns the refreshes so far. */
+    readonly tick: () => number
+    /** The tab comes back into view; returns the refreshes so far. */
+    readonly showTab: () => number
+  }
+
+  function wire(scene: Scene): Wired {
+    let timer: (() => void) | undefined
+    let onVisibility: (() => void) | undefined
     let periodMs: number | undefined
     let refreshes = 0
+    const inside = { inside: true }
+    const body = { body: true }
     const regionNode = {
-      getAttribute: (name: string) => (name === 'data-live-every' ? region.every : null),
-      querySelector: (selector: string) => (selector === '[data-clock-sec]' && region.hasClock ? {} : null),
+      getAttribute: (name: string) => (name === 'data-live-every' ? (scene.every ?? '30000') : null),
+      querySelector: (selector: string) => (selector === '[data-clock-sec]' && scene.hasClock !== false ? {} : null),
+      contains: (node: unknown) => node === inside,
+    }
+    const documentStub = {
+      hidden: scene.hidden === true,
+      body,
+      activeElement: scene.focusInside === true ? inside : body,
+      addEventListener: (type: string, fn: () => void) => {
+        if (type === 'visibilitychange') onVisibility = fn
+      },
+    }
+    const windowStub = {
+      getSelection: () =>
+        scene.selectionInside === true ? { isCollapsed: false, anchorNode: inside } : { isCollapsed: true, anchorNode: null },
     }
     const wireAgingRegion = new Function(
       'document',
+      'window',
       'setInterval',
       'refreshRegion',
-      `${shipped('wireAgingRegion')}\nreturn wireAgingRegion;`,
+      `${shipped('isOperatorBusyIn')}\n${shipped('refreshIfAging')}\n${shipped('wireAgingRegion')}\nreturn wireAgingRegion;`,
     )(
-      { hidden },
+      documentStub,
+      windowStub,
       (fn: () => void, ms: number) => {
-        callback = fn
+        timer = fn
         periodMs = ms
       },
       () => {
@@ -146,29 +186,45 @@ describe('regions that re-read themselves (data-live-every) in APP_JS', () => {
     wireAgingRegion(regionNode)
     return {
       periodMs,
-      fire: () => {
-        callback?.()
+      tick: () => {
+        timer?.()
+        return refreshes
+      },
+      showTab: () => {
+        onVisibility?.()
         return refreshes
       },
     }
   }
 
   test('re-reads a region that shows a clock on its own period', () => {
-    const wired = wire({ every: '30000', hasClock: true }, false)
+    const wired = wire({})
     expect(wired.periodMs).toBe(30_000)
-    expect(wired.fire()).toBe(1)
+    expect(wired.tick()).toBe(1)
+  })
+
+  test('re-reads at once when the tab comes back into view', () => {
+    expect(wire({}).showTab()).toBe(1)
   })
 
   test('leaves an empty queue alone: nothing on it ages', () => {
-    expect(wire({ every: '30000', hasClock: false }, false).fire()).toBe(0)
+    expect(wire({ hasClock: false }).tick()).toBe(0)
   })
 
   test('does not read while the tab is hidden', () => {
-    expect(wire({ every: '30000', hasClock: true }, true).fire()).toBe(0)
+    expect(wire({ hidden: true }).tick()).toBe(0)
+  })
+
+  test('waits while focus is on a control in the region: the swap would drop it', () => {
+    expect(wire({ focusInside: true }).tick()).toBe(0)
+  })
+
+  test('waits while text in the region is selected: the swap would drop the selection', () => {
+    expect(wire({ selectionInside: true }).tick()).toBe(0)
   })
 
   test('ignores a period that is not a positive number', () => {
-    expect(wire({ every: 'soon', hasClock: true }, false).periodMs).toBeUndefined()
+    expect(wire({ every: 'soon' }).periodMs).toBeUndefined()
   })
 
   test('the page script wires both on start', () => {
