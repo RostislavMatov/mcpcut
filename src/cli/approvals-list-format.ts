@@ -55,11 +55,15 @@ const ELLIPSIS = '…'
 
 /** True when a row's arguments were cut: the operator is pointed at `--json` before approving what they cannot see. */
 export function hasCutArgs(entries: readonly PendingApproval[]): boolean {
-  return entries.some((entry) => formatReadableField(JSON.stringify(entry.argsRedacted)).length > ARGS_PREVIEW_MAX_CHARS)
+  return entries.some((entry) => argsTextOf(entry.argsRedacted).length > ARGS_PREVIEW_MAX_CHARS)
+}
+
+function argsTextOf(argsRedacted: unknown): string {
+  return formatReadableField(JSON.stringify(argsRedacted))
 }
 
 function formatArgsPreview(argsRedacted: unknown): string {
-  const json = formatReadableField(JSON.stringify(argsRedacted))
+  const json = argsTextOf(argsRedacted)
   return json.length > ARGS_PREVIEW_MAX_CHARS ? `${json.slice(0, ARGS_PREVIEW_MAX_CHARS)}${ELLIPSIS}` : json
 }
 

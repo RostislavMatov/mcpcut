@@ -62,7 +62,6 @@ export function unknownSessionMessage(sessionId: string): string {
 const STARTER_POLICY_JSON =
   '{ "version": 1, "defaultDecision": "require-approval", "classDefaults": { "read": "allow" }, "quarantine": { "enabled": false } }'
 
-
 /**
  * The empty `approvals list`: what puts a call here, with the real policy
  * file when one sits where mcpcut looks for it, otherwise a command that
@@ -74,7 +73,7 @@ export function noPendingApprovalsHint(policyPath: string | undefined, dataPolic
   const cmd = cliCommand()
   if (policyPath !== undefined) {
     return (
-      `${why} Servers behind mcpcut read ${shellArg(policyPath)} when they start: restart your client after a change.\n` +
+      `${why} ${shellArg(policyPath)} is read when a server behind mcpcut starts: restart your client after a change.\n` +
       `No server behind mcpcut yet? ${cmd} adopt\n`
     )
   }

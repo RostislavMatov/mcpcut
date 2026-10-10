@@ -242,7 +242,7 @@ describe('dashboard handler composition', () => {
     expect(doc).toContain('list_issues') // recent decision
     expect(doc).toContain('read stopped early')
     // What was read is not the whole journal: no "N of N" that claims it is.
-    expect(doc).toContain('latest 1 calls shown')
+    expect(doc).toContain('latest 1 call shown')
     expect(doc).not.toContain('1 of 1 calls shown')
   })
 

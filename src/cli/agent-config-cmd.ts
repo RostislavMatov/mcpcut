@@ -114,12 +114,31 @@ export async function runConfig(
     form: parsed.form,
     address: resolveServeAddress(opts),
   })
-  if (agent.revokedAt === undefined) io.stdout.write(lostTokenHint(agent.name, opts.env ?? process.env))
+  if (agent.revokedAt === undefined) {
+    // On stderr: `agent config … > file` keeps only the config.
+    io.stderr.write(lostTokenHint(agent.name, await freeAgentNameNear(store, agent.name), opts.env ?? process.env))
+  }
   return 0
 }
 
 /** A token is shown once and stored as a hash, so the way back from a lost one is a new agent. */
-function lostTokenHint(name: string, env: NodeJS.ProcessEnv): string {
+function lostTokenHint(name: string, another: string | undefined, env: NodeJS.ProcessEnv): string {
   const cli = cliCommand(env)
-  return `Lost it? mcpcut keeps only its hash: ${cli} agent revoke ${shellArg(name)}, then ${cli} agent create ${shellArg(`${name}-2`)}\n`
+  const create = another === undefined ? `${cli} agent create <another name>` : `${cli} agent create ${shellArg(another)}`
+  return `Lost it? mcpcut keeps only its hash: ${cli} agent revoke ${shellArg(name)}, then ${create}\n`
+}
+
+/** The longest agent name `AGENT_NAME_PATTERN` allows. */
+const MAX_AGENT_NAME_LENGTH = 64
+/** How many `-N` suffixes a hint tries before it stops offering one. */
+const MAX_NAME_SUFFIX = 99
+
+/** The first `<name>-N` no agent holds, cut to fit the name limit: the ready value a hint offers. */
+export async function freeAgentNameNear(store: Pick<AgentsStore, 'getAgent'>, name: string): Promise<string | undefined> {
+  for (let n = 2; n <= MAX_NAME_SUFFIX; n += 1) {
+    const suffix = `-${String(n)}`
+    const candidate = `${name.slice(0, MAX_AGENT_NAME_LENGTH - suffix.length)}${suffix}`
+    if ((await store.getAgent(candidate)) === undefined) return candidate
+  }
+  return undefined
 }

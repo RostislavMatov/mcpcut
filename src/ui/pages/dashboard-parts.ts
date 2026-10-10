@@ -111,7 +111,7 @@ function renderFooter(input: JournalPanelInput): Html {
     : html`<span class="faint">journal retained locally</span>`
   // A walk that stopped early knows no total: "N of N" would claim the whole journal.
   const shown = input.truncated
-    ? `latest ${String(input.decisions.length)} calls shown`
+    ? `latest ${String(input.decisions.length)} call${input.decisions.length === 1 ? '' : 's'} shown`
     : `${String(input.decisions.length)} of ${String(input.total)} calls shown`
   return html`<div class="panel-ft"><span>${shown}</span>${note}</div>`
 }

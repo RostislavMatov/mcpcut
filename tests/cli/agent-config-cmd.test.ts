@@ -89,7 +89,7 @@ describe('agent config: the block with <token>', () => {
     expect(io.out()).toContain(`${CLIENT_CONFIG_PLACEHOLDER_NOTE}\n`)
     expect(io.out()).not.toContain(CLIENT_CONFIG_HEADING)
     expect(io.out()).not.toMatch(/mcpj_/)
-    expect(io.err()).toBe('')
+    expect(io.err()).not.toMatch(/mcpj_/)
   })
 
   test('says what to do when the token is lost: only its hash is kept, so a new agent', async () => {
@@ -100,8 +100,8 @@ describe('agent config: the block with <token>', () => {
     // Act
     await configOf(['research-bot'], io)
 
-    // Assert
-    expect(io.out()).toContain(
+    // Assert: on stderr, so `agent config … > file` keeps only the config
+    expect(io.err()).toBe(
       'Lost it? mcpcut keeps only its hash: mcpcut agent revoke research-bot, then mcpcut agent create research-bot-2\n',
     )
   })

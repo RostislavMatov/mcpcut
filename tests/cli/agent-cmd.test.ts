@@ -115,6 +115,33 @@ describe('agent create', () => {
     )
   })
 
+  test('the name offered is free: research-bot-2 taken, research-bot-3 is offered', async () => {
+    // Arrange
+    await run(['create', 'research-bot'])
+    await run(['create', 'research-bot-2'])
+    const io = fakeIo()
+
+    // Act
+    await run(['create', 'research-bot'], io)
+
+    // Assert
+    expect(io.err()).toContain('mcpcut agent create research-bot-3\n')
+  })
+
+  test('the name offered for a name at the length limit still fits it', async () => {
+    // Arrange
+    const longest = `a${'b'.repeat(63)}`
+    await run(['create', longest])
+    const io = fakeIo()
+
+    // Act
+    await run(['create', longest], io)
+
+    // Assert
+    const offered = /agent create (\S+)\n$/.exec(io.err())?.[1] ?? ''
+    expect(offered).toBe(`a${'b'.repeat(61)}-2`)
+  })
+
   test('a revoked agent keeps its name: the refusal says so and offers another', async () => {
     // Arrange
     await run(['create', 'research-bot'])

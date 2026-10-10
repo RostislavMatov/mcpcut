@@ -920,12 +920,13 @@ describe('runApprovals: an empty list names the real policy file or how to make 
 
   test('without any policy it writes one where every server behind mcpcut reads it, then the restart', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'mcpcut-approvals-cwd-'))
+    const dataDir = join(cwd, 'data')
     const io = fakeIo()
 
-    await runApprovals(['list'], io, { baseDir, cwd, journalDir: cwd, env: {} })
+    await runApprovals(['list'], io, { baseDir, cwd, journalDir: dataDir, env: {} })
 
     expect(io.err()).toContain('"defaultDecision": "require-approval"')
-    expect(io.err()).toContain(`> ${join(cwd, 'policy.json')}\n`)
+    expect(io.err()).toContain(`> ${join(dataDir, 'policy.json')}\n`)
     expect(io.err()).toContain('then restart your client')
     expect(io.err()).not.toMatch(/[<](?!\s*policy\.json)/)
     await rm(cwd, { recursive: true, force: true })

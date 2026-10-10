@@ -214,8 +214,13 @@ function candidatesOf(args: {
 export function defaultPolicyCandidates(cwd: string, journalDir: string): readonly PolicySourceCandidate[] {
   return [
     { path: resolveCandidate(cwd, join(PROJECT_POLICY_SUBDIR, POLICY_FILE_NAME)), required: false },
-    { path: resolveCandidate(cwd, join(journalDir, POLICY_FILE_NAME)), required: false },
+    { path: dataDirPolicyPath(cwd, journalDir), required: false },
   ]
+}
+
+/** The data directory's policy: every server behind mcpcut reads it, and the README puts the starter one there. */
+export function dataDirPolicyPath(cwd: string, journalDir: string): string {
+  return resolveCandidate(cwd, join(journalDir, POLICY_FILE_NAME))
 }
 
 /**

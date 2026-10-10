@@ -235,6 +235,30 @@ describe('files grant', () => {
     expect(result.err).toContain(`To keep those as well: mcpcut files grant writer ${join(root, 'a')} --ops read,write,edit,delete\n`)
   })
 
+  test('a grant that only adds operations, or cuts the folder out, offers no union', async () => {
+    // Arrange
+    await files(['grant', 'writer', join(root, 'a'), '--ops', 'read'])
+
+    // Act
+    const widened = await files(['grant', 'writer', join(root, 'a'), '--ops', 'read,write'])
+    const cutOut = await files(['grant', 'writer', join(root, 'a'), '--ops', 'none'])
+
+    // Assert
+    expect(widened.out).toContain(': read, write (was read)\n')
+    expect(widened.err).not.toContain('To keep those as well')
+    expect(cutOut.out).toContain(': no access (cut out) (was read, write)\n')
+    expect(cutOut.err).not.toContain('To keep those as well')
+  })
+
+  test('a grant on a cut-out folder says it was cut out', async () => {
+    await files(['grant', 'writer', join(root, 'a'), '--ops', 'none'])
+
+    const result = await files(['grant', 'writer', join(root, 'a'), '--ops', 'read'])
+
+    expect(result.out).toContain(`granted writer on ${join(root, 'a')}: read (was no access (cut out))\n`)
+    expect(result.err).not.toContain('To keep those as well')
+  })
+
   test('a first grant on a folder names nothing it replaced', async () => {
     const result = await files(['grant', 'writer', join(root, 'a'), '--ops', 'read'])
 
