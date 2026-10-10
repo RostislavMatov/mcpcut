@@ -160,11 +160,17 @@ function tappedGate(
 export function wirePolicyRelay(args: PolicyRelayArgs): RelayWiring {
   const { approvalsBaseDir, inventoryStorePath } = policyPathsOf(args)
 
+  // A gate-internal failure and a swallowed inventory-persist failure are the
+  // same class of problem (a proxy defect that must never be silently lost):
+  // both route through the same reportError channel/origin (TS-MEDIUM-3).
+  const onInternalError = (error: unknown): void => args.reportError('client→server', error, 'tap')
+
   const clientWriter = createOrderedWriter(args.clientStdout, {
     onError: (error) => {
       // The client can hear nothing more: what it holds is withdrawn now, not
       // once the server has been stopped — an approve in between would send a
-      // call nobody waits for (stranger run of 0.4.0).
+      // call nobody waits for. `gate` is assigned below; a stream emits its
+      // errors asynchronously, never while the writer is being built.
       gate.agentLeft().catch(onInternalError)
       args.reportError('server→client', error, 'destination')
     },
@@ -172,11 +178,6 @@ export function wirePolicyRelay(args: PolicyRelayArgs): RelayWiring {
   const serverWriter = createOrderedWriter(args.handle.stdin, {
     onError: (error) => args.reportError('client→server', error, 'destination'),
   })
-
-  // A gate-internal failure and a swallowed inventory-persist failure are the
-  // same class of problem (a proxy defect that must never be silently lost):
-  // both route through the same reportError channel/origin (TS-MEDIUM-3).
-  const onInternalError = (error: unknown): void => args.reportError('client→server', error, 'tap')
 
   const approvalQueue = createApprovalQueue({ baseDir: approvalsBaseDir })
   const gate = createPolicyGate({

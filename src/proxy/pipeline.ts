@@ -53,8 +53,9 @@ export interface PipelineOptions {
    */
   onEnd?: () => void
   /**
-   * Called the moment the source ends, before the verdicts still in flight
-   * settle — `onEnd` waits for those, and a verdict can wait on a person.
+   * Called once the moment the source ends — cleanly or with an error —
+   * before the verdicts still in flight settle: `onEnd` waits for those, and
+   * a verdict can wait on a person. A throw is reported through `onError`.
    */
   onSourceEnd?: () => void
   /**
@@ -267,8 +268,20 @@ export function startPipeline(
     for (const frame of splitter.flush()) {
       processFrame(frame)
     }
+    markSourceEnded()
+  }
+
+  /** Both endings of the source land here; `onSourceEnd` hears the first one only. */
+  function markSourceEnded(): void {
+    const wasEnded = isSourceEnded
     isSourceEnded = true
-    opts.onSourceEnd?.()
+    if (!wasEnded) {
+      try {
+        opts.onSourceEnd?.()
+      } catch (error: unknown) {
+        onError(error)
+      }
+    }
     checkFinished()
   }
 
@@ -285,8 +298,7 @@ export function startPipeline(
     }
     stopReading()
     onError(error)
-    isSourceEnded = true
-    checkFinished()
+    markSourceEnded()
   }
 
   const registrations: readonly Registration[] = [

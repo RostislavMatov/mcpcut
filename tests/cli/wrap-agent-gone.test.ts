@@ -126,6 +126,29 @@ describe('wrap: a client that died stops waiting at once', () => {
     expect(answeredByServer).toBe(false)
   })
 
+  test('every call it held is withdrawn, each journaled agent-gone once', async () => {
+    // Arrange
+    const harness = createClientHarness()
+    const client = createDyingStdout()
+    const { run, queue } = await startWrap(client.stdout, harness)
+    harness.clientOutbox.write(heldCallLine(11) + heldCallLine(12))
+    await waitUntilAsync(async () => (await queue.list()).length === 2)
+    await waitUntil(() => client.lines.length >= 2)
+
+    // Act
+    client.kill()
+    harness.clientOutbox.end()
+    await waitUntilAsync(async () => (await queue.list()).length === 0)
+    await run
+
+    // Assert
+    const [sessionId] = await journalSessionIds(journalDir)
+    const records = await readJournalRecords(journalDir, sessionId!)
+    const outcomes = records.filter((record) => record.kind === 'decision').map((record) => record.decision?.outcome)
+    expect(outcomes.filter((outcome) => outcome === 'agent-gone')).toHaveLength(2)
+    expect(outcomes.filter((outcome) => outcome === 'require-approval-pending')).toHaveLength(2)
+  })
+
   test('a one-shot client that ends its input but still reads keeps its call held until the approve', async () => {
     // Arrange
     const harness = createClientHarness()

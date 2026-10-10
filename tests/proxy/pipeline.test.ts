@@ -345,6 +345,47 @@ describe('startPipeline lifecycle', () => {
     expect(onEnd).not.toHaveBeenCalled()
   })
 
+  test('calls onSourceEnd once when the source fails instead of ending', async () => {
+    // Arrange
+    const source = new PassThrough()
+    const { writer } = createRecordingWriter()
+    const onSourceEnd = vi.fn()
+    const gate: GateFn = () => new Promise<Verdict>(() => undefined)
+
+    // Act
+    startPipeline(source, writer, gate, { onSourceEnd, onError: () => undefined })
+    source.write('held\n')
+    await tick()
+    source.destroy(Object.assign(new Error('read failed'), { code: 'EIO' }))
+    await tick()
+
+    // Assert
+    expect(onSourceEnd).toHaveBeenCalledTimes(1)
+  })
+
+  test('an onSourceEnd that throws is reported, and onEnd still follows', async () => {
+    // Arrange
+    const source = new PassThrough()
+    const { writer } = createRecordingWriter()
+    const errors: unknown[] = []
+    const onEnd = vi.fn()
+
+    // Act
+    startPipeline(source, writer, () => ({ action: 'forward' }), {
+      onSourceEnd: () => {
+        throw new Error('hook failed')
+      },
+      onEnd,
+      onError: (error) => errors.push(error),
+    })
+    source.end()
+    await tick()
+
+    // Assert
+    expect(errors.map((error) => (error as Error).message)).toEqual(['hook failed'])
+    expect(onEnd).toHaveBeenCalledTimes(1)
+  })
+
   test('does not end the destination itself: lifecycle belongs to the wrap layer', async () => {
     const source = new PassThrough()
     const { writable: destination } = createCapturingWritable()
