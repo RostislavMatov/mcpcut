@@ -122,6 +122,17 @@ describe('value-pattern scrubbing of raw strings', () => {
     expect(result).toContain('next line')
   })
 
+  test.each([
+    ['Token', 'Authorization: Token abcdef123456', ['abcdef123456']],
+    ['Digest', 'authorization: Digest username="bob", realm="x", response="6629fae49393a05397450978507c4ef1"', ['bob', '6629fae4']],
+    ['an unknown scheme', 'Authorization=ApiKey k-123-secret', ['k-123-secret']],
+  ])('an Authorization header with the %s scheme loses its whole credential', (_name, text, secretParts) => {
+    const result = scrub(`${text}\nnext line`)
+
+    for (const part of secretParts) expect(result).not.toContain(part)
+    expect(result).toContain('next line')
+  })
+
   test('an assigned value ends at whitespace: the words after it stay', () => {
     expect(scrub('password=hunter2 user=bob')).toBe(`${REDACTED_PLACEHOLDER} user=bob`)
   })

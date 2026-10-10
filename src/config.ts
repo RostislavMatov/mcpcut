@@ -169,6 +169,10 @@ export const REDACT_TOKEN_PATTERNS: readonly RegExp[] = [
   /\bAKIA[0-9A-Z]{16}\b/g,
   /\bAIza[0-9A-Za-z_-]{35}/g,
   /\bglpat-[A-Za-z0-9_-]{20,}/g,
+  // An `Authorization` header whose scheme the two above do not know (`Token`,
+  // `Digest`, `ApiKey`, …): the scheme is followed by the credential, so the
+  // whole rest of the line goes, not just the scheme word.
+  /\bauthorization\s*[:=]\s*(?!\[REDACTED\])[^\r\n]+/gi,
   // `API_KEY=...`, `x-api-key: ...`, `password = ...` in headers, env dumps,
   // `.env` files and log lines. A quoted value goes whole, escapes included
   // (bounded, so a quote that never closes costs at most 1024 characters per

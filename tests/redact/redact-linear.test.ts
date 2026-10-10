@@ -34,6 +34,7 @@ describe('redaction stays linear on crafted input', () => {
     ['assignments opening a quote that never closes', 'password="a '],
     ['assignments opening a quote, with no space anywhere', 'token="'],
     ['assignments of a single quote', "secret='x "],
+    ['authorization headers with a scheme and no line end', 'authorization: Token a '],
   ])('%s', (_name, unit) => {
     const text = repeated(unit)
     const started = performance.now()

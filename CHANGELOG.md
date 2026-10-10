@@ -12,6 +12,8 @@ All notable changes to this project are documented here. The format follows
   `passwd`) no longer stops inside the value. A bare value runs to the next whitespace, so a password holding `&`, `;`,
   `,` or a quote is redacted whole instead of leaving its tail in the journal and the search index; a quoted value
   (`DB_PASSWORD="…"`, as in `.env` files) is redacted whole, where before it was not redacted at all.
+- An `Authorization` header with a scheme other than `Bearer` or `Basic` (`Token`, `Digest`, `ApiKey`, …) is redacted to
+  the end of its line; before, only the scheme word was, and the credential after it stayed in the journal.
 
 ### Fixed
 
