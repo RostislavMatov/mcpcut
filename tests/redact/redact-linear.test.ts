@@ -31,6 +31,9 @@ describe('redaction stays linear on crafted input', () => {
     ['private key headers with no footer', '-----BEGIN PRIVATE KEY-----'],
     ['private key headers with bodies and no footer', '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n'],
     ['scheme and user info without an @', 'a://x:'],
+    ['assignments opening a quote that never closes', 'password="a '],
+    ['assignments opening a quote, with no space anywhere', 'token="'],
+    ['assignments of a single quote', "secret='x "],
   ])('%s', (_name, unit) => {
     const text = repeated(unit)
     const started = performance.now()

@@ -106,6 +106,26 @@ describe('value-pattern scrubbing of raw strings', () => {
     expect(result).toContain('starting up')
   })
 
+  test.each([
+    ['an ampersand', 'password = Tr0ub4dor&3-staging-xyz', ['Tr0ub4dor', '&3-staging-xyz']],
+    ['a semicolon and a comma', 'password: Tr0ub4dor;3,staging', ['Tr0ub4dor', ';3,staging']],
+    ['an ampersand in an env key', 'API_KEY=sk-live-abc&def', ['sk-live-abc', '&def']],
+    ['a double-quoted value with a space', 'DB_PASSWORD="Tr0ub4dor&3 staging"', ['Tr0ub4dor', 'staging']],
+    ['a single-quoted value', "secret: 'hunter2 and more'", ['hunter2', 'and more']],
+    ['an escaped quote inside the value', 'TOKEN="ab\\"cd ef"', ['ab', 'cd ef']],
+    ['a quote inside a bare value', 'passwd=ab"cd', ['ab', 'cd']],
+  ])('an assigned value is redacted whole, with %s in it', (_name, text, secretParts) => {
+    const result = scrub(`${text}\nnext line`)
+
+    for (const part of secretParts) expect(result).not.toContain(part)
+    expect(result).toContain(REDACTED_PLACEHOLDER)
+    expect(result).toContain('next line')
+  })
+
+  test('an assigned value ends at whitespace: the words after it stay', () => {
+    expect(scrub('password=hunter2 user=bob')).toBe(`${REDACTED_PLACEHOLDER} user=bob`)
+  })
+
   test('leaves ordinary text untouched', () => {
     const text = 'fake-server: starting on port 8080 with 3 tools'
 

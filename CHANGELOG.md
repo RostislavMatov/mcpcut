@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- Redaction of `key=value` and `key: value` secrets (`password`, `secret`, `token`, `api_key`, `authorization`,
+  `passwd`) no longer stops inside the value. A bare value runs to the next whitespace, so a password holding `&`, `;`,
+  `,` or a quote is redacted whole instead of leaving its tail in the journal and the search index; a quoted value
+  (`DB_PASSWORD="…"`, as in `.env` files) is redacted whole, where before it was not redacted at all.
+
 ### Fixed
 
 - `wrap`: an agent whose client dies outright (killed, crashed, its terminal closed) no longer leaves its held call

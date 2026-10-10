@@ -169,11 +169,14 @@ export const REDACT_TOKEN_PATTERNS: readonly RegExp[] = [
   /\bAKIA[0-9A-Z]{16}\b/g,
   /\bAIza[0-9A-Za-z_-]{35}/g,
   /\bglpat-[A-Za-z0-9_-]{20,}/g,
-  // `API_KEY=...`, `x-api-key: ...`, `password = ...` in headers, env dumps
-  // and log lines. The value stops at whitespace, `&`, quotes and `;` so that
-  // neighbouring query parameters and JSON syntax survive; the negative
-  // lookahead keeps an already-redacted value from swallowing what follows.
-  /(?:api[-_ ]?key|x-api-key|authorization|token|secret|password|passwd)\s*[:=]\s*(?!\[REDACTED\])[^\s&"',;]+/gi,
+  // `API_KEY=...`, `x-api-key: ...`, `password = ...` in headers, env dumps,
+  // `.env` files and log lines. A quoted value goes whole, escapes included
+  // (bounded, so a quote that never closes costs at most 1024 characters per
+  // key); a bare one runs to whitespace — a password may hold `&`, `;`, `,` or
+  // a quote, and stopping there left its tail in the journal. Query
+  // parameters are the partial rule's (`?key=…&next=1`, applied first), and
+  // the negative lookahead keeps a value it redacted from being redacted again.
+  /(?:api[-_ ]?key|x-api-key|authorization|token|secret|password|passwd)\s*[:=]\s*(?!\[REDACTED\])(?:"(?:[^"\\\n]|\\.){0,1024}"|'(?:[^'\\\n]|\\.){0,1024}'|\S+)/gi,
 ]
 
 /**
