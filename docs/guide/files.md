@@ -53,7 +53,7 @@ another name).
   "mcpServers": {
     "mcpcut": {
       "command": "npx",
-      "args": ["-y", "mcpcut@0.4.0", "connect", "--url", "http://127.0.0.1:8090"],
+      "args": ["-y", "mcpcut@0.4.1", "connect", "--url", "http://127.0.0.1:8090"],
       "env": { "MCP_AGENT_TOKEN": "mcpj_…" }
     }
   }

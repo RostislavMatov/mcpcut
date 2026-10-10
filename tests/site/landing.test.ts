@@ -292,7 +292,7 @@ describe('site/ — one truth with the README and the console', () => {
   })
 
   test('Stop also offers the path without JSON: Create policy in the admin UI, then the buttons', () => {
-    expect(html).toContain('<code>npx -y mcpcut@0.4.0 ui</code>')
+    expect(html).toContain('<code>npx -y mcpcut@0.4.1 ui</code>')
     expect(html).toContain('<b>Create policy</b>')
     expect(html).toContain('restart the client once')
   })

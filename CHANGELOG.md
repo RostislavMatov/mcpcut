@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-10-10
+
 ### Security
 
 - Redaction of `key=value` and `key: value` secrets (`password`, `secret`, `token`, `api_key`, `authorization`,
@@ -1021,7 +1023,8 @@ publication — several are security fixes, so they are kept.
   real loopback address are unaffected, since the URL parser normalizes them
   first. Found by the security review of the bridge, 2026-09-21.
 
-[Unreleased]: https://github.com/RostislavMatov/mcpcut/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/RostislavMatov/mcpcut/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/RostislavMatov/mcpcut/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/RostislavMatov/mcpcut/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/RostislavMatov/mcpcut/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/RostislavMatov/mcpcut/compare/v0.2.4...v0.3.0

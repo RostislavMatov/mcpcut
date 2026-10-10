@@ -11,7 +11,7 @@ on:
       version:
         description: mcpcut version on npm
         required: true
-        default: '0.4.0'
+        default: '0.4.1'
 
 permissions:
   contents: read
@@ -37,7 +37,7 @@ jobs:
 
       - name: Smoke the published package
         env:
-          MCPCUT_VERSION: ${{ inputs.version || '0.4.0' }}
+          MCPCUT_VERSION: ${{ inputs.version || '0.4.1' }}
         run: node tools/smoke/published-smoke.mjs
 
       # The same walk over a build of this checkout, packed the way npm
@@ -56,7 +56,7 @@ jobs:
       - name: Smoke this checkout
         if: always() && steps.pack.outcome == 'success'
         env:
-          MCPCUT_VERSION: ${{ inputs.version || '0.4.0' }}
+          MCPCUT_VERSION: ${{ inputs.version || '0.4.1' }}
         run: node tools/smoke/published-smoke.mjs
 
       # The file module (not on npm yet) on the same packed build: owner setup,

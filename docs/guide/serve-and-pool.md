@@ -210,7 +210,7 @@ an HTTP agent.
       "command": "npx",
       "args": [
         "-y",
-        "mcpcut@0.4.0",
+        "mcpcut@0.4.1",
         "connect",
         "--url",
         "https://plane.example:8090"
