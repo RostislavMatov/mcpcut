@@ -93,6 +93,52 @@ describe('startHold: the progress beside a held call (M36)', () => {
     expect(sent).toHaveLength(1) // only the one sent at once
   })
 
+  test('poke sends the progress now, off the minute, and nothing once stopped', async () => {
+    // Arrange
+    const scheduler = manualScheduler()
+    const sent: Buffer[] = []
+    const hold = startHold({
+      approvalId: '01A',
+      progressToken: 'tok',
+      messageOf: (id) => `waiting for approval ${id}`,
+      send: (bytes) => {
+        sent.push(bytes)
+        return Promise.resolve()
+      },
+      scheduler,
+      onError: () => undefined,
+    })
+
+    // Act
+    hold.poke()
+    await flush()
+    hold.stop()
+    hold.poke()
+
+    // Assert
+    const progress = sent.map((bytes) => (JSON.parse(bytes.toString('utf8')) as { params: { progress: number } }).params)
+    expect(progress.map((params) => params.progress)).toEqual([1, 2])
+  })
+
+  test('poke on a call without a progress token sends nothing', () => {
+    const sent: Buffer[] = []
+    const hold = startHold({
+      approvalId: '01A',
+      messageOf: (id) => id,
+      send: (bytes) => {
+        sent.push(bytes)
+        return Promise.resolve()
+      },
+      scheduler: manualScheduler(),
+      onError: () => undefined,
+    })
+
+    hold.poke()
+
+    expect(sent).toEqual([])
+    hold.stop()
+  })
+
   test('without a message builder nothing runs at all', () => {
     const scheduler = manualScheduler()
     const sent: Buffer[] = []

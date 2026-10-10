@@ -46,6 +46,12 @@ export interface HoldDeps {
 }
 
 export interface Hold {
+  /**
+   * Sends the progress now, off the minute; nothing for a call without a
+   * progress token. The write is what tells a client that still reads from
+   * one that died: a dead client's pipe fails it (`wire-policy.ts`).
+   */
+  poke(): void
   stop(): void
 }
 
@@ -66,8 +72,9 @@ export function startHold(deps: HoldDeps): Hold {
   }
 
   const { progressToken, messageOf } = deps
+  let sendProgress: (() => void) | undefined
   if (progressToken !== undefined && messageOf !== undefined) {
-    const sendProgress = (): void =>
+    sendProgress = (): void =>
       runSafely(() => {
         progress += 1
         return deps.send(heldCallProgress(progressToken, progress, messageOf(deps.approvalId)))
@@ -77,6 +84,9 @@ export function startHold(deps: HoldDeps): Hold {
   }
 
   return {
+    poke() {
+      sendProgress?.()
+    },
     stop() {
       if (stopped) return
       stopped = true

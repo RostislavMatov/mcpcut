@@ -148,6 +148,13 @@ export interface MessagePolicyGate {
    */
   agentLeft(): Promise<void>
   /**
+   * The client's input ended, which alone is not the agent leaving (a
+   * one-shot `printf … | mcpcut wrap` still reads its answers): every held
+   * call's progress goes out now, and a client that died fails that write
+   * at once instead of at the next once-a-minute progress (`wire-policy.ts`).
+   */
+  clientInputEnded(): void
+  /**
    * Waits up to `graceMs` for the server's answers to forwarded calls, then
    * journals each still missing as `unanswered` (with `reason` when its agent
    * had not left) and resolves to how many there were. A call the agent

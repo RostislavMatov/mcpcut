@@ -58,6 +58,8 @@ export interface PolicyGate {
   abandonRequest(id: JsonRpcId): void
   /** The agent is gone, the server still runs (see `MessagePolicyGate.agentLeft`). */
   agentLeft(): Promise<void>
+  /** The client's input ended (see `MessagePolicyGate.clientInputEnded`). */
+  clientInputEnded(): void
   /** See `MessagePolicyGate.settleForwarded`. */
   settleForwarded(graceMs: number, reason: string, stop?: AbortSignal): Promise<number>
 }
@@ -98,6 +100,7 @@ export function createPolicyGate(deps: PolicyGateDeps): PolicyGate {
     cancelPending: () => core.cancelPending(),
     abandonRequest: (id) => core.abandonRequest(id),
     agentLeft: () => core.agentLeft(),
+    clientInputEnded: () => core.clientInputEnded(),
     settleForwarded: (graceMs, reason, stop) => core.settleForwarded(graceMs, reason, stop),
   }
 }

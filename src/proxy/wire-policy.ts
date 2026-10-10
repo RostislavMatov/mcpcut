@@ -161,7 +161,13 @@ export function wirePolicyRelay(args: PolicyRelayArgs): RelayWiring {
   const { approvalsBaseDir, inventoryStorePath } = policyPathsOf(args)
 
   const clientWriter = createOrderedWriter(args.clientStdout, {
-    onError: (error) => args.reportError('server→client', error, 'destination'),
+    onError: (error) => {
+      // The client can hear nothing more: what it holds is withdrawn now, not
+      // once the server has been stopped — an approve in between would send a
+      // call nobody waits for (stranger run of 0.4.0).
+      gate.agentLeft().catch(onInternalError)
+      args.reportError('server→client', error, 'destination')
+    },
   })
   const serverWriter = createOrderedWriter(args.handle.stdin, {
     onError: (error) => args.reportError('client→server', error, 'destination'),
@@ -235,6 +241,7 @@ export function wirePolicyRelay(args: PolicyRelayArgs): RelayWiring {
     tappedGate(gate.gateClientMessage, 'client→server', args.tapLine),
     {
       onError: (error) => args.reportError('client→server', error, 'source'),
+      onSourceEnd: () => gate.clientInputEnded(),
       onEnd: () => void endServerStdinAfterGrace(),
     },
   )

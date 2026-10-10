@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `wrap`: an agent whose client dies outright (killed, crashed, its terminal closed) no longer leaves its held call
+  open for up to a minute. When the client's input ends, `wrap` sends the held calls' progress at once; a client that
+  no longer reads fails that write, and its calls are withdrawn as `agent-gone` there and then. Before, an approve in
+  that minute sent the call to the server with nobody waiting for it. A call that carries no progress token (Claude
+  Code always gives one) is still found out only when mcpcut next writes to the client.
+
 ## [0.4.0] — 2026-10-09
 
 ### Added

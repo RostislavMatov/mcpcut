@@ -323,6 +323,28 @@ describe('startPipeline lifecycle', () => {
     expect(onEnd).toHaveBeenCalledTimes(1)
   })
 
+  test('calls onSourceEnd at the source end, while a verdict is still pending', async () => {
+    // Arrange
+    const source = new PassThrough()
+    const { writer } = createRecordingWriter()
+    const onSourceEnd = vi.fn()
+    const onEnd = vi.fn()
+    const gate: GateFn = () => new Promise<Verdict>(() => undefined)
+
+    // Act
+    startPipeline(source, writer, gate, { onSourceEnd, onEnd })
+    source.write('held\n')
+    await tick()
+    const beforeEnd = onSourceEnd.mock.calls.length
+    source.end()
+    await tick()
+
+    // Assert
+    expect(beforeEnd).toBe(0)
+    expect(onSourceEnd).toHaveBeenCalledTimes(1)
+    expect(onEnd).not.toHaveBeenCalled()
+  })
+
   test('does not end the destination itself: lifecycle belongs to the wrap layer', async () => {
     const source = new PassThrough()
     const { writable: destination } = createCapturingWritable()

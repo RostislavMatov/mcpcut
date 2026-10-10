@@ -14,7 +14,7 @@ import {
   approvalTimeoutError,
   type SynthesizableId,
 } from './synthesize.js'
-import { createHeartbeatTicker, startHold, type HoldScheduler } from './approval-hold.js'
+import { createHeartbeatTicker, startHold, type Hold, type HoldScheduler } from './approval-hold.js'
 import type { PendingApprovalNotice } from './gate-types.js'
 import {
   ALREADY_ANSWERED_RULE,
@@ -140,6 +140,8 @@ export interface ApprovalFlow {
   withdrawByClient(idKey: string, reason: string): Promise<void>
   /** Session end: every held call is withdrawn as `disconnected`, and so is any call queued after this. */
   withdrawAll(): Promise<void>
+  /** Sends every held call's progress now (`Hold.poke`): the client's input ended, does it still read? */
+  pokeHeld(): void
 }
 
 export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
@@ -153,6 +155,8 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
    */
   const holdLimitMs = Math.min(waitCapMs ?? APPROVAL_REQUEST_MAX_AGE_MS, APPROVAL_REQUEST_MAX_AGE_MS)
   const held = new Set<HeldCall>()
+  /** The progress beside each held call, so `pokeHeld` can send it off the minute. */
+  const holds = new Map<HeldCall, Hold>()
   /**
    * Calls between the cap check and the end of their wait, counted from the
    * synchronous start of `requestApproval` — `held` only learns of a call
@@ -248,6 +252,7 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
       scheduler: deps.holdScheduler,
       onError: deps.onError,
     })
+    holds.set(entry, ticker)
     // Mark this id as having an in-flight wait, so if it is answered locally
     // in the meantime the exactly-one-outcome burn survives even a 10k-id LRU
     // flood (M8).
@@ -256,6 +261,7 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
       return await approvalWaiter.wait(approvalQueue, entry.approvalId, holdLimitMs, entry.controller.signal)
     } finally {
       ticker.stop()
+      holds.delete(entry)
       answerGuard.endWait(entry.idKey)
       held.delete(entry)
       noteReleased(entry.approvalId)
@@ -391,6 +397,9 @@ export function createApprovalFlow(deps: ApprovalFlowDeps): ApprovalFlow {
     async withdrawAll() {
       isClosed = true
       await Promise.all(Array.from(held).map((entry) => leave(entry, WITHDRAW_REASON_DISCONNECTED)))
+    },
+    pokeHeld() {
+      for (const ticker of holds.values()) ticker.poke()
     },
   }
 }

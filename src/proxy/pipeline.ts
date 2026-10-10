@@ -53,6 +53,11 @@ export interface PipelineOptions {
    */
   onEnd?: () => void
   /**
+   * Called the moment the source ends, before the verdicts still in flight
+   * settle — `onEnd` waits for those, and a verdict can wait on a person.
+   */
+  onSourceEnd?: () => void
+  /**
    * Number of frames with an in-flight gate evaluation and/or write above
    * which the source is paused; reading resumes once the count drops back
    * to or below this line. Defaults to HIGH_WATER_PENDING_FRAMES.
@@ -263,6 +268,7 @@ export function startPipeline(
       processFrame(frame)
     }
     isSourceEnded = true
+    opts.onSourceEnd?.()
     checkFinished()
   }
 
