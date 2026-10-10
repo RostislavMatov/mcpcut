@@ -877,6 +877,17 @@ describe('runApprovals: list row carries the asking agent and a capped args prev
     const preview = /args=(\S+)/.exec(io.out())?.[1] ?? ''
     expect(preview.length).toBeLessThanOrEqual(121)
     expect(preview.endsWith('…')).toBe(true)
+    expect(io.err()).toContain('Whole arguments, to read before you approve: mcpcut approvals list --json\n')
+  })
+
+  test('short arguments are printed whole, with no pointer to --json', async () => {
+    const queue = createApprovalQueue({ baseDir })
+    await queue.enqueue(baseRequest({ args: { a: 1 } }))
+    const io = fakeIo()
+
+    await runApprovals(['list'], io, anonymousOpts())
+
+    expect(io.err()).not.toContain('Whole arguments')
   })
 
   test('short arguments are printed whole', async () => {
@@ -907,16 +918,16 @@ describe('runApprovals: an empty list names the real policy file or how to make 
     await rm(cwd, { recursive: true, force: true })
   })
 
-  test('without any policy it gives a command that writes one and the wrap line that uses it', async () => {
+  test('without any policy it writes one where every server behind mcpcut reads it, then the restart', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'mcpcut-approvals-cwd-'))
     const io = fakeIo()
 
     await runApprovals(['list'], io, { baseDir, cwd, journalDir: cwd, env: {} })
 
     expect(io.err()).toContain('"defaultDecision": "require-approval"')
-    expect(io.err()).toContain('> policy.json')
-    expect(io.err()).toContain('wrap --policy "$PWD/policy.json" --')
-    expect(io.err()).not.toMatch(/[<>](?!\s*policy\.json)/)
+    expect(io.err()).toContain(`> ${join(cwd, 'policy.json')}\n`)
+    expect(io.err()).toContain('then restart your client')
+    expect(io.err()).not.toMatch(/[<](?!\s*policy\.json)/)
     await rm(cwd, { recursive: true, force: true })
   })
 })

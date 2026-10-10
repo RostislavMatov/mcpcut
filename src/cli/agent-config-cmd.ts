@@ -3,6 +3,7 @@ import { renderClientConfig, TOKEN_PLACEHOLDER, type ClientConfigForm } from '..
 import { AgentNotFoundError, type AgentsStore } from '../agents/store.js'
 import { formatReadableField } from '../journal/format.js'
 import { CLI_NAME } from '../setup/constants.js'
+import { cliCommand, shellArg } from './next-step.js'
 import {
   addressNoteOf,
   resolveServeAddress,
@@ -113,5 +114,12 @@ export async function runConfig(
     form: parsed.form,
     address: resolveServeAddress(opts),
   })
+  if (agent.revokedAt === undefined) io.stdout.write(lostTokenHint(agent.name, opts.env ?? process.env))
   return 0
+}
+
+/** A token is shown once and stored as a hash, so the way back from a lost one is a new agent. */
+function lostTokenHint(name: string, env: NodeJS.ProcessEnv): string {
+  const cli = cliCommand(env)
+  return `Lost it? mcpcut keeps only its hash: ${cli} agent revoke ${shellArg(name)}, then ${cli} agent create ${shellArg(`${name}-2`)}\n`
 }

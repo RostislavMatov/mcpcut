@@ -22,7 +22,8 @@ import { formatAgentLine, formatGrantLines, summaryOf } from './agent-cmd-format
 import { recordChange, requireOwner, warnIfGroupsUncovered } from './agent-cmd-write.js'
 import { runConfig, writeClientConfig } from './agent-config-cmd.js'
 import { resolveGrantFlags } from './grant-flags.js'
-import { noAgentsHint } from './next-step.js'
+import { cliCommand, noAgentsHint, shellArg } from './next-step.js'
+import type { AgentRecord } from '../agents/schema.js'
 import { TOKEN_ONCE_NOTICE } from './ui-constants.js'
 import { StoreCorruptError, StoreLockError, StoreWriteRejectedError } from '../policy/store.js'
 
@@ -169,6 +170,11 @@ async function runCreate(
   const actor = await requireOwner(io, opts)
   if (actor === undefined) return 1
 
+  const taken = await store.getAgent(name)
+  if (taken !== undefined) {
+    io.stderr.write(takenNameMessage(taken, opts.env ?? process.env))
+    return 1
+  }
   const { agent, token } = await store.createAgent(name)
 
   io.stdout.write(`agent: ${formatReadableField(agent.name)}\n`)
@@ -181,6 +187,17 @@ async function runCreate(
     action: 'agent.create',
     agent: name,
   })
+}
+
+/** A name is never reused — a revoked agent keeps it for the journal — so the refusal names the way on. */
+function takenNameMessage(agent: AgentRecord, env: NodeJS.ProcessEnv): string {
+  const cli = cliCommand(env)
+  const name = formatReadableField(agent.name)
+  const another = `${cli} agent create ${shellArg(`${agent.name}-2`)}`
+  if (agent.revokedAt !== undefined) {
+    return `agent "${name}" was revoked, and its name stays with it in the journal: ${another}\n`
+  }
+  return `agent "${name}" already exists: its client config is \`${cli} agent config ${shellArg(agent.name)}\`; a new agent needs another name: ${another}\n`
 }
 
 async function runList(

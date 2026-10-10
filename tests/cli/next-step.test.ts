@@ -114,22 +114,30 @@ describe('hints name the next command with real values', () => {
 
   test('an empty approvals queue says what puts a call there', () => {
     asInstalled()
-    const hint = noPendingApprovalsHint()
+    const hint = noPendingApprovalsHint(undefined, '/home/me/.mcpcut/data/policy.json')
     expect(hint).toContain('require-approval')
-    expect(hint).toContain('--policy')
   })
 
-  test('with no policy in the default places it does not claim there is none: wrap may run with --policy elsewhere', () => {
+  test('with no policy where mcpcut looks, it writes the starter one there, as the README does', () => {
+    // Arrange
     asInstalled()
-    const hint = noPendingApprovalsHint()
-    expect(hint).not.toContain('No policy file yet')
+
+    // Act
+    const hint = noPendingApprovalsHint(undefined, '/home/me/.mcpcut/data/policy.json')
+
+    // Assert
+    expect(hint).toContain("' > /home/me/.mcpcut/data/policy.json\n")
+    expect(hint).toContain('restart your client')
+    expect(hint).not.toContain('No policy file yet') // a wrap may run with --policy elsewhere
     expect(hint).toContain('If you have no policy yet')
   })
 
-  test('an empty approvals queue with a known policy names that file, with no placeholder', () => {
+  test('an empty approvals queue with a known policy names that file and the restart, with no placeholder', () => {
     asInstalled()
-    const hint = noPendingApprovalsHint('/work/proj/.mcpcut-project/policy.json')
-    expect(hint).toContain('wrap --policy /work/proj/.mcpcut-project/policy.json --')
+    const hint = noPendingApprovalsHint('/work/proj/.mcpcut-project/policy.json', '/home/me/.mcpcut/data/policy.json')
+    expect(hint).toContain('/work/proj/.mcpcut-project/policy.json')
+    expect(hint).toContain('restart your client')
+    expect(hint).toContain('mcpcut adopt')
     expect(hint).not.toContain('<')
   })
 

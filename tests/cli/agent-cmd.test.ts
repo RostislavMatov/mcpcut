@@ -99,6 +99,37 @@ async function seedServer(name: string): Promise<void> {
 }
 
 describe('agent create', () => {
+  test('a taken name says where the existing agent\'s config is and offers another name', async () => {
+    // Arrange
+    await run(['create', 'research-bot'])
+    const io = fakeIo()
+
+    // Act
+    const exitCode = await run(['create', 'research-bot'], io)
+
+    // Assert
+    expect(exitCode).toBe(1)
+    expect(io.err()).toBe(
+      'agent "research-bot" already exists: its client config is `mcpcut agent config research-bot`; ' +
+        'a new agent needs another name: mcpcut agent create research-bot-2\n',
+    )
+  })
+
+  test('a revoked agent keeps its name: the refusal says so and offers another', async () => {
+    // Arrange
+    await run(['create', 'research-bot'])
+    await run(['revoke', 'research-bot'])
+    const io = fakeIo()
+
+    // Act
+    await run(['create', 'research-bot'], io)
+
+    // Assert
+    expect(io.err()).toBe(
+      'agent "research-bot" was revoked, and its name stays with it in the journal: mcpcut agent create research-bot-2\n',
+    )
+  })
+
   test('prints the token in its token: line and inside the client config — the same token, nowhere else (C5)', async () => {
     // The point is "not multiplied across the output", not a literal count:
     // the block exists to carry the token into the client, and the token:

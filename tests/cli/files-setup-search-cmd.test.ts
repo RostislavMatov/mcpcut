@@ -116,6 +116,7 @@ describe('files setup --search', () => {
       { command: 'npm', args: ['ci', '--omit=dev', '--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund', '--no-update-notifier'], cwd: searchDir(), shell: false },
     ])
     expect(result.out).toContain('installing the search runtime')
+    expect(result.out).toContain('about 300 MB from npm, silent until it is done: on a slow connection this takes minutes')
   })
 
   test('runs the Postgres client part first when it is missing', async () => {

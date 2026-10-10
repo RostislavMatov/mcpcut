@@ -62,25 +62,27 @@ export function unknownSessionMessage(sessionId: string): string {
 const STARTER_POLICY_JSON =
   '{ "version": 1, "defaultDecision": "require-approval", "classDefaults": { "read": "allow" }, "quarantine": { "enabled": false } }'
 
-/** A server the first minute can wrap as is (the README's Quick start uses it too). */
-const EXAMPLE_SERVER_COMMAND = 'npx -y @modelcontextprotocol/server-filesystem .'
 
 /**
  * The empty `approvals list`: what puts a call here, with the real policy
  * file when one sits where mcpcut looks for it, otherwise a command that
- * writes the README's starter policy. No placeholder either way.
+ * writes the README's starter policy where every server behind mcpcut reads
+ * it (`dataPolicyPath`). No placeholder either way.
  */
-export function noPendingApprovalsHint(policyPath?: string): string {
+export function noPendingApprovalsHint(policyPath: string | undefined, dataPolicyPath: string): string {
   const why = 'A call waits here when the policy says "require-approval" for it.'
   const cmd = cliCommand()
   if (policyPath !== undefined) {
-    return `${why} Put mcpcut in front of your server with that policy: ${cmd} wrap --policy ${shellArg(policyPath)} -- ${EXAMPLE_SERVER_COMMAND}\n`
+    return (
+      `${why} Servers behind mcpcut read ${shellArg(policyPath)} when they start: restart your client after a change.\n` +
+      `No server behind mcpcut yet? ${cmd} adopt\n`
+    )
   }
   return (
     // Not "no policy yet": `approvals list` cannot see a wrap started with `--policy <file>` elsewhere.
-    `${why} If you have no policy yet, write a starter one with\n` +
-    `  echo '${STARTER_POLICY_JSON}' > policy.json\n` +
-    `then put mcpcut in front of your server: ${cmd} wrap --policy "$PWD/policy.json" -- ${EXAMPLE_SERVER_COMMAND}\n`
+    `${why} If you have no policy yet, write the starter one where every server behind mcpcut reads it:\n` +
+    `  echo '${STARTER_POLICY_JSON}' > ${shellArg(dataPolicyPath)}\n` +
+    `then restart your client. No server behind mcpcut yet? ${cmd} adopt\n`
   )
 }
 

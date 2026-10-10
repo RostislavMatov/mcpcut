@@ -44,9 +44,9 @@ Or be asked right in the session: let everything pass and stop only the tools yo
     { "version": 1, "defaultDecision": "allow", "quarantine": { "enabled": false },
       "servers": { "fs": { "confirmInClient": { "write_file": ["*"], "edit_file": ["*"] } } } }
 
-Rather click than write JSON? `npx -y mcpcut@0.4.0 ui` opens the admin UI. On **Servers**, **Create policy** writes a policy that lets every call pass — restart the client once — and then every tool of every server behind mcpcut has its buttons: **all** under **client** makes that tool ask you in the session, **approval** holds it for the queue, **deny** blocks it. Each click takes effect on the next call.
+Rather click than write JSON? `npx -y mcpcut@0.4.0 ui` opens the admin UI. On **Servers**, **Create policy** writes a policy that lets every call pass — restart the client once — and then every tool of every server behind mcpcut has its buttons under **view →** on the server's card (a server shows up there after its first call): **all** under **client** makes that tool ask you in the session, **approval** holds it for the queue, **deny** blocks it. Each click takes effect on the next call.
 
-**Prove.** Sign the history, export it, and check it offline — with nothing but the directory:
+**Prove.** Sign the history, export it, and check it offline — with nothing but the directory and the public key `keygen` printed (on another machine, pass it with `--pub`):
 
     npx -y mcpcut@0.4.0 keygen && npx -y mcpcut@0.4.0 export --report --out ./report
     npx -y mcpcut@0.4.0 verify --report ./report

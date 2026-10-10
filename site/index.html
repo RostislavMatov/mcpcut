@@ -108,11 +108,11 @@ npx -y mcpcut@0.4.0 approvals approve &lt;id&gt;</pre>
         <p>Or be asked right in the session: let everything pass and stop only the tools you name — Claude Code shows Accept / Decline, no second terminal. <code>fs</code> is the server's name in your client — <code>adopt</code> keeps those names:</p>
 <pre data-from-readme>{ "version": 1, "defaultDecision": "allow", "quarantine": { "enabled": false },
   "servers": { "fs": { "confirmInClient": { "write_file": ["*"], "edit_file": ["*"] } } } }</pre>
-        <p>Rather click than write JSON? <code>npx -y mcpcut@0.4.0 ui</code> opens the admin UI. On Servers, <b>Create policy</b> writes a policy that lets every call pass — restart the client once — and then every tool of every server behind mcpcut has its buttons: <i>all</i> under <i>client</i> makes that tool ask you in the session, <i>approval</i> holds it for the queue, <i>deny</i> blocks it.</p>
+        <p>Rather click than write JSON? <code>npx -y mcpcut@0.4.0 ui</code> opens the admin UI. On Servers, <b>Create policy</b> writes a policy that lets every call pass — restart the client once — and then every tool of every server behind mcpcut has its buttons under <i>view →</i> on the server's card (a server shows up there after its first call): <i>all</i> under <i>client</i> makes that tool ask you in the session, <i>approval</i> holds it for the queue, <i>deny</i> blocks it.</p>
       </div>
       <div class="step">
         <h3>Prove</h3>
-        <p>Sign the history, export it, and check it offline — with nothing but the directory:</p>
+        <p>Sign the history, export it, and check it offline — with nothing but the directory and the public key <code>keygen</code> printed (on another machine, pass it with <code>--pub</code>):</p>
 <pre data-from-readme>npx -y mcpcut@0.4.0 keygen &amp;&amp; npx -y mcpcut@0.4.0 export --report --out ./report
 npx -y mcpcut@0.4.0 verify --report ./report
 npx -y mcpcut@0.4.0 verify --sign</pre>

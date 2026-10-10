@@ -241,6 +241,9 @@ describe('dashboard handler composition', () => {
     expect(doc).toContain('of 2 active')
     expect(doc).toContain('list_issues') // recent decision
     expect(doc).toContain('read stopped early')
+    // What was read is not the whole journal: no "N of N" that claims it is.
+    expect(doc).toContain('latest 1 calls shown')
+    expect(doc).not.toContain('1 of 1 calls shown')
   })
 
   test('with quarantine off in the policy, the handler counts nothing as quarantined', async () => {

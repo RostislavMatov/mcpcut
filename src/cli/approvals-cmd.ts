@@ -19,8 +19,8 @@ import {
   noAdminsYetListNotice,
   type AdminStoreEmptiness,
 } from './admin-token.js'
-import { findDefaultPolicyPath } from './approvals-policy-lookup.js'
-import { formatListReadable, formatTruncationNote } from './approvals-list-format.js'
+import { dataPolicyPathOf, findDefaultPolicyPath } from './approvals-policy-lookup.js'
+import { formatListReadable, formatTruncationNote, hasCutArgs } from './approvals-list-format.js'
 import { cliCommand, listApprovalsHint, noPendingApprovalsHint, resolveApprovalHint } from './next-step.js'
 
 /**
@@ -214,12 +214,13 @@ async function runList(
   const [first] = entries
   if (first === undefined) {
     io.stdout.write('no pending approvals\n')
-    io.stderr.write(noPendingApprovalsHint(findDefaultPolicyPath(opts)))
+    io.stderr.write(noPendingApprovalsHint(findDefaultPolicyPath(opts), dataPolicyPathOf(opts)))
     return 0
   }
 
   const truncationNote = truncated ? formatTruncationNote(entries.length, totalPending) : ''
   io.stdout.write(truncationNote + formatListReadable(entries, clock()))
+  if (hasCutArgs(entries)) io.stderr.write(`Whole arguments, to read before you approve: ${cliCommand(opts.env)} approvals list --json\n`)
   io.stderr.write(resolveApprovalHint(first.approvalId))
   await warnIfNoAdminsYet(io, opts)
   return 0

@@ -92,6 +92,20 @@ describe('agent config: the block with <token>', () => {
     expect(io.err()).toBe('')
   })
 
+  test('says what to do when the token is lost: only its hash is kept, so a new agent', async () => {
+    // Arrange
+    await seedAgent('research-bot')
+    const io = fakeIo()
+
+    // Act
+    await configOf(['research-bot'], io)
+
+    // Assert
+    expect(io.out()).toContain(
+      'Lost it? mcpcut keeps only its hash: mcpcut agent revoke research-bot, then mcpcut agent create research-bot-2\n',
+    )
+  })
+
   test('--http prints the native HTTP form: the pool path and a Bearer placeholder', async () => {
     await seedAgent('research-bot')
     const io = fakeIo()

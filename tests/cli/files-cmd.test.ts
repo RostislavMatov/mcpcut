@@ -222,6 +222,26 @@ describe('files grant', () => {
     expect(result.err).toContain('mcpcut files show writer')
   })
 
+  test('granting a folder again says what it replaced and how to keep both', async () => {
+    // Arrange
+    await files(['grant', 'writer', join(root, 'a'), '--ops', 'read,write,edit'])
+
+    // Act
+    const result = await files(['grant', 'writer', join(root, 'a'), '--ops', 'delete'])
+
+    // Assert
+    expect(result.code).toBe(0)
+    expect(result.out).toContain(`granted writer on ${join(root, 'a')}: delete (was read, write, edit)\n`)
+    expect(result.err).toContain(`To keep those as well: mcpcut files grant writer ${join(root, 'a')} --ops read,write,edit,delete\n`)
+  })
+
+  test('a first grant on a folder names nothing it replaced', async () => {
+    const result = await files(['grant', 'writer', join(root, 'a'), '--ops', 'read'])
+
+    expect(result.out).toContain(`granted writer on ${join(root, 'a')}: read\n`)
+    expect(result.err).not.toContain('To keep those as well')
+  })
+
   test('the audit line names the agent and the folder with "on", not a glued slash', async () => {
     const result = await files(['grant', 'writer', join(root, 'a'), '--ops', 'read'])
 

@@ -43,7 +43,10 @@ research-bot's folder rules:
 Connect the agent the way `agent create` printed: its client config block goes
 into the agent's client (`.mcp.json` for Claude Code, `.cursor/mcp.json` for
 Cursor, Claude Desktop's config) and points `connect --url` at `serve`. If you
-did not keep it, `mcpcut agent config research-bot` prints it again.
+did not keep it, `mcpcut agent config research-bot` prints the block again
+with `<token>` in place of the token: mcpcut keeps only the token's hash, so a
+lost token means a new agent (`agent revoke`, then `agent create` under
+another name).
 
 ```
 {
@@ -97,7 +100,11 @@ mcpcut files grant research-bot ~/project/docs/private --ops none
 The agent reads all of `~/project`, edits `~/project/docs`, and gets nothing in
 `~/project/docs/private`: `--ops none` carves a subfolder out. A carved-out
 folder still appears by name in its parent's listing; its contents are refused.
-Two rules on the same folder add up, except that `none` on it wins.
+Granting a folder again sets its operations anew: after `--ops read,write,edit`,
+`--ops delete` leaves only `delete` there (`grant` says what it replaced and
+prints the command that keeps both). When an agent takes its rules from
+several groups, their rules on the same folder add up, except that `none` on
+it wins.
 
 A carve-out remembers the folder it was granted on. If that folder is later
 moved, deleted or replaced by a new one of the same name (by another agent, or
@@ -148,9 +155,12 @@ declared again. The limits are 50 roots and 100 folder rules per agent or group.
 Passing the `sha256` from `read_file` as `expectedSha256` to `write_file` or
 `edit_file` makes the call fail with `The file changed since you read it`
 instead of overwriting someone else's change. Paths are absolute. Not
-allowed, whatever the rights: binary files, a file with several hard links
-(it could be a way out of the folder), and moving or deleting a folder that
-contains a separately granted folder. A move may not give the agent `read` or
+allowed, whatever the rights: binary files, changing, moving or deleting a
+file with several hard links (its other link could be outside the folder),
+and moving or deleting a folder that contains a separately granted folder.
+Reading a hard-linked file is allowed: rights follow paths, so a hard link
+inside a folder the agent may read shows it that file, wherever its other
+links are — even in a folder cut out with `none`. A move may not give the agent `read` or
 `edit` somewhere it lacks them at the source.
 
 The tools go through the same gate as any other server's: a
@@ -265,7 +275,9 @@ mcpcut files db sync
 
 `setup --search` installs the local runtime (onnxruntime) and downloads the
 model `multilingual-e5-small` (Russian and English among others) once, about
-430 MB in total, each file checked against a pinned size and hash. After that
+430 MB in total, each file checked against a pinned size and hash. The
+runtime comes from npm (about 300 MB) and npm prints nothing until it is done:
+on a slow connection that step alone takes many minutes. After that
 nothing is sent anywhere: file text is embedded on this machine and stored
 in your Postgres. It is not available on Intel Macs; there the command says so
 and exits.
@@ -274,8 +286,10 @@ and exits.
 appears in the agents' lists only once some folder is on. `index off <folder>`
 turns a folder off, or cuts a subfolder out of an indexed parent;
 `index list` shows the rules, the counts and what is missing. `serve` embeds
-new and changed files in the background, so the index can lag a minute behind
-a change.
+new and changed files in the background: a file an agent changed through these
+tools is in the index within a minute; one changed outside them (by you, an
+editor, `git`) when `serve` next walks the folders, once an hour — or at once
+with `mcpcut files db sync`.
 
 What is indexed, and what never is:
 

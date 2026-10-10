@@ -13,6 +13,7 @@ import {
   ruleKeysOf,
 } from '../files/grant-admin.js'
 import { hasAgentConnected } from '../files/agent-seen.js'
+import type { FileRule } from '../files/rights.js'
 import { prepareRoot } from '../files/roots-admin.js'
 import { JOURNAL_DIR } from '../config.js'
 import { createRootsStore } from '../files/roots-store.js'
@@ -174,7 +175,8 @@ export async function runGrant(args: string[], io: AgentCliIo, opts: FilesCliOpt
   if (!ops.ok) return fail(io, ops.message)
   const actor = await requireOwner(io, opts)
   if (actor === undefined) return 1
-  if ((await findAgent(io, opts, agentName)) === undefined) return 1
+  const found = await findAgent(io, opts, agentName)
+  if (found === undefined) return 1
   const state = await filesServerState(registryOf(opts))
   if (state === 'conflict') return fail(io, conflictMessage(opts.env))
   if (state === 'missing') return fail(io, notRegisteredMessage(opts.env, shellArg(rawPath)))
@@ -183,6 +185,7 @@ export async function runGrant(args: string[], io: AgentCliIo, opts: FilesCliOpt
   const resolved = await resolveRulePath(roots.map((root) => root.path), rawPath, (folder) => `${cliCommand(opts.env)} files root add ${shellArg(folder)}`)
   if (!resolved.ok) return fail(io, replaceControlChars(resolved.message))
   const rule = await ruleFor(resolved.path, ops.ops)
+  const replaced = replacedOps(found, rule)
 
   const agent = await storesOf(opts).agents.setServerGrant(agentName, FILES_SERVER_NAME, (current) => {
     const applied = applyRule(filesGrantsOf(current), rule)
@@ -190,7 +193,8 @@ export async function runGrant(args: string[], io: AgentCliIo, opts: FilesCliOpt
     return applied.grants[FILES_SERVER_NAME] as AgentGrant
   })
   const grant = agent.grants[FILES_SERVER_NAME] as AgentGrant
-  io.stdout.write(`granted ${formatReadableField(agentName)} on ${formatReadableField(rule.path)}: ${rule.ops.length === 0 ? 'no access (cut out)' : rule.ops.join(', ')}\n`)
+  const was = replaced === undefined ? '' : ` (was ${describeOps(replaced)})`
+  io.stdout.write(`granted ${formatReadableField(agentName)} on ${formatReadableField(rule.path)}: ${describeOps(rule.ops)}${was}\n`)
   io.stdout.write(`${agentName}'s folder rules:\n${formatRuleLines(grant.paths ?? []).join('\n')}\n`)
   // The change is journaled first: the hint below reads the journal and must not delay or lose the record.
   const code = await record(io, opts, actor, 'grant', onTarget(agentName, rule.path), {
@@ -200,11 +204,45 @@ export async function runGrant(args: string[], io: AgentCliIo, opts: FilesCliOpt
     path: rule.path,
     grant,
   })
-  io.stderr.write(`Check the result: ${cliCommand(opts.env)} files show ${shellArg(agentName)}\n`)
-  if (!(await hasAgentConnected(agentName, opts.journalDir))) {
-    io.stderr.write(`Connect it: ${cliCommand(opts.env)} agent config ${shellArg(agentName)}\n`)
-  }
+  await writeGrantNextSteps(io, opts, agentName, rule, replaced)
   return code
+}
+
+/** After a grant: the union to keep when it dropped operations, the check, and the connect step for a new agent. */
+async function writeGrantNextSteps(
+  io: AgentCliIo,
+  opts: FilesCliOptions,
+  agentName: string,
+  rule: FileRule,
+  replaced: readonly FileOp[] | undefined,
+): Promise<void> {
+  const cli = cliCommand(opts.env)
+  const kept = keepBothOps(replaced, rule.ops)
+  if (kept !== undefined) {
+    io.stderr.write(`To keep those as well: ${cli} files grant ${shellArg(agentName)} ${shellArg(rule.path)} --ops ${kept.join(',')}\n`)
+  }
+  io.stderr.write(`Check the result: ${cli} files show ${shellArg(agentName)}\n`)
+  if (!(await hasAgentConnected(agentName, opts.journalDir))) {
+    io.stderr.write(`Connect it: ${cli} agent config ${shellArg(agentName)}\n`)
+  }
+}
+
+function describeOps(ops: readonly FileOp[]): string {
+  return ops.length === 0 ? 'no access (cut out)' : ops.join(', ')
+}
+
+/** A grant on a folder sets its operations anew (rules of one agent never add up): what it replaces, if it changes anything. */
+function replacedOps(agent: AgentRecord, rule: FileRule): readonly FileOp[] | undefined {
+  const previous = agent.grants[FILES_SERVER_NAME]?.paths?.find((existing) => existing.path === rule.path)
+  if (previous === undefined) return undefined
+  const isSame = previous.ops.length === rule.ops.length && previous.ops.every((op) => rule.ops.includes(op))
+  return isSame ? undefined : previous.ops
+}
+
+/** The union to offer when a new grant dropped operations the old one had; none when it only added or cut out. */
+function keepBothOps(replaced: readonly FileOp[] | undefined, ops: readonly FileOp[]): readonly FileOp[] | undefined {
+  if (replaced === undefined || ops.length === 0 || replaced.every((op) => ops.includes(op))) return undefined
+  return normalizeOps([...replaced, ...ops])
 }
 
 /** After a revoke: a removed cut-out says what changed; a removed grant offers to give a folder again. */

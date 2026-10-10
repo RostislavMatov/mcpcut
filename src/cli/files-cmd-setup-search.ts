@@ -53,6 +53,7 @@ async function ensureRuntimeTree(io: AgentCliIo, opts: FilesCliOptions, searchDi
   const retry = `check your network and run \`${cli} files setup --search\` again`
   await writeSearchPinnedFiles(searchDir)
   io.stdout.write(`installing the search runtime onnxruntime-node ${ORT_PACKAGE_VERSION} into ${formatReadableField(searchDir)}\n`)
+  io.stdout.write('about 300 MB from npm, silent until it is done: on a slow connection this takes minutes\n')
   const runNpm = opts.db?.runNpm ?? spawnNpm
   const code = await runNpm(npmInvocationOf(searchDir, opts.db?.platform ?? process.platform)).catch((error: unknown) => {
     io.stderr.write(`could not run npm (${errorText(error)}): install Node.js with npm, then run \`${cli} files setup --search\` again\n`)

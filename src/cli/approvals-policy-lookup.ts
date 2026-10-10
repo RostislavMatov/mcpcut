@@ -15,6 +15,14 @@ export interface PolicyLookupOptions {
  * "here is how to make one".
  */
 export function findDefaultPolicyPath(opts: PolicyLookupOptions = {}): string | undefined {
-  const candidates = defaultPolicyCandidates(opts.cwd ?? process.cwd(), opts.journalDir ?? JOURNAL_DIR)
-  return candidates.map((candidate) => candidate.path).find((path) => existsSync(path))
+  return candidatePathsOf(opts).find((path) => existsSync(path))
+}
+
+/** The data directory's policy — the one every server behind mcpcut reads, where the README puts it. */
+export function dataPolicyPathOf(opts: PolicyLookupOptions = {}): string {
+  return candidatePathsOf(opts).at(-1) as string
+}
+
+function candidatePathsOf(opts: PolicyLookupOptions): string[] {
+  return defaultPolicyCandidates(opts.cwd ?? process.cwd(), opts.journalDir ?? JOURNAL_DIR).map((candidate) => candidate.path)
 }

@@ -109,7 +109,11 @@ function renderFooter(input: JournalPanelInput): Html {
   const note = input.truncated
     ? html`<span class="faint">read stopped early — <a href="${safeUrl('/journal')}">open the journal</a> for the rest</span>`
     : html`<span class="faint">journal retained locally</span>`
-  return html`<div class="panel-ft"><span>${String(input.decisions.length)} of ${String(input.total)} calls shown</span>${note}</div>`
+  // A walk that stopped early knows no total: "N of N" would claim the whole journal.
+  const shown = input.truncated
+    ? `latest ${String(input.decisions.length)} calls shown`
+    : `${String(input.decisions.length)} of ${String(input.total)} calls shown`
+  return html`<div class="panel-ft"><span>${shown}</span>${note}</div>`
 }
 
 /** The left panel: header with filter pills, the column grid, rows, footer. */

@@ -23,6 +23,22 @@ All notable changes to this project are documented here. The format follows
   that minute sent the call to the server with nobody waiting for it. A call that carries no progress token (Claude
   Code always gives one) is still found out only when mcpcut next writes to the client.
 
+### Changed
+
+- `files grant` on a folder that already had a rule says what it replaced (`delete (was read, write, edit)`) and prints
+  the command that keeps both: a grant sets a folder's operations anew. The guide said one agent's rules on a folder
+  add up; only the rules of several groups do.
+- `agent config` says what to do about a lost token (a new agent: only its hash is kept), and `agent create` on a name
+  that is taken, or kept by a revoked agent, says so and offers another name instead of a bare "already exists".
+- `approvals list` points at `--json` when it cut a request's arguments, so they can be read whole before approving,
+  and an empty queue with no policy writes the starter one to `~/.mcpcut/data/policy.json`, where every server behind
+  mcpcut reads it, as the README does.
+- `files setup --search` says that the npm step downloads about 300 MB and prints nothing until it is done.
+- The dashboard's journal says "latest N calls shown" when its read stopped early, instead of "N of N".
+- README and site: verifying a report elsewhere needs the public key `keygen` printed (`--pub`); a tool's buttons sit
+  under "view →" on its server's card. The files guide says that reading a hard-linked file is allowed (rights follow
+  paths) and how soon the index sees a file changed outside the tools.
+
 ## [0.4.0] — 2026-10-09
 
 ### Added

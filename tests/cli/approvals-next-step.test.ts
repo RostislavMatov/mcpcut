@@ -61,7 +61,7 @@ describe('approvals: the next command', () => {
     expect(exitCode).toBe(0)
     expect(io.out()).toBe('no pending approvals\n')
     expect(io.err()).toContain('require-approval')
-    expect(io.err()).toContain('mcpcut wrap --policy')
+    expect(io.err()).toContain('restart your client')
   })
 
   test('a pending call gets approve and deny commands with its id', async () => {
